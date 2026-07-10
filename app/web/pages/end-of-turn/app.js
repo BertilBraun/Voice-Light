@@ -2,6 +2,11 @@ const sessionSelect = document.querySelector("#session-select");
 const loadingIndicator = document.querySelector("#loading-indicator");
 const playToggleButton = document.querySelector("#play-toggle-button");
 const speaker2ToggleButton = document.querySelector("#speaker2-toggle-button");
+const settingsButton = document.querySelector("#settings-button");
+const detectorSettingsModal = document.querySelector("#detector-settings-modal");
+const closeSettingsButton = document.querySelector("#close-settings-button");
+const cancelSettingsButton = document.querySelector("#cancel-settings-button");
+const saveSettingsButton = document.querySelector("#save-settings-button");
 const selectAllDetectorsButton = document.querySelector("#select-all-detectors-button");
 const clearDetectorsButton = document.querySelector("#clear-detectors-button");
 const timeSlider = document.querySelector("#time-slider");
@@ -22,6 +27,7 @@ const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors";
 let sessions = [];
 let detectors = [];
 let selectedDetectorModes = new Set();
+let stagedDetectorModes = new Set();
 let currentPayload = null;
 let animationFrameIdentifier = null;
 let viewportStartSeconds = 0;
@@ -47,6 +53,7 @@ async function loadInitialOptions() {
   sessions = sessionsPayload.sessions;
   detectors = detectorsPayload.detectors;
   selectedDetectorModes = loadSelectedDetectorModes();
+  stagedDetectorModes = new Set(selectedDetectorModes);
   sessionSelect.replaceChildren(
     ...sessions.map((session) => {
       const option = document.createElement("option");
@@ -55,7 +62,8 @@ async function loadInitialOptions() {
       return option;
     }),
   );
-  renderDetectorOptions();
+  updateDetectorSettingsSummary();
+  setDetectorSettingsButtonsEnabled(true);
   if (sessions.length > 0) {
     await analyzeSelectedSession();
   }
@@ -98,6 +106,7 @@ async function analyzeSelectedSession() {
   } catch (error) {
     if (requestId === analysisRequestId) {
       sessionSummary.textContent = error.message;
+      transcriptSummary.textContent = "Transcript unavailable.";
     }
   } finally {
     if (requestId === analysisRequestId) {
@@ -132,8 +141,8 @@ function renderDetectorOptions() {
       checkbox.type = "checkbox";
       checkbox.id = `detector-${detector.mode}`;
       checkbox.value = detector.mode;
-      checkbox.checked = selectedDetectorModes.has(detector.mode);
-      checkbox.addEventListener("change", updateSelectedDetectorModesFromInputs);
+      checkbox.checked = stagedDetectorModes.has(detector.mode);
+      checkbox.addEventListener("change", updateStagedDetectorModesFromInputs);
 
       const title = document.createElement("strong");
       title.textContent = detector.label;
@@ -150,9 +159,8 @@ function renderDetectorOptions() {
       return option;
     }),
   );
-  selectAllDetectorsButton.disabled = false;
-  clearDetectorsButton.disabled = false;
   updateDetectorSettingsSummary();
+  updateSaveSettingsButton();
 }
 
 function loadSelectedDetectorModes() {
@@ -170,28 +178,47 @@ function loadSelectedDetectorModes() {
   return new Set(storedModes.filter((mode) => availableModes.has(mode)));
 }
 
-function updateSelectedDetectorModesFromInputs() {
-  selectedDetectorModes = new Set(
+function openSettingsModal() {
+  stagedDetectorModes = new Set(selectedDetectorModes);
+  renderDetectorOptions();
+  detectorSettingsModal.hidden = false;
+}
+
+function closeSettingsModal() {
+  detectorSettingsModal.hidden = true;
+  stagedDetectorModes = new Set(selectedDetectorModes);
+  updateDetectorSettingsSummary();
+}
+
+function updateStagedDetectorModesFromInputs() {
+  stagedDetectorModes = new Set(
     [...detectorOptions.querySelectorAll("input[type='checkbox']")]
       .filter((checkbox) => checkbox.checked)
       .map((checkbox) => checkbox.value),
   );
-  persistSelectedDetectorModes();
   updateDetectorSettingsSummary();
-  void analyzeSelectedSession();
+  updateSaveSettingsButton();
 }
 
 function selectAllDetectors() {
-  selectedDetectorModes = new Set(detectors.map((detector) => detector.mode));
-  persistSelectedDetectorModes();
+  stagedDetectorModes = new Set(detectors.map((detector) => detector.mode));
   renderDetectorOptions();
-  void analyzeSelectedSession();
 }
 
 function clearDetectors() {
-  selectedDetectorModes = new Set();
-  persistSelectedDetectorModes();
+  stagedDetectorModes = new Set();
   renderDetectorOptions();
+}
+
+function saveDetectorSettings() {
+  if (detectorModeSetsEqual(selectedDetectorModes, stagedDetectorModes)) {
+    closeSettingsModal();
+    return;
+  }
+  selectedDetectorModes = new Set(stagedDetectorModes);
+  persistSelectedDetectorModes();
+  updateDetectorSettingsSummary();
+  closeSettingsModal();
   void analyzeSelectedSession();
 }
 
@@ -203,7 +230,27 @@ function persistSelectedDetectorModes() {
 }
 
 function updateDetectorSettingsSummary() {
-  detectorSettingsSummary.textContent = `${selectedDetectorModes.size}/${detectors.length} detectors selected`;
+  const displayedDetectorModes = detectorSettingsModal.hidden
+    ? selectedDetectorModes
+    : stagedDetectorModes;
+  detectorSettingsSummary.textContent = `${displayedDetectorModes.size}/${detectors.length} detectors selected`;
+}
+
+function updateSaveSettingsButton() {
+  saveSettingsButton.disabled = detectorModeSetsEqual(selectedDetectorModes, stagedDetectorModes);
+}
+
+function setDetectorSettingsButtonsEnabled(areEnabled) {
+  settingsButton.disabled = !areEnabled;
+  selectAllDetectorsButton.disabled = !areEnabled;
+  clearDetectorsButton.disabled = !areEnabled;
+}
+
+function detectorModeSetsEqual(firstDetectorModes, secondDetectorModes) {
+  if (firstDetectorModes.size !== secondDetectorModes.size) {
+    return false;
+  }
+  return [...firstDetectorModes].every((detectorMode) => secondDetectorModes.has(detectorMode));
 }
 
 function selectedDetectorModesQueryValue() {
@@ -251,6 +298,8 @@ function setLoading(isLoading) {
   loadingIndicator.hidden = !isLoading;
   if (isLoading) {
     sessionSummary.textContent = `Analyzing ${sessionSelect.value}...`;
+    transcriptSummary.textContent = "Loading transcript...";
+    transcriptList.replaceChildren();
   }
 }
 
@@ -580,7 +629,7 @@ function seekToSeconds(targetTime) {
 
 function renderTranscript() {
   activeTranscriptTurnIndex = null;
-  const transcriptTurns = currentPayload.analysis.transcript_turns;
+  const transcriptTurns = transcriptTurnsForCurrentPayload();
   transcriptSummary.textContent = `${transcriptTurns.length} transcript turns`;
   if (transcriptTurns.length === 0) {
     const emptyState = document.createElement("div");
@@ -624,7 +673,7 @@ function updateActiveTranscriptTurn() {
     return;
   }
   const currentTime = Number(timeSlider.value);
-  const transcriptTurnIndex = currentPayload.analysis.transcript_turns.findIndex(
+  const transcriptTurnIndex = transcriptTurnsForCurrentPayload().findIndex(
     (transcriptTurn) =>
       currentTime >= transcriptTurn.start_seconds && currentTime <= transcriptTurn.end_seconds,
   );
@@ -649,6 +698,13 @@ function updateActiveTranscriptTurn() {
   }
   activeTurn.classList.add("transcript-turn-active");
   activeTurn.scrollIntoView({ block: "nearest" });
+}
+
+function transcriptTurnsForCurrentPayload() {
+  if (currentPayload === null || !Array.isArray(currentPayload.analysis.transcript_turns)) {
+    return [];
+  }
+  return currentPayload.analysis.transcript_turns;
 }
 
 function toggleSpeaker2() {
@@ -743,6 +799,9 @@ function zoomAtPointer(event) {
   if (currentPayload === null) {
     return;
   }
+  if (!eventIsOverWaveform(event)) {
+    return;
+  }
   const anchorSeconds = eventToSeconds(event);
   if (anchorSeconds === null) {
     return;
@@ -760,6 +819,30 @@ function zoomAtPointer(event) {
   const nextEndSeconds = nextStartSeconds + nextDurationSeconds;
   setViewport(nextStartSeconds, nextEndSeconds);
   drawTimeline();
+}
+
+function eventIsOverWaveform(event) {
+  const rect = canvas.getBoundingClientRect();
+  const leftPad = 92;
+  const rightPad = 16;
+  const trackWidth = rect.width - leftPad - rightPad;
+  const x = event.clientX - rect.left;
+  if (x < leftPad || x > leftPad + trackWidth) {
+    return false;
+  }
+
+  const y = event.clientY - rect.top;
+  const waveTop = 44;
+  const waveHeight = showSpeaker2 ? 120 : 172;
+  const rowGap = 24;
+  const rowCount = showSpeaker2 ? 2 : 1;
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const top = waveTop + rowIndex * (waveHeight + rowGap);
+    if (y >= top && y <= top + waveHeight) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function eventToSeconds(event) {
@@ -836,6 +919,10 @@ sessionSelect.addEventListener("change", analyzeSelectedSession);
 playToggleButton.addEventListener("click", togglePlayback);
 document.addEventListener("keydown", togglePlaybackWithKeyboard);
 speaker2ToggleButton.addEventListener("click", toggleSpeaker2);
+settingsButton.addEventListener("click", openSettingsModal);
+closeSettingsButton.addEventListener("click", closeSettingsModal);
+cancelSettingsButton.addEventListener("click", closeSettingsModal);
+saveSettingsButton.addEventListener("click", saveDetectorSettings);
 selectAllDetectorsButton.addEventListener("click", selectAllDetectors);
 clearDetectorsButton.addEventListener("click", clearDetectors);
 timeSlider.addEventListener("input", seekBothAudio);
