@@ -4,21 +4,23 @@ import wave
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import Protocol, cast
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
+from torch import Tensor, nn
+from transformers import (
+    Wav2Vec2Config,
+    Wav2Vec2FeatureExtractor,
+    Wav2Vec2Model,
+    Wav2Vec2PreTrainedModel,
+)
+from transformers.feature_extraction_utils import BatchFeature
 
 from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
 from app.audio.wav import mono_samples
-
-if TYPE_CHECKING:
-    from torch import Tensor
-    from torch.nn import Module
-    from transformers.feature_extraction_utils import BatchFeature
-    from transformers.modeling_outputs import SequenceClassifierOutput
-
 
 MODEL_NAME = "pipecat-ai/smart-turn-v2"
 TARGET_SAMPLE_RATE = 16000
@@ -39,11 +41,40 @@ class SmartTurnFeatureExtractor(Protocol):
 
 
 class SmartTurnModel(Protocol):
-    def eval(self) -> Module:
+    def eval(self) -> nn.Module:
         raise NotImplementedError
 
-    def __call__(self, input_values: Tensor) -> SequenceClassifierOutput:
+    def __call__(self, input_values: Tensor) -> Tensor:
         raise NotImplementedError
+
+
+class Wav2Vec2ForEndpointing(Wav2Vec2PreTrainedModel):
+    def __init__(self, config: Wav2Vec2Config) -> None:
+        super().__init__(config)
+        self.wav2vec2 = Wav2Vec2Model(config)
+        self.pool_attention = nn.Sequential(
+            nn.Linear(config.hidden_size, config.classifier_proj_size),
+            nn.Tanh(),
+            nn.Linear(config.classifier_proj_size, 1),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(config.hidden_size, config.classifier_proj_size),
+            nn.LayerNorm(config.classifier_proj_size),
+            nn.GELU(),
+            nn.Dropout(config.final_dropout),
+            nn.Linear(config.classifier_proj_size, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
+        )
+        self.post_init()
+
+    def forward(self, input_values: Tensor) -> Tensor:
+        outputs = self.wav2vec2(input_values=input_values)
+        hidden_states = outputs.last_hidden_state
+        attention_scores = self.pool_attention(hidden_states)
+        attention_weights = torch.softmax(attention_scores, dim=1)
+        pooled_states = torch.sum(attention_weights * hidden_states, dim=1)
+        return self.classifier(pooled_states)
 
 
 @dataclass(frozen=True)
@@ -120,22 +151,13 @@ def pipecat_smart_turn_v2_detector(
 @lru_cache(maxsize=1)
 def _load_inference_components(model_name: str) -> SmartTurnInferenceComponents:
     try:
-        from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
-    except ImportError as error:
-        raise ImportError(
-            "Pipecat Smart Turn v2 requires optional dependencies: "
-            "`torch`, `transformers`, and `safetensors`. Install them before enabling "
-            "this detector."
-        ) from error
-
-    try:
         feature_extractor = cast(
             SmartTurnFeatureExtractor,
             Wav2Vec2FeatureExtractor.from_pretrained(model_name),
         )
         model = cast(
             SmartTurnModel,
-            Wav2Vec2ForSequenceClassification.from_pretrained(model_name),
+            Wav2Vec2ForEndpointing.from_pretrained(model_name),
         )
     except OSError as error:
         raise ValueError(
@@ -399,8 +421,6 @@ def _completion_probability(
     audio: NDArray[np.float32],
     inference_components: SmartTurnInferenceComponents,
 ) -> float:
-    import torch
-
     feature_batch = inference_components.feature_extractor(
         audio,
         sampling_rate=TARGET_SAMPLE_RATE,
@@ -411,8 +431,8 @@ def _completion_probability(
     )
     input_values = cast("Tensor", feature_batch["input_values"])
     with torch.no_grad():
-        model_output = inference_components.model(input_values=input_values)
-        probability = torch.sigmoid(model_output.logits).squeeze()
+        logits = inference_components.model(input_values=input_values)
+        probability = torch.sigmoid(logits).squeeze()
 
     return float(probability.detach().cpu().item())
 

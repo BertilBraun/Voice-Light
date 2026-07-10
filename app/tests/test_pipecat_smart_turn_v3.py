@@ -5,11 +5,13 @@ from dataclasses import dataclass, field
 import numpy as np
 import pytest
 from numpy.typing import NDArray
+from transformers.feature_extraction_utils import BatchFeature
 
 from app.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
     CandidatePause,
-    SmartTurnPrediction,
+    SmartTurnV3Inference,
     _candidate_pauses,
+    _completion_probability,
     _smart_turn_events,
     _speech_segments_from_flags_with_pause,
 )
@@ -17,17 +19,33 @@ from app.analyses.end_of_turn.service import SpeechSegment
 
 
 @dataclass
-class RecordingSmartTurnAnalyzer:
-    probabilities: list[float]
+class RecordingFeatureExtractor:
     observed_sample_counts: list[int] = field(default_factory=list)
 
-    def _predict_endpoint(self, audio_array: NDArray[np.float32]) -> SmartTurnPrediction:
-        self.observed_sample_counts.append(audio_array.size)
-        probability = self.probabilities.pop(0)
-        return SmartTurnPrediction(
-            prediction=1 if probability >= 0.5 else 0,
-            probability=probability,
-        )
+    def __call__(
+        self,
+        raw_speech: NDArray[np.float32],
+        sampling_rate: int,
+        return_tensors: str,
+        padding: str,
+        max_length: int,
+        truncation: bool,
+        do_normalize: bool,
+    ) -> BatchFeature:
+        self.observed_sample_counts.append(raw_speech.size)
+        return BatchFeature(data={"input_features": raw_speech.reshape(1, 1, -1)})
+
+
+@dataclass
+class RecordingSession:
+    probabilities: list[float]
+
+    def run(
+        self,
+        output_names: list[str] | None,
+        input_feed: dict[str, NDArray[np.float32]],
+    ) -> list[NDArray[np.float32]]:
+        return [np.array([self.probabilities.pop(0)], dtype=np.float32)]
 
 
 def test_speech_segments_from_flags_with_pause_bridges_short_silence() -> None:
@@ -73,7 +91,11 @@ def test_candidate_pauses_include_intermediate_and_trailing_silence() -> None:
 
 
 def test_smart_turn_events_accumulate_until_completion() -> None:
-    analyzer = RecordingSmartTurnAnalyzer(probabilities=[0.2, 0.8, 0.9])
+    feature_extractor = RecordingFeatureExtractor()
+    inference = SmartTurnV3Inference(
+        feature_extractor=feature_extractor,
+        session=RecordingSession(probabilities=[0.2, 0.8, 0.9]),
+    )
     samples = np.zeros(40, dtype=np.float32)
     candidate_pauses = [
         CandidatePause(
@@ -97,12 +119,26 @@ def test_smart_turn_events_accumulate_until_completion() -> None:
     ]
 
     events = _smart_turn_events(
-        analyzer=analyzer,
+        inference=inference,
         samples=samples,
         sample_rate=10,
         candidate_pauses=candidate_pauses,
         completion_threshold=0.5,
     )
 
-    assert analyzer.observed_sample_counts == [12, 22, 4]
+    assert feature_extractor.observed_sample_counts == [128000, 128000, 128000]
     assert [event.time_seconds for event in events] == pytest.approx([2.2, 3.4])
+
+
+def test_completion_probability_uses_session_probability() -> None:
+    inference = SmartTurnV3Inference(
+        feature_extractor=RecordingFeatureExtractor(),
+        session=RecordingSession(probabilities=[0.73]),
+    )
+
+    probability = _completion_probability(
+        inference=inference,
+        audio=np.zeros(16000, dtype=np.float32),
+    )
+
+    assert probability == pytest.approx(0.73)

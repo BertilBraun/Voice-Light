@@ -65,4 +65,9 @@ def test_session_listing_uses_session_directories() -> None:
 def test_available_detectors_include_vad_variants() -> None:
     detector_modes = {detector_info.mode.value for detector_info in available_detectors()}
 
-    assert detector_modes == {"naive_vad_floor", "naive_vad_fast"}
+    assert detector_modes == {
+        "naive_vad_floor",
+        "naive_vad_fast",
+        "pipecat_smart_turn_v2",
+        "pipecat_smart_turn_v3",
+    }

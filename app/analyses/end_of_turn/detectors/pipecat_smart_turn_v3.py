@@ -14,7 +14,6 @@ from transformers import WhisperFeatureExtractor
 from transformers.feature_extraction_utils import BatchFeature
 
 from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
-from app.analyses.end_of_turn.detectors.naive_vad import _adaptive_threshold
 from app.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
 from app.audio.wav import mono_samples
 
@@ -38,10 +37,19 @@ class SmartTurnFeatureExtractor(Protocol):
         raise NotImplementedError
 
 
+class SmartTurnSession(Protocol):
+    def run(
+        self,
+        output_names: list[str] | None,
+        input_feed: dict[str, NDArray[np.float32]],
+    ) -> list[NDArray[np.float32]]:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class SmartTurnV3Inference:
     feature_extractor: SmartTurnFeatureExtractor
-    session: ort.InferenceSession
+    session: SmartTurnSession
 
 
 @dataclass(frozen=True)
@@ -209,6 +217,24 @@ def _frame_energies(
     return frame_energies
 
 
+def _adaptive_threshold(frame_energies: list[float]) -> float:
+    if not frame_energies:
+        raise ValueError("Cannot calculate a speech threshold for an empty audio file.")
+
+    sorted_energies = sorted(frame_energies)
+    noise_floor = _percentile(sorted_values=sorted_energies, percentile=0.20)
+    speech_level = _percentile(sorted_values=sorted_energies, percentile=0.90)
+    return max(noise_floor * 3.0, speech_level * 0.08, 0.00003)
+
+
+def _percentile(sorted_values: list[float], percentile: float) -> float:
+    if not sorted_values:
+        raise ValueError("Cannot calculate a percentile for an empty list.")
+    bounded_percentile = min(1.0, max(0.0, percentile))
+    index = round((len(sorted_values) - 1) * bounded_percentile)
+    return sorted_values[index]
+
+
 def _speech_segments_from_flags_with_pause(
     speech_flags: list[bool],
     frame_seconds: float,
@@ -371,7 +397,7 @@ def _load_smart_turn_v3_inference(
     session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     session_options.inter_op_num_threads = 1
     session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session = ort.InferenceSession(model_path, sess_options=session_options)
+    session = cast(SmartTurnSession, ort.InferenceSession(model_path, sess_options=session_options))
     feature_extractor = cast(SmartTurnFeatureExtractor, WhisperFeatureExtractor(chunk_length=8))
     return SmartTurnV3Inference(feature_extractor=feature_extractor, session=session)
 

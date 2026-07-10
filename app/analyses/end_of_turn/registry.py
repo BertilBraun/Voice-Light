@@ -15,6 +15,12 @@ from app.analyses.end_of_turn.detectors.naive_vad import (
     naive_vad_fast_detector,
     naive_vad_floor_detector,
 )
+from app.analyses.end_of_turn.detectors.pipecat_smart_turn_v2 import (
+    pipecat_smart_turn_v2_detector,
+)
+from app.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
+    pipecat_smart_turn_v3_detector,
+)
 from app.analyses.end_of_turn.service import BaselineResult
 
 DETECTOR_CACHE_SIZE = 20
@@ -54,6 +60,8 @@ _DETECTOR_RESULT_CACHE = DetectorResultCache(capacity=DETECTOR_CACHE_SIZE)
 _DETECTORS: tuple[EndOfTurnDetector, ...] = (
     naive_vad_floor_detector(),
     naive_vad_fast_detector(),
+    pipecat_smart_turn_v2_detector(mode=EndOfTurnDetectorMode.PIPECAT_SMART_TURN_V2),
+    pipecat_smart_turn_v3_detector(mode=EndOfTurnDetectorMode.PIPECAT_SMART_TURN_V3),
 )
 
 

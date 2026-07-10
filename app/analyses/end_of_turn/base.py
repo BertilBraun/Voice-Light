@@ -11,6 +11,8 @@ from app.analyses.end_of_turn.service import BaselineResult
 class EndOfTurnDetectorMode(StrEnum):
     NAIVE_VAD_FLOOR = "naive_vad_floor"
     NAIVE_VAD_FAST = "naive_vad_fast"
+    PIPECAT_SMART_TURN_V2 = "pipecat_smart_turn_v2"
+    PIPECAT_SMART_TURN_V3 = "pipecat_smart_turn_v3"
 
 
 @dataclass(frozen=True)
