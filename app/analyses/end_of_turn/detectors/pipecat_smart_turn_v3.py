@@ -68,7 +68,7 @@ class PipecatSmartTurnV3Detector:
     candidate_silence_seconds: float
     completion_threshold: float
 
-    def analyze(self, speaker1_path: Path) -> BaselineResult:
+    def analyze(self, speaker1_path: Path, max_duration_seconds: float) -> BaselineResult:
         return run_pipecat_smart_turn_v3(
             wave_path=speaker1_path,
             result_name=self.info.mode.value,
@@ -77,15 +77,14 @@ class PipecatSmartTurnV3Detector:
             min_speech_seconds=self.min_speech_seconds,
             candidate_silence_seconds=self.candidate_silence_seconds,
             completion_threshold=self.completion_threshold,
+            max_duration_seconds=max_duration_seconds,
         )
 
 
-def pipecat_smart_turn_v3_detector(
-    mode: EndOfTurnDetectorMode,
-) -> PipecatSmartTurnV3Detector:
+def pipecat_smart_turn_v3_detector() -> PipecatSmartTurnV3Detector:
     return PipecatSmartTurnV3Detector(
         info=EndOfTurnDetectorInfo(
-            mode=mode,
+            mode=EndOfTurnDetectorMode.PIPECAT_SMART_TURN_V3,
             label="Pipecat Smart Turn v3.2",
             description=(
                 "RMS speech windows propose candidate turn boundaries after 200 ms of silence; "
@@ -108,10 +107,12 @@ def run_pipecat_smart_turn_v3(
     min_speech_seconds: float = 0.09,
     candidate_silence_seconds: float = 0.2,
     completion_threshold: float = 0.5,
+    max_duration_seconds: float = 180.0,
 ) -> BaselineResult:
     audio = _read_normalized_audio(
         wave_path=wave_path,
         target_sample_rate=MODEL_SAMPLE_RATE,
+        max_duration_seconds=max_duration_seconds,
     )
     frame_energies = _frame_energies(
         samples=audio.samples,
@@ -160,12 +161,16 @@ class NormalizedAudio:
     duration_seconds: float
 
 
-def _read_normalized_audio(wave_path: Path, target_sample_rate: int) -> NormalizedAudio:
+def _read_normalized_audio(
+    wave_path: Path,
+    target_sample_rate: int,
+    max_duration_seconds: float,
+) -> NormalizedAudio:
     with wave.open(str(wave_path), "rb") as wave_reader:
         sample_rate = wave_reader.getframerate()
         sample_width = wave_reader.getsampwidth()
         channel_count = wave_reader.getnchannels()
-        frame_count = wave_reader.getnframes()
+        frame_count = min(wave_reader.getnframes(), round(sample_rate * max_duration_seconds))
         fragment = wave_reader.readframes(frame_count)
 
     samples = mono_samples(

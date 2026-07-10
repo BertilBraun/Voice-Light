@@ -93,11 +93,12 @@ class PipecatSmartTurnV2Detector:
     min_silence_seconds: float
     max_window_seconds: float
 
-    def analyze(self, speaker1_path: Path) -> BaselineResult:
+    def analyze(self, speaker1_path: Path, max_duration_seconds: float) -> BaselineResult:
         inference_components = _load_inference_components(model_name=self.model_name)
         audio = _read_mono_float_audio(
             wave_path=speaker1_path,
             target_sample_rate=TARGET_SAMPLE_RATE,
+            max_duration_seconds=max_duration_seconds,
         )
         speech_segments = _candidate_speech_segments(
             audio=audio,
@@ -126,12 +127,10 @@ class PipecatSmartTurnV2Detector:
         )
 
 
-def pipecat_smart_turn_v2_detector(
-    mode: EndOfTurnDetectorMode,
-) -> PipecatSmartTurnV2Detector:
+def pipecat_smart_turn_v2_detector() -> PipecatSmartTurnV2Detector:
     return PipecatSmartTurnV2Detector(
         info=EndOfTurnDetectorInfo(
-            mode=mode,
+            mode=EndOfTurnDetectorMode.PIPECAT_SMART_TURN_V2,
             label="Pipecat Smart Turn v2",
             description=(
                 "RMS speech windows propose candidate turn boundaries after 400 ms of silence; "
@@ -172,12 +171,14 @@ def _load_inference_components(model_name: str) -> SmartTurnInferenceComponents:
 def _read_mono_float_audio(
     wave_path: Path,
     target_sample_rate: int,
+    max_duration_seconds: float,
 ) -> NDArray[np.float32]:
     with wave.open(str(wave_path), "rb") as wave_reader:
         sample_rate = wave_reader.getframerate()
         sample_width = wave_reader.getsampwidth()
         channel_count = wave_reader.getnchannels()
-        fragment = wave_reader.readframes(wave_reader.getnframes())
+        max_frame_count = min(wave_reader.getnframes(), round(sample_rate * max_duration_seconds))
+        fragment = wave_reader.readframes(max_frame_count)
 
     samples = mono_samples(
         fragment=fragment,

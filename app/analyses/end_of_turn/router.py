@@ -7,6 +7,7 @@ from app.analyses.end_of_turn.service import analysis_to_json, analyze_session_a
 from app.data.sessions import SpeakerName, session_audio_path
 
 router = APIRouter(prefix="/api/end-of-turn", tags=["end-of-turn"])
+ANALYSIS_MAX_DURATION_SECONDS = 180.0
 
 
 @router.get("/detectors")
@@ -36,7 +37,10 @@ def analyze_end_of_turn(
             identifier=identifier,
             speaker_name=SpeakerName.SPEAKER2,
         )
-        baseline_results = run_all_detectors(speaker1_path=speaker1_path)
+        baseline_results = run_all_detectors(
+            speaker1_path=speaker1_path,
+            max_duration_seconds=ANALYSIS_MAX_DURATION_SECONDS,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -44,6 +48,7 @@ def analyze_end_of_turn(
         speaker1_path=speaker1_path,
         speaker2_path=speaker2_path,
         baseline_results=baseline_results,
+        max_duration_seconds=ANALYSIS_MAX_DURATION_SECONDS,
     )
     return {
         "session_id": identifier,

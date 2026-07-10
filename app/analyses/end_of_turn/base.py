@@ -27,5 +27,5 @@ class EndOfTurnDetector(Protocol):
     def info(self) -> EndOfTurnDetectorInfo:
         raise NotImplementedError
 
-    def analyze(self, speaker1_path: Path) -> BaselineResult:
+    def analyze(self, speaker1_path: Path, max_duration_seconds: float) -> BaselineResult:
         raise NotImplementedError
