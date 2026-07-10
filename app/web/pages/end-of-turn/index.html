@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>End-of-turn Analysis - Voice Light</title>
+    <link rel="stylesheet" href="/pages/end-of-turn/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="toolbar">
+        <div>
+          <a class="back-link" href="/">Voice Light</a>
+          <h1>End-of-turn analysis</h1>
+          <p id="session-summary">Select a session and run an end-of-turn detector.</p>
+        </div>
+        <div class="controls">
+          <select id="session-select" aria-label="Session"></select>
+          <select id="detector-select" aria-label="Detector"></select>
+          <button id="analyze-button" type="button">Analyze</button>
+        </div>
+      </header>
+
+      <section class="transport" aria-label="Playback">
+        <button id="play-toggle-button" type="button" disabled>Play</button>
+        <button id="speaker2-toggle-button" type="button" disabled>Hide speaker 2</button>
+        <button id="reset-zoom-button" type="button" disabled>Reset zoom</button>
+        <input id="time-slider" type="range" min="0" max="0" step="0.01" value="0" disabled />
+        <span id="time-readout">00:00 / 00:00</span>
+      </section>
+
+      <section class="timeline" aria-label="Timeline">
+        <canvas id="timeline-canvas" width="1400" height="520"></canvas>
+        <div class="legend" aria-label="Marker legend">
+          <span><i class="legend-speech"></i>Speaker 1 speech detected by VAD</span>
+          <span><i class="legend-eot"></i>Predicted end of turn</span>
+          <span><i class="legend-playhead"></i>Playback position</span>
+        </div>
+      </section>
+
+      <audio id="speaker1-audio" preload="metadata"></audio>
+      <audio id="speaker2-audio" preload="metadata"></audio>
+    </main>
+
+    <script src="/pages/end-of-turn/app.js" type="module"></script>
+  </body>
+</html>
+
