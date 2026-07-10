@@ -12,6 +12,7 @@ from app.analyses.end_of_turn.cache import (
     DetectorCacheKey,
     LeastRecentlyUsedCache,
 )
+from app.analyses.end_of_turn.detectors.livekit_v1_mini import livekit_v1_mini_detector
 from app.analyses.end_of_turn.detectors.naive_vad import (
     naive_vad_fast_detector,
     naive_vad_floor_detector,
@@ -22,6 +23,9 @@ from app.analyses.end_of_turn.detectors.pipecat_smart_turn_v2 import (
 from app.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
     pipecat_smart_turn_v3_detector,
 )
+from app.analyses.end_of_turn.detectors.silero_vad import silero_vad_detector
+from app.analyses.end_of_turn.detectors.transcript_gap import transcript_gap_detector
+from app.analyses.end_of_turn.detectors.turnsense import turnsense_detector
 from app.analyses.end_of_turn.service import BaselineResult
 
 DETECTOR_CACHE_SIZE = 20
@@ -33,8 +37,12 @@ _DETECTOR_RESULT_CACHE = LeastRecentlyUsedCache[DetectorCacheKey, BaselineResult
 _DETECTORS: tuple[EndOfTurnDetector, ...] = (
     naive_vad_floor_detector(),
     naive_vad_fast_detector(),
+    silero_vad_detector(),
+    livekit_v1_mini_detector(),
     pipecat_smart_turn_v2_detector(),
     pipecat_smart_turn_v3_detector(),
+    transcript_gap_detector(),
+    turnsense_detector(),
 )
 
 

@@ -13,6 +13,11 @@ class EndOfTurnDetectorMode(StrEnum):
     NAIVE_VAD_FAST = "naive_vad_fast"
     PIPECAT_SMART_TURN_V2 = "pipecat_smart_turn_v2"
     PIPECAT_SMART_TURN_V3 = "pipecat_smart_turn_v3"
+    SILERO_VAD = "silero_vad"
+    LIVEKIT_V1_MINI = "livekit_v1_mini"
+    TRANSCRIPT_GAP = "transcript_gap"
+    LIVEKIT_TEXT_TURN = "livekit_text_turn"
+    TURNSENSE = "turnsense"
 
 
 @dataclass(frozen=True)

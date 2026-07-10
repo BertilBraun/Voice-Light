@@ -68,6 +68,10 @@ def test_available_detectors_include_vad_variants() -> None:
     assert detector_modes == {
         "naive_vad_floor",
         "naive_vad_fast",
+        "silero_vad",
+        "livekit_v1_mini",
         "pipecat_smart_turn_v2",
         "pipecat_smart_turn_v3",
+        "transcript_gap",
+        "turnsense",
     }
