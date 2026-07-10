@@ -352,9 +352,13 @@ function playInSync() {
   ) {
     speaker1Audio.currentTime = viewportStartSeconds;
   }
-  speaker2Audio.currentTime = speaker1Audio.currentTime;
   void speaker1Audio.play();
-  void speaker2Audio.play();
+  if (showSpeaker2) {
+    speaker2Audio.currentTime = speaker1Audio.currentTime;
+    void speaker2Audio.play();
+  } else {
+    speaker2Audio.pause();
+  }
   isPlaying = true;
   updatePlayToggleLabel();
   startPlaybackLoop();
@@ -372,7 +376,10 @@ function pauseInSync() {
 function startPlaybackLoop() {
   stopPlaybackLoop();
   const drawFrame = () => {
-    if (Math.abs(speaker2Audio.currentTime - speaker1Audio.currentTime) > 0.08) {
+    if (
+      showSpeaker2 &&
+      Math.abs(speaker2Audio.currentTime - speaker1Audio.currentTime) > 0.08
+    ) {
       speaker2Audio.currentTime = speaker1Audio.currentTime;
     }
     timeSlider.value = String(speaker1Audio.currentTime);
@@ -392,13 +399,23 @@ function stopPlaybackLoop() {
 function seekBothAudio() {
   const targetTime = Number(timeSlider.value);
   speaker1Audio.currentTime = targetTime;
-  speaker2Audio.currentTime = targetTime;
+  if (showSpeaker2) {
+    speaker2Audio.currentTime = targetTime;
+  }
   drawTimeline();
 }
 
 function toggleSpeaker2() {
   showSpeaker2 = !showSpeaker2;
   speaker2ToggleButton.textContent = showSpeaker2 ? "Hide speaker 2" : "Show speaker 2";
+  if (showSpeaker2) {
+    speaker2Audio.currentTime = speaker1Audio.currentTime;
+    if (isPlaying) {
+      void speaker2Audio.play();
+    }
+  } else {
+    speaker2Audio.pause();
+  }
   drawTimeline();
 }
 
