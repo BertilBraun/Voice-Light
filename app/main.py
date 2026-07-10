@@ -21,7 +21,10 @@ def overview_page() -> FileResponse:
 
 @app.get("/analyses/end-of-turn")
 def end_of_turn_page() -> FileResponse:
-    return FileResponse(WEB_ROOT / "pages" / "end-of-turn" / "index.html")
+    return FileResponse(
+        WEB_ROOT / "pages" / "end-of-turn" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/sessions")

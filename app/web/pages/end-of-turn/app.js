@@ -21,6 +21,7 @@ const context = canvas.getContext("2d");
 const speaker1Audio = document.querySelector("#speaker1-audio");
 const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
+const ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS = 45000;
 const CLICK_DRAG_TOLERANCE_PIXELS = 4;
 const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors";
 const AUDIO_SOURCE_VERSION = "pcm16-v1";
@@ -90,12 +91,18 @@ async function analyzeSelectedSession() {
 
   setLoading(true);
   pauseInSync();
+  const abortController = new AbortController();
+  const timeoutIdentifier = window.setTimeout(
+    () => abortController.abort(),
+    ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS,
+  );
   try {
     const query = new URLSearchParams({
       id: identifier,
       detectors: selectedDetectorModesQueryValue(),
     });
     const response = await fetch(`/api/end-of-turn/analyze?${query.toString()}`, {
+      signal: abortController.signal,
       cache: "no-store",
     });
     if (!response.ok) {
@@ -110,14 +117,22 @@ async function analyzeSelectedSession() {
     applyAnalysisPayload(identifier, payload);
   } catch (error) {
     if (requestId === analysisRequestId) {
-      sessionSummary.textContent = error.message;
+      sessionSummary.textContent = analysisErrorMessage(error);
       transcriptSummary.textContent = "Transcript unavailable.";
     }
   } finally {
+    window.clearTimeout(timeoutIdentifier);
     if (requestId === analysisRequestId) {
       setLoading(false);
     }
   }
+}
+
+function analysisErrorMessage(error) {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return "Analysis timed out after 45 seconds. Try disabling slow detectors in settings.";
+  }
+  return error.message;
 }
 
 function applyAnalysisPayload(identifier, payload) {
