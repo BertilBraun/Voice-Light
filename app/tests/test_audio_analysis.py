@@ -2,11 +2,13 @@ from pathlib import Path
 
 import pytest
 
+from app.analyses.end_of_turn.base import EndOfTurnDetectorMode
 from app.analyses.end_of_turn.detectors.naive_vad import (
     _end_of_turn_events,
     _speech_segments_from_flags,
 )
 from app.analyses.end_of_turn.registry import available_detectors
+from app.analyses.end_of_turn.router import parse_selected_detector_modes
 from app.analyses.end_of_turn.service import SpeechSegment
 from app.data.sessions import list_sessions
 
@@ -75,3 +77,26 @@ def test_available_detectors_include_vad_variants() -> None:
         "transcript_gap",
         "turnsense",
     }
+
+
+@pytest.mark.parametrize(
+    ("detectors", "expected_modes"),
+    [
+        (None, None),
+        ("", []),
+        (
+            "naive_vad_floor,silero_vad",
+            [EndOfTurnDetectorMode.NAIVE_VAD_FLOOR, EndOfTurnDetectorMode.SILERO_VAD],
+        ),
+    ],
+)
+def test_parse_selected_detector_modes(
+    detectors: str | None,
+    expected_modes: list[EndOfTurnDetectorMode] | None,
+) -> None:
+    assert parse_selected_detector_modes(detectors=detectors) == expected_modes
+
+
+def test_parse_selected_detector_modes_rejects_unknown_mode() -> None:
+    with pytest.raises(ValueError, match="Unknown end-of-turn detector mode: missing"):
+        parse_selected_detector_modes(detectors="missing")

@@ -118,7 +118,8 @@ input:disabled {
 }
 
 .transport,
-.timeline {
+.timeline,
+.settings {
   background: #ffffff;
   border: 1px solid #d3dadd;
   border-radius: 8px;
@@ -132,6 +133,63 @@ input:disabled {
   gap: 10px;
   grid-template-columns: auto auto minmax(180px, 1fr) auto;
   padding: 12px;
+}
+
+.settings {
+  padding: 14px;
+}
+
+.settings-header {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+h2 {
+  font-size: 18px;
+  line-height: 1.2;
+  margin: 0 0 4px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.detector-options {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.detector-option {
+  align-items: start;
+  border: 1px solid #e0e5e7;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto 1fr;
+  padding: 10px;
+}
+
+.detector-option input {
+  margin-top: 3px;
+}
+
+.detector-option strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.detector-option span {
+  color: #5a666b;
+  display: block;
+  font-size: 12px;
+  line-height: 1.35;
+  margin-top: 3px;
 }
 
 #time-slider {
@@ -209,6 +267,11 @@ input:disabled {
   }
 
   .toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-header {
     align-items: stretch;
     flex-direction: column;
   }

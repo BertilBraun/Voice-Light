@@ -2,17 +2,24 @@ const sessionSelect = document.querySelector("#session-select");
 const loadingIndicator = document.querySelector("#loading-indicator");
 const playToggleButton = document.querySelector("#play-toggle-button");
 const speaker2ToggleButton = document.querySelector("#speaker2-toggle-button");
+const selectAllDetectorsButton = document.querySelector("#select-all-detectors-button");
+const clearDetectorsButton = document.querySelector("#clear-detectors-button");
 const timeSlider = document.querySelector("#time-slider");
 const timeReadout = document.querySelector("#time-readout");
 const sessionSummary = document.querySelector("#session-summary");
+const detectorSettingsSummary = document.querySelector("#detector-settings-summary");
+const detectorOptions = document.querySelector("#detector-options");
 const canvas = document.querySelector("#timeline-canvas");
 const context = canvas.getContext("2d");
 const speaker1Audio = document.querySelector("#speaker1-audio");
 const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
 const CLICK_DRAG_TOLERANCE_PIXELS = 4;
+const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors";
 
 let sessions = [];
+let detectors = [];
+let selectedDetectorModes = new Set();
 let currentPayload = null;
 let animationFrameIdentifier = null;
 let viewportStartSeconds = 0;
@@ -28,9 +35,15 @@ let analysisRequestId = 0;
 const analysisPayloadCache = new Map();
 
 async function loadInitialOptions() {
-  const sessionsResponse = await fetch("/api/sessions");
+  const [sessionsResponse, detectorsResponse] = await Promise.all([
+    fetch("/api/sessions"),
+    fetch("/api/end-of-turn/detectors"),
+  ]);
   const sessionsPayload = await sessionsResponse.json();
+  const detectorsPayload = await detectorsResponse.json();
   sessions = sessionsPayload.sessions;
+  detectors = detectorsPayload.detectors;
+  selectedDetectorModes = loadSelectedDetectorModes();
   sessionSelect.replaceChildren(
     ...sessions.map((session) => {
       const option = document.createElement("option");
@@ -39,6 +52,7 @@ async function loadInitialOptions() {
       return option;
     }),
   );
+  renderDetectorOptions();
   if (sessions.length > 0) {
     await analyzeSelectedSession();
   }
@@ -52,7 +66,8 @@ async function analyzeSelectedSession() {
 
   const requestId = analysisRequestId + 1;
   analysisRequestId = requestId;
-  const cachedPayload = getCachedAnalysisPayload(identifier);
+  const analysisCacheKey = buildAnalysisCacheKey(identifier);
+  const cachedPayload = getCachedAnalysisPayload(analysisCacheKey);
   if (cachedPayload !== null) {
     pauseInSync();
     applyAnalysisPayload(identifier, cachedPayload);
@@ -62,7 +77,10 @@ async function analyzeSelectedSession() {
   setLoading(true);
   pauseInSync();
   try {
-    const query = new URLSearchParams({ id: identifier });
+    const query = new URLSearchParams({
+      id: identifier,
+      detectors: selectedDetectorModesQueryValue(),
+    });
     const response = await fetch(`/api/end-of-turn/analyze?${query.toString()}`);
     if (!response.ok) {
       throw new Error(`Analysis failed with HTTP ${response.status}`);
@@ -72,7 +90,7 @@ async function analyzeSelectedSession() {
       return;
     }
 
-    putCachedAnalysisPayload(identifier, payload);
+    putCachedAnalysisPayload(analysisCacheKey, payload);
     applyAnalysisPayload(identifier, payload);
   } catch (error) {
     if (requestId === analysisRequestId) {
@@ -98,9 +116,97 @@ function applyAnalysisPayload(identifier, payload) {
   timeSlider.disabled = false;
   playToggleButton.disabled = false;
   speaker2ToggleButton.disabled = false;
-  sessionSummary.textContent = `${identifier} analyzed with ${currentPayload.analysis.baseline_results.length} detectors.`;
+  sessionSummary.textContent = `${identifier} analyzed with ${currentPayload.analysis.baseline_results.length} selected detectors.`;
   updatePlayToggleLabel();
   drawTimeline();
+}
+
+function renderDetectorOptions() {
+  detectorOptions.replaceChildren(
+    ...detectors.map((detector) => {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = `detector-${detector.mode}`;
+      checkbox.value = detector.mode;
+      checkbox.checked = selectedDetectorModes.has(detector.mode);
+      checkbox.addEventListener("change", updateSelectedDetectorModesFromInputs);
+
+      const title = document.createElement("strong");
+      title.textContent = detector.label;
+      const description = document.createElement("span");
+      description.textContent = detector.description;
+
+      const text = document.createElement("div");
+      text.append(title, description);
+
+      const option = document.createElement("label");
+      option.className = "detector-option";
+      option.htmlFor = checkbox.id;
+      option.append(checkbox, text);
+      return option;
+    }),
+  );
+  selectAllDetectorsButton.disabled = false;
+  clearDetectorsButton.disabled = false;
+  updateDetectorSettingsSummary();
+}
+
+function loadSelectedDetectorModes() {
+  const storedValue = window.localStorage.getItem(DETECTOR_SELECTION_STORAGE_KEY);
+  if (storedValue === null) {
+    return new Set(detectors.map((detector) => detector.mode));
+  }
+
+  const storedModes = JSON.parse(storedValue);
+  if (!Array.isArray(storedModes)) {
+    throw new Error("Stored detector selection must be a list.");
+  }
+
+  const availableModes = new Set(detectors.map((detector) => detector.mode));
+  return new Set(storedModes.filter((mode) => availableModes.has(mode)));
+}
+
+function updateSelectedDetectorModesFromInputs() {
+  selectedDetectorModes = new Set(
+    [...detectorOptions.querySelectorAll("input[type='checkbox']")]
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => checkbox.value),
+  );
+  persistSelectedDetectorModes();
+  updateDetectorSettingsSummary();
+  void analyzeSelectedSession();
+}
+
+function selectAllDetectors() {
+  selectedDetectorModes = new Set(detectors.map((detector) => detector.mode));
+  persistSelectedDetectorModes();
+  renderDetectorOptions();
+  void analyzeSelectedSession();
+}
+
+function clearDetectors() {
+  selectedDetectorModes = new Set();
+  persistSelectedDetectorModes();
+  renderDetectorOptions();
+  void analyzeSelectedSession();
+}
+
+function persistSelectedDetectorModes() {
+  window.localStorage.setItem(
+    DETECTOR_SELECTION_STORAGE_KEY,
+    JSON.stringify([...selectedDetectorModes]),
+  );
+}
+
+function updateDetectorSettingsSummary() {
+  detectorSettingsSummary.textContent = `${selectedDetectorModes.size}/${detectors.length} detectors selected`;
+}
+
+function selectedDetectorModesQueryValue() {
+  return detectors
+    .filter((detector) => selectedDetectorModes.has(detector.mode))
+    .map((detector) => detector.mode)
+    .join(",");
 }
 
 function setAudioSourceIfChanged(audioElement, sourceUrl) {
@@ -113,22 +219,26 @@ function setAudioSourceIfChanged(audioElement, sourceUrl) {
   audioElement.load();
 }
 
-function getCachedAnalysisPayload(identifier) {
-  const payload = analysisPayloadCache.get(identifier);
+function buildAnalysisCacheKey(identifier) {
+  return `${identifier}:${selectedDetectorModesQueryValue()}`;
+}
+
+function getCachedAnalysisPayload(analysisCacheKey) {
+  const payload = analysisPayloadCache.get(analysisCacheKey);
   if (payload === undefined) {
     return null;
   }
-  analysisPayloadCache.delete(identifier);
-  analysisPayloadCache.set(identifier, payload);
+  analysisPayloadCache.delete(analysisCacheKey);
+  analysisPayloadCache.set(analysisCacheKey, payload);
   return payload;
 }
 
-function putCachedAnalysisPayload(identifier, payload) {
-  analysisPayloadCache.delete(identifier);
-  analysisPayloadCache.set(identifier, payload);
+function putCachedAnalysisPayload(analysisCacheKey, payload) {
+  analysisPayloadCache.delete(analysisCacheKey);
+  analysisPayloadCache.set(analysisCacheKey, payload);
   while (analysisPayloadCache.size > ANALYSIS_CACHE_SIZE) {
-    const oldestIdentifier = analysisPayloadCache.keys().next().value;
-    analysisPayloadCache.delete(oldestIdentifier);
+    const oldestAnalysisCacheKey = analysisPayloadCache.keys().next().value;
+    analysisPayloadCache.delete(oldestAnalysisCacheKey);
   }
 }
 
@@ -648,6 +758,8 @@ sessionSelect.addEventListener("change", analyzeSelectedSession);
 playToggleButton.addEventListener("click", togglePlayback);
 document.addEventListener("keydown", togglePlaybackWithKeyboard);
 speaker2ToggleButton.addEventListener("click", toggleSpeaker2);
+selectAllDetectorsButton.addEventListener("click", selectAllDetectors);
+clearDetectorsButton.addEventListener("click", clearDetectors);
 timeSlider.addEventListener("input", seekBothAudio);
 canvas.addEventListener("pointerdown", beginZoomDrag);
 canvas.addEventListener("pointermove", updateZoomDrag);

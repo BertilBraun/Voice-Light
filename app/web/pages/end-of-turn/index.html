@@ -23,6 +23,20 @@
         </div>
       </header>
 
+      <section class="settings" aria-labelledby="detector-settings-title">
+        <div class="settings-header">
+          <div>
+            <h2 id="detector-settings-title">Detector settings</h2>
+            <p id="detector-settings-summary">Loading detectors...</p>
+          </div>
+          <div class="settings-actions">
+            <button id="select-all-detectors-button" type="button" disabled>Select all</button>
+            <button id="clear-detectors-button" type="button" disabled>Clear</button>
+          </div>
+        </div>
+        <div id="detector-options" class="detector-options" aria-label="Detectors"></div>
+      </section>
+
       <section class="transport" aria-label="Playback">
         <button id="play-toggle-button" type="button" disabled>Play</button>
         <button id="speaker2-toggle-button" type="button" disabled>Hide speaker 2</button>

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.analyses.end_of_turn.registry import available_detectors, run_all_detectors
+from app.analyses.end_of_turn.base import EndOfTurnDetectorMode
+from app.analyses.end_of_turn.registry import available_detectors, run_all_detectors, run_detectors
 from app.analyses.end_of_turn.service import analysis_to_json, analyze_session_audio
 from app.data.sessions import SpeakerName, session_audio_path
 
@@ -26,8 +27,10 @@ def list_detector_modes() -> dict[str, object]:
 @router.get("/analyze")
 def analyze_end_of_turn(
     identifier: str = Query(alias="id"),
+    detectors: str | None = None,
 ) -> dict[str, object]:
     try:
+        selected_detector_modes = parse_selected_detector_modes(detectors=detectors)
         speaker1_path = session_audio_path(
             identifier=identifier,
             speaker_name=SpeakerName.SPEAKER1,
@@ -36,7 +39,13 @@ def analyze_end_of_turn(
             identifier=identifier,
             speaker_name=SpeakerName.SPEAKER2,
         )
-        baseline_results = run_all_detectors(speaker1_path=speaker1_path)
+        if selected_detector_modes is None:
+            baseline_results = run_all_detectors(speaker1_path=speaker1_path)
+        else:
+            baseline_results = run_detectors(
+                speaker1_path=speaker1_path,
+                selected_modes=selected_detector_modes,
+            )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -51,3 +60,20 @@ def analyze_end_of_turn(
         "speaker2_audio_url": f"/api/audio/{identifier}/{SpeakerName.SPEAKER2.value}",
         "analysis": analysis_to_json(audio_analysis=audio_analysis),
     }
+
+
+def parse_selected_detector_modes(
+    detectors: str | None,
+) -> list[EndOfTurnDetectorMode] | None:
+    if detectors is None:
+        return None
+    if detectors == "":
+        return []
+
+    selected_modes: list[EndOfTurnDetectorMode] = []
+    for detector_mode in detectors.split(","):
+        try:
+            selected_modes.append(EndOfTurnDetectorMode(detector_mode))
+        except ValueError as error:
+            raise ValueError(f"Unknown end-of-turn detector mode: {detector_mode}") from error
+    return selected_modes

@@ -51,14 +51,31 @@ def available_detectors() -> list[EndOfTurnDetectorInfo]:
 
 
 def run_all_detectors(speaker1_path: Path) -> list[BaselineResult]:
-    with ThreadPoolExecutor(max_workers=len(_DETECTORS)) as executor:
+    return run_detectors(
+        speaker1_path=speaker1_path,
+        selected_modes=[detector.info.mode for detector in _DETECTORS],
+    )
+
+
+def run_detectors(
+    speaker1_path: Path,
+    selected_modes: list[EndOfTurnDetectorMode],
+) -> list[BaselineResult]:
+    selected_mode_set = set(selected_modes)
+    selected_detectors = [
+        detector for detector in _DETECTORS if detector.info.mode in selected_mode_set
+    ]
+    if not selected_detectors:
+        return []
+
+    with ThreadPoolExecutor(max_workers=len(selected_detectors)) as executor:
         return list(
             executor.map(
                 lambda detector: _run_detector_cached(
                     detector=detector,
                     speaker1_path=speaker1_path,
                 ),
-                _DETECTORS,
+                selected_detectors,
             )
         )
 
