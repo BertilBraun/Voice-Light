@@ -21,7 +21,7 @@ const context = canvas.getContext("2d");
 const speaker1Audio = document.querySelector("#speaker1-audio");
 const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
-const ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS = 45000;
+const ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS = 120000;
 const CLICK_DRAG_TOLERANCE_PIXELS = 4;
 const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors-v2";
 const DEFAULT_DETECTOR_MODES = new Set([
@@ -138,7 +138,7 @@ async function analyzeSelectedSession() {
 
 function analysisErrorMessage(error) {
   if (error instanceof DOMException && error.name === "AbortError") {
-    return "Analysis timed out after 45 seconds. Try disabling slow detectors in settings.";
+    return "Analysis timed out after 120 seconds. Try disabling slow detectors in settings.";
   }
   return error.message;
 }
