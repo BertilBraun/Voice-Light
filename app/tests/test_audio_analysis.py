@@ -1,3 +1,5 @@
+import io
+import wave
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from app.analyses.end_of_turn.detectors.naive_vad import (
 from app.analyses.end_of_turn.registry import available_detectors
 from app.analyses.end_of_turn.router import parse_selected_detector_modes
 from app.analyses.end_of_turn.service import SpeechSegment
+from app.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS, capped_wave_bytes
 from app.data.sessions import list_sessions
 from app.data.transcripts import read_transcript_turns
 
@@ -112,3 +115,14 @@ def test_read_transcript_turns_loads_session_speakers() -> None:
     assert transcript_turns[0].text.startswith("So apparently")
     assert transcript_turns[0].start_seconds == 0.26
     assert transcript_turns[1].speaker == "Speaker2"
+
+
+def test_capped_wave_bytes_serves_browser_seekable_pcm16() -> None:
+    wave_bytes = capped_wave_bytes(Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav"))
+
+    with wave.open(io.BytesIO(wave_bytes), "rb") as wave_reader:
+        assert wave_reader.getnchannels() == 1
+        assert wave_reader.getsampwidth() == 2
+        assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(
+            ANALYSIS_AUDIO_MAX_DURATION_SECONDS
+        )

@@ -35,4 +35,8 @@ def audio_api(identifier: str, speaker_name: SpeakerName) -> Response:
         wave_path = session_audio_path(identifier=identifier, speaker_name=speaker_name)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return Response(content=capped_wave_bytes(wave_path=wave_path), media_type="audio/wav")
+    return Response(
+        content=capped_wave_bytes(wave_path=wave_path),
+        headers={"Cache-Control": "no-store"},
+        media_type="audio/wav",
+    )

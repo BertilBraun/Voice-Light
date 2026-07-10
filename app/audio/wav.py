@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 ANALYSIS_AUDIO_MAX_DURATION_SECONDS = 180.0
+PLAYBACK_SAMPLE_WIDTH_BYTES = 2
 
 
 @dataclass(frozen=True)
@@ -76,21 +77,29 @@ def read_mono_wave_audio(wave_path: Path) -> MonoWaveAudio:
 
 
 def capped_wave_bytes(wave_path: Path) -> bytes:
-    with wave.open(str(wave_path), "rb") as wave_reader:
-        sample_rate = wave_reader.getframerate()
-        source_parameters = wave_reader.getparams()
-        frame_count = capped_frame_count(
-            source_frame_count=wave_reader.getnframes(),
-            sample_rate=sample_rate,
-        )
-        fragment = wave_reader.readframes(frame_count)
+    audio = read_mono_wave_audio(wave_path=wave_path)
+    fragment = playback_pcm16_fragment(audio=audio)
 
     output_buffer = io.BytesIO()
     with wave.open(output_buffer, "wb") as wave_writer:
-        wave_writer.setparams(source_parameters)
-        wave_writer.setnframes(frame_count)
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(PLAYBACK_SAMPLE_WIDTH_BYTES)
+        wave_writer.setframerate(audio.sample_rate)
+        wave_writer.setnframes(audio.frame_count)
         wave_writer.writeframes(fragment)
     return output_buffer.getvalue()
+
+
+def playback_pcm16_fragment(audio: MonoWaveAudio) -> bytes:
+    source_maximum_amplitude = float((1 << (audio.sample_width * 8 - 1)) - 1)
+    target_maximum_amplitude = float((1 << (PLAYBACK_SAMPLE_WIDTH_BYTES * 8 - 1)) - 1)
+    scaled_samples = np.round(audio.samples * (target_maximum_amplitude / source_maximum_amplitude))
+    clipped_samples = np.clip(
+        scaled_samples,
+        -target_maximum_amplitude - 1,
+        target_maximum_amplitude,
+    )
+    return clipped_samples.astype("<i2").tobytes()
 
 
 def capped_frame_count(source_frame_count: int, sample_rate: int) -> int:

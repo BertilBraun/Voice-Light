@@ -23,6 +23,7 @@ const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
 const CLICK_DRAG_TOLERANCE_PIXELS = 4;
 const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors";
+const AUDIO_SOURCE_VERSION = "pcm16-v1";
 
 let sessions = [];
 let detectors = [];
@@ -41,6 +42,8 @@ let isZoomDragActive = false;
 let isPlaying = false;
 let analysisRequestId = 0;
 let activeTranscriptTurnIndex = null;
+let desiredPlaybackSeconds = 0;
+let pendingPlaybackSeekSeconds = null;
 const analysisPayloadCache = new Map();
 
 async function loadInitialOptions() {
@@ -92,7 +95,9 @@ async function analyzeSelectedSession() {
       id: identifier,
       detectors: selectedDetectorModesQueryValue(),
     });
-    const response = await fetch(`/api/end-of-turn/analyze?${query.toString()}`);
+    const response = await fetch(`/api/end-of-turn/analyze?${query.toString()}`, {
+      cache: "no-store",
+    });
     if (!response.ok) {
       throw new Error(`Analysis failed with HTTP ${response.status}`);
     }
@@ -125,6 +130,7 @@ function applyAnalysisPayload(identifier, payload) {
   viewportEndSeconds = durationSeconds;
   setSliderBounds();
   timeSlider.value = "0";
+  desiredPlaybackSeconds = 0;
   timeSlider.disabled = false;
   playToggleButton.disabled = false;
   speaker2ToggleButton.disabled = false;
@@ -263,10 +269,11 @@ function selectedDetectorModesQueryValue() {
 function setAudioSourceIfChanged(audioElement, sourceUrl) {
   const currentUrl = new URL(audioElement.currentSrc || audioElement.src || "", window.location.href);
   const nextUrl = new URL(sourceUrl, window.location.href);
+  nextUrl.searchParams.set("v", AUDIO_SOURCE_VERSION);
   if (currentUrl.href === nextUrl.href) {
     return;
   }
-  audioElement.src = sourceUrl;
+  audioElement.src = nextUrl.href;
   audioElement.load();
 }
 
@@ -507,7 +514,7 @@ function drawBaselineSpans(spans, leftPad, top, trackWidth, height, fillStyle, s
 }
 
 function drawPlayhead(leftPad, trackWidth, layoutHeight, durationSeconds) {
-  const currentTime = Number(timeSlider.value);
+  const currentTime = desiredPlaybackSeconds;
   if (currentTime < viewportStartSeconds || currentTime > viewportEndSeconds || durationSeconds === 0) {
     return;
   }
@@ -547,7 +554,11 @@ function togglePlaybackWithKeyboard(event) {
   if (event.key !== " " || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
     return;
   }
-  if (event.target instanceof HTMLElement && event.target.matches("button,input,select,textarea")) {
+  if (
+    event.target instanceof HTMLElement &&
+    (event.target.matches("button,select,textarea") ||
+      (event.target.matches("input") && event.target !== timeSlider))
+  ) {
     return;
   }
   if (currentPayload === null || playToggleButton.disabled) {
@@ -561,13 +572,18 @@ function playInSync() {
   if (currentPayload === null) {
     return;
   }
+  desiredPlaybackSeconds = Number(timeSlider.value);
+  syncAudioToPlaybackTarget();
   if (
     speaker1Audio.currentTime < viewportStartSeconds ||
     speaker1Audio.currentTime > viewportEndSeconds
   ) {
     speaker1Audio.currentTime = viewportStartSeconds;
+    desiredPlaybackSeconds = viewportStartSeconds;
+    timeSlider.value = String(desiredPlaybackSeconds);
   }
-  void speaker1Audio.play();
+  const speaker1PlayPromise = speaker1Audio.play();
+  void speaker1PlayPromise.then(syncAudioToPlaybackTarget);
   if (showSpeaker2) {
     speaker2Audio.currentTime = speaker1Audio.currentTime;
     void speaker2Audio.play();
@@ -591,13 +607,28 @@ function pauseInSync() {
 function startPlaybackLoop() {
   stopPlaybackLoop();
   const drawFrame = () => {
+    if (pendingPlaybackSeekSeconds !== null) {
+      if (Math.abs(speaker1Audio.currentTime - pendingPlaybackSeekSeconds) > 0.08) {
+        speaker1Audio.currentTime = pendingPlaybackSeekSeconds;
+        if (showSpeaker2) {
+          speaker2Audio.currentTime = pendingPlaybackSeekSeconds;
+        }
+        desiredPlaybackSeconds = pendingPlaybackSeekSeconds;
+        timeSlider.value = String(desiredPlaybackSeconds);
+        drawTimeline();
+        animationFrameIdentifier = window.requestAnimationFrame(drawFrame);
+        return;
+      }
+      pendingPlaybackSeekSeconds = null;
+    }
     if (
       showSpeaker2 &&
       Math.abs(speaker2Audio.currentTime - speaker1Audio.currentTime) > 0.08
     ) {
       speaker2Audio.currentTime = speaker1Audio.currentTime;
     }
-    timeSlider.value = String(speaker1Audio.currentTime);
+    desiredPlaybackSeconds = speaker1Audio.currentTime;
+    timeSlider.value = String(desiredPlaybackSeconds);
     drawTimeline();
     animationFrameIdentifier = window.requestAnimationFrame(drawFrame);
   };
@@ -619,12 +650,18 @@ function seekBothAudio() {
 function seekToSeconds(targetTime) {
   const durationSeconds = currentPayload.analysis.speaker1_waveform.duration_seconds;
   const boundedTargetTime = clamp(targetTime, 0, durationSeconds);
-  timeSlider.value = String(boundedTargetTime);
-  speaker1Audio.currentTime = boundedTargetTime;
-  if (showSpeaker2) {
-    speaker2Audio.currentTime = boundedTargetTime;
-  }
+  desiredPlaybackSeconds = boundedTargetTime;
+  timeSlider.value = String(desiredPlaybackSeconds);
+  syncAudioToPlaybackTarget();
   drawTimeline();
+}
+
+function syncAudioToPlaybackTarget() {
+  pendingPlaybackSeekSeconds = desiredPlaybackSeconds;
+  speaker1Audio.currentTime = desiredPlaybackSeconds;
+  if (showSpeaker2) {
+    speaker2Audio.currentTime = desiredPlaybackSeconds;
+  }
 }
 
 function renderTranscript() {
@@ -672,7 +709,7 @@ function updateActiveTranscriptTurn() {
   if (currentPayload === null) {
     return;
   }
-  const currentTime = Number(timeSlider.value);
+  const currentTime = desiredPlaybackSeconds;
   const transcriptTurnIndex = transcriptTurnsForCurrentPayload().findIndex(
     (transcriptTurn) =>
       currentTime >= transcriptTurn.start_seconds && currentTime <= transcriptTurn.end_seconds,
@@ -697,7 +734,16 @@ function updateActiveTranscriptTurn() {
     return;
   }
   activeTurn.classList.add("transcript-turn-active");
-  activeTurn.scrollIntoView({ block: "nearest" });
+  centerTranscriptTurn(activeTurn);
+}
+
+function centerTranscriptTurn(transcriptTurnElement) {
+  const targetScrollTop =
+    transcriptTurnElement.offsetTop -
+    transcriptList.clientHeight / 2 +
+    transcriptTurnElement.offsetHeight / 2;
+  const maximumScrollTop = transcriptList.scrollHeight - transcriptList.clientHeight;
+  transcriptList.scrollTop = clamp(targetScrollTop, 0, Math.max(0, maximumScrollTop));
 }
 
 function transcriptTurnsForCurrentPayload() {
@@ -863,8 +909,7 @@ function updatePlayToggleLabel() {
 }
 
 function updateTimeReadout() {
-  const currentTime = Number(timeSlider.value);
-  timeReadout.textContent = `${formatDuration(currentTime)} / ${formatDuration(viewportEndSeconds)}`;
+  timeReadout.textContent = `${formatDuration(desiredPlaybackSeconds)} / ${formatDuration(viewportEndSeconds)}`;
 }
 
 function setViewport(startSeconds, endSeconds) {
@@ -883,7 +928,8 @@ function setViewport(startSeconds, endSeconds) {
   viewportStartSeconds = nextStartSeconds;
   viewportEndSeconds = nextEndSeconds;
   setSliderBounds();
-  timeSlider.value = String(clamp(Number(timeSlider.value), 0, durationSeconds));
+  desiredPlaybackSeconds = clamp(desiredPlaybackSeconds, 0, durationSeconds);
+  timeSlider.value = String(desiredPlaybackSeconds);
 }
 
 function visibleDurationSeconds() {
