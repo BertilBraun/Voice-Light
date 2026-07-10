@@ -23,7 +23,15 @@ const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
 const ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS = 45000;
 const CLICK_DRAG_TOLERANCE_PIXELS = 4;
-const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors";
+const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors-v2";
+const DEFAULT_DETECTOR_MODES = new Set([
+  "naive_vad_floor",
+  "naive_vad_fast",
+  "silero_vad",
+  "livekit_v1_mini",
+  "pipecat_smart_turn_v3",
+  "transcript_gap",
+]);
 const AUDIO_SOURCE_VERSION = "pcm16-v1";
 
 let sessions = [];
@@ -187,7 +195,11 @@ function renderDetectorOptions() {
 function loadSelectedDetectorModes() {
   const storedValue = window.localStorage.getItem(DETECTOR_SELECTION_STORAGE_KEY);
   if (storedValue === null) {
-    return new Set(detectors.map((detector) => detector.mode));
+    return new Set(
+      detectors
+        .filter((detector) => DEFAULT_DETECTOR_MODES.has(detector.mode))
+        .map((detector) => detector.mode),
+    );
   }
 
   const storedModes = JSON.parse(storedValue);
