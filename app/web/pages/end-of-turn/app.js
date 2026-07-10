@@ -753,6 +753,14 @@ function updateActiveTranscriptTurn() {
       currentTime >= transcriptTurn.start_seconds && currentTime <= transcriptTurn.end_seconds,
   );
   if (transcriptTurnIndex === activeTranscriptTurnIndex) {
+    if (isPlaying && activeTranscriptTurnIndex !== null) {
+      const activeTurn = transcriptList.querySelector(
+        `[data-transcript-turn-index='${activeTranscriptTurnIndex}']`,
+      );
+      if (activeTurn !== null) {
+        centerTranscriptTurn(activeTurn);
+      }
+    }
     return;
   }
 
@@ -776,12 +784,16 @@ function updateActiveTranscriptTurn() {
 }
 
 function centerTranscriptTurn(transcriptTurnElement) {
-  const targetScrollTop =
-    transcriptTurnElement.offsetTop -
-    transcriptList.clientHeight / 2 +
-    transcriptTurnElement.offsetHeight / 2;
+  const listRect = transcriptList.getBoundingClientRect();
+  const turnRect = transcriptTurnElement.getBoundingClientRect();
+  const turnCenterOffset =
+    turnRect.top - listRect.top + transcriptList.scrollTop + turnRect.height / 2;
+  const targetScrollTop = turnCenterOffset - transcriptList.clientHeight / 2;
   const maximumScrollTop = transcriptList.scrollHeight - transcriptList.clientHeight;
-  transcriptList.scrollTop = clamp(targetScrollTop, 0, Math.max(0, maximumScrollTop));
+  const nextScrollTop = clamp(targetScrollTop, 0, Math.max(0, maximumScrollTop));
+  if (Math.abs(transcriptList.scrollTop - nextScrollTop) > 1) {
+    transcriptList.scrollTop = nextScrollTop;
+  }
 }
 
 function transcriptTurnsForCurrentPayload() {
