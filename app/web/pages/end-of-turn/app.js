@@ -32,7 +32,7 @@ const DEFAULT_DETECTOR_MODES = new Set([
   "pipecat_smart_turn_v3",
   "transcript_gap",
 ]);
-const AUDIO_SOURCE_VERSION = "pcm16-range-v1";
+const AUDIO_SOURCE_VERSION = "pcm16-blob-v1";
 
 let sessions = [];
 let detectors = [];
@@ -92,7 +92,7 @@ async function analyzeSelectedSession() {
   const cachedPayload = getCachedAnalysisPayload(analysisCacheKey);
   if (cachedPayload !== null) {
     pauseInSync();
-    applyAnalysisPayload(identifier, cachedPayload);
+    await applyAnalysisPayload(identifier, cachedPayload);
     return;
   }
 
@@ -121,7 +121,7 @@ async function analyzeSelectedSession() {
     }
 
     putCachedAnalysisPayload(analysisCacheKey, payload);
-    applyAnalysisPayload(identifier, payload);
+    await applyAnalysisPayload(identifier, payload);
   } catch (error) {
     if (requestId === analysisRequestId) {
       sessionSummary.textContent = analysisErrorMessage(error);
@@ -142,10 +142,12 @@ function analysisErrorMessage(error) {
   return error.message;
 }
 
-function applyAnalysisPayload(identifier, payload) {
+async function applyAnalysisPayload(identifier, payload) {
   currentPayload = payload;
-  setAudioSourceIfChanged(speaker1Audio, currentPayload.speaker1_audio_url);
-  setAudioSourceIfChanged(speaker2Audio, currentPayload.speaker2_audio_url);
+  await Promise.all([
+    setAudioSourceIfChanged(speaker1Audio, currentPayload.speaker1_audio_url),
+    setAudioSourceIfChanged(speaker2Audio, currentPayload.speaker2_audio_url),
+  ]);
 
   const durationSeconds = currentPayload.analysis.speaker1_waveform.duration_seconds;
   viewportStartSeconds = 0;
@@ -292,14 +294,25 @@ function selectedDetectorModesQueryValue() {
     .join(",");
 }
 
-function setAudioSourceIfChanged(audioElement, sourceUrl) {
-  const currentUrl = new URL(audioElement.currentSrc || audioElement.src || "", window.location.href);
+async function setAudioSourceIfChanged(audioElement, sourceUrl) {
   const nextUrl = new URL(sourceUrl, window.location.href);
   nextUrl.searchParams.set("v", AUDIO_SOURCE_VERSION);
-  if (currentUrl.href === nextUrl.href) {
+  if (audioElement.dataset.sourceUrl === nextUrl.href) {
     return;
   }
-  audioElement.src = nextUrl.href;
+  const response = await fetch(nextUrl.href, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Audio download failed with HTTP ${response.status}`);
+  }
+  const audioBlob = await response.blob();
+  const previousObjectUrl = audioElement.dataset.objectUrl;
+  if (previousObjectUrl !== undefined) {
+    URL.revokeObjectURL(previousObjectUrl);
+  }
+  const objectUrl = URL.createObjectURL(audioBlob);
+  audioElement.dataset.sourceUrl = nextUrl.href;
+  audioElement.dataset.objectUrl = objectUrl;
+  audioElement.src = objectUrl;
   audioElement.load();
 }
 

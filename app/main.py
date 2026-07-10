@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import tempfile
+from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from app.analyses.end_of_turn.router import router as end_of_turn_router
 from app.audio.wav import capped_wave_bytes
@@ -14,14 +16,6 @@ from app.data.sessions import SpeakerName, list_sessions, session_audio_path, se
 app = FastAPI(title="Voice Light")
 app.include_router(end_of_turn_router)
 app.mount("/pages", StaticFiles(directory=WEB_ROOT / "pages"), name="pages")
-
-BYTE_RANGE_UNIT = "bytes"
-
-
-@dataclass(frozen=True)
-class ByteRange:
-    start_index: int
-    end_index: int
 
 
 @app.get("/")
@@ -46,88 +40,30 @@ def sessions_api() -> dict[str, object]:
 def audio_api(
     identifier: str,
     speaker_name: SpeakerName,
-    range_header: str | None = Header(default=None, alias="Range"),
-) -> Response:
+) -> FileResponse:
     try:
         wave_path = session_audio_path(identifier=identifier, speaker_name=speaker_name)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    wave_bytes = capped_wave_bytes(wave_path=wave_path)
-    base_headers = {
-        "Accept-Ranges": BYTE_RANGE_UNIT,
-        "Cache-Control": "no-store",
-    }
-    if range_header is None:
-        return Response(
-            content=wave_bytes,
-            headers={**base_headers, "Content-Length": str(len(wave_bytes))},
-            media_type="audio/wav",
-        )
-
-    try:
-        byte_range = parse_byte_range(range_header=range_header, content_length=len(wave_bytes))
-    except ValueError as error:
-        raise HTTPException(
-            status_code=416,
-            detail=str(error),
-            headers={"Content-Range": f"{BYTE_RANGE_UNIT} */{len(wave_bytes)}"},
-        ) from error
-
-    partial_content = wave_bytes[byte_range.start_index : byte_range.end_index + 1]
-    return Response(
-        content=partial_content,
-        headers={
-            **base_headers,
-            "Content-Length": str(len(partial_content)),
-            "Content-Range": (
-                f"{BYTE_RANGE_UNIT} {byte_range.start_index}-{byte_range.end_index}/"
-                f"{len(wave_bytes)}"
-            ),
-        },
+    playback_wave_path = write_playback_wave_file(wave_path=wave_path)
+    return FileResponse(
+        playback_wave_path,
         media_type="audio/wav",
-        status_code=206,
+        filename=playback_wave_path.name,
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(delete_file, path=playback_wave_path),
     )
 
 
-def parse_byte_range(range_header: str, content_length: int) -> ByteRange:
-    if content_length <= 0:
-        raise ValueError("Cannot serve a byte range for empty content.")
-    unit, separator, range_value = range_header.partition("=")
-    if unit.strip() != BYTE_RANGE_UNIT or separator != "=":
-        raise ValueError(f"Unsupported Range header: {range_header}")
-    start_value, dash, end_value = range_value.partition("-")
-    if dash != "-" or "," in range_value:
-        raise ValueError(f"Unsupported Range header: {range_header}")
-
-    if start_value == "":
-        return suffix_byte_range(end_value=end_value, content_length=content_length)
-    return bounded_byte_range(
-        start_value=start_value,
-        end_value=end_value,
-        content_length=content_length,
-    )
+def write_playback_wave_file(wave_path: Path) -> Path:
+    with tempfile.NamedTemporaryFile(
+        prefix=f"{wave_path.stem}_playback_",
+        suffix=".wav",
+        delete=False,
+    ) as playback_wave_file:
+        playback_wave_file.write(capped_wave_bytes(wave_path=wave_path))
+        return Path(playback_wave_file.name)
 
 
-def suffix_byte_range(end_value: str, content_length: int) -> ByteRange:
-    if end_value == "":
-        raise ValueError("Range header is missing a byte count.")
-    suffix_length = int(end_value)
-    if suffix_length <= 0:
-        raise ValueError("Range suffix length must be positive.")
-    start_index = max(0, content_length - suffix_length)
-    return ByteRange(start_index=start_index, end_index=content_length - 1)
-
-
-def bounded_byte_range(
-    start_value: str,
-    end_value: str,
-    content_length: int,
-) -> ByteRange:
-    start_index = int(start_value)
-    end_index = content_length - 1 if end_value == "" else int(end_value)
-    if start_index < 0 or start_index >= content_length or end_index < start_index:
-        raise ValueError("Requested byte range is not satisfiable.")
-    return ByteRange(
-        start_index=start_index,
-        end_index=min(end_index, content_length - 1),
-    )
+def delete_file(path: Path) -> None:
+    path.unlink(missing_ok=True)
