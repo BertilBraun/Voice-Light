@@ -375,6 +375,20 @@ function togglePlayback() {
   playInSync();
 }
 
+function togglePlaybackWithKeyboard(event) {
+  if (event.key !== " " || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    return;
+  }
+  if (event.target instanceof HTMLElement && event.target.matches("button,input,select,textarea")) {
+    return;
+  }
+  if (currentPayload === null || playToggleButton.disabled) {
+    return;
+  }
+  event.preventDefault();
+  togglePlayback();
+}
+
 function playInSync() {
   if (currentPayload === null) {
     return;
@@ -589,6 +603,7 @@ function formatDuration(totalSeconds) {
 
 sessionSelect.addEventListener("change", analyzeSelectedSession);
 playToggleButton.addEventListener("click", togglePlayback);
+document.addEventListener("keydown", togglePlaybackWithKeyboard);
 speaker2ToggleButton.addEventListener("click", toggleSpeaker2);
 timeSlider.addEventListener("input", seekBothAudio);
 canvas.addEventListener("pointerdown", beginZoomDrag);
