@@ -29,7 +29,6 @@ from app.analyses.end_of_turn.detectors.turnsense import turnsense_detector
 from app.analyses.end_of_turn.service import BaselineResult
 
 DETECTOR_CACHE_SIZE = 20
-ISOLATED_DETECTOR_MODES = frozenset({EndOfTurnDetectorMode.PIPECAT_SMART_TURN_V2})
 
 
 _DETECTOR_RESULT_CACHE = LeastRecentlyUsedCache[DetectorCacheKey, BaselineResult](
@@ -69,26 +68,9 @@ def run_detectors(
     if not selected_detectors:
         return []
 
-    isolated_detectors = [
-        detector for detector in selected_detectors if detector.info.mode in ISOLATED_DETECTOR_MODES
-    ]
-    parallel_detectors = [
-        detector
-        for detector in selected_detectors
-        if detector.info.mode not in ISOLATED_DETECTOR_MODES
-    ]
-    results_by_mode = {
-        detector.info.mode: _run_detector_cached(
-            detector=detector,
-            speaker1_path=speaker1_path,
-        )
-        for detector in isolated_detectors
-    }
-    results_by_mode.update(
-        _run_detectors_parallel(
-            detectors=parallel_detectors,
-            speaker1_path=speaker1_path,
-        )
+    results_by_mode = _run_detectors_parallel(
+        detectors=selected_detectors,
+        speaker1_path=speaker1_path,
     )
     return [results_by_mode[detector.info.mode] for detector in selected_detectors]
 
