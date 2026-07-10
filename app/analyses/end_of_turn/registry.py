@@ -42,14 +42,13 @@ def available_detectors() -> list[EndOfTurnDetectorInfo]:
     return [detector.info for detector in _DETECTORS]
 
 
-def run_all_detectors(speaker1_path: Path, max_duration_seconds: float) -> list[BaselineResult]:
+def run_all_detectors(speaker1_path: Path) -> list[BaselineResult]:
     with ThreadPoolExecutor(max_workers=len(_DETECTORS)) as executor:
         return list(
             executor.map(
                 lambda detector: _run_detector_cached(
                     detector=detector,
                     speaker1_path=speaker1_path,
-                    max_duration_seconds=max_duration_seconds,
                 ),
                 _DETECTORS,
             )
@@ -59,21 +58,16 @@ def run_all_detectors(speaker1_path: Path, max_duration_seconds: float) -> list[
 def _run_detector_cached(
     detector: EndOfTurnDetector,
     speaker1_path: Path,
-    max_duration_seconds: float,
 ) -> BaselineResult:
     cache_key = _cache_key(
         mode=detector.info.mode,
         speaker1_path=speaker1_path,
-        max_duration_seconds=max_duration_seconds,
     )
     cached_result = _DETECTOR_RESULT_CACHE.get(cache_key=cache_key)
     if cached_result is not None:
         return cached_result
 
-    result = detector.analyze(
-        speaker1_path=speaker1_path,
-        max_duration_seconds=max_duration_seconds,
-    )
+    result = detector.analyze(speaker1_path=speaker1_path)
     _DETECTOR_RESULT_CACHE.put(cache_key=cache_key, cache_value=result)
     return result
 
@@ -81,13 +75,11 @@ def _run_detector_cached(
 def _cache_key(
     mode: EndOfTurnDetectorMode,
     speaker1_path: Path,
-    max_duration_seconds: float,
 ) -> DetectorCacheKey:
     file_status = speaker1_path.stat()
     return DetectorCacheKey(
         mode=mode,
         speaker1_path=speaker1_path,
-        max_duration_seconds=max_duration_seconds,
         modified_ns=file_status.st_mtime_ns,
         size_bytes=file_status.st_size,
     )

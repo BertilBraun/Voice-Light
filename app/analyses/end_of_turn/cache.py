@@ -17,7 +17,6 @@ CacheValueType = TypeVar("CacheValueType")
 class DetectorCacheKey:
     mode: EndOfTurnDetectorMode
     speaker1_path: Path
-    max_duration_seconds: float
     modified_ns: int
     size_bytes: int
 
@@ -26,7 +25,6 @@ class DetectorCacheKey:
 class WaveformCacheKey:
     wave_path: Path
     target_bins: int
-    max_duration_seconds: float
     modified_ns: int
     size_bytes: int
 

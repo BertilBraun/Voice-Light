@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,7 +7,7 @@ import numpy as np
 
 from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
-from app.audio.wav import mono_samples
+from app.audio.wav import read_mono_wave_audio
 
 
 @dataclass(frozen=True)
@@ -18,7 +17,7 @@ class NaiveVadFloorDetector:
     min_speech_seconds: float
     min_silence_seconds: float
 
-    def analyze(self, speaker1_path: Path, max_duration_seconds: float) -> BaselineResult:
+    def analyze(self, speaker1_path: Path) -> BaselineResult:
         return run_naive_vad_floor(
             wave_path=speaker1_path,
             result_name=self.info.mode.value,
@@ -26,7 +25,6 @@ class NaiveVadFloorDetector:
             frame_seconds=self.frame_seconds,
             min_speech_seconds=self.min_speech_seconds,
             min_silence_seconds=self.min_silence_seconds,
-            max_duration_seconds=max_duration_seconds,
         )
 
 
@@ -37,13 +35,8 @@ def run_naive_vad_floor(
     frame_seconds: float = 0.03,
     min_speech_seconds: float = 0.12,
     min_silence_seconds: float = 0.7,
-    max_duration_seconds: float = 180.0,
 ) -> BaselineResult:
-    frame_energies = _read_frame_energies(
-        wave_path=wave_path,
-        frame_seconds=frame_seconds,
-        max_duration_seconds=max_duration_seconds,
-    )
+    frame_energies = _read_frame_energies(wave_path=wave_path, frame_seconds=frame_seconds)
     threshold = _adaptive_threshold(frame_energies=frame_energies)
     speech_flags = [frame_energy >= threshold for frame_energy in frame_energies]
     speech_segments = _speech_segments_from_flags(
@@ -69,27 +62,14 @@ def run_naive_vad_floor(
 def _read_frame_energies(
     wave_path: Path,
     frame_seconds: float,
-    max_duration_seconds: float,
 ) -> list[float]:
-    with wave.open(str(wave_path), "rb") as wave_reader:
-        sample_rate = wave_reader.getframerate()
-        sample_width = wave_reader.getsampwidth()
-        channel_count = wave_reader.getnchannels()
-        max_frame_count = min(wave_reader.getnframes(), round(sample_rate * max_duration_seconds))
-        frames_per_window = max(1, round(sample_rate * frame_seconds))
-        frame_energies: list[float] = []
+    audio = read_mono_wave_audio(wave_path=wave_path)
+    frames_per_window = max(1, round(audio.sample_rate * frame_seconds))
+    frame_energies: list[float] = []
 
-        while wave_reader.tell() < max_frame_count:
-            frames_to_read = min(frames_per_window, max_frame_count - wave_reader.tell())
-            fragment = wave_reader.readframes(frames_to_read)
-            if not fragment:
-                break
-            samples = mono_samples(
-                fragment=fragment,
-                sample_width=sample_width,
-                channel_count=channel_count,
-            )
-            frame_energies.append(float(np.sqrt(np.mean(samples * samples))))
+    for start_index in range(0, audio.frame_count, frames_per_window):
+        samples = audio.samples[start_index : start_index + frames_per_window]
+        frame_energies.append(float(np.sqrt(np.mean(samples * samples))))
 
     return frame_energies
 

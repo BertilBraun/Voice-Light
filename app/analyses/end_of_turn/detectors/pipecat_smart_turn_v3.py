@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import wave
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -15,7 +14,7 @@ from transformers.feature_extraction_utils import BatchFeature
 
 from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
-from app.audio.wav import mono_samples
+from app.audio.wav import read_mono_wave_audio
 
 MODEL_REPOSITORY = "pipecat-ai/smart-turn-v3"
 MODEL_FILENAME = "smart-turn-v3.2-cpu.onnx"
@@ -68,7 +67,7 @@ class PipecatSmartTurnV3Detector:
     candidate_silence_seconds: float
     completion_threshold: float
 
-    def analyze(self, speaker1_path: Path, max_duration_seconds: float) -> BaselineResult:
+    def analyze(self, speaker1_path: Path) -> BaselineResult:
         return run_pipecat_smart_turn_v3(
             wave_path=speaker1_path,
             result_name=self.info.mode.value,
@@ -77,7 +76,6 @@ class PipecatSmartTurnV3Detector:
             min_speech_seconds=self.min_speech_seconds,
             candidate_silence_seconds=self.candidate_silence_seconds,
             completion_threshold=self.completion_threshold,
-            max_duration_seconds=max_duration_seconds,
         )
 
 
@@ -107,12 +105,10 @@ def run_pipecat_smart_turn_v3(
     min_speech_seconds: float = 0.09,
     candidate_silence_seconds: float = 0.2,
     completion_threshold: float = 0.5,
-    max_duration_seconds: float = 180.0,
 ) -> BaselineResult:
     audio = _read_normalized_audio(
         wave_path=wave_path,
         target_sample_rate=MODEL_SAMPLE_RATE,
-        max_duration_seconds=max_duration_seconds,
     )
     frame_energies = _frame_energies(
         samples=audio.samples,
@@ -164,27 +160,15 @@ class NormalizedAudio:
 def _read_normalized_audio(
     wave_path: Path,
     target_sample_rate: int,
-    max_duration_seconds: float,
 ) -> NormalizedAudio:
-    with wave.open(str(wave_path), "rb") as wave_reader:
-        sample_rate = wave_reader.getframerate()
-        sample_width = wave_reader.getsampwidth()
-        channel_count = wave_reader.getnchannels()
-        frame_count = min(wave_reader.getnframes(), round(sample_rate * max_duration_seconds))
-        fragment = wave_reader.readframes(frame_count)
-
-    samples = mono_samples(
-        fragment=fragment,
-        sample_width=sample_width,
-        channel_count=channel_count,
-    )
-    maximum_amplitude = float((1 << (sample_width * 8 - 1)) - 1)
-    if samples.size == 0:
+    audio = read_mono_wave_audio(wave_path=wave_path)
+    maximum_amplitude = float((1 << (audio.sample_width * 8 - 1)) - 1)
+    if audio.samples.size == 0:
         raise ValueError("Cannot run Pipecat Smart Turn v3 on an audio file with no frames.")
-    normalized_samples = np.clip(samples / maximum_amplitude, -1.0, 1.0).astype(np.float32)
+    normalized_samples = np.clip(audio.samples / maximum_amplitude, -1.0, 1.0).astype(np.float32)
     resampled_samples = _resample_audio(
         samples=normalized_samples,
-        source_sample_rate=sample_rate,
+        source_sample_rate=audio.sample_rate,
         target_sample_rate=target_sample_rate,
     )
     return NormalizedAudio(

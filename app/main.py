@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.analyses.end_of_turn.router import router as end_of_turn_router
+from app.audio.wav import capped_wave_bytes
 from app.config import WEB_ROOT
 from app.data.sessions import SpeakerName, list_sessions, session_audio_path, session_to_json
 
@@ -29,9 +30,9 @@ def sessions_api() -> dict[str, object]:
 
 
 @app.get("/api/audio/{identifier}/{speaker_name}")
-def audio_api(identifier: str, speaker_name: SpeakerName) -> FileResponse:
+def audio_api(identifier: str, speaker_name: SpeakerName) -> Response:
     try:
         wave_path = session_audio_path(identifier=identifier, speaker_name=speaker_name)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return FileResponse(wave_path, media_type="audio/wav")
+    return Response(content=capped_wave_bytes(wave_path=wave_path), media_type="audio/wav")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import wave
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -20,7 +19,7 @@ from transformers.feature_extraction_utils import BatchFeature
 
 from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
-from app.audio.wav import mono_samples
+from app.audio.wav import read_mono_wave_audio
 
 MODEL_NAME = "pipecat-ai/smart-turn-v2"
 TARGET_SAMPLE_RATE = 16000
@@ -93,12 +92,11 @@ class PipecatSmartTurnV2Detector:
     min_silence_seconds: float
     max_window_seconds: float
 
-    def analyze(self, speaker1_path: Path, max_duration_seconds: float) -> BaselineResult:
+    def analyze(self, speaker1_path: Path) -> BaselineResult:
         inference_components = _load_inference_components(model_name=self.model_name)
         audio = _read_mono_float_audio(
             wave_path=speaker1_path,
             target_sample_rate=TARGET_SAMPLE_RATE,
-            max_duration_seconds=max_duration_seconds,
         )
         speech_segments = _candidate_speech_segments(
             audio=audio,
@@ -171,24 +169,14 @@ def _load_inference_components(model_name: str) -> SmartTurnInferenceComponents:
 def _read_mono_float_audio(
     wave_path: Path,
     target_sample_rate: int,
-    max_duration_seconds: float,
 ) -> NDArray[np.float32]:
-    with wave.open(str(wave_path), "rb") as wave_reader:
-        sample_rate = wave_reader.getframerate()
-        sample_width = wave_reader.getsampwidth()
-        channel_count = wave_reader.getnchannels()
-        max_frame_count = min(wave_reader.getnframes(), round(sample_rate * max_duration_seconds))
-        fragment = wave_reader.readframes(max_frame_count)
-
-    samples = mono_samples(
-        fragment=fragment,
-        sample_width=sample_width,
-        channel_count=channel_count,
+    audio = read_mono_wave_audio(wave_path=wave_path)
+    normalized_samples = _normalize_pcm_samples(
+        samples=audio.samples, sample_width=audio.sample_width
     )
-    normalized_samples = _normalize_pcm_samples(samples=samples, sample_width=sample_width)
     return _resample_audio(
         audio=normalized_samples,
-        source_sample_rate=sample_rate,
+        source_sample_rate=audio.sample_rate,
         target_sample_rate=target_sample_rate,
     )
 
