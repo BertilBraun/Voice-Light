@@ -6,6 +6,7 @@ from app.analyses.end_of_turn.detectors.naive_vad import (
     _end_of_turn_events,
     _speech_segments_from_flags,
 )
+from app.analyses.end_of_turn.registry import available_detectors
 from app.analyses.end_of_turn.service import SpeechSegment
 from app.data.sessions import list_sessions
 
@@ -59,3 +60,9 @@ def test_session_listing_uses_session_directories() -> None:
     session_identifiers = {session_entry.identifier for session_entry in list_sessions()}
 
     assert "pmt_001" in session_identifiers
+
+
+def test_available_detectors_include_vad_variants() -> None:
+    detector_modes = {detector_info.mode.value for detector_info in available_detectors()}
+
+    assert detector_modes == {"naive_vad_floor", "naive_vad_fast"}

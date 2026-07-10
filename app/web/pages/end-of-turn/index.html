@@ -16,15 +16,16 @@
         </div>
         <div class="controls">
           <select id="session-select" aria-label="Session"></select>
-          <select id="detector-select" aria-label="Detector"></select>
-          <button id="analyze-button" type="button">Analyze</button>
+          <span id="loading-indicator" class="loading-indicator" hidden>
+            <i></i>
+            Analyzing
+          </span>
         </div>
       </header>
 
       <section class="transport" aria-label="Playback">
         <button id="play-toggle-button" type="button" disabled>Play</button>
         <button id="speaker2-toggle-button" type="button" disabled>Hide speaker 2</button>
-        <button id="reset-zoom-button" type="button" disabled>Reset zoom</button>
         <input id="time-slider" type="range" min="0" max="0" step="0.01" value="0" disabled />
         <span id="time-readout">00:00 / 00:00</span>
       </section>
@@ -45,4 +46,3 @@
     <script src="/pages/end-of-turn/app.js" type="module"></script>
   </body>
 </html>
-

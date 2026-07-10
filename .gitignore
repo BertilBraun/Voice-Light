@@ -1,4 +1,7 @@
+# Local dataset files. Keep app/data source modules tracked.
 /data/
+!/app/data/
+
 .venv/
 .pytest_cache/
 .ruff_cache/

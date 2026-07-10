@@ -16,7 +16,8 @@ body {
 
 button,
 select,
-input {
+input,
+.loading-indicator {
   font: inherit;
 }
 
@@ -53,6 +54,7 @@ p {
 }
 
 .controls {
+  align-items: center;
   display: flex;
   gap: 10px;
 }
@@ -81,11 +83,38 @@ input:disabled {
   opacity: 0.55;
 }
 
-#analyze-button,
 #play-toggle-button {
   background: #146b63;
   border-color: #146b63;
   color: #ffffff;
+}
+
+.loading-indicator {
+  align-items: center;
+  color: #425057;
+  display: inline-flex;
+  gap: 8px;
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+.loading-indicator[hidden] {
+  display: none;
+}
+
+.loading-indicator i {
+  animation: spin 0.8s linear infinite;
+  border: 2px solid #c7d0d4;
+  border-top-color: #146b63;
+  border-radius: 999px;
+  height: 18px;
+  width: 18px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .transport,
@@ -101,7 +130,7 @@ input:disabled {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: auto auto auto minmax(180px, 1fr) auto;
+  grid-template-columns: auto auto minmax(180px, 1fr) auto;
   padding: 12px;
 }
 
@@ -123,7 +152,7 @@ input:disabled {
 
 #timeline-canvas {
   display: block;
-  height: min(62vh, 560px);
+  height: 560px;
   touch-action: none;
   width: 100%;
 }
@@ -192,4 +221,3 @@ input:disabled {
     text-align: left;
   }
 }
-

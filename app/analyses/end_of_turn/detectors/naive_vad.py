@@ -13,18 +13,26 @@ from app.audio.wav import mono_samples
 
 @dataclass(frozen=True)
 class NaiveVadFloorDetector:
-    info: EndOfTurnDetectorInfo = EndOfTurnDetectorInfo(
-        mode=EndOfTurnDetectorMode.NAIVE_VAD_FLOOR,
-        label="Naive VAD floor",
-        description="RMS VAD on speaker 1 with fixed silence hysteresis.",
-    )
+    info: EndOfTurnDetectorInfo
+    frame_seconds: float
+    min_speech_seconds: float
+    min_silence_seconds: float
 
     def analyze(self, speaker1_path: Path) -> BaselineResult:
-        return run_naive_vad_floor(wave_path=speaker1_path)
+        return run_naive_vad_floor(
+            wave_path=speaker1_path,
+            result_name=self.info.mode.value,
+            description=self.info.description,
+            frame_seconds=self.frame_seconds,
+            min_speech_seconds=self.min_speech_seconds,
+            min_silence_seconds=self.min_silence_seconds,
+        )
 
 
 def run_naive_vad_floor(
     wave_path: Path,
+    result_name: str,
+    description: str,
     frame_seconds: float = 0.03,
     min_speech_seconds: float = 0.12,
     min_silence_seconds: float = 0.7,
@@ -42,8 +50,8 @@ def run_naive_vad_floor(
         min_silence_seconds=min_silence_seconds,
     )
     return BaselineResult(
-        name="naive_vad_floor",
-        description="RMS VAD on speaker 1 with fixed silence hysteresis.",
+        name=result_name,
+        description=description,
         frame_seconds=frame_seconds,
         min_silence_seconds=min_silence_seconds,
         threshold=threshold,
@@ -165,3 +173,29 @@ def _end_of_turn_events(
 
 def _rounded_seconds(seconds: float) -> float:
     return round(seconds, 6)
+
+
+def naive_vad_floor_detector() -> NaiveVadFloorDetector:
+    return NaiveVadFloorDetector(
+        info=EndOfTurnDetectorInfo(
+            mode=EndOfTurnDetectorMode.NAIVE_VAD_FLOOR,
+            label="Naive VAD floor",
+            description="RMS VAD on speaker 1 with fixed 700 ms silence hysteresis.",
+        ),
+        frame_seconds=0.03,
+        min_speech_seconds=0.12,
+        min_silence_seconds=0.7,
+    )
+
+
+def naive_vad_fast_detector() -> NaiveVadFloorDetector:
+    return NaiveVadFloorDetector(
+        info=EndOfTurnDetectorInfo(
+            mode=EndOfTurnDetectorMode.NAIVE_VAD_FAST,
+            label="Naive VAD fast",
+            description="RMS VAD on speaker 1 with shorter 400 ms silence hysteresis.",
+        ),
+        frame_seconds=0.03,
+        min_speech_seconds=0.09,
+        min_silence_seconds=0.4,
+    )

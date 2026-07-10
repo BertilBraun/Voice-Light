@@ -10,6 +10,7 @@ from app.analyses.end_of_turn.service import BaselineResult
 
 class EndOfTurnDetectorMode(StrEnum):
     NAIVE_VAD_FLOOR = "naive_vad_floor"
+    NAIVE_VAD_FAST = "naive_vad_fast"
 
 
 @dataclass(frozen=True)

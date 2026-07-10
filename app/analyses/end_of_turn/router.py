@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.analyses.end_of_turn.base import EndOfTurnDetectorMode
-from app.analyses.end_of_turn.registry import available_detectors, run_detector
+from app.analyses.end_of_turn.registry import available_detectors, run_all_detectors
 from app.analyses.end_of_turn.service import analysis_to_json, analyze_session_audio
 from app.data.sessions import SpeakerName, session_audio_path
 
@@ -27,7 +26,6 @@ def list_detector_modes() -> dict[str, object]:
 @router.get("/analyze")
 def analyze_end_of_turn(
     identifier: str = Query(alias="id"),
-    mode: EndOfTurnDetectorMode = EndOfTurnDetectorMode.NAIVE_VAD_FLOOR,
 ) -> dict[str, object]:
     try:
         speaker1_path = session_audio_path(
@@ -38,14 +36,14 @@ def analyze_end_of_turn(
             identifier=identifier,
             speaker_name=SpeakerName.SPEAKER2,
         )
-        baseline_result = run_detector(mode=mode, speaker1_path=speaker1_path)
+        baseline_results = run_all_detectors(speaker1_path=speaker1_path)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     audio_analysis = analyze_session_audio(
         speaker1_path=speaker1_path,
         speaker2_path=speaker2_path,
-        baseline_results=[baseline_result],
+        baseline_results=baseline_results,
     )
     return {
         "session_id": identifier,

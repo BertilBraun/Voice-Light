@@ -1,9 +1,7 @@
 const sessionSelect = document.querySelector("#session-select");
-const detectorSelect = document.querySelector("#detector-select");
-const analyzeButton = document.querySelector("#analyze-button");
+const loadingIndicator = document.querySelector("#loading-indicator");
 const playToggleButton = document.querySelector("#play-toggle-button");
 const speaker2ToggleButton = document.querySelector("#speaker2-toggle-button");
-const resetZoomButton = document.querySelector("#reset-zoom-button");
 const timeSlider = document.querySelector("#time-slider");
 const timeReadout = document.querySelector("#time-readout");
 const sessionSummary = document.querySelector("#session-summary");
@@ -11,6 +9,7 @@ const canvas = document.querySelector("#timeline-canvas");
 const context = canvas.getContext("2d");
 const speaker1Audio = document.querySelector("#speaker1-audio");
 const speaker2Audio = document.querySelector("#speaker2-audio");
+const ANALYSIS_CACHE_SIZE = 20;
 
 let sessions = [];
 let currentPayload = null;
@@ -21,14 +20,12 @@ let showSpeaker2 = true;
 let dragStartSeconds = null;
 let dragCurrentSeconds = null;
 let isPlaying = false;
+let analysisRequestId = 0;
+const analysisPayloadCache = new Map();
 
 async function loadInitialOptions() {
-  const [sessionsResponse, detectorsResponse] = await Promise.all([
-    fetch("/api/sessions"),
-    fetch("/api/end-of-turn/detectors"),
-  ]);
+  const sessionsResponse = await fetch("/api/sessions");
   const sessionsPayload = await sessionsResponse.json();
-  const detectorsPayload = await detectorsResponse.json();
   sessions = sessionsPayload.sessions;
   sessionSelect.replaceChildren(
     ...sessions.map((session) => {
@@ -38,33 +35,56 @@ async function loadInitialOptions() {
       return option;
     }),
   );
-  detectorSelect.replaceChildren(
-    ...detectorsPayload.detectors.map((detector) => {
-      const option = document.createElement("option");
-      option.value = detector.mode;
-      option.textContent = detector.label;
-      option.title = detector.description;
-      return option;
-    }),
-  );
+  if (sessions.length > 0) {
+    await analyzeSelectedSession();
+  }
 }
 
 async function analyzeSelectedSession() {
   const identifier = sessionSelect.value;
-  const detectorMode = detectorSelect.value;
-  if (!identifier || !detectorMode) {
+  if (!identifier) {
     return;
   }
 
-  setBusy(true);
+  const requestId = analysisRequestId + 1;
+  analysisRequestId = requestId;
+  const cachedPayload = getCachedAnalysisPayload(identifier);
+  if (cachedPayload !== null) {
+    pauseInSync();
+    applyAnalysisPayload(identifier, cachedPayload);
+    return;
+  }
+
+  setLoading(true);
   pauseInSync();
-  const query = new URLSearchParams({ id: identifier, mode: detectorMode });
-  const response = await fetch(`/api/end-of-turn/analyze?${query.toString()}`);
-  currentPayload = await response.json();
-  speaker1Audio.src = currentPayload.speaker1_audio_url;
-  speaker2Audio.src = currentPayload.speaker2_audio_url;
-  speaker1Audio.load();
-  speaker2Audio.load();
+  try {
+    const query = new URLSearchParams({ id: identifier });
+    const response = await fetch(`/api/end-of-turn/analyze?${query.toString()}`);
+    if (!response.ok) {
+      throw new Error(`Analysis failed with HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    if (requestId !== analysisRequestId) {
+      return;
+    }
+
+    putCachedAnalysisPayload(identifier, payload);
+    applyAnalysisPayload(identifier, payload);
+  } catch (error) {
+    if (requestId === analysisRequestId) {
+      sessionSummary.textContent = error.message;
+    }
+  } finally {
+    if (requestId === analysisRequestId) {
+      setLoading(false);
+    }
+  }
+}
+
+function applyAnalysisPayload(identifier, payload) {
+  currentPayload = payload;
+  setAudioSourceIfChanged(speaker1Audio, currentPayload.speaker1_audio_url);
+  setAudioSourceIfChanged(speaker2Audio, currentPayload.speaker2_audio_url);
 
   const durationSeconds = currentPayload.analysis.speaker1_waveform.duration_seconds;
   viewportStartSeconds = 0;
@@ -74,16 +94,46 @@ async function analyzeSelectedSession() {
   timeSlider.disabled = false;
   playToggleButton.disabled = false;
   speaker2ToggleButton.disabled = false;
-  resetZoomButton.disabled = false;
-  sessionSummary.textContent = `${identifier} analyzed with ${detectorSelect.selectedOptions[0].textContent}.`;
+  sessionSummary.textContent = `${identifier} analyzed with ${currentPayload.analysis.baseline_results.length} detectors.`;
   updatePlayToggleLabel();
   drawTimeline();
-  setBusy(false);
 }
 
-function setBusy(isBusy) {
-  analyzeButton.disabled = isBusy;
-  analyzeButton.textContent = isBusy ? "Analyzing..." : "Analyze";
+function setAudioSourceIfChanged(audioElement, sourceUrl) {
+  const currentUrl = new URL(audioElement.currentSrc || audioElement.src || "", window.location.href);
+  const nextUrl = new URL(sourceUrl, window.location.href);
+  if (currentUrl.href === nextUrl.href) {
+    return;
+  }
+  audioElement.src = sourceUrl;
+  audioElement.load();
+}
+
+function getCachedAnalysisPayload(identifier) {
+  const payload = analysisPayloadCache.get(identifier);
+  if (payload === undefined) {
+    return null;
+  }
+  analysisPayloadCache.delete(identifier);
+  analysisPayloadCache.set(identifier, payload);
+  return payload;
+}
+
+function putCachedAnalysisPayload(identifier, payload) {
+  analysisPayloadCache.delete(identifier);
+  analysisPayloadCache.set(identifier, payload);
+  while (analysisPayloadCache.size > ANALYSIS_CACHE_SIZE) {
+    const oldestIdentifier = analysisPayloadCache.keys().next().value;
+    analysisPayloadCache.delete(oldestIdentifier);
+  }
+}
+
+function setLoading(isLoading) {
+  sessionSelect.disabled = isLoading;
+  loadingIndicator.hidden = !isLoading;
+  if (isLoading) {
+    sessionSummary.textContent = `Analyzing ${sessionSelect.value}...`;
+  }
 }
 
 function setSliderBounds() {
@@ -93,6 +143,7 @@ function setSliderBounds() {
 }
 
 function drawTimeline() {
+  updateCanvasHeight();
   const layout = resizeCanvas();
   context.clearRect(0, 0, layout.width, layout.height);
   context.fillStyle = "#ffffff";
@@ -145,10 +196,22 @@ function resizeCanvas() {
   return { width: rect.width, height: rect.height };
 }
 
+function updateCanvasHeight() {
+  if (currentPayload === null) {
+    canvas.style.height = "560px";
+    return;
+  }
+  const baselineCount = currentPayload.analysis.baseline_results.length;
+  const rowCount = showSpeaker2 ? 2 : 1;
+  const waveHeight = showSpeaker2 ? 120 : 172;
+  const requiredHeight = 44 + rowCount * (waveHeight + 24) + 16 + baselineCount * 74 + 24;
+  canvas.style.height = `${Math.max(560, requiredHeight)}px`;
+}
+
 function drawEmptyState() {
   context.fillStyle = "#5a666b";
   context.font = "16px sans-serif";
-  context.fillText("Choose a session and click Analyze.", 24, 42);
+  context.fillText("Choose a session to analyze.", 24, 42);
 }
 
 function drawTimeRuler(leftPad, trackWidth, layoutHeight) {
@@ -179,20 +242,23 @@ function drawWaveform(row, leftPad, top, trackWidth, height) {
   const minimums = row.waveform.minimums;
   const maximums = row.waveform.maximums;
   const binDurationSeconds = row.waveform.duration_seconds / Math.max(1, maximums.length);
-  const firstIndex = Math.max(0, Math.floor(viewportStartSeconds / binDurationSeconds));
-  const lastIndex = Math.min(
-    maximums.length - 1,
-    Math.ceil(viewportEndSeconds / binDurationSeconds),
-  );
+  const columns = Math.max(1, Math.floor(trackWidth));
 
-  for (let index = firstIndex; index <= lastIndex; index += 1) {
-    const seconds = index * binDurationSeconds;
-    const x = leftPad + secondsToRatio(seconds) * trackWidth;
-    if (x < leftPad || x > leftPad + trackWidth) {
-      continue;
-    }
-    const yMin = middle + minimums[index] * (height / 2 - 4);
-    const yMax = middle + maximums[index] * (height / 2 - 4);
+  for (let column = 0; column < columns; column += 1) {
+    const startSeconds = viewportStartSeconds + (column / columns) * visibleDurationSeconds();
+    const endSeconds =
+      viewportStartSeconds + ((column + 1) / columns) * visibleDurationSeconds();
+    const startIndex = clamp(
+      Math.floor(startSeconds / binDurationSeconds),
+      0,
+      maximums.length - 1,
+    );
+    const endIndex = clamp(Math.ceil(endSeconds / binDurationSeconds), startIndex + 1, maximums.length);
+    const columnMinimum = Math.min(...minimums.slice(startIndex, endIndex));
+    const columnMaximum = Math.max(...maximums.slice(startIndex, endIndex));
+    const x = leftPad + column;
+    const yMin = middle + columnMinimum * (height / 2 - 4);
+    const yMax = middle + columnMaximum * (height / 2 - 4);
     context.beginPath();
     context.moveTo(x, yMin);
     context.lineTo(x, yMax);
@@ -309,10 +375,6 @@ function startPlaybackLoop() {
     if (Math.abs(speaker2Audio.currentTime - speaker1Audio.currentTime) > 0.08) {
       speaker2Audio.currentTime = speaker1Audio.currentTime;
     }
-    if (speaker1Audio.currentTime > viewportEndSeconds) {
-      pauseInSync();
-      return;
-    }
     timeSlider.value = String(speaker1Audio.currentTime);
     drawTimeline();
     animationFrameIdentifier = window.requestAnimationFrame(drawFrame);
@@ -340,19 +402,8 @@ function toggleSpeaker2() {
   drawTimeline();
 }
 
-function resetZoom() {
-  if (currentPayload === null) {
-    return;
-  }
-  viewportStartSeconds = 0;
-  viewportEndSeconds = currentPayload.analysis.speaker1_waveform.duration_seconds;
-  setSliderBounds();
-  timeSlider.value = String(clamp(Number(timeSlider.value), viewportStartSeconds, viewportEndSeconds));
-  drawTimeline();
-}
-
 function beginZoomDrag(event) {
-  if (!event.ctrlKey || currentPayload === null) {
+  if (currentPayload === null) {
     return;
   }
   const seconds = eventToSeconds(event);
@@ -388,11 +439,31 @@ function endZoomDrag(event) {
   dragStartSeconds = null;
   dragCurrentSeconds = null;
   if (endSeconds - startSeconds >= 0.5) {
-    viewportStartSeconds = startSeconds;
-    viewportEndSeconds = endSeconds;
-    setSliderBounds();
-    timeSlider.value = String(clamp(Number(timeSlider.value), viewportStartSeconds, viewportEndSeconds));
+    setViewport(startSeconds, endSeconds);
   }
+  drawTimeline();
+}
+
+function zoomAtPointer(event) {
+  if (currentPayload === null) {
+    return;
+  }
+  const anchorSeconds = eventToSeconds(event);
+  if (anchorSeconds === null) {
+    return;
+  }
+  event.preventDefault();
+  const zoomFactor = event.deltaY < 0 ? 0.8 : 1.25;
+  const currentDurationSeconds = visibleDurationSeconds();
+  const nextDurationSeconds = clamp(
+    currentDurationSeconds * zoomFactor,
+    0.5,
+    currentPayload.analysis.speaker1_waveform.duration_seconds,
+  );
+  const anchorRatio = (anchorSeconds - viewportStartSeconds) / currentDurationSeconds;
+  const nextStartSeconds = anchorSeconds - nextDurationSeconds * anchorRatio;
+  const nextEndSeconds = nextStartSeconds + nextDurationSeconds;
+  setViewport(nextStartSeconds, nextEndSeconds);
   drawTimeline();
 }
 
@@ -416,6 +487,25 @@ function updatePlayToggleLabel() {
 function updateTimeReadout() {
   const currentTime = Number(timeSlider.value);
   timeReadout.textContent = `${formatDuration(currentTime)} / ${formatDuration(viewportEndSeconds)}`;
+}
+
+function setViewport(startSeconds, endSeconds) {
+  const durationSeconds = currentPayload.analysis.speaker1_waveform.duration_seconds;
+  const viewportDurationSeconds = Math.min(durationSeconds, Math.max(0.5, endSeconds - startSeconds));
+  let nextStartSeconds = startSeconds;
+  let nextEndSeconds = nextStartSeconds + viewportDurationSeconds;
+  if (nextStartSeconds < 0) {
+    nextStartSeconds = 0;
+    nextEndSeconds = viewportDurationSeconds;
+  }
+  if (nextEndSeconds > durationSeconds) {
+    nextEndSeconds = durationSeconds;
+    nextStartSeconds = durationSeconds - viewportDurationSeconds;
+  }
+  viewportStartSeconds = nextStartSeconds;
+  viewportEndSeconds = nextEndSeconds;
+  setSliderBounds();
+  timeSlider.value = String(clamp(Number(timeSlider.value), 0, durationSeconds));
 }
 
 function visibleDurationSeconds() {
@@ -447,15 +537,15 @@ function formatDuration(totalSeconds) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-analyzeButton.addEventListener("click", analyzeSelectedSession);
+sessionSelect.addEventListener("change", analyzeSelectedSession);
 playToggleButton.addEventListener("click", togglePlayback);
 speaker2ToggleButton.addEventListener("click", toggleSpeaker2);
-resetZoomButton.addEventListener("click", resetZoom);
 timeSlider.addEventListener("input", seekBothAudio);
 canvas.addEventListener("pointerdown", beginZoomDrag);
 canvas.addEventListener("pointermove", updateZoomDrag);
 canvas.addEventListener("pointerup", endZoomDrag);
 canvas.addEventListener("pointercancel", endZoomDrag);
+canvas.addEventListener("wheel", zoomAtPointer, { passive: false });
 speaker1Audio.addEventListener("ended", pauseInSync);
 window.addEventListener("resize", drawTimeline);
 
