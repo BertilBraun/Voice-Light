@@ -10,6 +10,7 @@ const context = canvas.getContext("2d");
 const speaker1Audio = document.querySelector("#speaker1-audio");
 const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
+const CLICK_DRAG_TOLERANCE_PIXELS = 4;
 
 let sessions = [];
 let currentPayload = null;
@@ -19,6 +20,9 @@ let viewportEndSeconds = 0;
 let showSpeaker2 = true;
 let dragStartSeconds = null;
 let dragCurrentSeconds = null;
+let dragStartClientX = null;
+let dragStartClientY = null;
+let isZoomDragActive = false;
 let isPlaying = false;
 let analysisRequestId = 0;
 const analysisPayloadCache = new Map();
@@ -445,9 +449,16 @@ function stopPlaybackLoop() {
 
 function seekBothAudio() {
   const targetTime = Number(timeSlider.value);
-  speaker1Audio.currentTime = targetTime;
+  seekToSeconds(targetTime);
+}
+
+function seekToSeconds(targetTime) {
+  const durationSeconds = currentPayload.analysis.speaker1_waveform.duration_seconds;
+  const boundedTargetTime = clamp(targetTime, 0, durationSeconds);
+  timeSlider.value = String(boundedTargetTime);
+  speaker1Audio.currentTime = boundedTargetTime;
   if (showSpeaker2) {
-    speaker2Audio.currentTime = targetTime;
+    speaker2Audio.currentTime = boundedTargetTime;
   }
   drawTimeline();
 }
@@ -476,36 +487,68 @@ function beginZoomDrag(event) {
   }
   event.preventDefault();
   dragStartSeconds = seconds;
-  dragCurrentSeconds = seconds;
+  dragCurrentSeconds = null;
+  dragStartClientX = event.clientX;
+  dragStartClientY = event.clientY;
+  isZoomDragActive = false;
   canvas.setPointerCapture(event.pointerId);
-  drawTimeline();
 }
 
 function updateZoomDrag(event) {
-  if (dragStartSeconds === null) {
+  if (dragStartSeconds === null || dragStartClientX === null || dragStartClientY === null) {
     return;
   }
   const seconds = eventToSeconds(event);
   if (seconds === null) {
     return;
   }
+  const pointerDistancePixels = Math.hypot(
+    event.clientX - dragStartClientX,
+    event.clientY - dragStartClientY,
+  );
+  if (!isZoomDragActive && pointerDistancePixels < CLICK_DRAG_TOLERANCE_PIXELS) {
+    return;
+  }
+  isZoomDragActive = true;
   dragCurrentSeconds = seconds;
   drawTimeline();
 }
 
 function endZoomDrag(event) {
-  if (dragStartSeconds === null || dragCurrentSeconds === null) {
+  if (dragStartSeconds === null) {
     return;
   }
   canvas.releasePointerCapture(event.pointerId);
+  const targetSeconds = eventToSeconds(event) ?? dragStartSeconds;
+  if (!isZoomDragActive || dragCurrentSeconds === null) {
+    clearTimelineDrag();
+    seekToSeconds(targetSeconds);
+    return;
+  }
   const startSeconds = Math.min(dragStartSeconds, dragCurrentSeconds);
   const endSeconds = Math.max(dragStartSeconds, dragCurrentSeconds);
-  dragStartSeconds = null;
-  dragCurrentSeconds = null;
+  clearTimelineDrag();
   if (endSeconds - startSeconds >= 0.5) {
     setViewport(startSeconds, endSeconds);
   }
   drawTimeline();
+}
+
+function cancelZoomDrag(event) {
+  if (dragStartSeconds === null) {
+    return;
+  }
+  canvas.releasePointerCapture(event.pointerId);
+  clearTimelineDrag();
+  drawTimeline();
+}
+
+function clearTimelineDrag() {
+  dragStartSeconds = null;
+  dragCurrentSeconds = null;
+  dragStartClientX = null;
+  dragStartClientY = null;
+  isZoomDragActive = false;
 }
 
 function zoomAtPointer(event) {
@@ -609,7 +652,7 @@ timeSlider.addEventListener("input", seekBothAudio);
 canvas.addEventListener("pointerdown", beginZoomDrag);
 canvas.addEventListener("pointermove", updateZoomDrag);
 canvas.addEventListener("pointerup", endZoomDrag);
-canvas.addEventListener("pointercancel", endZoomDrag);
+canvas.addEventListener("pointercancel", cancelZoomDrag);
 canvas.addEventListener("wheel", zoomAtPointer, { passive: false });
 speaker1Audio.addEventListener("ended", pauseInSync);
 window.addEventListener("resize", drawTimeline);
