@@ -157,6 +157,8 @@ class TurnsenseDetector:
             min_silence_seconds=self.min_silence_seconds,
             threshold=self.eou_threshold,
             speech_segments=classified_turns.speech_segments,
+            pause_spans=[],
+            backchannel_spans=[],
             end_of_turn_events=classified_turns.end_of_turn_events,
         )
 

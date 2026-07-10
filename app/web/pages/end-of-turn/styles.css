@@ -185,6 +185,16 @@ input:disabled {
   border: 1px solid rgba(20, 107, 99, 0.35);
 }
 
+.legend-pause {
+  background: rgba(224, 173, 42, 0.5);
+  border: 1px solid rgba(156, 110, 0, 0.7);
+}
+
+.legend-backchannel {
+  background: rgba(126, 87, 194, 0.5);
+  border: 1px solid rgba(90, 54, 153, 0.75);
+}
+
 .legend-eot {
   border-left: 3px solid #c2322d;
 }

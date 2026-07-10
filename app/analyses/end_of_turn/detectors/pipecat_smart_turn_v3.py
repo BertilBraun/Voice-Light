@@ -146,6 +146,8 @@ def run_pipecat_smart_turn_v3(
         min_silence_seconds=candidate_silence_seconds,
         threshold=completion_threshold,
         speech_segments=speech_segments,
+        pause_spans=[],
+        backchannel_spans=[],
         end_of_turn_events=end_of_turn_events,
     )
 

@@ -55,6 +55,8 @@ def run_naive_vad_floor(
         min_silence_seconds=min_silence_seconds,
         threshold=threshold,
         speech_segments=speech_segments,
+        pause_spans=[],
+        backchannel_spans=[],
         end_of_turn_events=end_of_turn_events,
     )
 

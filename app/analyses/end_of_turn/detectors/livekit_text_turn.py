@@ -203,6 +203,8 @@ def run_livekit_text_turn(
         min_silence_seconds=candidate_silence_seconds,
         threshold=threshold,
         speech_segments=speech_segments,
+        pause_spans=[],
+        backchannel_spans=[],
         end_of_turn_events=end_of_turn_events,
     )
 

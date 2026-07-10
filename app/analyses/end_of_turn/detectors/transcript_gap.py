@@ -1,19 +1,64 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias, cast
 
 from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
-from app.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
+from app.analyses.end_of_turn.service import (
+    BackchannelSpan,
+    BaselineResult,
+    EndOfTurnEvent,
+    PauseSpan,
+    SpeechSegment,
+)
 from app.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
 
 JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 TURN_GAP_SECONDS = 1.5
 INTERNAL_PAUSE_SECONDS = 0.5
+BACKCHANNEL_MAX_SECONDS = 1.2
+BACKCHANNEL_MAX_WORDS = 2
 ROUND_SECONDS_DIGITS = 6
+BACKCHANNEL_TOKENS = {
+    "yeah",
+    "yep",
+    "yup",
+    "yes",
+    "ok",
+    "okay",
+    "right",
+    "sure",
+    "mhm",
+    "mm",
+    "hmm",
+    "huh",
+    "haha",
+    "hah",
+    "laugh",
+    "laughs",
+    "laughter",
+    "chuckle",
+    "chuckles",
+}
+BACKCHANNEL_PHRASES = {
+    "uh huh",
+    "uh-huh",
+    "mm hmm",
+    "mm-hmm",
+    "mm hm",
+    "mm-hm",
+    "mhm mhm",
+    "yeah yeah",
+    "yep yep",
+    "ok ok",
+    "okay okay",
+    "ha ha",
+    "haha haha",
+}
 
 
 @dataclass(frozen=True)
@@ -43,6 +88,18 @@ class SpeakerMetadataLocation:
 
 
 @dataclass(frozen=True)
+class TranscriptTurn:
+    words: list[TranscriptWord]
+
+
+@dataclass(frozen=True)
+class ClassifiedTranscriptTurns:
+    speech_segments: list[SpeechSegment]
+    pause_spans: list[PauseSpan]
+    backchannel_spans: list[BackchannelSpan]
+
+
+@dataclass(frozen=True)
 class TranscriptGapDetector:
     info: EndOfTurnDetectorInfo
     turn_gap_seconds: float
@@ -60,12 +117,13 @@ class TranscriptGapDetector:
             speaker_name=metadata_location.speaker_name,
             analysis_end_seconds=analysis_end_seconds,
         )
-        speech_segments = _turn_segments(
+        classified_turns = _classified_turns(
             words=words,
             turn_gap_seconds=self.turn_gap_seconds,
+            internal_pause_seconds=self.internal_pause_seconds,
         )
         end_of_turn_events = _end_of_turn_events(
-            speech_segments=speech_segments,
+            speech_segments=classified_turns.speech_segments,
             analysis_end_seconds=analysis_end_seconds,
             min_silence_seconds=self.turn_gap_seconds,
         )
@@ -76,7 +134,9 @@ class TranscriptGapDetector:
             frame_seconds=self.internal_pause_seconds,
             min_silence_seconds=self.turn_gap_seconds,
             threshold=self.turn_gap_seconds,
-            speech_segments=speech_segments,
+            speech_segments=classified_turns.speech_segments,
+            pause_spans=classified_turns.pause_spans,
+            backchannel_spans=classified_turns.backchannel_spans,
             end_of_turn_events=end_of_turn_events,
         )
 
@@ -286,36 +346,146 @@ def _clipped_word(
     )
 
 
-def _turn_segments(
+def _classified_turns(
     words: list[TranscriptWord],
     turn_gap_seconds: float,
-) -> list[SpeechSegment]:
+    internal_pause_seconds: float,
+) -> ClassifiedTranscriptTurns:
+    turns = _transcript_turns(words=words, turn_gap_seconds=turn_gap_seconds)
+    speech_segments: list[SpeechSegment] = []
+    pause_spans: list[PauseSpan] = []
+    backchannel_spans: list[BackchannelSpan] = []
+
+    for turn in turns:
+        if _is_backchannel_turn(turn=turn):
+            backchannel_spans.append(_backchannel_span(turn=turn))
+            continue
+
+        speech_segments.append(_speech_segment(turn=turn))
+        pause_spans.extend(
+            _pause_spans(
+                turn=turn,
+                internal_pause_seconds=internal_pause_seconds,
+            )
+        )
+
+    return ClassifiedTranscriptTurns(
+        speech_segments=speech_segments,
+        pause_spans=pause_spans,
+        backchannel_spans=backchannel_spans,
+    )
+
+
+def _transcript_turns(
+    words: list[TranscriptWord],
+    turn_gap_seconds: float,
+) -> list[TranscriptTurn]:
     if not words:
         return []
 
-    speech_segments: list[SpeechSegment] = []
-    current_start_seconds = words[0].start_seconds
+    turns: list[TranscriptTurn] = []
+    current_words = [words[0]]
     previous_end_seconds = words[0].end_seconds
 
     for word in words[1:]:
         gap_seconds = word.start_seconds - previous_end_seconds
         if gap_seconds > turn_gap_seconds:
-            speech_segments.append(
-                SpeechSegment(
-                    start_seconds=_rounded_seconds(current_start_seconds),
-                    end_seconds=_rounded_seconds(previous_end_seconds),
-                )
-            )
-            current_start_seconds = word.start_seconds
+            turns.append(TranscriptTurn(words=current_words))
+            current_words = []
+        current_words.append(word)
         previous_end_seconds = max(previous_end_seconds, word.end_seconds)
 
-    speech_segments.append(
-        SpeechSegment(
-            start_seconds=_rounded_seconds(current_start_seconds),
-            end_seconds=_rounded_seconds(previous_end_seconds),
-        )
+    turns.append(TranscriptTurn(words=current_words))
+    return turns
+
+
+def _speech_segment(turn: TranscriptTurn) -> SpeechSegment:
+    assert turn.words
+    return SpeechSegment(
+        start_seconds=_rounded_seconds(turn.words[0].start_seconds),
+        end_seconds=_rounded_seconds(max(word.end_seconds for word in turn.words)),
     )
-    return speech_segments
+
+
+def _pause_spans(
+    turn: TranscriptTurn,
+    internal_pause_seconds: float,
+) -> list[PauseSpan]:
+    pause_spans: list[PauseSpan] = []
+    previous_word = turn.words[0]
+    for word in turn.words[1:]:
+        gap_seconds = word.start_seconds - previous_word.end_seconds
+        if gap_seconds >= internal_pause_seconds:
+            pause_spans.append(
+                PauseSpan(
+                    start_seconds=_rounded_seconds(previous_word.end_seconds),
+                    end_seconds=_rounded_seconds(word.start_seconds),
+                    duration_seconds=_rounded_seconds(gap_seconds),
+                )
+            )
+        if word.end_seconds > previous_word.end_seconds:
+            previous_word = word
+    return pause_spans
+
+
+def _backchannel_span(turn: TranscriptTurn) -> BackchannelSpan:
+    assert turn.words
+    start_seconds = _rounded_seconds(turn.words[0].start_seconds)
+    end_seconds = _rounded_seconds(max(word.end_seconds for word in turn.words))
+    return BackchannelSpan(
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        duration_seconds=_rounded_seconds(end_seconds - start_seconds),
+        text=" ".join(word.text for word in turn.words),
+    )
+
+
+def _is_backchannel_turn(turn: TranscriptTurn) -> bool:
+    assert turn.words
+    if len(turn.words) > BACKCHANNEL_MAX_WORDS:
+        return False
+
+    start_seconds = turn.words[0].start_seconds
+    end_seconds = max(word.end_seconds for word in turn.words)
+    if end_seconds - start_seconds > BACKCHANNEL_MAX_SECONDS:
+        return False
+
+    normalized_tokens = [
+        normalized_token
+        for normalized_token in (_normalized_backchannel_token(word.text) for word in turn.words)
+        if normalized_token
+    ]
+    if not normalized_tokens:
+        return False
+
+    phrase = " ".join(normalized_tokens)
+    if phrase in BACKCHANNEL_PHRASES:
+        return True
+    if len(normalized_tokens) == 1:
+        return normalized_tokens[0] in BACKCHANNEL_TOKENS
+    return all(_is_laugh_token(token=token) for token in normalized_tokens)
+
+
+def _normalized_backchannel_token(text: str) -> str:
+    lower_text = text.strip().lower()
+    bracket_stripped_text = lower_text.strip("[](){}")
+    if _is_laugh_token(token=bracket_stripped_text):
+        return bracket_stripped_text
+    return re.sub(r"[^a-z0-9-]+", "", bracket_stripped_text)
+
+
+def _is_laugh_token(token: str) -> bool:
+    return token in {
+        "ha",
+        "haha",
+        "hahaha",
+        "hah",
+        "laugh",
+        "laughs",
+        "laughter",
+        "chuckle",
+        "chuckles",
+    }
 
 
 def _end_of_turn_events(

@@ -273,17 +273,33 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   context.fillStyle = "#f3f5f6";
   context.fillRect(leftPad, top, trackWidth, 42);
 
-  context.fillStyle = "rgba(20, 107, 99, 0.18)";
-  baselineResult.speech_segments.forEach((segment) => {
-    if (!timeRangesOverlap(segment.start_seconds, segment.end_seconds)) {
-      return;
-    }
-    const startSeconds = Math.max(segment.start_seconds, viewportStartSeconds);
-    const endSeconds = Math.min(segment.end_seconds, viewportEndSeconds);
-    const x = leftPad + secondsToRatio(startSeconds) * trackWidth;
-    const width = ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth;
-    context.fillRect(x, top + 8, Math.max(1, width), 26);
-  });
+  drawBaselineSpans(
+    baselineResult.speech_segments,
+    leftPad,
+    top + 8,
+    trackWidth,
+    26,
+    "rgba(20, 107, 99, 0.18)",
+    "rgba(20, 107, 99, 0.35)",
+  );
+  drawBaselineSpans(
+    baselineResult.pause_spans,
+    leftPad,
+    top + 11,
+    trackWidth,
+    20,
+    "rgba(224, 173, 42, 0.5)",
+    "rgba(156, 110, 0, 0.7)",
+  );
+  drawBaselineSpans(
+    baselineResult.backchannel_spans,
+    leftPad,
+    top + 6,
+    trackWidth,
+    30,
+    "rgba(126, 87, 194, 0.5)",
+    "rgba(90, 54, 153, 0.75)",
+  );
 
   context.strokeStyle = "#c2322d";
   context.fillStyle = "#c2322d";
@@ -299,10 +315,27 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   });
   context.font = "12px sans-serif";
   context.fillText(
-    `${countVisibleEndMarkers(baselineResult)} visible of ${baselineResult.end_of_turn_events.length}`,
+    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length}`,
     leftPad,
     top + 62,
   );
+}
+
+function drawBaselineSpans(spans, leftPad, top, trackWidth, height, fillStyle, strokeStyle) {
+  context.fillStyle = fillStyle;
+  context.strokeStyle = strokeStyle;
+  spans.forEach((segment) => {
+    if (!timeRangesOverlap(segment.start_seconds, segment.end_seconds)) {
+      return;
+    }
+    const startSeconds = Math.max(segment.start_seconds, viewportStartSeconds);
+    const endSeconds = Math.min(segment.end_seconds, viewportEndSeconds);
+    const x = leftPad + secondsToRatio(startSeconds) * trackWidth;
+    const width = ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth;
+    const visibleWidth = Math.max(1, width);
+    context.fillRect(x, top, visibleWidth, height);
+    context.strokeRect(x, top, visibleWidth, height);
+  });
 }
 
 function drawPlayhead(leftPad, trackWidth, layoutHeight, durationSeconds) {

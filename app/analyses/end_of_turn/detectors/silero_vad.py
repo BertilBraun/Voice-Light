@@ -96,6 +96,8 @@ class SileroVadDetector:
             min_silence_seconds=self.min_silence_seconds,
             threshold=self.threshold,
             speech_segments=speech_segments,
+            pause_spans=[],
+            backchannel_spans=[],
             end_of_turn_events=end_of_turn_events,
         )
 

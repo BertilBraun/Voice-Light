@@ -36,6 +36,21 @@ class EndOfTurnEvent:
 
 
 @dataclass(frozen=True)
+class PauseSpan:
+    start_seconds: float
+    end_seconds: float
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class BackchannelSpan:
+    start_seconds: float
+    end_seconds: float
+    duration_seconds: float
+    text: str
+
+
+@dataclass(frozen=True)
 class BaselineResult:
     name: str
     description: str
@@ -43,6 +58,8 @@ class BaselineResult:
     min_silence_seconds: float
     threshold: float
     speech_segments: list[SpeechSegment]
+    pause_spans: list[PauseSpan]
+    backchannel_spans: list[BackchannelSpan]
     end_of_turn_events: list[EndOfTurnEvent]
 
 

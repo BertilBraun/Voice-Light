@@ -128,6 +128,8 @@ def run_livekit_v1_mini(
         min_silence_seconds=candidate_silence_seconds,
         threshold=end_of_turn_threshold,
         speech_segments=speech_segments,
+        pause_spans=[],
+        backchannel_spans=[],
         end_of_turn_events=end_of_turn_events,
     )
 

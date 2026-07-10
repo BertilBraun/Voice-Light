@@ -10,7 +10,12 @@ from app.analyses.end_of_turn.detectors.transcript_gap import (
     TranscriptGapDetector,
     transcript_gap_detector,
 )
-from app.analyses.end_of_turn.service import EndOfTurnEvent, SpeechSegment
+from app.analyses.end_of_turn.service import (
+    BackchannelSpan,
+    EndOfTurnEvent,
+    PauseSpan,
+    SpeechSegment,
+)
 
 
 def test_transcript_gap_detector_builds_turns_and_events_from_speaker1_words(
@@ -38,6 +43,10 @@ def test_transcript_gap_detector_builds_turns_and_events_from_speaker1_words(
         SpeechSegment(start_seconds=0.2, end_seconds=3.0),
         SpeechSegment(start_seconds=8.0, end_seconds=8.3),
     ]
+    assert result.pause_spans == [
+        PauseSpan(start_seconds=1.0, end_seconds=2.4, duration_seconds=1.4)
+    ]
+    assert result.backchannel_spans == []
     assert result.end_of_turn_events == [
         EndOfTurnEvent(
             time_seconds=3.0,
@@ -76,6 +85,8 @@ def test_transcript_gap_detector_clips_words_and_trailing_silence_to_analysis_ca
         SpeechSegment(start_seconds=177.0, end_seconds=177.4),
         SpeechSegment(start_seconds=179.8, end_seconds=180.0),
     ]
+    assert result.pause_spans == []
+    assert result.backchannel_spans == []
     assert result.end_of_turn_events == [
         EndOfTurnEvent(
             time_seconds=177.4,
@@ -84,6 +95,74 @@ def test_transcript_gap_detector_clips_words_and_trailing_silence_to_analysis_ca
             silence_seconds=2.4,
         )
     ]
+
+
+def test_transcript_gap_detector_marks_short_acknowledgements_as_backchannels(
+    tmp_path: Path,
+) -> None:
+    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
+    metadata_path = tmp_path / "pmt_326.json"
+    _write_metadata(
+        metadata_path=metadata_path,
+        duration_seconds=7.0,
+        speaker1_words=[
+            _word(text="hello", start_seconds=0.0, end_seconds=0.3),
+            _word(text="yeah", start_seconds=2.0, end_seconds=2.25),
+            _word(text="continuing", start_seconds=4.0, end_seconds=4.4),
+        ],
+        speaker2_words=[],
+    )
+
+    result = _detector().analyze(speaker1_path=speaker1_path)
+
+    assert result.speech_segments == [
+        SpeechSegment(start_seconds=0.0, end_seconds=0.3),
+        SpeechSegment(start_seconds=4.0, end_seconds=4.4),
+    ]
+    assert result.backchannel_spans == [
+        BackchannelSpan(
+            start_seconds=2.0,
+            end_seconds=2.25,
+            duration_seconds=0.25,
+            text="yeah",
+        )
+    ]
+    assert result.pause_spans == []
+    assert result.end_of_turn_events == [
+        EndOfTurnEvent(
+            time_seconds=0.3,
+            speech_start_seconds=0.0,
+            speech_end_seconds=0.3,
+            silence_seconds=3.7,
+        ),
+        EndOfTurnEvent(
+            time_seconds=4.4,
+            speech_start_seconds=4.0,
+            speech_end_seconds=4.4,
+            silence_seconds=2.6,
+        ),
+    ]
+
+
+def test_transcript_gap_detector_keeps_contentful_acknowledgement_turns_as_speech(
+    tmp_path: Path,
+) -> None:
+    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
+    metadata_path = tmp_path / "pmt_326.json"
+    _write_metadata(
+        metadata_path=metadata_path,
+        duration_seconds=5.0,
+        speaker1_words=[
+            _word(text="yeah", start_seconds=0.0, end_seconds=0.2),
+            _word(text="actually", start_seconds=0.35, end_seconds=0.75),
+        ],
+        speaker2_words=[],
+    )
+
+    result = _detector().analyze(speaker1_path=speaker1_path)
+
+    assert result.speech_segments == [SpeechSegment(start_seconds=0.0, end_seconds=0.75)]
+    assert result.backchannel_spans == []
 
 
 def test_transcript_gap_detector_raises_for_missing_metadata(tmp_path: Path) -> None:
