@@ -40,13 +40,13 @@ def test_transcript_gap_detector_builds_turns_and_events_from_speaker1_words(
     ]
     assert result.end_of_turn_events == [
         EndOfTurnEvent(
-            time_seconds=4.5,
+            time_seconds=3.0,
             speech_start_seconds=0.2,
             speech_end_seconds=3.0,
             silence_seconds=5.0,
         ),
         EndOfTurnEvent(
-            time_seconds=9.8,
+            time_seconds=8.3,
             speech_start_seconds=8.0,
             speech_end_seconds=8.3,
             silence_seconds=3.7,
@@ -78,7 +78,7 @@ def test_transcript_gap_detector_clips_words_and_trailing_silence_to_analysis_ca
     ]
     assert result.end_of_turn_events == [
         EndOfTurnEvent(
-            time_seconds=178.9,
+            time_seconds=177.4,
             speech_start_seconds=177.0,
             speech_end_seconds=177.4,
             silence_seconds=2.4,

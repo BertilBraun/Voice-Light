@@ -334,13 +334,9 @@ def _end_of_turn_events(
         if silence_seconds < min_silence_seconds:
             continue
 
-        event_time_seconds = speech_segment.end_seconds + min_silence_seconds
-        if event_time_seconds > analysis_end_seconds:
-            continue
-
         end_of_turn_events.append(
             EndOfTurnEvent(
-                time_seconds=_rounded_seconds(event_time_seconds),
+                time_seconds=speech_segment.end_seconds,
                 speech_start_seconds=speech_segment.start_seconds,
                 speech_end_seconds=speech_segment.end_seconds,
                 silence_seconds=_rounded_seconds(silence_seconds),
