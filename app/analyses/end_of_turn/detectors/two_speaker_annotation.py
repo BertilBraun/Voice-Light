@@ -151,7 +151,8 @@ def two_speaker_annotation_detector() -> TwoSpeakerAnnotationDetector:
             label="Two speaker annotation",
             description=(
                 "Speaker 1 labels from both LUEL speakers plus naive VAD-only "
-                "backchannels; ambiguous short transcript turns remain speech."
+                "backchannels outside Speaker 1 turns; ambiguous short transcript turns "
+                "remain speech."
             ),
         ),
         turn_gap_seconds=TURN_GAP_SECONDS,
@@ -367,7 +368,7 @@ def _is_contextual_backchannel(turns: list[TranscriptTurn], turn_index: int) -> 
         return False
     if _answers_previous_question(turns=turns, turn_index=turn_index):
         return False
-    if _target_speaker_continues_with_content(turns=turns, turn_index=turn_index):
+    if _target_speaker_has_adjacent_content(turns=turns, turn_index=turn_index):
         return False
     return _other_speaker_continues(turns=turns, turn_index=turn_index)
 
@@ -401,8 +402,14 @@ def _answers_previous_question(turns: list[TranscriptTurn], turn_index: int) -> 
     return previous_turn.text.strip().endswith("?")
 
 
-def _target_speaker_continues_with_content(turns: list[TranscriptTurn], turn_index: int) -> bool:
+def _target_speaker_has_adjacent_content(turns: list[TranscriptTurn], turn_index: int) -> bool:
     current_turn = turns[turn_index]
+    for earlier_turn in reversed(turns[:turn_index]):
+        if earlier_turn.speaker == OTHER_SPEAKER:
+            break
+        if earlier_turn.speaker == TARGET_SPEAKER:
+            return current_turn.start_seconds - earlier_turn.end_seconds <= TURN_GAP_SECONDS
+
     for later_turn in turns[turn_index + 1 :]:
         if later_turn.speaker == OTHER_SPEAKER:
             return False
@@ -522,13 +529,12 @@ def _vad_backchannel_spans(
         min_speech_seconds=VAD_MIN_SPEECH_SECONDS,
         min_silence_seconds=VAD_MIN_SILENCE_SECONDS,
     )
-    transcript_words = [word for target_turn in target_turns for word in target_turn.words]
     vad_backchannels: list[BackchannelSpan] = []
     for speech_segment in vad_result.speech_segments:
         duration_seconds = speech_segment.end_seconds - speech_segment.start_seconds
         if duration_seconds > BACKCHANNEL_MAX_SECONDS:
             continue
-        if _segment_overlaps_words(speech_segment=speech_segment, words=transcript_words):
+        if _segment_overlaps_turns(speech_segment=speech_segment, turns=target_turns):
             continue
         vad_backchannels.append(
             BackchannelSpan(
@@ -541,14 +547,14 @@ def _vad_backchannel_spans(
     return vad_backchannels
 
 
-def _segment_overlaps_words(
+def _segment_overlaps_turns(
     speech_segment: SpeechSegment,
-    words: list[TranscriptWord],
+    turns: list[TranscriptTurn],
 ) -> bool:
     return any(
-        speech_segment.start_seconds < word.end_seconds
-        and speech_segment.end_seconds > word.start_seconds
-        for word in words
+        speech_segment.start_seconds < turn.end_seconds
+        and speech_segment.end_seconds > turn.start_seconds
+        for turn in turns
     )
 
 
