@@ -3,6 +3,7 @@ import wave
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.analyses.end_of_turn.base import EndOfTurnDetectorMode
 from app.analyses.end_of_turn.detectors.naive_vad import (
@@ -15,6 +16,7 @@ from app.analyses.end_of_turn.service import SpeechSegment
 from app.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS, capped_wave_bytes
 from app.data.sessions import list_sessions
 from app.data.transcripts import read_transcript_turns
+from app.main import app, parse_byte_range
 
 
 @pytest.mark.parametrize(
@@ -126,3 +128,38 @@ def test_capped_wave_bytes_serves_browser_seekable_pcm16() -> None:
         assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(
             ANALYSIS_AUDIO_MAX_DURATION_SECONDS
         )
+
+
+@pytest.mark.parametrize(
+    ("range_header", "expected_start_index", "expected_end_index"),
+    [
+        ("bytes=0-99", 0, 99),
+        ("bytes=100-", 100, 999),
+        ("bytes=-50", 950, 999),
+        ("bytes=900-1200", 900, 999),
+    ],
+)
+def test_parse_byte_range(
+    range_header: str,
+    expected_start_index: int,
+    expected_end_index: int,
+) -> None:
+    byte_range = parse_byte_range(range_header=range_header, content_length=1000)
+
+    assert byte_range.start_index == expected_start_index
+    assert byte_range.end_index == expected_end_index
+
+
+def test_audio_api_serves_partial_content_for_range_requests() -> None:
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/audio/pmt_001/speaker1",
+        headers={"Range": "bytes=0-15"},
+    )
+
+    assert response.status_code == 206
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-range"].startswith("bytes 0-15/")
+    assert response.headers["content-length"] == "16"
+    assert len(response.content) == 16

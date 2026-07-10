@@ -32,7 +32,7 @@ const DEFAULT_DETECTOR_MODES = new Set([
   "pipecat_smart_turn_v3",
   "transcript_gap",
 ]);
-const AUDIO_SOURCE_VERSION = "pcm16-v1";
+const AUDIO_SOURCE_VERSION = "pcm16-range-v1";
 
 let sessions = [];
 let detectors = [];
@@ -52,7 +52,6 @@ let isPlaying = false;
 let analysisRequestId = 0;
 let activeTranscriptTurnIndex = null;
 let desiredPlaybackSeconds = 0;
-let pendingPlaybackSeekSeconds = null;
 const analysisPayloadCache = new Map();
 
 async function loadInitialOptions() {
@@ -634,22 +633,15 @@ function pauseInSync() {
 function startPlaybackLoop() {
   stopPlaybackLoop();
   const drawFrame = () => {
-    if (pendingPlaybackSeekSeconds !== null) {
-      if (Math.abs(speaker1Audio.currentTime - pendingPlaybackSeekSeconds) > 0.08) {
-        speaker1Audio.currentTime = pendingPlaybackSeekSeconds;
-        if (showSpeaker2) {
-          speaker2Audio.currentTime = pendingPlaybackSeekSeconds;
-        }
-        desiredPlaybackSeconds = pendingPlaybackSeekSeconds;
-        timeSlider.value = String(desiredPlaybackSeconds);
-        drawTimeline();
-        animationFrameIdentifier = window.requestAnimationFrame(drawFrame);
-        return;
-      }
-      pendingPlaybackSeekSeconds = null;
+    if (speaker1Audio.seeking || (showSpeaker2 && speaker2Audio.seeking)) {
+      drawTimeline();
+      animationFrameIdentifier = window.requestAnimationFrame(drawFrame);
+      return;
     }
     if (
       showSpeaker2 &&
+      !speaker1Audio.seeking &&
+      !speaker2Audio.seeking &&
       Math.abs(speaker2Audio.currentTime - speaker1Audio.currentTime) > 0.08
     ) {
       speaker2Audio.currentTime = speaker1Audio.currentTime;
@@ -684,11 +676,17 @@ function seekToSeconds(targetTime) {
 }
 
 function syncAudioToPlaybackTarget() {
-  pendingPlaybackSeekSeconds = desiredPlaybackSeconds;
-  speaker1Audio.currentTime = desiredPlaybackSeconds;
+  setAudioElementTime(speaker1Audio, desiredPlaybackSeconds);
   if (showSpeaker2) {
-    speaker2Audio.currentTime = desiredPlaybackSeconds;
+    setAudioElementTime(speaker2Audio, desiredPlaybackSeconds);
   }
+}
+
+function setAudioElementTime(audioElement, targetSeconds) {
+  if (Math.abs(audioElement.currentTime - targetSeconds) <= 0.03) {
+    return;
+  }
+  audioElement.currentTime = targetSeconds;
 }
 
 function renderTranscript() {
