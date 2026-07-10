@@ -26,6 +26,9 @@ from app.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
 from app.analyses.end_of_turn.detectors.silero_vad import silero_vad_detector
 from app.analyses.end_of_turn.detectors.transcript_gap import transcript_gap_detector
 from app.analyses.end_of_turn.detectors.turnsense import turnsense_detector
+from app.analyses.end_of_turn.detectors.two_speaker_annotation import (
+    two_speaker_annotation_detector,
+)
 from app.analyses.end_of_turn.service import BaselineResult
 
 DETECTOR_CACHE_SIZE = 20
@@ -42,6 +45,7 @@ _DETECTORS: tuple[EndOfTurnDetector, ...] = (
     pipecat_smart_turn_v2_detector(),
     pipecat_smart_turn_v3_detector(),
     transcript_gap_detector(),
+    two_speaker_annotation_detector(),
     turnsense_detector(),
 )
 

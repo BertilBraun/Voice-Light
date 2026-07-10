@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +52,16 @@ class BackchannelSpan:
 
 
 @dataclass(frozen=True)
+class InterruptionSpan:
+    start_seconds: float
+    end_seconds: float
+    duration_seconds: float
+    interrupted_speaker: str
+    interrupting_speaker: str
+    text: str
+
+
+@dataclass(frozen=True)
 class BaselineResult:
     name: str
     description: str
@@ -62,6 +72,7 @@ class BaselineResult:
     pause_spans: list[PauseSpan]
     backchannel_spans: list[BackchannelSpan]
     end_of_turn_events: list[EndOfTurnEvent]
+    interruption_spans: list[InterruptionSpan] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

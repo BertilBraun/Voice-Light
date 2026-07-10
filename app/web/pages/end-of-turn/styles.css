@@ -365,6 +365,11 @@ h2 {
   border: 1px solid rgba(90, 54, 153, 0.75);
 }
 
+.legend-interruption {
+  background: rgba(202, 80, 16, 0.42);
+  border: 1px solid rgba(146, 50, 8, 0.8);
+}
+
 .legend-eot {
   border-left: 3px solid #c2322d;
 }

@@ -61,4 +61,5 @@ def test_baseline_to_json_includes_pause_and_backchannel_spans() -> None:
                 "silence_seconds": 1.5,
             }
         ],
+        "interruption_spans": [],
     }

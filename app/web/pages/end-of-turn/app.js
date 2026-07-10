@@ -31,6 +31,7 @@ const DEFAULT_DETECTOR_MODES = new Set([
   "livekit_v1_mini",
   "pipecat_smart_turn_v3",
   "transcript_gap",
+  "two_speaker_annotation",
 ]);
 const AUDIO_SOURCE_VERSION = "pcm16-blob-v1";
 
@@ -514,6 +515,15 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
     "rgba(126, 87, 194, 0.5)",
     "rgba(90, 54, 153, 0.75)",
   );
+  drawBaselineSpans(
+    baselineResult.interruption_spans ?? [],
+    leftPad,
+    top + 3,
+    trackWidth,
+    36,
+    "rgba(202, 80, 16, 0.42)",
+    "rgba(146, 50, 8, 0.8)",
+  );
 
   context.strokeStyle = "#c2322d";
   context.fillStyle = "#c2322d";
@@ -529,7 +539,7 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   });
   context.font = "12px sans-serif";
   context.fillText(
-    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length}`,
+    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length} | interruptions ${(baselineResult.interruption_spans ?? []).length}`,
     leftPad,
     top + 62,
   );
