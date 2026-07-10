@@ -5,7 +5,8 @@ from fastapi import APIRouter, HTTPException, Query
 from app.analyses.end_of_turn.base import EndOfTurnDetectorMode
 from app.analyses.end_of_turn.registry import available_detectors, run_all_detectors, run_detectors
 from app.analyses.end_of_turn.service import analysis_to_json, analyze_session_audio
-from app.data.sessions import SpeakerName, session_audio_path
+from app.data.sessions import SpeakerName, session_audio_path, session_metadata_path
+from app.data.transcripts import read_transcript_turns
 
 router = APIRouter(prefix="/api/end-of-turn", tags=["end-of-turn"])
 
@@ -39,6 +40,9 @@ def analyze_end_of_turn(
             identifier=identifier,
             speaker_name=SpeakerName.SPEAKER2,
         )
+        transcript_turns = read_transcript_turns(
+            metadata_path=session_metadata_path(identifier=identifier)
+        )
         if selected_detector_modes is None:
             baseline_results = run_all_detectors(speaker1_path=speaker1_path)
         else:
@@ -52,6 +56,7 @@ def analyze_end_of_turn(
     audio_analysis = analyze_session_audio(
         speaker1_path=speaker1_path,
         speaker2_path=speaker2_path,
+        transcript_turns=transcript_turns,
         baseline_results=baseline_results,
     )
     return {

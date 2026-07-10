@@ -52,6 +52,15 @@ def session_audio_path(identifier: str, speaker_name: SpeakerName) -> Path:
     return wave_path
 
 
+def session_metadata_path(identifier: str) -> Path:
+    if not identifier.startswith("pmt_") or "/" in identifier or "\\" in identifier:
+        raise ValueError("Invalid session identifier.")
+    metadata_path = SESSIONS_ROOT / identifier / f"{identifier}.json"
+    if not metadata_path.exists():
+        raise ValueError(f"Missing metadata file for {identifier}.")
+    return metadata_path
+
+
 def _session_entry_from_metadata(metadata_path: Path) -> SessionEntry:
     with metadata_path.open("r", encoding="utf-8") as metadata_file:
         metadata_payload = json.load(metadata_file)

@@ -9,6 +9,8 @@ const timeReadout = document.querySelector("#time-readout");
 const sessionSummary = document.querySelector("#session-summary");
 const detectorSettingsSummary = document.querySelector("#detector-settings-summary");
 const detectorOptions = document.querySelector("#detector-options");
+const transcriptSummary = document.querySelector("#transcript-summary");
+const transcriptList = document.querySelector("#transcript-list");
 const canvas = document.querySelector("#timeline-canvas");
 const context = canvas.getContext("2d");
 const speaker1Audio = document.querySelector("#speaker1-audio");
@@ -32,6 +34,7 @@ let dragStartClientY = null;
 let isZoomDragActive = false;
 let isPlaying = false;
 let analysisRequestId = 0;
+let activeTranscriptTurnIndex = null;
 const analysisPayloadCache = new Map();
 
 async function loadInitialOptions() {
@@ -117,6 +120,7 @@ function applyAnalysisPayload(identifier, payload) {
   playToggleButton.disabled = false;
   speaker2ToggleButton.disabled = false;
   sessionSummary.textContent = `${identifier} analyzed with ${currentPayload.analysis.baseline_results.length} selected detectors.`;
+  renderTranscript();
   updatePlayToggleLabel();
   drawTimeline();
 }
@@ -299,6 +303,7 @@ function drawTimeline() {
   drawZoomDrag(leftPad, trackWidth, layout.height);
   drawPlayhead(leftPad, trackWidth, layout.height, durationSeconds);
   updateTimeReadout();
+  updateActiveTranscriptTurn();
 }
 
 function resizeCanvas() {
@@ -571,6 +576,79 @@ function seekToSeconds(targetTime) {
     speaker2Audio.currentTime = boundedTargetTime;
   }
   drawTimeline();
+}
+
+function renderTranscript() {
+  activeTranscriptTurnIndex = null;
+  const transcriptTurns = currentPayload.analysis.transcript_turns;
+  transcriptSummary.textContent = `${transcriptTurns.length} transcript turns`;
+  if (transcriptTurns.length === 0) {
+    const emptyState = document.createElement("div");
+    emptyState.className = "transcript-empty";
+    emptyState.textContent = "No transcript turns are available for this session.";
+    transcriptList.replaceChildren(emptyState);
+    return;
+  }
+
+  transcriptList.replaceChildren(
+    ...transcriptTurns.map((transcriptTurn, transcriptTurnIndex) => {
+      const meta = document.createElement("div");
+      meta.className = "transcript-meta";
+      meta.textContent = `${transcriptTurn.speaker} ${formatDuration(transcriptTurn.start_seconds)}`;
+
+      const text = document.createElement("div");
+      text.className = "transcript-text";
+      text.textContent = transcriptTurn.text;
+
+      const turn = document.createElement("div");
+      turn.className = `transcript-turn ${transcriptTurnClassName(transcriptTurn.speaker)}`;
+      turn.dataset.transcriptTurnIndex = String(transcriptTurnIndex);
+      turn.append(meta, text);
+      return turn;
+    }),
+  );
+}
+
+function transcriptTurnClassName(speaker) {
+  if (speaker === "Speaker1") {
+    return "transcript-turn-speaker1";
+  }
+  if (speaker === "Speaker2") {
+    return "transcript-turn-speaker2";
+  }
+  return "";
+}
+
+function updateActiveTranscriptTurn() {
+  if (currentPayload === null) {
+    return;
+  }
+  const currentTime = Number(timeSlider.value);
+  const transcriptTurnIndex = currentPayload.analysis.transcript_turns.findIndex(
+    (transcriptTurn) =>
+      currentTime >= transcriptTurn.start_seconds && currentTime <= transcriptTurn.end_seconds,
+  );
+  if (transcriptTurnIndex === activeTranscriptTurnIndex) {
+    return;
+  }
+
+  const previousTurn = transcriptList.querySelector(".transcript-turn-active");
+  if (previousTurn !== null) {
+    previousTurn.classList.remove("transcript-turn-active");
+  }
+  activeTranscriptTurnIndex = transcriptTurnIndex === -1 ? null : transcriptTurnIndex;
+  if (activeTranscriptTurnIndex === null) {
+    return;
+  }
+
+  const activeTurn = transcriptList.querySelector(
+    `[data-transcript-turn-index='${activeTranscriptTurnIndex}']`,
+  );
+  if (activeTurn === null) {
+    return;
+  }
+  activeTurn.classList.add("transcript-turn-active");
+  activeTurn.scrollIntoView({ block: "nearest" });
 }
 
 function toggleSpeaker2() {

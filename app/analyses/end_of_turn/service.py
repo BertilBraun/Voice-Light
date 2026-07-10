@@ -8,6 +8,7 @@ import numpy as np
 
 from app.analyses.end_of_turn.cache import LeastRecentlyUsedCache, WaveformCacheKey
 from app.audio.wav import read_mono_wave_audio
+from app.data.transcripts import TranscriptTurn, transcript_turn_to_json
 
 WAVEFORM_CACHE_SIZE = 40
 
@@ -67,6 +68,7 @@ class BaselineResult:
 class AudioAnalysis:
     speaker1_waveform: WaveformEnvelope
     speaker2_waveform: WaveformEnvelope
+    transcript_turns: list[TranscriptTurn]
     baseline_results: list[BaselineResult]
 
 
@@ -87,6 +89,10 @@ def analysis_to_json(audio_analysis: AudioAnalysis) -> dict[str, object]:
     return {
         "speaker1_waveform": waveform_to_json(audio_analysis.speaker1_waveform),
         "speaker2_waveform": waveform_to_json(audio_analysis.speaker2_waveform),
+        "transcript_turns": [
+            transcript_turn_to_json(transcript_turn)
+            for transcript_turn in audio_analysis.transcript_turns
+        ],
         "baseline_results": [
             baseline_to_json(baseline_result) for baseline_result in audio_analysis.baseline_results
         ],
@@ -132,6 +138,7 @@ def build_waveform_envelope(
 def analyze_session_audio(
     speaker1_path: Path,
     speaker2_path: Path,
+    transcript_turns: list[TranscriptTurn],
     baseline_results: list[BaselineResult],
 ) -> AudioAnalysis:
     speaker1_waveform = build_waveform_envelope(wave_path=speaker1_path)
@@ -139,6 +146,7 @@ def analyze_session_audio(
     return AudioAnalysis(
         speaker1_waveform=speaker1_waveform,
         speaker2_waveform=speaker2_waveform,
+        transcript_turns=transcript_turns,
         baseline_results=baseline_results,
     )
 

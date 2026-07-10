@@ -11,6 +11,7 @@ from app.analyses.end_of_turn.registry import available_detectors
 from app.analyses.end_of_turn.router import parse_selected_detector_modes
 from app.analyses.end_of_turn.service import SpeechSegment
 from app.data.sessions import list_sessions
+from app.data.transcripts import read_transcript_turns
 
 
 @pytest.mark.parametrize(
@@ -100,3 +101,14 @@ def test_parse_selected_detector_modes(
 def test_parse_selected_detector_modes_rejects_unknown_mode() -> None:
     with pytest.raises(ValueError, match="Unknown end-of-turn detector mode: missing"):
         parse_selected_detector_modes(detectors="missing")
+
+
+def test_read_transcript_turns_loads_session_speakers() -> None:
+    transcript_turns = read_transcript_turns(
+        metadata_path=Path("data/luel/sessions/pmt_001/pmt_001.json")
+    )
+
+    assert transcript_turns[0].speaker == "Speaker1"
+    assert transcript_turns[0].text.startswith("So apparently")
+    assert transcript_turns[0].start_seconds == 0.26
+    assert transcript_turns[1].speaker == "Speaker2"
