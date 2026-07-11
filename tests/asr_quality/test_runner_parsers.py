@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.analyses.asr.runners import merge_timestamp_pieces, words_from_whisperx_output
+from app.asr.models.parsing import merge_timestamp_pieces, words_from_whisperx_output
 from app.asr_quality.schemas import Word
 
 

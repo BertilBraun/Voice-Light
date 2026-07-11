@@ -4,7 +4,9 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from app.frozen_base_config import FrozenBaseModel
 
 
 class DatasetStorageKind(StrEnum):
@@ -33,18 +35,14 @@ class AsrRunStatus(StrEnum):
     FAILED = "failed"
 
 
-class DatasetCreate(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class DatasetCreate(FrozenBaseModel):
     name: str
     storage_kind: DatasetStorageKind = DatasetStorageKind.LOCAL
     root_uri: str
     description: str = ""
 
 
-class DatasetRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class DatasetRecord(FrozenBaseModel):
     id: UUID
     name: str
     storage_kind: DatasetStorageKind
@@ -54,9 +52,7 @@ class DatasetRecord(BaseModel):
     updated_at: datetime
 
 
-class SampleRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SampleRecord(FrozenBaseModel):
     id: UUID
     dataset_id: UUID
     external_id: str
@@ -67,9 +63,7 @@ class SampleRecord(BaseModel):
     updated_at: datetime
 
 
-class SampleTrackRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SampleTrackRecord(FrozenBaseModel):
     id: UUID
     sample_id: UUID
     side: TrackSide
@@ -84,9 +78,7 @@ class SampleTrackRecord(BaseModel):
     updated_at: datetime
 
 
-class AudioMetadataRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AudioMetadataRecord(FrozenBaseModel):
     id: UUID
     sample_track_id: UUID
     duration_seconds: float
@@ -98,9 +90,7 @@ class AudioMetadataRecord(BaseModel):
     updated_at: datetime
 
 
-class QualityResultRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class QualityResultRecord(FrozenBaseModel):
     id: UUID
     sample_id: UUID
     metric_version: str
@@ -123,9 +113,7 @@ class QualityResultRecord(BaseModel):
     updated_at: datetime
 
 
-class AsrRunRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AsrRunRecord(FrozenBaseModel):
     id: UUID
     sample_id: UUID
     model_name: str
@@ -138,9 +126,7 @@ class AsrRunRecord(BaseModel):
     updated_at: datetime
 
 
-class AsrWordRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AsrWordRecord(FrozenBaseModel):
     id: UUID
     asr_run_id: UUID
     side: TrackSide
@@ -152,9 +138,7 @@ class AsrWordRecord(BaseModel):
     created_at: datetime
 
 
-class AsrEvaluationRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AsrEvaluationRecord(FrozenBaseModel):
     id: UUID
     asr_run_id: UUID
     wer: float | None
@@ -173,9 +157,7 @@ class AsrEvaluationRecord(BaseModel):
     updated_at: datetime
 
 
-class IngestionJobRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class IngestionJobRecord(FrozenBaseModel):
     id: UUID
     dataset_id: UUID | None
     status: JobStatus
@@ -190,9 +172,7 @@ class IngestionJobRecord(BaseModel):
     finished_at: datetime | None
 
 
-class SampleListFilter(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SampleListFilter(FrozenBaseModel):
     dataset_id: UUID | None = None
     quality_min: float | None = None
     quality_max: float | None = None
@@ -213,9 +193,7 @@ class SampleListFilter(BaseModel):
     offset: int = Field(default=0, ge=0)
 
 
-class DashboardSample(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class DashboardSample(FrozenBaseModel):
     sample: SampleRecord
     tracks: tuple[SampleTrackRecord, ...]
     latest_quality: QualityResultRecord | None

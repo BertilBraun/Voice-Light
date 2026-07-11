@@ -8,8 +8,8 @@ import whisperx
 from faster_whisper import WhisperModel
 from torch import nn
 
-from app.analyses.asr.runners import words_from_whisperx_output
 from app.asr.models.base import load_time_seconds, timestamped_word_from_word
+from app.asr.models.parsing import words_from_whisperx_output
 from app.asr.schemas import AsrModelId, TimestampedWord
 
 AlignmentMetadata = dict[str, str | int | float | bool | None]

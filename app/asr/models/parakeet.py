@@ -7,8 +7,8 @@ import librosa
 import torch
 from transformers import AutoModelForTDT, AutoProcessor
 
-from app.analyses.asr.runners import PARAKEET_IDENTIFIER, words_from_parakeet_timestamps
 from app.asr.models.base import load_time_seconds, timestamped_word_from_word
+from app.asr.models.parsing import PARAKEET_IDENTIFIER, words_from_parakeet_timestamps
 from app.asr.schemas import AsrModelId, TimestampedWord
 
 

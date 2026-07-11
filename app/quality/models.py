@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import computed_field
+
+from app.frozen_base_config import FrozenBaseModel
 
 METRIC_VERSION = "quality-calibrated-v2"
 
@@ -26,18 +28,14 @@ class EventType(StrEnum):
     OVERLAP = "overlap"
 
 
-class AudioMetadata(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AudioMetadata(FrozenBaseModel):
     duration_seconds: float
     sample_rate: int
     channels: int
     sample_count: int
 
 
-class SpeechSegment(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SpeechSegment(FrozenBaseModel):
     start_seconds: float
     end_seconds: float
 
@@ -47,9 +45,7 @@ class SpeechSegment(BaseModel):
         return self.end_seconds - self.start_seconds
 
 
-class TrackVadResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TrackVadResult(FrozenBaseModel):
     side: SpeakerSide
     speech_segments: tuple[SpeechSegment, ...]
     speech_time_seconds: float
@@ -59,9 +55,7 @@ class TrackVadResult(BaseModel):
     long_segment_ratio: float
 
 
-class TrackAudioQuality(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TrackAudioQuality(FrozenBaseModel):
     side: SpeakerSide
     duration_seconds: float
     sample_rate: int
@@ -78,9 +72,7 @@ class TrackAudioQuality(BaseModel):
     flags: tuple[str, ...]
 
 
-class InteractionDensityMetrics(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class InteractionDensityMetrics(FrozenBaseModel):
     speech_ratio: float
     silence_ratio: float
     overlap_ratio: float
@@ -94,9 +86,7 @@ class InteractionDensityMetrics(BaseModel):
     quality_score: float
 
 
-class TimingReliabilityMetrics(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TimingReliabilityMetrics(FrozenBaseModel):
     median_segment_duration_seconds: float | None
     tiny_fragment_ratio: float
     long_segment_ratio: float
@@ -108,9 +98,7 @@ class TimingReliabilityMetrics(BaseModel):
     quality_score: float
 
 
-class AudioQualityMetrics(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AudioQualityMetrics(FrozenBaseModel):
     speaker1: TrackAudioQuality
     speaker2: TrackAudioQuality
     duration_gap_seconds: float
@@ -124,9 +112,7 @@ class AudioQualityMetrics(BaseModel):
     flags: tuple[str, ...]
 
 
-class EventCandidate(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class EventCandidate(FrozenBaseModel):
     event_type: EventType
     primary_speaker: SpeakerSide
     secondary_speaker: SpeakerSide | None
@@ -136,17 +122,13 @@ class EventCandidate(BaseModel):
     overlap_seconds: float | None
 
 
-class QualityWeights(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class QualityWeights(FrozenBaseModel):
     interaction_density: float = 0.5
     timing_reliability: float = 0.2
     audio_quality: float = 0.3
 
 
-class QualityResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class QualityResult(FrozenBaseModel):
     metric_version: str
     sample_id: str
     status: ProcessingStatus
@@ -164,9 +146,7 @@ class QualityResult(BaseModel):
     error: str | None
 
 
-class RunConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class RunConfig(FrozenBaseModel):
     metric_version: str = METRIC_VERSION
     weights: QualityWeights = QualityWeights()
     max_events_per_sample: int = 200

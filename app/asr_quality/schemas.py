@@ -3,7 +3,9 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from app.frozen_base_config import FrozenBaseModel
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonObject: TypeAlias = dict[str, JsonScalar]
@@ -21,25 +23,19 @@ class SpeakerTrack(StrEnum):
     SPEAKER2 = "speaker2"
 
 
-class Word(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class Word(FrozenBaseModel):
     text: str
     start_seconds: float | None = None
     end_seconds: float | None = None
     confidence: float | None = None
 
 
-class ReferenceTranscript(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ReferenceTranscript(FrozenBaseModel):
     audio_path: str
     words: tuple[Word, ...]
 
 
-class RuntimeStats(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class RuntimeStats(FrozenBaseModel):
     audio_duration_seconds: float
     processing_time_seconds: float
     model_loading_time_seconds: float | None = None
@@ -48,9 +44,7 @@ class RuntimeStats(BaseModel):
     peak_gpu_memory_mb: float | None = None
 
 
-class TranscriptionResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TranscriptionResult(FrozenBaseModel):
     model_name: str
     audio_path: str
     track: SpeakerTrack
@@ -67,9 +61,7 @@ class TranscriptionResult(BaseModel):
     error: str | None = None
 
 
-class AlignedWord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AlignedWord(FrozenBaseModel):
     reference: Word | None
     prediction: Word | None
     operation: AlignmentOperation
@@ -77,9 +69,7 @@ class AlignedWord(BaseModel):
     prediction_token: str | None
 
 
-class WordErrorCounts(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class WordErrorCounts(FrozenBaseModel):
     substitutions: int
     insertions: int
     deletions: int
@@ -92,9 +82,7 @@ class WordErrorCounts(BaseModel):
         return (self.substitutions + self.insertions + self.deletions) / self.reference_words
 
 
-class ClassMetric(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ClassMetric(FrozenBaseModel):
     precision: float
     recall: float
     f1: float
@@ -103,9 +91,7 @@ class ClassMetric(BaseModel):
     false_negatives: int
 
 
-class TimestampMetric(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TimestampMetric(FrozenBaseModel):
     count: int
     median_absolute_error: float | None
     mean_absolute_error: float | None
@@ -117,16 +103,12 @@ class TimestampMetric(BaseModel):
     median_bias: float | None
 
 
-class TimestampMetrics(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TimestampMetrics(FrozenBaseModel):
     start: TimestampMetric
     end: TimestampMetric
 
 
-class DisfluencyMetrics(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class DisfluencyMetrics(FrozenBaseModel):
     repetition_reference_events: int
     repetition_predicted_events: int
     repetition_recalled_events: int
@@ -137,9 +119,7 @@ class DisfluencyMetrics(BaseModel):
     partial_recall: float
 
 
-class FileMetrics(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class FileMetrics(FrozenBaseModel):
     model_name: str
     audio_path: str
     word_error_counts: WordErrorCounts
