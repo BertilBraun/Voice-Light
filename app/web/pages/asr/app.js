@@ -6,6 +6,8 @@ const summary = document.querySelector("#summary");
 const modelSummary = document.querySelector("#model-summary");
 const modelOptions = document.querySelector("#model-options");
 const referenceInput = document.querySelector("#reference-input");
+const playToggle = document.querySelector("#play-toggle");
+const playbackTime = document.querySelector("#playback-time");
 const audioPlayer = document.querySelector("#audio-player");
 const metricsSummary = document.querySelector("#metrics-summary");
 const metricsList = document.querySelector("#metrics-list");
@@ -14,8 +16,21 @@ const transcriptList = document.querySelector("#transcript-list");
 
 let sessions = [];
 let models = [];
+let currentPayload = null;
+let activeWordKeys = new Map();
 
 runButton.addEventListener("click", runAnalysis);
+playToggle.addEventListener("click", togglePlayback);
+audioPlayer.addEventListener("timeupdate", updateActiveTranscriptWords);
+audioPlayer.addEventListener("timeupdate", updatePlaybackState);
+audioPlayer.addEventListener("durationchange", updatePlaybackState);
+audioPlayer.addEventListener("loadedmetadata", updatePlaybackState);
+audioPlayer.addEventListener("canplay", updatePlaybackState);
+audioPlayer.addEventListener("seeked", updateActiveTranscriptWords);
+audioPlayer.addEventListener("play", updateActiveTranscriptWords);
+audioPlayer.addEventListener("play", updatePlaybackState);
+audioPlayer.addEventListener("pause", updatePlaybackState);
+audioPlayer.addEventListener("ended", updatePlaybackState);
 
 await loadInitialOptions();
 
@@ -104,6 +119,9 @@ function parseReferenceWords() {
 }
 
 async function applyAnalysisPayload(payload) {
+  currentPayload = payload;
+  activeWordKeys = new Map();
+  playToggle.disabled = true;
   audioPlayer.src = payload.audio_url;
   audioPlayer.load();
   summary.textContent = `${payload.session_id} ${payload.speaker_track} analyzed for ${formatSeconds(payload.analyzed_duration_seconds)}.`;
@@ -114,6 +132,8 @@ async function applyAnalysisPayload(payload) {
   transcriptSummary.textContent = `${payload.runs.length} model runs`;
   renderMetrics(payload.runs);
   renderTranscripts(payload.runs);
+  updateActiveTranscriptWords();
+  updatePlaybackState();
 }
 
 function renderMetrics(runs) {
@@ -159,7 +179,7 @@ function renderMetrics(runs) {
 
 function renderTranscripts(runs) {
   transcriptList.replaceChildren(
-    ...runs.map((run) => {
+    ...runs.map((run, runIndex) => {
       const card = document.createElement("div");
       card.className = "transcript-card";
       const title = document.createElement("strong");
@@ -172,31 +192,33 @@ function renderTranscripts(runs) {
         card.appendChild(error);
         return card;
       }
-      card.appendChild(wordTable(run.transcription.words.slice(0, 200)));
+      const wordRail = document.createElement("div");
+      wordRail.className = "word-rail";
+      wordRail.dataset.runIndex = String(runIndex);
+      wordRail.replaceChildren(
+        ...run.transcription.words.map((word, wordIndex) => transcriptWord(word, runIndex, wordIndex)),
+      );
+      card.appendChild(wordRail);
       return card;
     }),
   );
 }
 
-function wordTable(words) {
-  const table = document.createElement("table");
-  table.className = "word-table";
-  const head = document.createElement("thead");
-  head.innerHTML = "<tr><th>#</th><th>Word</th><th>Start</th><th>End</th><th>Conf</th></tr>";
-  const body = document.createElement("tbody");
-  for (const [index, word] of words.entries()) {
-    const row = document.createElement("tr");
-    row.replaceChildren(
-      cell(index + 1),
-      cell(word.text),
-      cell(formatSeconds(word.start_seconds)),
-      cell(formatSeconds(word.end_seconds)),
-      cell(formatNullable(word.confidence)),
-    );
-    body.appendChild(row);
-  }
-  table.append(head, body);
-  return table;
+function transcriptWord(word, runIndex, wordIndex) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "transcript-word";
+  element.textContent = word.text;
+  element.dataset.runIndex = String(runIndex);
+  element.dataset.wordIndex = String(wordIndex);
+  element.title = `${formatSeconds(word.start_seconds)} - ${formatSeconds(word.end_seconds)}`;
+  element.addEventListener("click", () => {
+    if (word.start_seconds !== null && word.start_seconds !== undefined) {
+      audioPlayer.currentTime = Number(word.start_seconds);
+      audioPlayer.play();
+    }
+  });
+  return element;
 }
 
 function metricValue(label, value) {
@@ -210,10 +232,86 @@ function metricValue(label, value) {
   return container;
 }
 
-function cell(value) {
-  const element = document.createElement("td");
-  element.textContent = String(value);
-  return element;
+function updateActiveTranscriptWords() {
+  if (currentPayload === null) {
+    return;
+  }
+  const currentSeconds = audioPlayer.currentTime;
+  currentPayload.runs.forEach((run, runIndex) => {
+    const activeWordIndex = activeWordIndexForTime(run.transcription.words, currentSeconds);
+    updateActiveTranscriptWord(runIndex, activeWordIndex);
+  });
+}
+
+function activeWordIndexForTime(words, currentSeconds) {
+  return words.findIndex((word) => {
+    if (word.start_seconds === null || word.start_seconds === undefined) {
+      return false;
+    }
+    if (word.end_seconds === null || word.end_seconds === undefined) {
+      return currentSeconds >= Number(word.start_seconds);
+    }
+    return currentSeconds >= Number(word.start_seconds) && currentSeconds <= Number(word.end_seconds);
+  });
+}
+
+function updateActiveTranscriptWord(runIndex, activeWordIndex) {
+  const previousWordKey = activeWordKeys.get(runIndex);
+  const nextWordKey = activeWordIndex === -1 ? null : `${runIndex}:${activeWordIndex}`;
+  if (previousWordKey === nextWordKey) {
+    return;
+  }
+  if (previousWordKey !== undefined && previousWordKey !== null) {
+    const previousWord = transcriptList.querySelector(wordSelectorFromKey(previousWordKey));
+    if (previousWord !== null) {
+      previousWord.classList.remove("transcript-word-active");
+    }
+  }
+  activeWordKeys.set(runIndex, nextWordKey);
+  if (nextWordKey === null) {
+    return;
+  }
+  const activeWord = transcriptList.querySelector(wordSelectorFromKey(nextWordKey));
+  if (activeWord === null) {
+    return;
+  }
+  activeWord.classList.add("transcript-word-active");
+  centerTranscriptWord(activeWord);
+}
+
+function wordSelectorFromKey(wordKey) {
+  const [runIndex, wordIndex] = wordKey.split(":");
+  return `[data-run-index='${runIndex}'][data-word-index='${wordIndex}']`;
+}
+
+function centerTranscriptWord(wordElement) {
+  const wordRail = wordElement.closest(".word-rail");
+  if (wordRail === null) {
+    return;
+  }
+  const railRect = wordRail.getBoundingClientRect();
+  const wordRect = wordElement.getBoundingClientRect();
+  const wordCenterOffset = wordRect.top - railRect.top + wordRail.scrollTop + wordRect.height / 2;
+  const targetScrollTop = wordCenterOffset - wordRail.clientHeight / 2;
+  const maximumScrollTop = wordRail.scrollHeight - wordRail.clientHeight;
+  const nextScrollTop = Math.max(0, Math.min(targetScrollTop, maximumScrollTop));
+  if (Math.abs(wordRail.scrollTop - nextScrollTop) > 1) {
+    wordRail.scrollTop = nextScrollTop;
+  }
+}
+
+async function togglePlayback() {
+  if (audioPlayer.paused) {
+    await audioPlayer.play();
+    return;
+  }
+  audioPlayer.pause();
+}
+
+function updatePlaybackState() {
+  playToggle.disabled = audioPlayer.currentSrc === "" || !Number.isFinite(audioPlayer.duration);
+  playToggle.textContent = audioPlayer.paused ? "Play" : "Pause";
+  playbackTime.textContent = `${formatSeconds(audioPlayer.currentTime)} / ${formatSeconds(audioPlayer.duration)}`;
 }
 
 async function fetchJson(url) {
@@ -247,7 +345,7 @@ function setLoading(isLoading) {
 }
 
 function formatSeconds(value) {
-  if (value === null || value === undefined) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
     return "?";
   }
   return `${Number(value).toFixed(2)}s`;

@@ -181,6 +181,22 @@ audio {
   width: 100%;
 }
 
+.playback-controls {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+#play-toggle {
+  min-width: 74px;
+}
+
+#playback-time {
+  color: #425057;
+  font-variant-numeric: tabular-nums;
+}
+
 .results-grid {
   display: grid;
   gap: 14px;
@@ -228,25 +244,44 @@ audio {
   color: #9a2b20;
 }
 
-.word-table {
-  border-collapse: collapse;
+.word-rail {
+  align-content: start;
+  background: #f7f8f6;
+  border: 1px solid #e0e5e7;
+  border-radius: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 10px;
-  width: 100%;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 10px;
+  scroll-behavior: smooth;
 }
 
-.word-table th,
-.word-table td {
-  border-bottom: 1px solid #e4e8ea;
-  font-size: 13px;
-  padding: 5px 6px;
-  text-align: left;
+.transcript-word {
+  background: #ffffff;
+  border: 1px solid #d8dee1;
+  border-radius: 5px;
+  color: #1e2528;
+  cursor: pointer;
+  line-height: 1.2;
+  min-height: 28px;
+  padding: 4px 7px;
 }
 
-.word-table th {
-  color: #425057;
-  font-weight: 650;
+.transcript-word:hover {
+  border-color: #86a9a4;
 }
 
+.transcript-word-active {
+  background: #146b63;
+  border-color: #146b63;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+/* Retained for any legacy table payload rendered by older cached pages. */
 @media (max-width: 960px) {
   .toolbar,
   .controls {
