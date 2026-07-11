@@ -15,13 +15,13 @@ const modelOptions = document.querySelector("#model-options");
 const referenceInput = document.querySelector("#reference-input");
 const playToggle = document.querySelector("#play-toggle");
 const playbackTime = document.querySelector("#playback-time");
-const waveformCanvas = document.querySelector("#waveform-canvas");
-const waveformContext = waveformCanvas.getContext("2d");
 const audioPlayer = document.querySelector("#audio-player");
 const metricsSummary = document.querySelector("#metrics-summary");
 const metricsList = document.querySelector("#metrics-list");
 const transcriptSummary = document.querySelector("#transcript-summary");
 const transcriptList = document.querySelector("#transcript-list");
+const timingSummary = document.querySelector("#timing-summary");
+const timingWaveforms = document.querySelector("#timing-waveforms");
 
 let sessions = [];
 let models = [];
@@ -31,6 +31,7 @@ let currentPayload = null;
 let activeWordKeys = new Map();
 let playbackObjectUrl = null;
 let waveformPeaks = [];
+const sentenceGapSeconds = 0.15;
 
 runButton.addEventListener("click", runAnalysis);
 modelSettingsButton.addEventListener("click", openModelSettingsModal);
@@ -42,17 +43,17 @@ clearModelsButton.addEventListener("click", clearModels);
 playToggle.addEventListener("click", togglePlayback);
 audioPlayer.addEventListener("timeupdate", updateActiveTranscriptWords);
 audioPlayer.addEventListener("timeupdate", updatePlaybackState);
-audioPlayer.addEventListener("timeupdate", drawWaveform);
+audioPlayer.addEventListener("timeupdate", drawTimingWaveforms);
 audioPlayer.addEventListener("durationchange", updatePlaybackState);
 audioPlayer.addEventListener("loadedmetadata", updatePlaybackState);
 audioPlayer.addEventListener("canplay", updatePlaybackState);
 audioPlayer.addEventListener("seeked", updateActiveTranscriptWords);
-audioPlayer.addEventListener("seeked", drawWaveform);
+audioPlayer.addEventListener("seeked", drawTimingWaveforms);
 audioPlayer.addEventListener("play", updateActiveTranscriptWords);
 audioPlayer.addEventListener("play", updatePlaybackState);
 audioPlayer.addEventListener("pause", updatePlaybackState);
 audioPlayer.addEventListener("ended", updatePlaybackState);
-window.addEventListener("resize", drawWaveform);
+window.addEventListener("resize", drawTimingWaveforms);
 
 await loadInitialOptions();
 
@@ -79,7 +80,7 @@ async function loadInitialOptions() {
   runButton.disabled = sessions.length === 0 || selectedModelModes.size === 0;
   summary.textContent =
     sessions.length === 0 ? "No sessions available." : "Select an audio track and model set.";
-  drawWaveform();
+  drawTimingWaveforms();
 }
 
 function renderModelOptions() {
@@ -119,6 +120,7 @@ async function runAnalysis() {
   setLoading(true);
   metricsList.replaceChildren();
   transcriptList.replaceChildren();
+  timingWaveforms.replaceChildren();
   try {
     const referenceWords = parseReferenceWords();
     const payload = await postJson("/api/asr/analyze", {
@@ -160,9 +162,10 @@ async function applyAnalysisPayload(payload) {
   transcriptSummary.textContent = `${payload.runs.length} model runs`;
   renderMetrics(payload.runs);
   renderTranscripts(payload.runs);
+  renderTimingWaveforms(payload.runs);
   updateActiveTranscriptWords();
   updatePlaybackState();
-  drawWaveform();
+  drawTimingWaveforms();
 }
 
 function openModelSettingsModal() {
@@ -232,7 +235,7 @@ function modelModeSetsEqual(firstModelModes, secondModelModes) {
 
 async function loadPlaybackAudio(audioUrl) {
   waveformPeaks = [];
-  drawWaveform();
+  drawTimingWaveforms();
   const response = await fetch(audioUrl, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`Audio download failed with HTTP ${response.status}`);
@@ -275,11 +278,15 @@ function waveformPeaksFromChannel(samples, sampleRate) {
   return peaks;
 }
 
-function drawWaveform() {
-  const rect = waveformCanvas.getBoundingClientRect();
+function drawWaveform(canvas, speechSpans, color) {
+  const waveformContext = canvas.getContext("2d");
+  if (waveformContext === null) {
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
   const scale = window.devicePixelRatio || 1;
-  waveformCanvas.width = Math.floor(rect.width * scale);
-  waveformCanvas.height = Math.floor(rect.height * scale);
+  canvas.width = Math.floor(rect.width * scale);
+  canvas.height = Math.floor(rect.height * scale);
   waveformContext.setTransform(scale, 0, 0, scale, 0, 0);
   waveformContext.clearRect(0, 0, rect.width, rect.height);
   waveformContext.fillStyle = "#f7f8f6";
@@ -292,10 +299,11 @@ function drawWaveform() {
     return;
   }
 
+  drawSpeechSpans(waveformContext, rect, speechSpans, color);
   const middle = rect.height / 2;
-  const amplitude = rect.height / 2 - 18;
+  const amplitude = rect.height / 2 - 12;
   const columns = Math.max(1, Math.floor(rect.width));
-  waveformContext.strokeStyle = "#146b63";
+  waveformContext.strokeStyle = "#425057";
   waveformContext.lineWidth = 1;
   for (let column = 0; column < columns; column += 1) {
     const peakStart = Math.floor((column / columns) * waveformPeaks.length);
@@ -320,6 +328,87 @@ function drawWaveform() {
     waveformContext.lineTo(playheadX, rect.height - 10);
     waveformContext.stroke();
   }
+}
+
+function drawSpeechSpans(waveformContext, rect, speechSpans, color) {
+  if (!Number.isFinite(audioPlayer.duration) || audioPlayer.duration <= 0) {
+    return;
+  }
+  waveformContext.fillStyle = color;
+  for (const speechSpan of speechSpans) {
+    const startX = (speechSpan.startSeconds / audioPlayer.duration) * rect.width;
+    const endX = (speechSpan.endSeconds / audioPlayer.duration) * rect.width;
+    waveformContext.fillRect(startX, 0, Math.max(1, endX - startX), rect.height);
+  }
+}
+
+function renderTimingWaveforms(runs) {
+  timingWaveforms.replaceChildren(
+    ...runs.map((run, runIndex) => timingWaveform(run, runIndex)),
+  );
+  timingSummary.textContent = `${runs.length} model timing tracks; words within 150ms are grouped.`;
+  drawTimingWaveforms();
+}
+
+function timingWaveform(run, runIndex) {
+  const track = document.createElement("section");
+  track.className = "timing-track";
+  const header = document.createElement("div");
+  header.className = "timing-track-header";
+  const label = document.createElement("strong");
+  label.textContent = run.model.label;
+  const detail = document.createElement("span");
+  const spans = sentenceSpansFromWords(run.transcription.words);
+  detail.textContent = run.transcription.error
+    ? run.transcription.error
+    : `${spans.length} speech blocks`;
+  if (run.transcription.error) {
+    detail.className = "error-text";
+  }
+  header.append(label, detail);
+  const canvas = document.createElement("canvas");
+  canvas.className = "timing-waveform";
+  canvas.width = 1400;
+  canvas.height = 112;
+  canvas.dataset.runIndex = String(runIndex);
+  track.append(header, canvas);
+  return track;
+}
+
+function sentenceSpansFromWords(words) {
+  const timestampedWords = words.filter(
+    (word) => word.start_seconds !== null && word.end_seconds !== null,
+  );
+  const spans = [];
+  for (const word of timestampedWords) {
+    const startSeconds = Number(word.start_seconds);
+    const endSeconds = Number(word.end_seconds);
+    const previousSpan = spans.at(-1);
+    if (previousSpan !== undefined && startSeconds - previousSpan.endSeconds < sentenceGapSeconds) {
+      previousSpan.endSeconds = Math.max(previousSpan.endSeconds, endSeconds);
+      continue;
+    }
+    spans.push({ startSeconds, endSeconds });
+  }
+  return spans;
+}
+
+function drawTimingWaveforms() {
+  if (currentPayload === null) {
+    return;
+  }
+  currentPayload.runs.forEach((run, runIndex) => {
+    const canvas = timingWaveforms.querySelector(`[data-run-index='${runIndex}']`);
+    if (canvas === null) {
+      return;
+    }
+    drawWaveform(canvas, sentenceSpansFromWords(run.transcription.words), timingColor(runIndex));
+  });
+}
+
+function timingColor(runIndex) {
+  const colors = ["#bfe4d8", "#c9def4", "#f6d5a8", "#e3c9ef", "#f1c7cd"];
+  return colors[runIndex % colors.length];
 }
 
 function renderMetrics(runs) {

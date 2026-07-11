@@ -264,18 +264,6 @@ audio {
   font-variant-numeric: tabular-nums;
 }
 
-.playback-panel audio {
-  margin-top: 10px;
-}
-
-#waveform-canvas {
-  border: 1px solid #e0e5e7;
-  border-radius: 6px;
-  display: block;
-  height: 180px;
-  width: 100%;
-}
-
 .results-stack {
   display: grid;
   gap: 14px;
@@ -298,6 +286,38 @@ audio {
   border: 1px solid #e0e5e7;
   border-radius: 6px;
   padding: 10px;
+}
+
+.timing-waveforms {
+  display: grid;
+  gap: 10px;
+}
+
+.timing-track {
+  border: 1px solid #e0e5e7;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.timing-track-header {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.timing-track-header span {
+  color: #5a666b;
+  font-size: 13px;
+}
+
+.timing-waveform {
+  border: 1px solid #e0e5e7;
+  border-radius: 4px;
+  display: block;
+  height: 112px;
+  width: 100%;
 }
 
 .metric-grid {

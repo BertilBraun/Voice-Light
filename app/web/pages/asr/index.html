@@ -65,7 +65,6 @@
           <button id="play-toggle" type="button" disabled>Play</button>
           <span id="playback-time">0.00s / 0.00s</span>
         </div>
-        <canvas id="waveform-canvas" width="1400" height="180" aria-label="Audio waveform"></canvas>
         <audio id="audio-player" controls preload="auto"></audio>
       </section>
 
@@ -84,6 +83,13 @@
             <p id="transcript-summary">No run yet</p>
           </div>
           <div id="transcript-list" class="transcript-list"></div>
+        </div>
+        <div class="panel timing-panel">
+          <div class="panel-header">
+            <h2>Speech timing</h2>
+            <p id="timing-summary">No run yet</p>
+          </div>
+          <div id="timing-waveforms" class="timing-waveforms"></div>
         </div>
         <div class="panel">
           <div class="panel-header">
