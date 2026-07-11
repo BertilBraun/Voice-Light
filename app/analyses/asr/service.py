@@ -10,7 +10,7 @@ from app.analyses.asr.models import (
     AsrModelRun,
 )
 from app.analyses.asr.runners import model_identifier_for_mode
-from app.asr.schemas import AsrModelId, AsrTranscriptResult, TranscriptSegment
+from app.asr.schemas import AsrModelId, AsrTranscriptResult, TimestampedWord
 from app.asr.service import AsrTranscriptCache, RemoteAsrClientFactory, cached_asr_transcripts
 from app.asr_quality.metrics import evaluate_file
 from app.asr_quality.schemas import ReferenceTranscript, SpeakerTrack, TranscriptionResult, Word
@@ -136,10 +136,10 @@ def transcription_result_from_cached_asr(
         track=speaker_track,
         audio_duration_seconds=audio_duration_seconds,
         processing_time_seconds=processing_time_seconds,
-        words=tuple(word_from_segment(segment) for segment in transcript.segments),
+        words=tuple(word_from_timestamped_word(word) for word in transcript.words),
         raw_output={
             "text": transcript.text,
-            "segment_count": len(transcript.segments),
+            "word_count": len(transcript.words),
             "cache_source": "database",
         },
         model_identifier=model_identifier_for_mode(model_mode),
@@ -154,12 +154,12 @@ def transcription_result_from_cached_asr(
     )
 
 
-def word_from_segment(segment: TranscriptSegment) -> Word:
+def word_from_timestamped_word(word: TimestampedWord) -> Word:
     return Word(
-        text=segment.text,
-        start_seconds=segment.start_seconds,
-        end_seconds=segment.end_seconds,
-        confidence=segment.confidence,
+        text=word.text,
+        start_seconds=word.start_seconds,
+        end_seconds=word.end_seconds,
+        confidence=word.confidence,
     )
 
 

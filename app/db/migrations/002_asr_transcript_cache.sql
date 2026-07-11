@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS cached_asr_transcripts (
   audio_filename text NOT NULL,
   model_id text NOT NULL,
   transcript_text text NOT NULL,
-  segments jsonb NOT NULL DEFAULT '[]'::jsonb,
+  words jsonb NOT NULL DEFAULT '[]'::jsonb,
   processing_time_seconds double precision,
   runtime jsonb NOT NULL DEFAULT '{}'::jsonb,
   error text,

@@ -10,7 +10,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from app.asr.schemas import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TranscriptSegment
+from app.asr.schemas import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TimestampedWord
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,7 @@ class CachedAsrTranscriptRecord:
     audio_filename: str
     model_id: AsrModelId
     transcript_text: str
-    segments: tuple[TranscriptSegment, ...]
+    words: tuple[TimestampedWord, ...]
     processing_time_seconds: float | None
     runtime: AsrRuntimeStats | None
     error: str | None
@@ -67,13 +67,13 @@ class AsrTranscriptRepository:
                 """
                 INSERT INTO cached_asr_transcripts (
                   audio_sha256, audio_filename, model_id, transcript_text,
-                  segments, processing_time_seconds, runtime, error, updated_at
+                  words, processing_time_seconds, runtime, error, updated_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (audio_sha256, model_id) DO UPDATE
                 SET audio_filename = EXCLUDED.audio_filename,
                     transcript_text = EXCLUDED.transcript_text,
-                    segments = EXCLUDED.segments,
+                    words = EXCLUDED.words,
                     processing_time_seconds = EXCLUDED.processing_time_seconds,
                     runtime = EXCLUDED.runtime,
                     error = EXCLUDED.error,
@@ -85,7 +85,7 @@ class AsrTranscriptRepository:
                     audio_filename,
                     transcript.model_id.value,
                     transcript.text,
-                    Jsonb([segment.model_dump(mode="json") for segment in transcript.segments]),
+                    Jsonb([word.model_dump(mode="json") for word in transcript.words]),
                     transcript.processing_time_seconds,
                     Jsonb(
                         transcript.runtime.model_dump(mode="json")
@@ -100,10 +100,10 @@ class AsrTranscriptRepository:
 
 
 def cached_asr_transcript_record(row: dict[str, object]) -> CachedAsrTranscriptRecord:
-    segments_value = row["segments"]
-    segments = json.loads(segments_value) if isinstance(segments_value, str) else segments_value
-    if not isinstance(segments, list):
-        raise ValueError("Cached ASR transcript segments must be a JSON array.")
+    words_value = row["words"]
+    words = json.loads(words_value) if isinstance(words_value, str) else words_value
+    if not isinstance(words, list):
+        raise ValueError("Cached ASR transcript words must be a JSON array.")
     runtime_value = row["runtime"]
     runtime = json.loads(runtime_value) if isinstance(runtime_value, str) else runtime_value
     if not isinstance(runtime, dict):
@@ -114,7 +114,7 @@ def cached_asr_transcript_record(row: dict[str, object]) -> CachedAsrTranscriptR
         audio_filename=str(row["audio_filename"]),
         model_id=AsrModelId(str(row["model_id"])),
         transcript_text=str(row["transcript_text"]),
-        segments=tuple(TranscriptSegment.model_validate(segment) for segment in segments),
+        words=tuple(TimestampedWord.model_validate(word) for word in words),
         processing_time_seconds=optional_float(row["processing_time_seconds"]),
         runtime=AsrRuntimeStats.model_validate(runtime) if runtime else None,
         error=optional_string(row["error"]),
@@ -127,7 +127,7 @@ def cached_asr_transcript_result(record: CachedAsrTranscriptRecord) -> AsrTransc
     return AsrTranscriptResult(
         model_id=record.model_id,
         text=record.transcript_text,
-        segments=record.segments,
+        words=record.words,
         processing_time_seconds=record.processing_time_seconds,
         runtime=record.runtime,
         error=record.error,

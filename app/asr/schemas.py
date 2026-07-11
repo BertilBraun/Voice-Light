@@ -10,7 +10,7 @@ class AsrModelId(StrEnum):
     WHISPERX = "whisperx_large_v3"
 
 
-class TranscriptSegment(BaseModel):
+class TimestampedWord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     text: str
@@ -35,7 +35,7 @@ class AsrTranscriptResult(BaseModel):
 
     model_id: AsrModelId
     text: str
-    segments: tuple[TranscriptSegment, ...]
+    words: tuple[TimestampedWord, ...]
     processing_time_seconds: float | None = None
     error: str | None = None
     runtime: AsrRuntimeStats | None = None

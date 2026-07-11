@@ -12,7 +12,7 @@ from app.asr.schemas import (
     AsrTranscriptResult,
     RemoteAsrRequest,
     RemoteAsrResponse,
-    TranscriptSegment,
+    TimestampedWord,
 )
 from app.asr.service import cached_asr_transcripts
 
@@ -156,7 +156,7 @@ def transcript_result(model_id: AsrModelId, text: str) -> AsrTranscriptResult:
     return AsrTranscriptResult(
         model_id=model_id,
         text=text,
-        segments=(TranscriptSegment(text=text, start_seconds=0.0, end_seconds=1.0),),
+        words=(TimestampedWord(text=text, start_seconds=0.0, end_seconds=1.0),),
     )
 
 

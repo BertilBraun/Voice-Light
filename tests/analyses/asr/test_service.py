@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.analyses.asr.service import transcription_result_from_cached_asr
-from app.asr.schemas import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TranscriptSegment
+from app.asr.schemas import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TimestampedWord
 from app.asr_quality.schemas import SpeakerTrack, Word
 
 
-def test_transcription_result_from_cached_asr_preserves_segments_and_runtime() -> None:
+def test_transcription_result_from_cached_asr_preserves_words_and_runtime() -> None:
     transcription = transcription_result_from_cached_asr(
         audio_path=Path("sample.wav"),
         speaker_track=SpeakerTrack.SPEAKER1,
@@ -15,9 +15,9 @@ def test_transcription_result_from_cached_asr_preserves_segments_and_runtime() -
         transcript=AsrTranscriptResult(
             model_id=AsrModelId.WHISPERX,
             text="hello world",
-            segments=(
-                TranscriptSegment(text="hello", start_seconds=0.0, end_seconds=0.5),
-                TranscriptSegment(text="world", start_seconds=0.6, end_seconds=1.0),
+            words=(
+                TimestampedWord(text="hello", start_seconds=0.0, end_seconds=0.5),
+                TimestampedWord(text="world", start_seconds=0.6, end_seconds=1.0),
             ),
             processing_time_seconds=1.5,
             runtime=AsrRuntimeStats(
