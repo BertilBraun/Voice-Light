@@ -3,12 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Lock
 
-import torch
 import whisperx
 from faster_whisper import WhisperModel
 from torch import nn
 
-from app.asr.models.base import load_time_seconds, timestamped_word_from_word
+from app.asr.models.base import cuda_device, load_time_seconds, timestamped_word_from_word
 from app.asr.models.parsing import words_from_whisperx_output
 from app.asr.schemas import AsrModelId, TimestampedWord
 
@@ -27,9 +26,8 @@ class WhisperxAsrModel:
         self.model_loading_time_seconds = load_time_seconds(self.load)
 
     def load(self) -> None:
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        compute_type = "float16" if self.device == "cuda" else "int8"
-        self.model = WhisperModel("large-v3", device=self.device, compute_type=compute_type)
+        self.device = cuda_device()
+        self.model = WhisperModel("large-v3", device=self.device, compute_type="float16")
 
     def transcribe(self, audio_path: Path) -> tuple[TimestampedWord, ...]:
         with self.inference_lock:

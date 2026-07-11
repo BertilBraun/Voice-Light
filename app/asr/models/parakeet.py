@@ -4,10 +4,9 @@ from pathlib import Path
 from threading import Lock
 
 import librosa
-import torch
 from transformers import AutoModelForTDT, AutoProcessor
 
-from app.asr.models.base import load_time_seconds, timestamped_word_from_word
+from app.asr.models.base import cuda_device, load_time_seconds, timestamped_word_from_word
 from app.asr.models.parsing import PARAKEET_IDENTIFIER, words_from_parakeet_timestamps
 from app.asr.schemas import AsrModelId, TimestampedWord
 
@@ -23,7 +22,7 @@ class ParakeetAsrModel:
     def load(self) -> None:
         self.processor = AutoProcessor.from_pretrained(PARAKEET_IDENTIFIER)
         self.model = AutoModelForTDT.from_pretrained(PARAKEET_IDENTIFIER, dtype="auto")
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = cuda_device()
         self.model.to(self.device)
         self.sample_rate = int(self.processor.feature_extractor.sampling_rate)
 

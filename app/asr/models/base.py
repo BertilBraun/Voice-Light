@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import torch
+
 from app.asr.schemas import AsrModelId, TimestampedWord
 from app.asr_quality.schemas import Word
 
@@ -49,6 +51,12 @@ def load_time_seconds(load_model: Callable[[], None]) -> float:
     load_start = time.perf_counter()
     load_model()
     return time.perf_counter() - load_start
+
+
+def cuda_device() -> str:
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available for ASR inference.")
+    return "cuda"
 
 
 def timestamped_word_from_word(word: Word) -> TimestampedWord:
