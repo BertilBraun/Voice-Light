@@ -12,9 +12,11 @@ from app.analyses.end_of_turn.router import router as end_of_turn_router
 from app.audio.wav import capped_wave_bytes
 from app.config import WEB_ROOT
 from app.data.sessions import SpeakerName, list_sessions, session_audio_path, session_to_json
+from app.dataset_dashboard.router import router as dataset_dashboard_router
 
 app = FastAPI(title="Voice Light")
 app.include_router(end_of_turn_router)
+app.include_router(dataset_dashboard_router)
 app.mount("/pages", StaticFiles(directory=WEB_ROOT / "pages"), name="pages")
 
 
@@ -27,6 +29,14 @@ def overview_page() -> FileResponse:
 def end_of_turn_page() -> FileResponse:
     return FileResponse(
         WEB_ROOT / "pages" / "end-of-turn" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/datasets")
+def dataset_dashboard_page() -> FileResponse:
+    return FileResponse(
+        WEB_ROOT / "pages" / "datasets" / "index.html",
         headers={"Cache-Control": "no-store"},
     )
 

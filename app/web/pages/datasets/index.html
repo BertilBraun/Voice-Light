@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice Light Datasets</title>
+    <link rel="stylesheet" href="/pages/datasets/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="toolbar">
+        <div>
+          <h1>Datasets</h1>
+          <p id="status">Loading database records</p>
+        </div>
+        <button id="refresh-button" type="button">Refresh</button>
+      </header>
+
+      <section class="filters" aria-label="Dataset filters">
+        <label>
+          Dataset
+          <select id="dataset-filter"></select>
+        </label>
+        <label>
+          Min quality
+          <input id="quality-min" type="number" min="0" max="1" step="0.05" />
+        </label>
+        <label>
+          Max overlap
+          <input id="overlap-max" type="number" min="0" max="1" step="0.05" />
+        </label>
+        <label>
+          Flag
+          <input id="flag-filter" type="text" />
+        </label>
+      </section>
+
+      <section class="content-grid">
+        <div class="panel">
+          <h2>Samples</h2>
+          <div id="sample-list" class="sample-list"></div>
+        </div>
+        <div class="panel">
+          <h2>Selected</h2>
+          <div id="sample-detail" class="detail-empty">Select a sample</div>
+        </div>
+      </section>
+    </main>
+    <script src="/pages/datasets/app.js"></script>
+  </body>
+</html>
