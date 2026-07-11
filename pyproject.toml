@@ -3,13 +3,12 @@ name = "voice-light"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "faster-whisper>=1.1.0",
     "fastapi>=0.115.0",
     "huggingface-hub>=1.23.0",
-    "librosa>=0.11.0",
     "livekit-local-inference>=0.2.6",
     "modal>=1.0.0",
-    "numpy>=2.0.0",
+    "numpy>=2.0.0; python_version < '3.14'",
+    "numpy>=2.5.1; python_version >= '3.14'",
     "onnxruntime>=1.24.3",
     "psycopg[binary]>=3.2.0",
     "safetensors>=0.8.0",
@@ -17,7 +16,6 @@ dependencies = [
     "torch>=2.13.0",
     "transformers>=5.13.0",
     "uvicorn>=0.30.0",
-    "whisperx>=3.7.0",
 ]
 
 [dependency-groups]
