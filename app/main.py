@@ -41,6 +41,14 @@ def dataset_dashboard_page() -> FileResponse:
     )
 
 
+@app.get("/datasets/ingest")
+def dataset_ingestion_page() -> FileResponse:
+    return FileResponse(
+        WEB_ROOT / "pages" / "datasets" / "ingest.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/sessions")
 def sessions_api() -> dict[str, object]:
     return {"sessions": [session_to_json(session_entry) for session_entry in list_sessions()]}

@@ -15,6 +15,39 @@ The root `data/` folder is intentionally ignored by Git.
 
 ## Run
 
+### Docker Compose
+
+Start Postgres, apply migrations, and run the app:
+
+```powershell
+docker compose up
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+Useful pages:
+
+```text
+http://127.0.0.1:8000/datasets
+http://127.0.0.1:8000/datasets/ingest
+http://127.0.0.1:8000/analyses/end-of-turn
+```
+
+The Compose app mounts the repository `data/` directory at `/app/data` in the
+container. For local LUEL ingestion, use:
+
+```text
+/app/data/luel/sessions
+```
+
+Postgres data is stored in the `voice-light-postgres` Docker volume.
+
+### Local
+
 Start the FastAPI server from the repository root:
 
 ```powershell
@@ -24,7 +57,13 @@ uv run python -m app.server
 Then open:
 
 ```text
-http://127.0.0.1:8765
+http://127.0.0.1:8000
 ```
 
 Set `VOICE_LIGHT_PORT` to use a different port.
+
+For DB-backed dataset pages outside Docker, set `VOICE_LIGHT_DATABASE_URL` and run:
+
+```powershell
+uv run python -m app.db.migrate
+```

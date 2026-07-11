@@ -81,7 +81,7 @@ function renderSamples() {
       formatSeconds(sample.sample.duration_seconds),
       `speech ${formatRatio(sample.latest_quality?.speech_ratio)}`,
       `overlap ${formatRatio(sample.latest_quality?.overlap_ratio)}`,
-    ].join(" · ");
+    ].join(" - ");
     text.append(title, metrics);
 
     const score = document.createElement("div");
@@ -107,7 +107,7 @@ function renderSampleDetail(sample) {
     audio.controls = true;
     audio.src = `/api/dataset-dashboard/audio/${sample.sample.id}/${track.side}`;
     const label = document.createElement("div");
-    label.textContent = `${track.side} · ${formatSeconds(track.duration_seconds)} · ${track.sample_rate || "?"} Hz`;
+    label.textContent = `${track.side} - ${formatSeconds(track.duration_seconds)} - ${track.sample_rate || "?"} Hz`;
     audioGrid.append(label, audio);
   }
   container.appendChild(audioGrid);

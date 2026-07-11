@@ -57,6 +57,21 @@ h2 {
   cursor: pointer;
 }
 
+nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+nav a {
+  color: #1d4f7a;
+  text-decoration: none;
+}
+
+nav a:hover {
+  text-decoration: underline;
+}
+
 .filters {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr 1fr;

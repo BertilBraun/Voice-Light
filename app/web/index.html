@@ -52,6 +52,11 @@
         text-decoration: none;
       }
 
+      .links {
+        display: grid;
+        gap: 12px;
+      }
+
       a:focus,
       a:hover {
         border-color: #146b63;
@@ -72,14 +77,29 @@
     <main>
       <h1>Voice Light</h1>
       <p>Analysis tools and dataset dashboards.</p>
-      <a href="/analyses/end-of-turn">
-        <span>
-          <strong>End-of-turn analysis</strong>
-          Inspect speaker waveforms and compare end-of-turn detector outputs.
-        </span>
-        <span>Open</span>
-      </a>
+      <div class="links">
+        <a href="/analyses/end-of-turn">
+          <span>
+            <strong>End-of-turn analysis</strong>
+            Inspect speaker waveforms and compare end-of-turn detector outputs.
+          </span>
+          <span>Open</span>
+        </a>
+        <a href="/datasets">
+          <span>
+            <strong>Dataset dashboard</strong>
+            Inspect ingested samples, audio tracks, quality metrics, and ASR records.
+          </span>
+          <span>Open</span>
+        </a>
+        <a href="/datasets/ingest">
+          <span>
+            <strong>Dataset ingestion</strong>
+            Start local two-track ingestion jobs and monitor job status.
+          </span>
+          <span>Open</span>
+        </a>
+      </div>
     </main>
   </body>
 </html>
-

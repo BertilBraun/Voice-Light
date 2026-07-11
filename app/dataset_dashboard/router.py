@@ -48,6 +48,12 @@ class LocalIngestionRequest(BaseModel):
     root_path: str
 
 
+class IngestionQueueResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: str
+
+
 def repository() -> Repository:
     if not DATABASE_URL:
         raise ValueError("VOICE_LIGHT_DATABASE_URL is required for dataset dashboard APIs.")
@@ -120,7 +126,7 @@ def list_jobs(limit: int = Query(default=50, ge=1, le=200)) -> IngestionJobListR
 @router.post("/ingest/local")
 def ingest_local_dataset(
     request: LocalIngestionRequest, background_tasks: BackgroundTasks
-) -> dict[str, str]:
+) -> IngestionQueueResponse:
     root_path = Path(request.root_path).resolve()
     if not root_path.exists() or not root_path.is_dir():
         raise HTTPException(
@@ -130,7 +136,7 @@ def ingest_local_dataset(
     background_tasks.add_task(
         ingestion_service.ingest_local_dataset, request.dataset_name, root_path
     )
-    return {"status": "queued"}
+    return IngestionQueueResponse(status="queued")
 
 
 @router.get("/audio/{sample_id}/{side}")

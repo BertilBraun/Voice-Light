@@ -8,6 +8,8 @@ from app.config import MIGRATIONS_ROOT
 
 
 def run_migrations(database_url: str, migrations_root: Path = MIGRATIONS_ROOT) -> None:
+    if not database_url:
+        raise ValueError("VOICE_LIGHT_DATABASE_URL is required to run database migrations.")
     migration_paths = sorted(migrations_root.glob("*.sql"))
     with psycopg.connect(database_url) as connection:
         with connection.cursor() as cursor:
@@ -26,3 +28,13 @@ def run_migrations(database_url: str, migrations_root: Path = MIGRATIONS_ROOT) -
                     continue
                 cursor.execute(migration_path.read_text(encoding="utf-8"))
                 cursor.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
+
+
+def main() -> None:
+    from app.config import DATABASE_URL
+
+    run_migrations(DATABASE_URL)
+
+
+if __name__ == "__main__":
+    main()
