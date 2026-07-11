@@ -24,10 +24,22 @@ from app.asr.schemas import (
 )
 from app.quality.audio import load_audio
 
+MODEL_CACHE_VOLUME_NAME = "voice-light-asr-model-cache"
+MODEL_CACHE_DIR = "/model-cache"
+HUGGING_FACE_CACHE_DIR = f"{MODEL_CACHE_DIR}/huggingface"
+TORCH_CACHE_DIR = f"{MODEL_CACHE_DIR}/torch"
+NEMO_CACHE_DIR = f"{MODEL_CACHE_DIR}/nemo"
+
 
 class RemoteAsrModelCache(Protocol):
     def transcribe(self, model_id: AsrModelId, audio_path: Path) -> TimedTranscription: ...
 
+
+model_cache_volume = modal.Volume.from_name(
+    MODEL_CACHE_VOLUME_NAME,
+    create_if_missing=True,
+    version=2,
+)
 
 modal_image = (
     modal.Image.from_registry(
@@ -35,6 +47,18 @@ modal_image = (
         add_python="3.12",
     )
     .entrypoint([])
+    .env(
+        {
+            "HF_HOME": HUGGING_FACE_CACHE_DIR,
+            "HF_HUB_CACHE": f"{HUGGING_FACE_CACHE_DIR}/hub",
+            "HUGGINGFACE_HUB_CACHE": f"{HUGGING_FACE_CACHE_DIR}/hub",
+            "TRANSFORMERS_CACHE": f"{HUGGING_FACE_CACHE_DIR}/transformers",
+            "XDG_CACHE_HOME": MODEL_CACHE_DIR,
+            "TORCH_HOME": TORCH_CACHE_DIR,
+            "NEMO_CACHE_DIR": NEMO_CACHE_DIR,
+            "HF_XET_HIGH_PERFORMANCE": "1",
+        }
+    )
     .apt_install("ffmpeg", "libsndfile1", "build-essential", "git")
     .uv_pip_install(
         "Cython>=3.0.0",
@@ -62,6 +86,7 @@ app = modal.App("VoiceLight")
     max_containers=1,
     scaledown_window=300,
     secrets=[modal.Secret.from_name("voice-light-asr")],
+    volumes={MODEL_CACHE_DIR: model_cache_volume},
 )
 @modal.concurrent(max_inputs=20, target_inputs=20)
 class AsrModelServer:
@@ -88,6 +113,7 @@ class AsrModelServer:
                 audio_path=audio_path,
                 audio_duration_seconds=audio_duration_seconds,
             )
+            model_cache_volume.commit()
             return RemoteAsrResponse(results=results)
         finally:
             audio_path.unlink(missing_ok=True)
