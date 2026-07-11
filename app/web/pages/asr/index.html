@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ASR Analysis - Voice Light</title>
+    <link rel="stylesheet" href="/pages/asr/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="toolbar">
+        <div>
+          <a class="back-link" href="/">Voice Light</a>
+          <h1>ASR analysis</h1>
+          <p id="summary">Run ASR on the first three minutes of one speaker track.</p>
+        </div>
+        <div class="controls">
+          <select id="session-select" aria-label="Session"></select>
+          <select id="speaker-select" aria-label="Speaker">
+            <option value="speaker1">Speaker 1</option>
+            <option value="speaker2">Speaker 2</option>
+          </select>
+          <button id="run-button" type="button" disabled>Run</button>
+          <span id="loading-indicator" class="loading-indicator" hidden>
+            <i></i>
+            Running
+          </span>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Models</h2>
+          <p id="model-summary">Loading models</p>
+        </div>
+        <div id="model-options" class="model-options"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Reference words</h2>
+          <p>Optional JSON array with text, start_seconds, and end_seconds.</p>
+        </div>
+        <textarea id="reference-input" spellcheck="false" placeholder='[{"text":"hello","start_seconds":0.0,"end_seconds":0.4}]'></textarea>
+      </section>
+
+      <section class="panel playback-panel">
+        <audio id="audio-player" controls preload="auto"></audio>
+      </section>
+
+      <section class="results-grid">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Metrics</h2>
+            <p id="metrics-summary">No run yet</p>
+          </div>
+          <div id="metrics-list" class="metrics-list"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Transcripts</h2>
+            <p id="transcript-summary">No run yet</p>
+          </div>
+          <div id="transcript-list" class="transcript-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/pages/asr/app.js" type="module"></script>
+  </body>
+</html>

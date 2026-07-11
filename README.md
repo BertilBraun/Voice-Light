@@ -35,6 +35,7 @@ Useful pages:
 http://127.0.0.1:8000/datasets
 http://127.0.0.1:8000/datasets/ingest
 http://127.0.0.1:8000/analyses/end-of-turn
+http://127.0.0.1:8000/analyses/asr
 ```
 
 The Compose app mounts the repository `data/` directory at `/app/data` in the
