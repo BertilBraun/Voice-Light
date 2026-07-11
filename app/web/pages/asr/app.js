@@ -31,6 +31,7 @@ let currentPayload = null;
 let activeWordKeys = new Map();
 let playbackObjectUrl = null;
 let waveformPeaks = [];
+let timelineDurationSeconds = 0;
 const sentenceGapSeconds = 0.15;
 
 runButton.addEventListener("click", runAnalysis);
@@ -152,6 +153,7 @@ function parseReferenceWords() {
 async function applyAnalysisPayload(payload) {
   currentPayload = payload;
   activeWordKeys = new Map();
+  timelineDurationSeconds = Number(payload.analyzed_duration_seconds);
   playToggle.disabled = true;
   await loadPlaybackAudio(payload.audio_url);
   summary.textContent = `${payload.session_id} ${payload.speaker_track} analyzed for ${formatSeconds(payload.analyzed_duration_seconds)}.`;
@@ -319,8 +321,8 @@ function drawWaveform(canvas, speechSpans, color) {
     waveformContext.stroke();
   }
 
-  if (Number.isFinite(audioPlayer.duration) && audioPlayer.duration > 0) {
-    const playheadX = (audioPlayer.currentTime / audioPlayer.duration) * rect.width;
+  if (timelineDurationSeconds > 0) {
+    const playheadX = Math.min(audioPlayer.currentTime / timelineDurationSeconds, 1) * rect.width;
     waveformContext.strokeStyle = "#11181b";
     waveformContext.lineWidth = 2;
     waveformContext.beginPath();
@@ -331,13 +333,13 @@ function drawWaveform(canvas, speechSpans, color) {
 }
 
 function drawSpeechSpans(waveformContext, rect, speechSpans, color) {
-  if (!Number.isFinite(audioPlayer.duration) || audioPlayer.duration <= 0) {
+  if (!Number.isFinite(timelineDurationSeconds) || timelineDurationSeconds <= 0) {
     return;
   }
   waveformContext.fillStyle = color;
   for (const speechSpan of speechSpans) {
-    const startX = (speechSpan.startSeconds / audioPlayer.duration) * rect.width;
-    const endX = (speechSpan.endSeconds / audioPlayer.duration) * rect.width;
+    const startX = (speechSpan.startSeconds / timelineDurationSeconds) * rect.width;
+    const endX = (speechSpan.endSeconds / timelineDurationSeconds) * rect.width;
     waveformContext.fillRect(startX, 0, Math.max(1, endX - startX), rect.height);
   }
 }
