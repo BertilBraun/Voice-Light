@@ -9,6 +9,8 @@ JsonRecord: TypeAlias = dict[str, JsonScalar]
 
 PARAKEET_IDENTIFIER = "nvidia/parakeet-tdt-0.6b-v3"
 WHISPERX_IDENTIFIER = "whisperx/large-v3"
+CANARY_IDENTIFIER = "nvidia/canary-1b-v2"
+NEMOTRON_3_5_IDENTIFIER = "nvidia/nemotron-3.5-asr-streaming-0.6b"
 
 
 def words_from_parakeet_timestamps(decoded_timestamps: object) -> list[Word]:
@@ -95,6 +97,20 @@ def words_from_whisperx_output(aligned_output: object) -> list[Word]:
                     confidence=float_from_keys(payload, ("score",)),
                 )
             )
+    return words
+
+
+def words_from_nemo_timestamps(timestamp_payloads: list[dict[str, JsonScalar]]) -> list[Word]:
+    words: list[Word] = []
+    for timestamp_payload in timestamp_payloads:
+        words.append(
+            Word(
+                text=string_from_keys(timestamp_payload, ("word", "text")),
+                start_seconds=float_from_keys(timestamp_payload, ("start", "start_offset")),
+                end_seconds=float_from_keys(timestamp_payload, ("end", "end_offset")),
+                confidence=float_from_keys(timestamp_payload, ("confidence", "score")),
+            )
+        )
     return words
 
 

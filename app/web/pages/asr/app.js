@@ -3,11 +3,20 @@ const speakerSelect = document.querySelector("#speaker-select");
 const runButton = document.querySelector("#run-button");
 const loadingIndicator = document.querySelector("#loading-indicator");
 const summary = document.querySelector("#summary");
+const modelSettingsButton = document.querySelector("#model-settings-button");
+const modelSettingsModal = document.querySelector("#model-settings-modal");
+const closeModelSettingsButton = document.querySelector("#close-model-settings-button");
+const cancelModelSettingsButton = document.querySelector("#cancel-model-settings-button");
+const saveModelSettingsButton = document.querySelector("#save-model-settings-button");
+const selectAllModelsButton = document.querySelector("#select-all-models-button");
+const clearModelsButton = document.querySelector("#clear-models-button");
 const modelSummary = document.querySelector("#model-summary");
 const modelOptions = document.querySelector("#model-options");
 const referenceInput = document.querySelector("#reference-input");
 const playToggle = document.querySelector("#play-toggle");
 const playbackTime = document.querySelector("#playback-time");
+const waveformCanvas = document.querySelector("#waveform-canvas");
+const waveformContext = waveformCanvas.getContext("2d");
 const audioPlayer = document.querySelector("#audio-player");
 const metricsSummary = document.querySelector("#metrics-summary");
 const metricsList = document.querySelector("#metrics-list");
@@ -16,21 +25,34 @@ const transcriptList = document.querySelector("#transcript-list");
 
 let sessions = [];
 let models = [];
+let selectedModelModes = new Set();
+let stagedModelModes = new Set();
 let currentPayload = null;
 let activeWordKeys = new Map();
+let playbackObjectUrl = null;
+let waveformPeaks = [];
 
 runButton.addEventListener("click", runAnalysis);
+modelSettingsButton.addEventListener("click", openModelSettingsModal);
+closeModelSettingsButton.addEventListener("click", closeModelSettingsModal);
+cancelModelSettingsButton.addEventListener("click", closeModelSettingsModal);
+saveModelSettingsButton.addEventListener("click", saveModelSettings);
+selectAllModelsButton.addEventListener("click", selectAllModels);
+clearModelsButton.addEventListener("click", clearModels);
 playToggle.addEventListener("click", togglePlayback);
 audioPlayer.addEventListener("timeupdate", updateActiveTranscriptWords);
 audioPlayer.addEventListener("timeupdate", updatePlaybackState);
+audioPlayer.addEventListener("timeupdate", drawWaveform);
 audioPlayer.addEventListener("durationchange", updatePlaybackState);
 audioPlayer.addEventListener("loadedmetadata", updatePlaybackState);
 audioPlayer.addEventListener("canplay", updatePlaybackState);
 audioPlayer.addEventListener("seeked", updateActiveTranscriptWords);
+audioPlayer.addEventListener("seeked", drawWaveform);
 audioPlayer.addEventListener("play", updateActiveTranscriptWords);
 audioPlayer.addEventListener("play", updatePlaybackState);
 audioPlayer.addEventListener("pause", updatePlaybackState);
 audioPlayer.addEventListener("ended", updatePlaybackState);
+window.addEventListener("resize", drawWaveform);
 
 await loadInitialOptions();
 
@@ -50,9 +72,14 @@ async function loadInitialOptions() {
     }),
   );
   renderModelOptions();
-  runButton.disabled = sessions.length === 0 || models.length === 0;
+  selectedModelModes = new Set(models.map((model) => model.mode));
+  stagedModelModes = new Set(selectedModelModes);
+  updateModelSettingsSummary();
+  setModelSettingsButtonsEnabled(models.length > 0);
+  runButton.disabled = sessions.length === 0 || selectedModelModes.size === 0;
   summary.textContent =
     sessions.length === 0 ? "No sessions available." : "Select an audio track and model set.";
+  drawWaveform();
 }
 
 function renderModelOptions() {
@@ -61,7 +88,8 @@ function renderModelOptions() {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.value = model.mode;
-      checkbox.checked = true;
+      checkbox.checked = stagedModelModes.has(model.mode);
+      checkbox.addEventListener("change", updateStagedModelModesFromInputs);
 
       const title = document.createElement("strong");
       title.textContent = model.label;
@@ -76,13 +104,14 @@ function renderModelOptions() {
       return option;
     }),
   );
-  modelSummary.textContent = `${models.length} ASR model adapters available`;
+  updateModelSettingsSummary();
+  updateSaveModelSettingsButton();
 }
 
 async function runAnalysis() {
-  const selectedModels = [...modelOptions.querySelectorAll("input[type='checkbox']")]
-    .filter((checkbox) => checkbox.checked)
-    .map((checkbox) => checkbox.value);
+  const selectedModels = models
+    .filter((model) => selectedModelModes.has(model.mode))
+    .map((model) => model.mode);
   if (selectedModels.length === 0) {
     summary.textContent = "Select at least one model.";
     return;
@@ -98,7 +127,7 @@ async function runAnalysis() {
       models: selectedModels,
       reference_words: referenceWords,
     });
-    applyAnalysisPayload(payload);
+    await applyAnalysisPayload(payload);
   } catch (error) {
     summary.textContent = error.message;
   } finally {
@@ -122,8 +151,7 @@ async function applyAnalysisPayload(payload) {
   currentPayload = payload;
   activeWordKeys = new Map();
   playToggle.disabled = true;
-  audioPlayer.src = payload.audio_url;
-  audioPlayer.load();
+  await loadPlaybackAudio(payload.audio_url);
   summary.textContent = `${payload.session_id} ${payload.speaker_track} analyzed for ${formatSeconds(payload.analyzed_duration_seconds)}.`;
   metricsSummary.textContent =
     payload.reference_word_count > 0
@@ -134,6 +162,164 @@ async function applyAnalysisPayload(payload) {
   renderTranscripts(payload.runs);
   updateActiveTranscriptWords();
   updatePlaybackState();
+  drawWaveform();
+}
+
+function openModelSettingsModal() {
+  stagedModelModes = new Set(selectedModelModes);
+  renderModelOptions();
+  modelSettingsModal.hidden = false;
+}
+
+function closeModelSettingsModal() {
+  modelSettingsModal.hidden = true;
+  stagedModelModes = new Set(selectedModelModes);
+  updateModelSettingsSummary();
+}
+
+function updateStagedModelModesFromInputs() {
+  stagedModelModes = new Set(
+    [...modelOptions.querySelectorAll("input[type='checkbox']")]
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => checkbox.value),
+  );
+  updateModelSettingsSummary();
+  updateSaveModelSettingsButton();
+}
+
+function selectAllModels() {
+  stagedModelModes = new Set(models.map((model) => model.mode));
+  renderModelOptions();
+}
+
+function clearModels() {
+  stagedModelModes = new Set();
+  renderModelOptions();
+}
+
+function saveModelSettings() {
+  if (modelModeSetsEqual(selectedModelModes, stagedModelModes)) {
+    closeModelSettingsModal();
+    return;
+  }
+  selectedModelModes = new Set(stagedModelModes);
+  updateModelSettingsSummary();
+  closeModelSettingsModal();
+  runButton.disabled = sessions.length === 0 || selectedModelModes.size === 0;
+}
+
+function updateModelSettingsSummary() {
+  const displayedModelModes = modelSettingsModal.hidden ? selectedModelModes : stagedModelModes;
+  modelSummary.textContent = `${displayedModelModes.size}/${models.length} models selected`;
+}
+
+function updateSaveModelSettingsButton() {
+  saveModelSettingsButton.disabled = modelModeSetsEqual(selectedModelModes, stagedModelModes);
+}
+
+function setModelSettingsButtonsEnabled(areEnabled) {
+  modelSettingsButton.disabled = !areEnabled;
+  selectAllModelsButton.disabled = !areEnabled;
+  clearModelsButton.disabled = !areEnabled;
+}
+
+function modelModeSetsEqual(firstModelModes, secondModelModes) {
+  if (firstModelModes.size !== secondModelModes.size) {
+    return false;
+  }
+  return [...firstModelModes].every((modelMode) => secondModelModes.has(modelMode));
+}
+
+async function loadPlaybackAudio(audioUrl) {
+  waveformPeaks = [];
+  drawWaveform();
+  const response = await fetch(audioUrl, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Audio download failed with HTTP ${response.status}`);
+  }
+  const audioBlob = await response.blob();
+  const audioBuffer = await audioBlob.arrayBuffer();
+  if (playbackObjectUrl !== null) {
+    URL.revokeObjectURL(playbackObjectUrl);
+  }
+  playbackObjectUrl = URL.createObjectURL(audioBlob);
+  audioPlayer.src = playbackObjectUrl;
+  audioPlayer.load();
+  await decodeWaveform(audioBuffer.slice(0));
+}
+
+async function decodeWaveform(audioBuffer) {
+  const audioContext = new AudioContext();
+  try {
+    const decodedAudio = await audioContext.decodeAudioData(audioBuffer);
+    waveformPeaks = waveformPeaksFromChannel(decodedAudio.getChannelData(0), decodedAudio.sampleRate);
+  } finally {
+    await audioContext.close();
+  }
+}
+
+function waveformPeaksFromChannel(samples, sampleRate) {
+  const durationSeconds = samples.length / sampleRate;
+  const peakCount = Math.max(1, Math.min(2400, Math.ceil(durationSeconds * 20)));
+  const samplesPerPeak = Math.max(1, Math.floor(samples.length / peakCount));
+  const peaks = [];
+  for (let peakIndex = 0; peakIndex < peakCount; peakIndex += 1) {
+    const startIndex = peakIndex * samplesPerPeak;
+    const endIndex = Math.min(samples.length, startIndex + samplesPerPeak);
+    let peak = 0;
+    for (let sampleIndex = startIndex; sampleIndex < endIndex; sampleIndex += 1) {
+      peak = Math.max(peak, Math.abs(samples[sampleIndex]));
+    }
+    peaks.push(peak);
+  }
+  return peaks;
+}
+
+function drawWaveform() {
+  const rect = waveformCanvas.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  waveformCanvas.width = Math.floor(rect.width * scale);
+  waveformCanvas.height = Math.floor(rect.height * scale);
+  waveformContext.setTransform(scale, 0, 0, scale, 0, 0);
+  waveformContext.clearRect(0, 0, rect.width, rect.height);
+  waveformContext.fillStyle = "#f7f8f6";
+  waveformContext.fillRect(0, 0, rect.width, rect.height);
+
+  if (waveformPeaks.length === 0) {
+    waveformContext.fillStyle = "#5a666b";
+    waveformContext.font = "14px sans-serif";
+    waveformContext.fillText("Waveform unavailable", 14, 28);
+    return;
+  }
+
+  const middle = rect.height / 2;
+  const amplitude = rect.height / 2 - 18;
+  const columns = Math.max(1, Math.floor(rect.width));
+  waveformContext.strokeStyle = "#146b63";
+  waveformContext.lineWidth = 1;
+  for (let column = 0; column < columns; column += 1) {
+    const peakStart = Math.floor((column / columns) * waveformPeaks.length);
+    const peakEnd = Math.max(
+      peakStart + 1,
+      Math.ceil(((column + 1) / columns) * waveformPeaks.length),
+    );
+    const peak = Math.max(...waveformPeaks.slice(peakStart, peakEnd));
+    const x = column + 0.5;
+    waveformContext.beginPath();
+    waveformContext.moveTo(x, middle - peak * amplitude);
+    waveformContext.lineTo(x, middle + peak * amplitude);
+    waveformContext.stroke();
+  }
+
+  if (Number.isFinite(audioPlayer.duration) && audioPlayer.duration > 0) {
+    const playheadX = (audioPlayer.currentTime / audioPlayer.duration) * rect.width;
+    waveformContext.strokeStyle = "#11181b";
+    waveformContext.lineWidth = 2;
+    waveformContext.beginPath();
+    waveformContext.moveTo(playheadX, 10);
+    waveformContext.lineTo(playheadX, rect.height - 10);
+    waveformContext.stroke();
+  }
 }
 
 function renderMetrics(runs) {
@@ -335,7 +521,8 @@ async function postJson(url, payload) {
 }
 
 function setLoading(isLoading) {
-  runButton.disabled = isLoading;
+  runButton.disabled = isLoading || sessions.length === 0 || selectedModelModes.size === 0;
+  modelSettingsButton.disabled = isLoading || models.length === 0;
   sessionSelect.disabled = isLoading;
   speakerSelect.disabled = isLoading;
   loadingIndicator.hidden = !isLoading;

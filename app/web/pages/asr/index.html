@@ -20,6 +20,15 @@
             <option value="speaker1">Speaker 1</option>
             <option value="speaker2">Speaker 2</option>
           </select>
+          <button
+            id="model-settings-button"
+            class="icon-button"
+            type="button"
+            aria-label="Model settings"
+            disabled
+          >
+            &#9881;
+          </button>
           <button id="run-button" type="button" disabled>Run</button>
           <span id="loading-indicator" class="loading-indicator" hidden>
             <i></i>
@@ -28,12 +37,36 @@
         </div>
       </header>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Models</h2>
-          <p id="model-summary">Loading models</p>
+      <div id="model-settings-modal" class="modal-overlay" hidden>
+        <section class="modal" role="dialog" aria-modal="true" aria-labelledby="model-settings-title">
+          <div class="modal-header">
+            <div>
+              <h2 id="model-settings-title">Model settings</h2>
+              <p id="model-summary">Loading models</p>
+            </div>
+            <button id="close-model-settings-button" class="icon-button" type="button" aria-label="Close settings">
+              x
+            </button>
+          </div>
+          <div class="settings-actions">
+            <button id="select-all-models-button" type="button" disabled>Select all</button>
+            <button id="clear-models-button" type="button" disabled>Clear</button>
+          </div>
+          <div id="model-options" class="model-options" aria-label="ASR models"></div>
+          <div class="modal-actions">
+            <button id="cancel-model-settings-button" type="button">Cancel</button>
+            <button id="save-model-settings-button" type="button" disabled>Save</button>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel playback-panel">
+        <div class="playback-controls">
+          <button id="play-toggle" type="button" disabled>Play</button>
+          <span id="playback-time">0.00s / 0.00s</span>
         </div>
-        <div id="model-options" class="model-options"></div>
+        <canvas id="waveform-canvas" width="1400" height="180" aria-label="Audio waveform"></canvas>
+        <audio id="audio-player" controls preload="auto"></audio>
       </section>
 
       <section class="panel">
@@ -44,28 +77,20 @@
         <textarea id="reference-input" spellcheck="false" placeholder='[{"text":"hello","start_seconds":0.0,"end_seconds":0.4}]'></textarea>
       </section>
 
-      <section class="panel playback-panel">
-        <div class="playback-controls">
-          <button id="play-toggle" type="button" disabled>Play</button>
-          <span id="playback-time">0.00s / 0.00s</span>
+      <section class="results-stack">
+        <div class="panel transcripts-panel">
+          <div class="panel-header">
+            <h2>Transcripts</h2>
+            <p id="transcript-summary">No run yet</p>
+          </div>
+          <div id="transcript-list" class="transcript-list"></div>
         </div>
-        <audio id="audio-player" controls preload="auto"></audio>
-      </section>
-
-      <section class="results-grid">
         <div class="panel">
           <div class="panel-header">
             <h2>Metrics</h2>
             <p id="metrics-summary">No run yet</p>
           </div>
           <div id="metrics-list" class="metrics-list"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-header">
-            <h2>Transcripts</h2>
-            <p id="transcript-summary">No run yet</p>
-          </div>
-          <div id="transcript-list" class="transcript-list"></div>
         </div>
       </section>
     </main>

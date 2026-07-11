@@ -9,6 +9,8 @@ from app.frozen_base_config import FrozenBaseModel
 class AsrModelMode(StrEnum):
     PARAKEET_TDT = "parakeet_tdt_0_6b_v3"
     WHISPERX = "whisperx_large_v3"
+    CANARY = "canary_1b_v2"
+    NEMOTRON_3_5 = "nemotron_3_5_asr_streaming_0_6b"
     MERGED_CONSENSUS = "merged_consensus"
 
 

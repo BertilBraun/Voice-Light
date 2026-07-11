@@ -35,12 +35,15 @@ modal_image = (
         add_python="3.12",
     )
     .entrypoint([])
-    .apt_install("ffmpeg", "libsndfile1")
+    .apt_install("ffmpeg", "libsndfile1", "build-essential", "git")
     .uv_pip_install(
+        "Cython>=3.0.0",
         "fastapi[standard]>=0.115.0",
         "faster-whisper>=1.1.0",
         "librosa>=0.11.0",
+        "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main",
         "numpy>=2.0.0",
+        "packaging>=24.0",
         "pydantic>=2.0.0",
         "torch>=2.13.0",
         "transformers>=5.13.0",

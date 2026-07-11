@@ -13,7 +13,12 @@ from app.analyses.asr.models import (
     AsrModelMode,
     AsrModelRun,
 )
-from app.asr.models.parsing import PARAKEET_IDENTIFIER, WHISPERX_IDENTIFIER
+from app.asr.models.parsing import (
+    CANARY_IDENTIFIER,
+    NEMOTRON_3_5_IDENTIFIER,
+    PARAKEET_IDENTIFIER,
+    WHISPERX_IDENTIFIER,
+)
 from app.asr.schemas import AsrModelId, AsrTranscriptResult, TimestampedWord
 from app.asr.service import AsrTranscriptCache, RemoteAsrClientFactory, cached_asr_transcripts
 from app.asr_quality.metrics import evaluate_file
@@ -28,7 +33,12 @@ from app.audio.wav import capped_wave_bytes
 from app.data.sessions import SpeakerName, session_audio_path
 from app.quality.audio import load_audio
 
-REMOTE_ASR_MODEL_MODES = (AsrModelMode.PARAKEET_TDT, AsrModelMode.WHISPERX)
+REMOTE_ASR_MODEL_MODES = (
+    AsrModelMode.PARAKEET_TDT,
+    AsrModelMode.WHISPERX,
+    AsrModelMode.CANARY,
+    AsrModelMode.NEMOTRON_3_5,
+)
 
 
 def available_asr_models() -> tuple[AsrModelInfo, ...]:
@@ -44,9 +54,19 @@ def available_asr_models() -> tuple[AsrModelInfo, ...]:
             description="Faster-Whisper transcription plus WhisperX word alignment.",
         ),
         AsrModelInfo(
+            mode=AsrModelMode.CANARY,
+            label="Canary 1B v2",
+            description="NVIDIA NeMo Canary with native word timestamp output.",
+        ),
+        AsrModelInfo(
+            mode=AsrModelMode.NEMOTRON_3_5,
+            label="Nemotron 3.5 ASR streaming 0.6B",
+            description="NVIDIA Nemotron transcript aligned with WhisperX word timestamps.",
+        ),
+        AsrModelInfo(
             mode=AsrModelMode.MERGED_CONSENSUS,
             label="Merged ASR consensus",
-            description="Local alignment merge of Parakeet and WhisperX timestamped words.",
+            description="Local alignment merge of selected timestamped ASR outputs.",
         ),
     )
 
@@ -272,6 +292,10 @@ def model_identifier_for_model_id(model_id: AsrModelId) -> str:
             return PARAKEET_IDENTIFIER
         case AsrModelId.WHISPERX:
             return WHISPERX_IDENTIFIER
+        case AsrModelId.CANARY:
+            return CANARY_IDENTIFIER
+        case AsrModelId.NEMOTRON_3_5:
+            return NEMOTRON_3_5_IDENTIFIER
 
 
 def word_from_timestamped_word(word: TimestampedWord) -> Word:

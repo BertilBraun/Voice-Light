@@ -51,6 +51,8 @@ def test_remote_model_ids_expand_merged_consensus_dependencies() -> None:
     assert remote_model_ids_for_selected_modes((AsrModelMode.MERGED_CONSENSUS,)) == (
         AsrModelId.PARAKEET_TDT,
         AsrModelId.WHISPERX,
+        AsrModelId.CANARY,
+        AsrModelId.NEMOTRON_3_5,
     )
 
 
@@ -64,4 +66,6 @@ def test_remote_model_ids_do_not_duplicate_explicit_dependencies() -> None:
     ) == (
         AsrModelId.PARAKEET_TDT,
         AsrModelId.WHISPERX,
+        AsrModelId.CANARY,
+        AsrModelId.NEMOTRON_3_5,
     )

@@ -25,7 +25,7 @@ def merged_consensus_transcription(
     if len(transcripts) < 2:
         raise ValueError("Merged ASR consensus requires at least two transcripts.")
     merge_start = time.perf_counter()
-    words = merged_words(primary=transcripts[0].words, secondary=transcripts[1].words)
+    words = progressively_merged_words(transcripts=transcripts)
     processing_time_seconds = time.perf_counter() - merge_start
     return TranscriptionResult(
         model_name=MERGED_CONSENSUS_MODEL_NAME,
@@ -48,6 +48,13 @@ def merged_consensus_transcription(
         peak_gpu_memory_mb=None,
         error=None,
     )
+
+
+def progressively_merged_words(transcripts: tuple[TranscriptToMerge, ...]) -> tuple[Word, ...]:
+    merged = transcripts[0].words
+    for transcript in transcripts[1:]:
+        merged = merged_words(primary=merged, secondary=transcript.words)
+    return merged
 
 
 def merged_words(primary: tuple[Word, ...], secondary: tuple[Word, ...]) -> tuple[Word, ...]:

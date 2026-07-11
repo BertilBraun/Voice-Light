@@ -36,3 +36,11 @@ def load_asr_model(model_id: AsrModelId) -> LoadedAsrModel:
             from app.asr.models.whisperx import WhisperxAsrModel
 
             return WhisperxAsrModel()
+        case AsrModelId.CANARY:
+            from app.asr.models.canary import CanaryAsrModel
+
+            return CanaryAsrModel()
+        case AsrModelId.NEMOTRON_3_5:
+            from app.asr.models.nemotron import NemotronAsrModel
+
+            return NemotronAsrModel()
