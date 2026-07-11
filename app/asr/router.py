@@ -1,29 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
-from app.analyses.asr.models import AsrAnalysisRequest, AsrAnalysisResponse, AsrModelInfo
-from app.analyses.asr.service import analyze_asr, available_asr_models
 from app.asr.client import HttpRemoteAsrClient
 from app.asr.repository import AsrTranscriptRepository
+from app.asr.schemas import CachedAsrRequest, CachedAsrResponse
+from app.asr.service import cached_asr_transcripts
 from app.config import DATABASE_URL, REMOTE_ASR_API_KEY, REMOTE_ASR_ENDPOINT_URL
 
 router = APIRouter(prefix="/api/asr", tags=["asr"])
 
 
-@router.get("/models")
-def list_asr_models() -> dict[str, tuple[AsrModelInfo, ...]]:
-    return {"models": available_asr_models()}
-
-
-@router.post("/analyze")
-def analyze_asr_api(request: AsrAnalysisRequest) -> AsrAnalysisResponse:
+@router.post("/transcriptions")
+def cached_asr_transcriptions_api(request: CachedAsrRequest) -> CachedAsrResponse:
     try:
-        return analyze_asr(
-            session_id=request.session_id,
-            speaker_track=request.speaker_track,
-            selected_models=request.models,
-            reference_words=request.reference_words,
+        return cached_asr_transcripts(
+            audio_path=Path(request.audio_path),
+            requested_models=request.models,
             cache=asr_transcript_repository(),
             remote_client_factory=remote_asr_client,
         )
@@ -33,7 +28,7 @@ def analyze_asr_api(request: AsrAnalysisRequest) -> AsrAnalysisResponse:
 
 def asr_transcript_repository() -> AsrTranscriptRepository:
     if not DATABASE_URL:
-        raise ValueError("VOICE_LIGHT_DATABASE_URL is required for ASR analysis.")
+        raise ValueError("VOICE_LIGHT_DATABASE_URL is required for cached ASR.")
     return AsrTranscriptRepository(database_url=DATABASE_URL)
 
 

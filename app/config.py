@@ -8,3 +8,5 @@ SESSIONS_ROOT = DATA_ROOT / "luel" / "sessions"
 WEB_ROOT = APP_ROOT / "web"
 MIGRATIONS_ROOT = APP_ROOT / "db" / "migrations"
 DATABASE_URL = os.environ.get("VOICE_LIGHT_DATABASE_URL", "")
+REMOTE_ASR_ENDPOINT_URL = os.environ.get("VOICE_LIGHT_REMOTE_ASR_ENDPOINT_URL", "")
+REMOTE_ASR_API_KEY = os.environ.get("VOICE_LIGHT_REMOTE_ASR_API_KEY", "")

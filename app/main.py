@@ -8,8 +8,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from app.analyses.asr.router import router as asr_router
+from app.analyses.asr.router import router as asr_analysis_router
 from app.analyses.end_of_turn.router import router as end_of_turn_router
+from app.asr.router import router as asr_router
 from app.audio.wav import capped_wave_bytes
 from app.config import WEB_ROOT
 from app.data.sessions import SpeakerName, list_sessions, session_audio_path, session_to_json
@@ -17,6 +18,7 @@ from app.dataset_dashboard.router import router as dataset_dashboard_router
 
 app = FastAPI(title="Voice Light")
 app.include_router(asr_router)
+app.include_router(asr_analysis_router)
 app.include_router(end_of_turn_router)
 app.include_router(dataset_dashboard_router)
 app.mount("/pages", StaticFiles(directory=WEB_ROOT / "pages"), name="pages")
