@@ -6,7 +6,7 @@ import importlib.metadata
 import os
 import tempfile
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Protocol
 
 import modal
 import torch
@@ -24,8 +24,17 @@ from app.asr.schemas import (
 )
 from app.quality.audio import load_audio
 
+
+class RemoteAsrModelCache(Protocol):
+    def transcribe(self, model_id: AsrModelId, audio_path: Path) -> TimedTranscription: ...
+
+
 modal_image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.from_registry(
+        "nvidia/cuda:12.4.0-devel-ubuntu22.04",
+        add_python="3.12",
+    )
+    .entrypoint([])
     .apt_install("ffmpeg", "libsndfile1")
     .uv_pip_install(
         "fastapi[standard]>=0.115.0",
@@ -70,22 +79,36 @@ class AsrModelServer:
             audio_path = Path(audio_file.name)
         try:
             audio_duration_seconds = load_audio(audio_path).metadata.duration_seconds
-            results = tuple(
-                transcribe_model(
-                    model_cache=self.model_cache,
-                    model_id=model_id,
-                    audio_path=audio_path,
-                    audio_duration_seconds=audio_duration_seconds,
-                )
-                for model_id in request.models
+            results = transcribe_requested_models(
+                model_cache=self.model_cache,
+                model_ids=request.models,
+                audio_path=audio_path,
+                audio_duration_seconds=audio_duration_seconds,
             )
             return RemoteAsrResponse(results=results)
         finally:
             audio_path.unlink(missing_ok=True)
 
 
+def transcribe_requested_models(
+    model_cache: RemoteAsrModelCache,
+    model_ids: tuple[AsrModelId, ...],
+    audio_path: Path,
+    audio_duration_seconds: float,
+) -> tuple[AsrTranscriptResult, ...]:
+    return tuple(
+        transcribe_model(
+            model_cache=model_cache,
+            model_id=model_id,
+            audio_path=audio_path,
+            audio_duration_seconds=audio_duration_seconds,
+        )
+        for model_id in model_ids
+    )
+
+
 def transcribe_model(
-    model_cache: AsrModelCache,
+    model_cache: RemoteAsrModelCache,
     model_id: AsrModelId,
     audio_path: Path,
     audio_duration_seconds: float,
