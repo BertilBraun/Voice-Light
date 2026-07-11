@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from app.asr.schemas import AsrModelId
+from enum import StrEnum
+
 from app.asr_quality.schemas import FileMetrics, SpeakerTrack, TranscriptionResult, Word
 from app.frozen_base_config import FrozenBaseModel
 
-AsrModelMode = AsrModelId
+
+class AsrModelMode(StrEnum):
+    PARAKEET_TDT = "parakeet_tdt_0_6b_v3"
+    WHISPERX = "whisperx_large_v3"
+    MERGED_CONSENSUS = "merged_consensus"
 
 
 class AsrModelInfo(FrozenBaseModel):

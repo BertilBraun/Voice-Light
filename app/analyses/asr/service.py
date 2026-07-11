@@ -3,6 +3,10 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from app.analyses.asr.merger import (
+    TranscriptToMerge,
+    merged_consensus_transcription,
+)
 from app.analyses.asr.models import (
     AsrAnalysisResponse,
     AsrModelInfo,
@@ -24,6 +28,8 @@ from app.audio.wav import capped_wave_bytes
 from app.data.sessions import SpeakerName, session_audio_path
 from app.quality.audio import load_audio
 
+REMOTE_ASR_MODEL_MODES = (AsrModelMode.PARAKEET_TDT, AsrModelMode.WHISPERX)
+
 
 def available_asr_models() -> tuple[AsrModelInfo, ...]:
     return (
@@ -36,6 +42,11 @@ def available_asr_models() -> tuple[AsrModelInfo, ...]:
             mode=AsrModelMode.WHISPERX,
             label="WhisperX large-v3",
             description="Faster-Whisper transcription plus WhisperX word alignment.",
+        ),
+        AsrModelInfo(
+            mode=AsrModelMode.MERGED_CONSENSUS,
+            label="Merged ASR consensus",
+            description="Local alignment merge of Parakeet and WhisperX timestamped words.",
         ),
     )
 
@@ -56,16 +67,16 @@ def analyze_asr(
     try:
         analyzed_duration_seconds = load_audio(capped_audio_path).metadata.duration_seconds
         model_info_by_id = {model.mode: model for model in available_asr_models()}
-        requested_model_ids = tuple(AsrModelId(model_mode.value) for model_mode in selected_models)
+        requested_model_ids = remote_model_ids_for_selected_modes(selected_models)
         cached_response = cached_asr_transcripts(
             audio_path=capped_audio_path,
             requested_models=requested_model_ids,
             cache=cache,
             remote_client_factory=remote_client_factory,
         )
-        runs = tuple(
+        dependency_runs = tuple(
             asr_model_run(
-                model_info=model_info_by_id[model_id],
+                model_info=model_info_by_id[AsrModelMode(model_id.value)],
                 transcript=transcript_for_model(
                     model_id=model_id,
                     results=cached_response.results,
@@ -77,6 +88,22 @@ def analyze_asr(
             )
             for model_id in requested_model_ids
         )
+        runs = tuple(
+            run
+            for run in dependency_runs
+            if AsrModelMode(run.transcription.model_name) in selected_models
+        )
+        if AsrModelMode.MERGED_CONSENSUS in selected_models:
+            runs += (
+                merged_asr_model_run(
+                    model_info=model_info_by_id[AsrModelMode.MERGED_CONSENSUS],
+                    source_runs=dependency_runs,
+                    audio_path=capped_audio_path,
+                    speaker_track=speaker_track,
+                    audio_duration_seconds=analyzed_duration_seconds,
+                    reference_words=reference_words,
+                ),
+            )
         return AsrAnalysisResponse(
             session_id=session_id,
             speaker_track=speaker_track,
@@ -87,6 +114,31 @@ def analyze_asr(
         )
     finally:
         capped_audio_path.unlink(missing_ok=True)
+
+
+def remote_model_ids_for_selected_modes(
+    selected_models: tuple[AsrModelMode, ...],
+) -> tuple[AsrModelId, ...]:
+    remote_model_modes = tuple(
+        model_mode for model_mode in selected_models if is_remote_model(model_mode)
+    )
+    if AsrModelMode.MERGED_CONSENSUS in selected_models:
+        remote_model_modes = unique_model_modes((*remote_model_modes, *REMOTE_ASR_MODEL_MODES))
+    if not remote_model_modes:
+        raise ValueError("Select at least one remote ASR model or merged ASR consensus.")
+    return tuple(AsrModelId(model_mode.value) for model_mode in remote_model_modes)
+
+
+def unique_model_modes(model_modes: tuple[AsrModelMode, ...]) -> tuple[AsrModelMode, ...]:
+    unique_modes: list[AsrModelMode] = []
+    for model_mode in model_modes:
+        if model_mode not in unique_modes:
+            unique_modes.append(model_mode)
+    return tuple(unique_modes)
+
+
+def is_remote_model(model_mode: AsrModelMode) -> bool:
+    return model_mode in REMOTE_ASR_MODEL_MODES
 
 
 def speaker_name_for_track(speaker_track: SpeakerTrack) -> SpeakerName:
@@ -120,6 +172,39 @@ def asr_model_run(
         speaker_track=speaker_track,
         audio_duration_seconds=audio_duration_seconds,
         transcript=transcript,
+    )
+    return AsrModelRun(
+        model=model_info,
+        transcription=transcription,
+        metrics=metrics_for_model(
+            audio_path=audio_path,
+            reference_words=reference_words,
+            transcription=transcription,
+        ),
+    )
+
+
+def merged_asr_model_run(
+    model_info: AsrModelInfo,
+    source_runs: tuple[AsrModelRun, ...],
+    audio_path: Path,
+    speaker_track: SpeakerTrack,
+    audio_duration_seconds: float,
+    reference_words: tuple[Word, ...],
+) -> AsrModelRun:
+    if len(source_runs) < 2:
+        raise ValueError("Merged ASR consensus requires Parakeet and WhisperX transcripts.")
+    transcription = merged_consensus_transcription(
+        audio_path=str(audio_path),
+        speaker_track=speaker_track,
+        audio_duration_seconds=audio_duration_seconds,
+        transcripts=tuple(
+            TranscriptToMerge(
+                model_name=source_run.transcription.model_name,
+                words=source_run.transcription.words,
+            )
+            for source_run in source_runs
+        ),
     )
     return AsrModelRun(
         model=model_info,

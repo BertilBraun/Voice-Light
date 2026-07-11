@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+
+from app.asr_quality.alignment import align_words
+from app.asr_quality.schemas import AlignmentOperation, SpeakerTrack, TranscriptionResult, Word
+
+MERGED_CONSENSUS_MODEL_NAME = "merged_consensus"
+MERGED_CONSENSUS_IDENTIFIER = "voice-light/asr-consensus-v1"
+
+
+@dataclass(frozen=True)
+class TranscriptToMerge:
+    model_name: str
+    words: tuple[Word, ...]
+
+
+def merged_consensus_transcription(
+    audio_path: str,
+    speaker_track: SpeakerTrack,
+    audio_duration_seconds: float,
+    transcripts: tuple[TranscriptToMerge, ...],
+) -> TranscriptionResult:
+    if len(transcripts) < 2:
+        raise ValueError("Merged ASR consensus requires at least two transcripts.")
+    merge_start = time.perf_counter()
+    words = merged_words(primary=transcripts[0].words, secondary=transcripts[1].words)
+    processing_time_seconds = time.perf_counter() - merge_start
+    return TranscriptionResult(
+        model_name=MERGED_CONSENSUS_MODEL_NAME,
+        audio_path=audio_path,
+        track=speaker_track,
+        audio_duration_seconds=audio_duration_seconds,
+        processing_time_seconds=processing_time_seconds,
+        words=words,
+        raw_output={
+            "source_models": ",".join(transcript.model_name for transcript in transcripts),
+            "word_count": len(words),
+        },
+        model_identifier=MERGED_CONSENSUS_IDENTIFIER,
+        package_versions={},
+        model_loading_time_seconds=0.0,
+        inference_time_seconds=processing_time_seconds,
+        real_time_factor=processing_time_seconds / audio_duration_seconds
+        if audio_duration_seconds > 0.0
+        else None,
+        peak_gpu_memory_mb=None,
+        error=None,
+    )
+
+
+def merged_words(primary: tuple[Word, ...], secondary: tuple[Word, ...]) -> tuple[Word, ...]:
+    alignment = align_words(primary, secondary)
+    words: list[Word] = []
+    for aligned_word in alignment:
+        match aligned_word.operation:
+            case AlignmentOperation.EQUAL:
+                assert aligned_word.reference is not None
+                assert aligned_word.prediction is not None
+                words.append(
+                    average_word_timestamps(aligned_word.reference, aligned_word.prediction)
+                )
+            case AlignmentOperation.SUBSTITUTE:
+                assert aligned_word.reference is not None
+                assert aligned_word.prediction is not None
+                words.extend(
+                    sorted_words_by_start((aligned_word.reference, aligned_word.prediction))
+                )
+            case AlignmentOperation.DELETE:
+                assert aligned_word.reference is not None
+                words.append(aligned_word.reference)
+            case AlignmentOperation.INSERT:
+                assert aligned_word.prediction is not None
+                words.append(aligned_word.prediction)
+    return tuple(words)
+
+
+def average_word_timestamps(primary: Word, secondary: Word) -> Word:
+    return Word(
+        text=primary.text,
+        start_seconds=average_optional_seconds(primary.start_seconds, secondary.start_seconds),
+        end_seconds=average_optional_seconds(primary.end_seconds, secondary.end_seconds),
+        confidence=average_optional_seconds(primary.confidence, secondary.confidence),
+    )
+
+
+def average_optional_seconds(primary: float | None, secondary: float | None) -> float | None:
+    if primary is None:
+        return secondary
+    if secondary is None:
+        return primary
+    return (primary + secondary) / 2.0
+
+
+def sorted_words_by_start(words: tuple[Word, ...]) -> tuple[Word, ...]:
+    return tuple(
+        sorted(
+            words,
+            key=lambda word: word.start_seconds if word.start_seconds is not None else float("inf"),
+        )
+    )
