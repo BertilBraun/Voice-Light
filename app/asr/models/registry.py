@@ -4,8 +4,6 @@ from pathlib import Path
 from threading import Lock
 
 from app.asr.models.base import LoadedAsrModel, TimedTranscription, timed_transcription
-from app.asr.models.parakeet import ParakeetAsrModel
-from app.asr.models.whisperx import WhisperxAsrModel
 from app.asr.schemas import AsrModelId
 
 
@@ -31,6 +29,10 @@ class AsrModelCache:
 def load_asr_model(model_id: AsrModelId) -> LoadedAsrModel:
     match model_id:
         case AsrModelId.PARAKEET_TDT:
+            from app.asr.models.parakeet import ParakeetAsrModel
+
             return ParakeetAsrModel()
         case AsrModelId.WHISPERX:
+            from app.asr.models.whisperx import WhisperxAsrModel
+
             return WhisperxAsrModel()

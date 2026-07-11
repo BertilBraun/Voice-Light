@@ -47,10 +47,11 @@ app = modal.App("VoiceLight")
     image=modal_image,
     gpu="A10G",
     timeout=600,
+    max_containers=1,
     scaledown_window=300,
     secrets=[modal.Secret.from_name("voice-light-asr")],
 )
-@modal.concurrent(max_inputs=20, target_inputs=4)
+@modal.concurrent(max_inputs=20, target_inputs=20)
 class AsrModelServer:
     @modal.enter()
     def setup(self) -> None:

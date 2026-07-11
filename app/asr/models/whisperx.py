@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
@@ -12,7 +13,12 @@ from app.asr.models.parsing import words_from_whisperx_output
 from app.asr.schemas import AsrModelId, TimestampedWord
 
 AlignmentMetadata = dict[str, str | int | float | bool | None]
-AlignmentResources = tuple[nn.Module, AlignmentMetadata]
+
+
+@dataclass(frozen=True)
+class AlignmentResources:
+    align_model: nn.Module
+    metadata: AlignmentMetadata
 
 
 class WhisperxAsrModel:
@@ -46,12 +52,12 @@ class WhisperxAsrModel:
                 for segment in segments
             ]
             language_code = str(transcription_info.language)
-            align_model, metadata = self.alignment_model_for_language(language_code=language_code)
+            alignment_resources = self.alignment_model_for_language(language_code=language_code)
             audio = whisperx.load_audio(str(audio_path))
             aligned = whisperx.align(
                 transcription_segments,
-                align_model,
-                metadata,
+                alignment_resources.align_model,
+                alignment_resources.metadata,
                 audio,
                 self.device,
                 return_char_alignments=False,
@@ -69,6 +75,6 @@ class WhisperxAsrModel:
                 language_code=language_code,
                 device=self.device,
             )
-            alignment_resources = (align_model, metadata)
+            alignment_resources = AlignmentResources(align_model=align_model, metadata=metadata)
             self.alignment_models[language_code] = alignment_resources
             return alignment_resources
