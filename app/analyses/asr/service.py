@@ -66,9 +66,10 @@ def available_asr_models() -> tuple[AsrModelInfo, ...]:
         ),
         AsrModelInfo(
             mode=AsrModelMode.PARAKEET_CANARY_CONSENSUS,
-            label="Parakeet + Canary timing consensus",
+            label="Parakeet + Canary timing union",
             description=(
-                "Parakeet words clipped to Canary speech blocks joined across gaps up to 300ms."
+                "All Parakeet words plus Canary-only timestamp coverage, without "
+                "overlapping duplicates."
             ),
         ),
         AsrModelInfo(

@@ -9,20 +9,13 @@ from app.asr_quality.schemas import AlignmentOperation, SpeakerTrack, Transcript
 MERGED_CONSENSUS_MODEL_NAME = "merged_consensus"
 MERGED_CONSENSUS_IDENTIFIER = "voice-light/asr-consensus-v1"
 PARAKEET_CANARY_CONSENSUS_MODEL_NAME = "parakeet_canary_consensus"
-PARAKEET_CANARY_CONSENSUS_IDENTIFIER = "voice-light/parakeet-canary-consensus-v2"
-CANARY_SPEECH_BLOCK_GAP_SECONDS = 0.3
+PARAKEET_CANARY_CONSENSUS_IDENTIFIER = "voice-light/parakeet-canary-consensus-v3"
 
 
 @dataclass(frozen=True)
 class TranscriptToMerge:
     model_name: str
     words: tuple[Word, ...]
-
-
-@dataclass(frozen=True)
-class SpeechBlock:
-    start_seconds: float
-    end_seconds: float
 
 
 def merged_consensus_transcription(
@@ -74,7 +67,7 @@ def parakeet_canary_consensus_transcription(
     canary: TranscriptToMerge,
 ) -> TranscriptionResult:
     merge_start = time.perf_counter()
-    words = parakeet_words_in_canary_speech_blocks(
+    words = parakeet_canary_union_words(
         parakeet_words=parakeet.words,
         canary_words=canary.words,
     )
@@ -88,7 +81,7 @@ def parakeet_canary_consensus_transcription(
         words=words,
         raw_output={
             "source_models": f"{parakeet.model_name},{canary.model_name}",
-            "canary_speech_block_gap_seconds": CANARY_SPEECH_BLOCK_GAP_SECONDS,
+            "merge_strategy": "parakeet_priority_timing_union",
             "word_count": len(words),
         },
         model_identifier=PARAKEET_CANARY_CONSENSUS_IDENTIFIER,
@@ -129,76 +122,33 @@ def merged_words(primary: tuple[Word, ...], secondary: tuple[Word, ...]) -> tupl
     return tuple(words)
 
 
-def parakeet_words_in_canary_speech_blocks(
+def parakeet_canary_union_words(
     parakeet_words: tuple[Word, ...], canary_words: tuple[Word, ...]
 ) -> tuple[Word, ...]:
-    words: list[Word] = []
-    speech_blocks = speech_blocks_from_words(canary_words)
-    for parakeet_word in parakeet_words:
-        speech_block = overlapping_speech_block(word=parakeet_word, speech_blocks=speech_blocks)
-        if speech_block is None:
-            continue
-        words.append(clipped_word_to_speech_block(word=parakeet_word, speech_block=speech_block))
-    return tuple(words)
-
-
-def speech_blocks_from_words(words: tuple[Word, ...]) -> tuple[SpeechBlock, ...]:
-    timestamped_words = tuple(
-        sorted(
-            (
-                word
-                for word in words
-                if word.start_seconds is not None and word.end_seconds is not None
-            ),
-            key=lambda word: word.start_seconds,
+    canary_only_words = tuple(
+        canary_word
+        for canary_word in canary_words
+        if is_timestamped(canary_word)
+        and not any(
+            words_overlap(first=canary_word, second=parakeet_word)
+            for parakeet_word in parakeet_words
         )
     )
-    speech_blocks: list[SpeechBlock] = []
-    for word in timestamped_words:
-        assert word.start_seconds is not None
-        assert word.end_seconds is not None
-        previous_block = speech_blocks[-1] if speech_blocks else None
-        if (
-            previous_block is not None
-            and word.start_seconds - previous_block.end_seconds <= CANARY_SPEECH_BLOCK_GAP_SECONDS
-        ):
-            speech_blocks[-1] = SpeechBlock(
-                start_seconds=previous_block.start_seconds,
-                end_seconds=max(previous_block.end_seconds, word.end_seconds),
-            )
-            continue
-        speech_blocks.append(
-            SpeechBlock(start_seconds=word.start_seconds, end_seconds=word.end_seconds)
-        )
-    return tuple(speech_blocks)
+    return sorted_words_by_start((*parakeet_words, *canary_only_words))
 
 
-def overlapping_speech_block(
-    word: Word, speech_blocks: tuple[SpeechBlock, ...]
-) -> SpeechBlock | None:
-    if word.start_seconds is None or word.end_seconds is None:
-        return None
-    for speech_block in speech_blocks:
-        if (
-            word.start_seconds <= speech_block.end_seconds
-            and word.end_seconds >= speech_block.start_seconds
-        ):
-            return speech_block
-    return None
+def is_timestamped(word: Word) -> bool:
+    return word.start_seconds is not None and word.end_seconds is not None
 
 
-def clipped_word_to_speech_block(word: Word, speech_block: SpeechBlock) -> Word:
-    assert word.start_seconds is not None
-    assert word.end_seconds is not None
-    start_seconds = max(word.start_seconds, speech_block.start_seconds)
-    end_seconds = min(word.end_seconds, speech_block.end_seconds)
-    assert start_seconds <= end_seconds
-    return Word(
-        text=word.text,
-        start_seconds=start_seconds,
-        end_seconds=end_seconds,
-        confidence=word.confidence,
-    )
+def words_overlap(first: Word, second: Word) -> bool:
+    if not is_timestamped(first) or not is_timestamped(second):
+        return False
+    assert first.start_seconds is not None
+    assert first.end_seconds is not None
+    assert second.start_seconds is not None
+    assert second.end_seconds is not None
+    return first.start_seconds <= second.end_seconds and first.end_seconds >= second.start_seconds
 
 
 def average_word_timestamps(primary: Word, secondary: Word) -> Word:
