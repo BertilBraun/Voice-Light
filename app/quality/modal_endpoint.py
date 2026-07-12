@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import os
 import shutil
 import tempfile
@@ -16,10 +14,11 @@ from fastapi import Header, HTTPException
 from app.audio import load_audio
 from app.quality.remote_models import (
     AudioSource,
+    LocalAudioSource,
     RemoteQualityRequest,
     RemoteQualityResponse,
-    UploadedAudioSource,
     UriAudioSource,
+    VolumeAudioSource,
 )
 from app.quality.service import score_two_track_sample
 from app.storage.local import LocalStorageBackend
@@ -37,6 +36,12 @@ modal_image = (
 )
 
 app = modal.App("VoiceLightQuality")
+QUALITY_INPUT_MOUNT = Path("/quality-inputs")
+quality_input_volume = modal.Volume.from_name(
+    "voice-light-quality-inputs",
+    create_if_missing=True,
+    version=2,
+)
 
 
 @app.function(
@@ -47,6 +52,7 @@ app = modal.App("VoiceLightQuality")
     max_containers=20,
     scaledown_window=120,
     secrets=[modal.Secret.from_name("voice-light-asr")],
+    volumes={QUALITY_INPUT_MOUNT.as_posix(): quality_input_volume},
 )
 @modal.concurrent(max_inputs=1)
 @modal.fastapi_endpoint(method="POST")
@@ -55,6 +61,7 @@ def analyze(
     authorization: Annotated[str | None, Header()] = None,
 ) -> RemoteQualityResponse:
     authorize_request(authorization)
+    quality_input_volume.reload()
     with tempfile.TemporaryDirectory(prefix="voice-light-quality-") as temporary_directory:
         directory = Path(temporary_directory)
         speaker1_path = materialize_audio_source(request.speaker1, directory, "speaker1")
@@ -78,15 +85,13 @@ def analyze(
 
 def materialize_audio_source(source: AudioSource, directory: Path, stem: str) -> Path:
     match source:
-        case UploadedAudioSource():
-            suffix = Path(source.filename).suffix or ".audio"
-            path = directory / f"{stem}{suffix}"
-            try:
-                path.write_bytes(base64.b64decode(source.audio_base64, validate=True))
-            except (binascii.Error, ValueError) as error:
-                raise HTTPException(
-                    status_code=400, detail="Invalid base64 audio payload."
-                ) from error
+        case VolumeAudioSource():
+            relative_path = Path(source.path.lstrip("/\\"))
+            if ".." in relative_path.parts:
+                raise HTTPException(status_code=400, detail="Invalid quality input volume path.")
+            path = QUALITY_INPUT_MOUNT / relative_path
+            if not path.is_file():
+                raise HTTPException(status_code=400, detail="Quality input file was not found.")
             return path
         case UriAudioSource():
             parsed_uri = urlparse(source.uri)
@@ -100,6 +105,10 @@ def materialize_audio_source(source: AudioSource, directory: Path, stem: str) ->
             with urlopen(source.uri, timeout=300) as response, path.open("wb") as output:
                 shutil.copyfileobj(response, output)
             return path
+        case LocalAudioSource():
+            raise HTTPException(
+                status_code=400, detail="Local audio must be staged before request."
+            )
 
 
 def authorize_request(authorization: str | None) -> None:

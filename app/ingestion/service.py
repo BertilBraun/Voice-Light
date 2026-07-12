@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,8 +14,8 @@ from app.quality.client import HttpRemoteQualityClient, RemoteQualityClient
 from app.quality.models import AudioMetadata, QualityResult
 from app.quality.remote_models import (
     AudioSource,
+    LocalAudioSource,
     RemoteQualityRequest,
-    UploadedAudioSource,
     UriAudioSource,
 )
 from app.storage.base import StorageBackend
@@ -155,9 +154,9 @@ def remote_audio_source(storage: StorageBackend, path: str) -> AudioSource:
     access_uri = storage.access_uri(path)
     if urlparse(access_uri).scheme in {"http", "https"}:
         return UriAudioSource(uri=access_uri)
-    return UploadedAudioSource(
+    return LocalAudioSource(
         filename=Path(path).name,
-        audio_base64=base64.b64encode(storage.read(path)).decode("ascii"),
+        path=path,
     )
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -10,9 +9,9 @@ from app.ingestion.discovery import DiscoveredSample
 from app.ingestion.service import process_sample, remote_audio_source
 from app.quality.models import AudioMetadata, ProcessingStatus, QualityResult
 from app.quality.remote_models import (
+    LocalAudioSource,
     RemoteQualityRequest,
     RemoteQualityResponse,
-    UploadedAudioSource,
     UriAudioSource,
 )
 
@@ -48,9 +47,7 @@ class RecordingQualityClient:
 def test_local_audio_source_is_uploaded() -> None:
     source = remote_audio_source(MemoryStorage(b"audio", "C:/audio.wav"), "audio.wav")
 
-    assert isinstance(source, UploadedAudioSource)
-    assert source.filename == "audio.wav"
-    assert base64.b64decode(source.audio_base64) == b"audio"
+    assert source == LocalAudioSource(filename="audio.wav", path="audio.wav")
 
 
 def test_presigned_audio_source_is_downloaded_by_modal() -> None:

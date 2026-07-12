@@ -8,10 +8,15 @@ from app.frozen_base_config import FrozenBaseModel
 from app.quality.models import AudioMetadata, QualityResult
 
 
-class UploadedAudioSource(FrozenBaseModel):
-    kind: Literal["upload"] = "upload"
+class LocalAudioSource(FrozenBaseModel):
+    kind: Literal["local"] = "local"
     filename: str
-    audio_base64: str
+    path: str
+
+
+class VolumeAudioSource(FrozenBaseModel):
+    kind: Literal["volume"] = "volume"
+    path: str
 
 
 class UriAudioSource(FrozenBaseModel):
@@ -19,7 +24,10 @@ class UriAudioSource(FrozenBaseModel):
     uri: str
 
 
-AudioSource = Annotated[UploadedAudioSource | UriAudioSource, Field(discriminator="kind")]
+AudioSource = Annotated[
+    LocalAudioSource | VolumeAudioSource | UriAudioSource,
+    Field(discriminator="kind"),
+]
 
 
 class RemoteQualityRequest(FrozenBaseModel):

@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
-from app.quality.remote_models import RemoteQualityRequest, RemoteQualityResponse
+import modal
+
+from app.quality.remote_models import (
+    AudioSource,
+    LocalAudioSource,
+    RemoteQualityRequest,
+    RemoteQualityResponse,
+    UriAudioSource,
+    VolumeAudioSource,
+)
+
+QUALITY_INPUT_VOLUME_NAME = "voice-light-quality-inputs"
 
 
 class RemoteQualityClient(Protocol):
     def analyze(self, request: RemoteQualityRequest) -> RemoteQualityResponse: ...
+
+
+class VolumeUpload(Protocol):
+    def put_file(self, local_file: str, remote_path: str) -> None: ...
 
 
 class HttpRemoteQualityClient:
@@ -22,6 +39,21 @@ class HttpRemoteQualityClient:
         self.api_key = api_key
 
     def analyze(self, request: RemoteQualityRequest) -> RemoteQualityResponse:
+        if not has_local_source(request.speaker1) and not has_local_source(request.speaker2):
+            return self._send(request)
+        request_identifier = str(uuid4())
+        volume = modal.Volume.from_name(
+            QUALITY_INPUT_VOLUME_NAME,
+            create_if_missing=True,
+            version=2,
+        )
+        staged_request = stage_local_sources(request, volume, request_identifier)
+        try:
+            return self._send(staged_request)
+        finally:
+            volume.remove_file(request_identifier, recursive=True)
+
+    def _send(self, request: RemoteQualityRequest) -> RemoteQualityResponse:
         request_body = json.dumps(request.model_dump(mode="json")).encode("utf-8")
         http_request = Request(
             self.endpoint_url,
@@ -43,3 +75,39 @@ class HttpRemoteQualityClient:
         except URLError as error:
             raise ValueError(f"Remote quality request failed: {error.reason}") from error
         return RemoteQualityResponse.model_validate_json(payload)
+
+
+def stage_local_sources(
+    request: RemoteQualityRequest,
+    volume: modal.Volume,
+    request_identifier: str,
+) -> RemoteQualityRequest:
+    with volume.batch_upload(force=True) as upload:
+        speaker1 = stage_audio_source(request.speaker1, upload, request_identifier, 1)
+        speaker2 = stage_audio_source(request.speaker2, upload, request_identifier, 2)
+    return request.model_copy(update={"speaker1": speaker1, "speaker2": speaker2})
+
+
+def has_local_source(source: AudioSource) -> bool:
+    match source:
+        case LocalAudioSource():
+            return True
+        case UriAudioSource() | VolumeAudioSource():
+            return False
+
+
+def stage_audio_source(
+    source: AudioSource,
+    upload: VolumeUpload,
+    request_identifier: str,
+    speaker_index: int,
+) -> VolumeAudioSource | UriAudioSource:
+    match source:
+        case LocalAudioSource():
+            remote_path = (
+                f"/{request_identifier}/speaker{speaker_index}{Path(source.filename).suffix}"
+            )
+            upload.put_file(source.path, remote_path)
+            return VolumeAudioSource(path=remote_path.lstrip("/"))
+        case UriAudioSource() | VolumeAudioSource():
+            return source

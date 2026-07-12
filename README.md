@@ -84,6 +84,6 @@ Deploy the Modal quality endpoint with:
 uv run modal deploy .\app\quality\modal_endpoint.py
 ```
 
-Local audio is uploaded to the endpoint. Remote storage backends can provide an HTTP or HTTPS
-access URI, including a presigned S3 URL, which Modal downloads into temporary storage for the
-duration of the analysis.
+Local audio is staged in a temporary request directory on a Modal Volume and deleted after the
+request. Remote storage backends can provide an HTTP or HTTPS access URI, including a presigned
+S3 URL, which Modal downloads into temporary storage for the duration of the analysis.
