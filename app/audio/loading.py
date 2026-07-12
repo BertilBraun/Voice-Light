@@ -26,20 +26,23 @@ def load_audio(storage: StorageBackend, path: str) -> AudioTrack:
             channels = stream.codec_context.channels
             if sample_rate is None or channels is None:
                 raise ValueError(f"Audio stream metadata is incomplete: {path}")
-            resampler = av.AudioResampler(format="fltp", layout="mono", rate=sample_rate)
+            resampler = av.AudioResampler(
+                format="fltp",
+                layout=stream.codec_context.layout.name,
+                rate=sample_rate,
+            )
             sample_parts = [
-                resampled_frame.to_ndarray().reshape(-1)
+                resampled_frame.to_ndarray().T
                 for decoded_frame in container.decode(stream)
                 for resampled_frame in resampler.resample(decoded_frame)
             ]
             sample_parts.extend(
-                resampled_frame.to_ndarray().reshape(-1)
-                for resampled_frame in resampler.resample(None)
+                resampled_frame.to_ndarray().T for resampled_frame in resampler.resample(None)
             )
     samples = (
         np.concatenate(sample_parts).astype(np.float32, copy=False)
         if sample_parts
-        else np.empty(0, dtype=np.float32)
+        else np.empty((0, channels), dtype=np.float32)
     )
     return AudioTrack(
         samples=samples,

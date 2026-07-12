@@ -12,7 +12,8 @@ from app.quality.service import score_two_track_sample
 def audio_track(sample_rate: int, duration_seconds: float = 1.0) -> AudioTrack:
     sample_count = round(sample_rate * duration_seconds)
     sample_positions = np.arange(sample_count, dtype=np.float32) / sample_rate
-    samples = (0.1 * np.sin(2.0 * np.pi * 220.0 * sample_positions)).astype(np.float32)
+    mono_samples = (0.1 * np.sin(2.0 * np.pi * 220.0 * sample_positions)).astype(np.float32)
+    samples = mono_samples[:, np.newaxis]
     return AudioTrack(
         samples=samples,
         metadata=AudioMetadata(
@@ -30,6 +31,18 @@ def test_prepare_audio_track_resamples_to_quality_sample_rate() -> None:
     assert prepared_track.metadata.sample_rate == QUALITY_SAMPLE_RATE
     assert prepared_track.metadata.sample_count == QUALITY_SAMPLE_RATE
     assert prepared_track.metadata.duration_seconds == 1.0
+
+
+def test_prepare_audio_track_averages_channels() -> None:
+    source_track = audio_track(sample_rate=QUALITY_SAMPLE_RATE)
+    stereo_track = AudioTrack(
+        samples=np.column_stack((source_track.samples[:, 0], -source_track.samples[:, 0])),
+        metadata=source_track.metadata.model_copy(update={"channels": 2}),
+    )
+
+    prepared_track = prepare_audio_track(stereo_track)
+
+    assert prepared_track.samples == pytest.approx(np.zeros(QUALITY_SAMPLE_RATE))
 
 
 def test_quality_assessment_accepts_tracks_with_different_source_sample_rates() -> None:

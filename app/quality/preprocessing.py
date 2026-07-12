@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -9,16 +11,27 @@ from app.quality.models import AudioMetadata
 QUALITY_SAMPLE_RATE = 16_000
 
 
+@dataclass(frozen=True)
+class PreparedAudioTrack:
+    samples: NDArray[np.float32]
+    metadata: AudioMetadata
+
+
 def prepare_audio_track(
     audio_track: AudioTrack,
     target_sample_rate: int = QUALITY_SAMPLE_RATE,
-) -> AudioTrack:
+) -> PreparedAudioTrack:
+    if audio_track.samples.ndim != 2:
+        raise ValueError("decoded audio samples must have frame and channel dimensions")
+    if audio_track.samples.shape[1] != audio_track.metadata.channels:
+        raise ValueError("decoded audio channel count does not match metadata")
+    mono_samples = audio_track.samples.mean(axis=1)
     samples = resample_linear(
-        audio_track.samples,
+        mono_samples,
         audio_track.metadata.sample_rate,
         target_sample_rate,
     )
-    return AudioTrack(
+    return PreparedAudioTrack(
         samples=np.clip(samples.astype(np.float32), -1.0, 1.0),
         metadata=AudioMetadata(
             duration_seconds=len(samples) / target_sample_rate,
