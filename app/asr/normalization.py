@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from app.asr_quality.schemas import Word
+from app.asr.transcript import Word
 
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*-?")
 

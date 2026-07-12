@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from app.asr_quality.schemas import FileMetrics, SpeakerTrack, TranscriptionResult, Word
+from app.analyses.asr.metric_models import FileMetrics
+from app.asr.transcript import SpeakerTrack, TranscriptionResult, Word
 from app.frozen_base_config import FrozenBaseModel
 
 

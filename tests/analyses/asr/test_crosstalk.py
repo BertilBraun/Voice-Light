@@ -7,7 +7,7 @@ from app.analyses.asr.crosstalk import (
     CrosstalkFramePower,
     filter_crosstalk_words,
 )
-from app.asr_quality.schemas import Word
+from app.asr.transcript import Word
 
 
 def test_filter_crosstalk_words_removes_quiet_and_other_dominant_words() -> None:

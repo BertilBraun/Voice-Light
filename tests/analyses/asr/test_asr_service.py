@@ -9,7 +9,7 @@ from app.analyses.asr.service import (
     transcription_result_from_cached_asr,
 )
 from app.asr.schemas import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TimestampedWord
-from app.asr_quality.schemas import SpeakerTrack, Word
+from app.asr.transcript import SpeakerTrack, Word
 
 
 def test_transcription_result_from_cached_asr_preserves_words_and_runtime() -> None:

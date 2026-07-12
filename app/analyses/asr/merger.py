@@ -3,8 +3,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from app.asr_quality.alignment import align_words
-from app.asr_quality.schemas import AlignmentOperation, SpeakerTrack, TranscriptionResult, Word
+from app.asr.alignment import AlignmentOperation, align_words
+from app.asr.transcript import SpeakerTrack, TranscriptionResult, Word
 
 MERGED_CONSENSUS_MODEL_NAME = "merged_consensus"
 MERGED_CONSENSUS_IDENTIFIER = "voice-light/asr-consensus-v1"

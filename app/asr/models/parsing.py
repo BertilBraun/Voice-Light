@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TypeAlias
 
-from app.asr_quality.schemas import Word
+from app.asr.transcript import Word
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonRecord: TypeAlias = dict[str, JsonScalar]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.asr.models.parsing import merge_timestamp_pieces, words_from_whisperx_output
-from app.asr_quality.schemas import Word
+from app.asr.transcript import Word
 
 
 def test_merge_parakeet_timestamp_pieces_combines_word_fragments() -> None:

@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from statistics import mean, median
 
-from app.asr_quality.alignment import align_words, word_error_counts
-from app.asr_quality.normalization import is_partial_token, normalized_tokens
-from app.asr_quality.schemas import (
-    AlignedWord,
-    AlignmentOperation,
+from app.analyses.asr.metric_models import (
     ClassMetric,
     DisfluencyMetrics,
     FileMetrics,
+    TimestampMetric,
+    TimestampMetrics,
+)
+from app.asr.alignment import AlignedWord, AlignmentOperation, align_words, word_error_counts
+from app.asr.normalization import is_partial_token, normalized_tokens
+from app.asr.transcript import (
     JsonScalar,
     ReferenceTranscript,
     RuntimeStats,
-    TimestampMetric,
-    TimestampMetrics,
     TranscriptionResult,
     Word,
 )

@@ -25,6 +25,8 @@ from app.analyses.asr.merger import (
     merged_consensus_transcription,
     parakeet_canary_consensus_transcription,
 )
+from app.analyses.asr.metric_models import FileMetrics
+from app.analyses.asr.metrics import evaluate_file
 from app.analyses.asr.models import (
     AsrAnalysisResponse,
     AsrModelInfo,
@@ -39,14 +41,7 @@ from app.asr.models.parsing import (
 )
 from app.asr.schemas import AsrModelId, AsrTranscriptResult, TimestampedWord
 from app.asr.service import AsrTranscriptCache, RemoteAsrClientFactory, cached_asr_transcripts
-from app.asr_quality.metrics import evaluate_file
-from app.asr_quality.schemas import (
-    FileMetrics,
-    ReferenceTranscript,
-    SpeakerTrack,
-    TranscriptionResult,
-    Word,
-)
+from app.asr.transcript import ReferenceTranscript, SpeakerTrack, TranscriptionResult, Word
 from app.audio.wav import capped_wave_bytes
 from app.data.sessions import SpeakerName, session_audio_path
 from app.quality.audio import load_audio

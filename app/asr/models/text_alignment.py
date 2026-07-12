@@ -8,7 +8,7 @@ import whisperx
 from torch import nn
 
 from app.asr.models.parsing import words_from_whisperx_output
-from app.asr_quality.schemas import Word
+from app.asr.transcript import Word
 
 AlignmentMetadata = dict[str, str | int | float | bool | None]
 

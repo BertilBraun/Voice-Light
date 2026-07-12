@@ -9,7 +9,7 @@ from typing import Protocol
 import torch
 
 from app.asr.schemas import AsrModelId, TimestampedWord
-from app.asr_quality.schemas import Word
+from app.asr.transcript import Word
 
 
 class LoadedAsrModel(Protocol):

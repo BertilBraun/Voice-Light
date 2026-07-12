@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from app.asr_quality.schemas import Word
+from app.asr.transcript import Word
 from app.audio.wav import read_mono_wave_audio
 from app.quality.vad import frame_rms
 

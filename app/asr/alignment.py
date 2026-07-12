@@ -1,7 +1,38 @@
 from __future__ import annotations
 
-from app.asr_quality.normalization import normalized_word_pairs
-from app.asr_quality.schemas import AlignedWord, AlignmentOperation, Word, WordErrorCounts
+from enum import StrEnum
+
+from app.asr.normalization import normalized_word_pairs
+from app.asr.transcript import Word
+from app.frozen_base_config import FrozenBaseModel
+
+
+class AlignmentOperation(StrEnum):
+    EQUAL = "equal"
+    SUBSTITUTE = "substitute"
+    DELETE = "delete"
+    INSERT = "insert"
+
+
+class AlignedWord(FrozenBaseModel):
+    reference: Word | None
+    prediction: Word | None
+    operation: AlignmentOperation
+    reference_token: str | None
+    prediction_token: str | None
+
+
+class WordErrorCounts(FrozenBaseModel):
+    substitutions: int
+    insertions: int
+    deletions: int
+    reference_words: int
+
+    @property
+    def wer(self) -> float:
+        if self.reference_words == 0:
+            return 0.0
+        return (self.substitutions + self.insertions + self.deletions) / self.reference_words
 
 
 def align_words(
