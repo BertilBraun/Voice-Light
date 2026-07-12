@@ -32,7 +32,7 @@ let activeWordKeys = new Map();
 let playbackObjectUrl = null;
 let waveformPeaks = [];
 let timelineDurationSeconds = 0;
-const sentenceGapSeconds = 0.15;
+const sentenceGapSeconds = 0.3;
 
 runButton.addEventListener("click", runAnalysis);
 modelSettingsButton.addEventListener("click", openModelSettingsModal);
@@ -348,7 +348,7 @@ function renderTimingWaveforms(runs) {
   timingWaveforms.replaceChildren(
     ...runs.map((run, runIndex) => timingWaveform(run, runIndex)),
   );
-  timingSummary.textContent = `${runs.length} model timing tracks; words within 150ms are grouped.`;
+  timingSummary.textContent = `${runs.length} model timing tracks; words within 300ms are grouped.`;
   drawTimingWaveforms();
 }
 

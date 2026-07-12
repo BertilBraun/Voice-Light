@@ -68,7 +68,7 @@ def available_asr_models() -> tuple[AsrModelInfo, ...]:
             mode=AsrModelMode.PARAKEET_CANARY_CONSENSUS,
             label="Parakeet + Canary timing consensus",
             description=(
-                "Only aligned words with start and end timestamps within 200ms; uses their overlap."
+                "Parakeet words clipped to Canary speech blocks joined across gaps up to 300ms."
             ),
         ),
         AsrModelInfo(

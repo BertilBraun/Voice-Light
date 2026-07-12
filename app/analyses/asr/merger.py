@@ -9,14 +9,20 @@ from app.asr_quality.schemas import AlignmentOperation, SpeakerTrack, Transcript
 MERGED_CONSENSUS_MODEL_NAME = "merged_consensus"
 MERGED_CONSENSUS_IDENTIFIER = "voice-light/asr-consensus-v1"
 PARAKEET_CANARY_CONSENSUS_MODEL_NAME = "parakeet_canary_consensus"
-PARAKEET_CANARY_CONSENSUS_IDENTIFIER = "voice-light/parakeet-canary-consensus-v1"
-PAIRWISE_TIMESTAMP_TOLERANCE_SECONDS = 0.2
+PARAKEET_CANARY_CONSENSUS_IDENTIFIER = "voice-light/parakeet-canary-consensus-v2"
+CANARY_SPEECH_BLOCK_GAP_SECONDS = 0.3
 
 
 @dataclass(frozen=True)
 class TranscriptToMerge:
     model_name: str
     words: tuple[Word, ...]
+
+
+@dataclass(frozen=True)
+class SpeechBlock:
+    start_seconds: float
+    end_seconds: float
 
 
 def merged_consensus_transcription(
@@ -68,7 +74,10 @@ def parakeet_canary_consensus_transcription(
     canary: TranscriptToMerge,
 ) -> TranscriptionResult:
     merge_start = time.perf_counter()
-    words = agreeing_conservative_words(primary=parakeet.words, secondary=canary.words)
+    words = parakeet_words_in_canary_speech_blocks(
+        parakeet_words=parakeet.words,
+        canary_words=canary.words,
+    )
     processing_time_seconds = time.perf_counter() - merge_start
     return TranscriptionResult(
         model_name=PARAKEET_CANARY_CONSENSUS_MODEL_NAME,
@@ -79,7 +88,7 @@ def parakeet_canary_consensus_transcription(
         words=words,
         raw_output={
             "source_models": f"{parakeet.model_name},{canary.model_name}",
-            "timestamp_tolerance_seconds": PAIRWISE_TIMESTAMP_TOLERANCE_SECONDS,
+            "canary_speech_block_gap_seconds": CANARY_SPEECH_BLOCK_GAP_SECONDS,
             "word_count": len(words),
         },
         model_identifier=PARAKEET_CANARY_CONSENSUS_IDENTIFIER,
@@ -120,58 +129,75 @@ def merged_words(primary: tuple[Word, ...], secondary: tuple[Word, ...]) -> tupl
     return tuple(words)
 
 
-def agreeing_conservative_words(
-    primary: tuple[Word, ...], secondary: tuple[Word, ...]
+def parakeet_words_in_canary_speech_blocks(
+    parakeet_words: tuple[Word, ...], canary_words: tuple[Word, ...]
 ) -> tuple[Word, ...]:
     words: list[Word] = []
-    for aligned_word in align_words(primary, secondary):
-        if aligned_word.operation is not AlignmentOperation.EQUAL:
+    speech_blocks = speech_blocks_from_words(canary_words)
+    for parakeet_word in parakeet_words:
+        speech_block = overlapping_speech_block(word=parakeet_word, speech_blocks=speech_blocks)
+        if speech_block is None:
             continue
-        assert aligned_word.reference is not None
-        assert aligned_word.prediction is not None
-        if not timestamps_agree_within_tolerance(
-            primary=aligned_word.reference,
-            secondary=aligned_word.prediction,
-        ):
-            continue
-        words.append(
-            intersecting_word_timestamps(
-                primary=aligned_word.reference,
-                secondary=aligned_word.prediction,
-            )
-        )
+        words.append(clipped_word_to_speech_block(word=parakeet_word, speech_block=speech_block))
     return tuple(words)
 
 
-def timestamps_agree_within_tolerance(primary: Word, secondary: Word) -> bool:
-    if (
-        primary.start_seconds is None
-        or primary.end_seconds is None
-        or secondary.start_seconds is None
-        or secondary.end_seconds is None
-    ):
-        return False
-    return (
-        abs(primary.start_seconds - secondary.start_seconds) <= PAIRWISE_TIMESTAMP_TOLERANCE_SECONDS
-        and abs(primary.end_seconds - secondary.end_seconds) <= PAIRWISE_TIMESTAMP_TOLERANCE_SECONDS
-        and max(primary.start_seconds, secondary.start_seconds)
-        <= min(primary.end_seconds, secondary.end_seconds)
+def speech_blocks_from_words(words: tuple[Word, ...]) -> tuple[SpeechBlock, ...]:
+    timestamped_words = tuple(
+        sorted(
+            (
+                word
+                for word in words
+                if word.start_seconds is not None and word.end_seconds is not None
+            ),
+            key=lambda word: word.start_seconds,
+        )
     )
+    speech_blocks: list[SpeechBlock] = []
+    for word in timestamped_words:
+        assert word.start_seconds is not None
+        assert word.end_seconds is not None
+        previous_block = speech_blocks[-1] if speech_blocks else None
+        if (
+            previous_block is not None
+            and word.start_seconds - previous_block.end_seconds <= CANARY_SPEECH_BLOCK_GAP_SECONDS
+        ):
+            speech_blocks[-1] = SpeechBlock(
+                start_seconds=previous_block.start_seconds,
+                end_seconds=max(previous_block.end_seconds, word.end_seconds),
+            )
+            continue
+        speech_blocks.append(
+            SpeechBlock(start_seconds=word.start_seconds, end_seconds=word.end_seconds)
+        )
+    return tuple(speech_blocks)
 
 
-def intersecting_word_timestamps(primary: Word, secondary: Word) -> Word:
-    assert primary.start_seconds is not None
-    assert primary.end_seconds is not None
-    assert secondary.start_seconds is not None
-    assert secondary.end_seconds is not None
-    start_seconds = max(primary.start_seconds, secondary.start_seconds)
-    end_seconds = min(primary.end_seconds, secondary.end_seconds)
+def overlapping_speech_block(
+    word: Word, speech_blocks: tuple[SpeechBlock, ...]
+) -> SpeechBlock | None:
+    if word.start_seconds is None or word.end_seconds is None:
+        return None
+    for speech_block in speech_blocks:
+        if (
+            word.start_seconds <= speech_block.end_seconds
+            and word.end_seconds >= speech_block.start_seconds
+        ):
+            return speech_block
+    return None
+
+
+def clipped_word_to_speech_block(word: Word, speech_block: SpeechBlock) -> Word:
+    assert word.start_seconds is not None
+    assert word.end_seconds is not None
+    start_seconds = max(word.start_seconds, speech_block.start_seconds)
+    end_seconds = min(word.end_seconds, speech_block.end_seconds)
     assert start_seconds <= end_seconds
     return Word(
-        text=primary.text,
+        text=word.text,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
-        confidence=average_optional_seconds(primary.confidence, secondary.confidence),
+        confidence=word.confidence,
     )
 
 
