@@ -63,6 +63,21 @@ def test_remote_model_ids_expand_parakeet_canary_consensus_dependencies() -> Non
     )
 
 
+def test_remote_model_ids_expand_filtered_remote_dependency() -> None:
+    assert remote_model_ids_for_selected_modes((AsrModelMode.PARAKEET_TDT_CROSSTALK_FILTERED,)) == (
+        AsrModelId.PARAKEET_TDT,
+    )
+
+
+def test_remote_model_ids_expand_filtered_union_dependencies() -> None:
+    assert remote_model_ids_for_selected_modes(
+        (AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED,)
+    ) == (
+        AsrModelId.PARAKEET_TDT,
+        AsrModelId.CANARY,
+    )
+
+
 def test_remote_model_ids_do_not_duplicate_explicit_dependencies() -> None:
     assert remote_model_ids_for_selected_modes(
         (

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from app.analyses.asr.catalog import available_asr_models
 from app.analyses.asr.models import AsrAnalysisRequest, AsrAnalysisResponse, AsrModelInfo
-from app.analyses.asr.service import analyze_asr, available_asr_models
+from app.analyses.asr.service import analyze_asr
 from app.asr.client import HttpRemoteAsrClient
 from app.asr.repository import AsrTranscriptRepository
 from app.config import DATABASE_URL, REMOTE_ASR_API_KEY, REMOTE_ASR_ENDPOINT_URL

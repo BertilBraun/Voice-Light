@@ -13,6 +13,12 @@ class AsrModelMode(StrEnum):
     NEMOTRON_3_5 = "nemotron_3_5_asr_streaming_0_6b"
     PARAKEET_CANARY_CONSENSUS = "parakeet_canary_consensus"
     MERGED_CONSENSUS = "merged_consensus"
+    PARAKEET_TDT_CROSSTALK_FILTERED = "parakeet_tdt_0_6b_v3_crosstalk_filtered"
+    WHISPERX_CROSSTALK_FILTERED = "whisperx_large_v3_crosstalk_filtered"
+    CANARY_CROSSTALK_FILTERED = "canary_1b_v2_crosstalk_filtered"
+    NEMOTRON_3_5_CROSSTALK_FILTERED = "nemotron_3_5_asr_streaming_0_6b_crosstalk_filtered"
+    PARAKEET_CANARY_CROSSTALK_FILTERED = "parakeet_canary_union_crosstalk_filtered"
+    MERGED_CONSENSUS_CROSSTALK_FILTERED = "merged_consensus_crosstalk_filtered"
 
 
 class AsrModelInfo(FrozenBaseModel):
