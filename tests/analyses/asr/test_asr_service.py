@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.analyses.asr.models import AsrModelMode
 from app.analyses.asr.service import (
+    filtered_remote_dependencies,
     remote_model_ids_for_selected_modes,
     transcription_result_from_cached_asr,
 )
@@ -75,6 +76,20 @@ def test_remote_model_ids_expand_filtered_union_dependencies() -> None:
     ) == (
         AsrModelId.PARAKEET_TDT,
         AsrModelId.CANARY,
+    )
+
+
+def test_filtered_remote_dependencies_expand_before_derived_merge() -> None:
+    assert filtered_remote_dependencies(
+        (
+            AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED,
+            AsrModelMode.MERGED_CONSENSUS_CROSSTALK_FILTERED,
+        )
+    ) == (
+        AsrModelMode.PARAKEET_TDT,
+        AsrModelMode.WHISPERX,
+        AsrModelMode.CANARY,
+        AsrModelMode.NEMOTRON_3_5,
     )
 
 

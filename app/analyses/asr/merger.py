@@ -8,8 +8,12 @@ from app.asr_quality.schemas import AlignmentOperation, SpeakerTrack, Transcript
 
 MERGED_CONSENSUS_MODEL_NAME = "merged_consensus"
 MERGED_CONSENSUS_IDENTIFIER = "voice-light/asr-consensus-v1"
+FILTERED_MERGED_CONSENSUS_MODEL_NAME = "merged_consensus_crosstalk_filtered"
+FILTERED_MERGED_CONSENSUS_IDENTIFIER = "voice-light/asr-consensus-filtered-v1"
 PARAKEET_CANARY_CONSENSUS_MODEL_NAME = "parakeet_canary_consensus"
 PARAKEET_CANARY_CONSENSUS_IDENTIFIER = "voice-light/parakeet-canary-consensus-v3"
+FILTERED_PARAKEET_CANARY_MODEL_NAME = "parakeet_canary_union_crosstalk_filtered"
+FILTERED_PARAKEET_CANARY_IDENTIFIER = "voice-light/parakeet-canary-filtered-union-v1"
 
 
 @dataclass(frozen=True)
@@ -24,13 +28,47 @@ def merged_consensus_transcription(
     audio_duration_seconds: float,
     transcripts: tuple[TranscriptToMerge, ...],
 ) -> TranscriptionResult:
+    return build_merged_consensus_transcription(
+        audio_path=audio_path,
+        speaker_track=speaker_track,
+        audio_duration_seconds=audio_duration_seconds,
+        transcripts=transcripts,
+        model_name=MERGED_CONSENSUS_MODEL_NAME,
+        model_identifier=MERGED_CONSENSUS_IDENTIFIER,
+    )
+
+
+def filtered_merged_consensus_transcription(
+    audio_path: str,
+    speaker_track: SpeakerTrack,
+    audio_duration_seconds: float,
+    transcripts: tuple[TranscriptToMerge, ...],
+) -> TranscriptionResult:
+    return build_merged_consensus_transcription(
+        audio_path=audio_path,
+        speaker_track=speaker_track,
+        audio_duration_seconds=audio_duration_seconds,
+        transcripts=transcripts,
+        model_name=FILTERED_MERGED_CONSENSUS_MODEL_NAME,
+        model_identifier=FILTERED_MERGED_CONSENSUS_IDENTIFIER,
+    )
+
+
+def build_merged_consensus_transcription(
+    audio_path: str,
+    speaker_track: SpeakerTrack,
+    audio_duration_seconds: float,
+    transcripts: tuple[TranscriptToMerge, ...],
+    model_name: str,
+    model_identifier: str,
+) -> TranscriptionResult:
     if len(transcripts) < 2:
         raise ValueError("Merged ASR consensus requires at least two transcripts.")
     merge_start = time.perf_counter()
     words = progressively_merged_words(transcripts=transcripts)
     processing_time_seconds = time.perf_counter() - merge_start
     return TranscriptionResult(
-        model_name=MERGED_CONSENSUS_MODEL_NAME,
+        model_name=model_name,
         audio_path=audio_path,
         track=speaker_track,
         audio_duration_seconds=audio_duration_seconds,
@@ -40,7 +78,7 @@ def merged_consensus_transcription(
             "source_models": ",".join(transcript.model_name for transcript in transcripts),
             "word_count": len(words),
         },
-        model_identifier=MERGED_CONSENSUS_IDENTIFIER,
+        model_identifier=model_identifier,
         package_versions={},
         model_loading_time_seconds=0.0,
         inference_time_seconds=processing_time_seconds,
@@ -66,6 +104,44 @@ def parakeet_canary_consensus_transcription(
     parakeet: TranscriptToMerge,
     canary: TranscriptToMerge,
 ) -> TranscriptionResult:
+    return build_parakeet_canary_union_transcription(
+        audio_path=audio_path,
+        speaker_track=speaker_track,
+        audio_duration_seconds=audio_duration_seconds,
+        parakeet=parakeet,
+        canary=canary,
+        model_name=PARAKEET_CANARY_CONSENSUS_MODEL_NAME,
+        model_identifier=PARAKEET_CANARY_CONSENSUS_IDENTIFIER,
+    )
+
+
+def filtered_parakeet_canary_union_transcription(
+    audio_path: str,
+    speaker_track: SpeakerTrack,
+    audio_duration_seconds: float,
+    parakeet: TranscriptToMerge,
+    canary: TranscriptToMerge,
+) -> TranscriptionResult:
+    return build_parakeet_canary_union_transcription(
+        audio_path=audio_path,
+        speaker_track=speaker_track,
+        audio_duration_seconds=audio_duration_seconds,
+        parakeet=parakeet,
+        canary=canary,
+        model_name=FILTERED_PARAKEET_CANARY_MODEL_NAME,
+        model_identifier=FILTERED_PARAKEET_CANARY_IDENTIFIER,
+    )
+
+
+def build_parakeet_canary_union_transcription(
+    audio_path: str,
+    speaker_track: SpeakerTrack,
+    audio_duration_seconds: float,
+    parakeet: TranscriptToMerge,
+    canary: TranscriptToMerge,
+    model_name: str,
+    model_identifier: str,
+) -> TranscriptionResult:
     merge_start = time.perf_counter()
     words = parakeet_canary_union_words(
         parakeet_words=parakeet.words,
@@ -73,7 +149,7 @@ def parakeet_canary_consensus_transcription(
     )
     processing_time_seconds = time.perf_counter() - merge_start
     return TranscriptionResult(
-        model_name=PARAKEET_CANARY_CONSENSUS_MODEL_NAME,
+        model_name=model_name,
         audio_path=audio_path,
         track=speaker_track,
         audio_duration_seconds=audio_duration_seconds,
@@ -84,7 +160,7 @@ def parakeet_canary_consensus_transcription(
             "merge_strategy": "parakeet_priority_timing_union",
             "word_count": len(words),
         },
-        model_identifier=PARAKEET_CANARY_CONSENSUS_IDENTIFIER,
+        model_identifier=model_identifier,
         package_versions={},
         model_loading_time_seconds=0.0,
         inference_time_seconds=processing_time_seconds,

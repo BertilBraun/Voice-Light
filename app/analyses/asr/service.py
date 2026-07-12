@@ -5,13 +5,12 @@ import time
 from pathlib import Path
 
 from app.analyses.asr.catalog import (
+    REMOTE_ASR_MODEL_MODES,
     available_asr_models,
+    filtered_mode_for_remote_model,
     is_filtered_model,
     is_remote_model,
     remote_dependencies_for_model_mode,
-    requires_merged_consensus,
-    requires_parakeet_canary_union,
-    source_mode_for_filtered_model,
 )
 from app.analyses.asr.crosstalk import (
     CrosstalkFilterConfig,
@@ -21,6 +20,8 @@ from app.analyses.asr.crosstalk import (
 )
 from app.analyses.asr.merger import (
     TranscriptToMerge,
+    filtered_merged_consensus_transcription,
+    filtered_parakeet_canary_union_transcription,
     merged_consensus_transcription,
     parakeet_canary_consensus_transcription,
 )
@@ -97,8 +98,27 @@ def analyze_asr(
             )
             for model_id in requested_model_ids
         )
+        frame_power_pair = (
+            load_crosstalk_frame_power(
+                target_audio_path=source_path,
+                other_audio_path=other_source_path,
+                config=CROSSTALK_FILTER_CONFIG,
+            )
+            if any(is_filtered_model(model_mode) for model_mode in selected_models)
+            else None
+        )
+        filtered_dependency_runs = filtered_remote_model_runs(
+            selected_models=selected_models,
+            dependency_runs=dependency_runs,
+            model_infos=model_infos,
+            frame_power_pair=frame_power_pair,
+            audio_path=capped_audio_path,
+            speaker_track=speaker_track,
+            audio_duration_seconds=analyzed_duration_seconds,
+            reference_words=reference_words,
+        )
         derived_runs: tuple[AsrModelRun, ...] = ()
-        if requires_merged_consensus(selected_models):
+        if AsrModelMode.MERGED_CONSENSUS in selected_models:
             derived_runs += (
                 merged_asr_model_run(
                     model_info=model_info_for_mode(
@@ -112,7 +132,7 @@ def analyze_asr(
                     reference_words=reference_words,
                 ),
             )
-        if requires_parakeet_canary_union(selected_models):
+        if AsrModelMode.PARAKEET_CANARY_CONSENSUS in selected_models:
             derived_runs += (
                 parakeet_canary_consensus_model_run(
                     model_info=model_info_for_mode(
@@ -133,25 +153,45 @@ def analyze_asr(
                     reference_words=reference_words,
                 ),
             )
-        source_runs = (*dependency_runs, *derived_runs)
-        frame_power_pair = (
-            load_crosstalk_frame_power(
-                target_audio_path=source_path,
-                other_audio_path=other_source_path,
-                config=CROSSTALK_FILTER_CONFIG,
+        if AsrModelMode.MERGED_CONSENSUS_CROSSTALK_FILTERED in selected_models:
+            derived_runs += (
+                merged_asr_model_run(
+                    model_info=model_info_for_mode(
+                        model_infos=model_infos,
+                        model_mode=AsrModelMode.MERGED_CONSENSUS_CROSSTALK_FILTERED,
+                    ),
+                    source_runs=filtered_dependency_runs,
+                    audio_path=capped_audio_path,
+                    speaker_track=speaker_track,
+                    audio_duration_seconds=analyzed_duration_seconds,
+                    reference_words=reference_words,
+                ),
             )
-            if any(is_filtered_model(model_mode) for model_mode in selected_models)
-            else None
-        )
+        if AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED in selected_models:
+            derived_runs += (
+                parakeet_canary_consensus_model_run(
+                    model_info=model_info_for_mode(
+                        model_infos=model_infos,
+                        model_mode=AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED,
+                    ),
+                    parakeet=source_run_for_mode(
+                        source_runs=filtered_dependency_runs,
+                        model_mode=AsrModelMode.PARAKEET_TDT_CROSSTALK_FILTERED,
+                    ),
+                    canary=source_run_for_mode(
+                        source_runs=filtered_dependency_runs,
+                        model_mode=AsrModelMode.CANARY_CROSSTALK_FILTERED,
+                    ),
+                    audio_path=capped_audio_path,
+                    speaker_track=speaker_track,
+                    audio_duration_seconds=analyzed_duration_seconds,
+                    reference_words=reference_words,
+                ),
+            )
+        source_runs = (*dependency_runs, *filtered_dependency_runs, *derived_runs)
         runs = selected_model_runs(
             selected_models=selected_models,
             source_runs=source_runs,
-            model_infos=model_infos,
-            frame_power_pair=frame_power_pair,
-            audio_path=capped_audio_path,
-            speaker_track=speaker_track,
-            audio_duration_seconds=analyzed_duration_seconds,
-            reference_words=reference_words,
         )
         return AsrAnalysisResponse(
             session_id=session_id,
@@ -177,7 +217,11 @@ def remote_model_ids_for_selected_modes(
         )
     if not remote_model_modes:
         raise ValueError("Select at least one remote ASR model or ASR consensus.")
-    return tuple(AsrModelId(model_mode.value) for model_mode in remote_model_modes)
+    return tuple(
+        AsrModelId(model_mode.value)
+        for model_mode in REMOTE_ASR_MODEL_MODES
+        if model_mode in remote_model_modes
+    )
 
 
 def unique_model_modes(model_modes: tuple[AsrModelMode, ...]) -> tuple[AsrModelMode, ...]:
@@ -248,19 +292,31 @@ def merged_asr_model_run(
     reference_words: tuple[Word, ...],
 ) -> AsrModelRun:
     if len(source_runs) < 2:
-        raise ValueError("Merged ASR consensus requires Parakeet and WhisperX transcripts.")
-    transcription = merged_consensus_transcription(
-        audio_path=str(audio_path),
-        speaker_track=speaker_track,
-        audio_duration_seconds=audio_duration_seconds,
-        transcripts=tuple(
-            TranscriptToMerge(
-                model_name=source_run.transcription.model_name,
-                words=source_run.transcription.words,
-            )
-            for source_run in source_runs
-        ),
+        raise ValueError("Merged ASR consensus requires at least two source transcripts.")
+    transcripts = tuple(
+        TranscriptToMerge(
+            model_name=source_run.transcription.model_name,
+            words=source_run.transcription.words,
+        )
+        for source_run in source_runs
     )
+    match model_info.mode:
+        case AsrModelMode.MERGED_CONSENSUS:
+            transcription = merged_consensus_transcription(
+                audio_path=str(audio_path),
+                speaker_track=speaker_track,
+                audio_duration_seconds=audio_duration_seconds,
+                transcripts=transcripts,
+            )
+        case AsrModelMode.MERGED_CONSENSUS_CROSSTALK_FILTERED:
+            transcription = filtered_merged_consensus_transcription(
+                audio_path=str(audio_path),
+                speaker_track=speaker_track,
+                audio_duration_seconds=audio_duration_seconds,
+                transcripts=transcripts,
+            )
+        case _:
+            raise ValueError(f"Unsupported merged ASR model mode: {model_info.mode.value}")
     return AsrModelRun(
         model=model_info,
         transcription=transcription,
@@ -281,19 +337,33 @@ def parakeet_canary_consensus_model_run(
     audio_duration_seconds: float,
     reference_words: tuple[Word, ...],
 ) -> AsrModelRun:
-    transcription = parakeet_canary_consensus_transcription(
-        audio_path=str(audio_path),
-        speaker_track=speaker_track,
-        audio_duration_seconds=audio_duration_seconds,
-        parakeet=TranscriptToMerge(
-            model_name=parakeet.transcription.model_name,
-            words=parakeet.transcription.words,
-        ),
-        canary=TranscriptToMerge(
-            model_name=canary.transcription.model_name,
-            words=canary.transcription.words,
-        ),
+    parakeet_transcript = TranscriptToMerge(
+        model_name=parakeet.transcription.model_name,
+        words=parakeet.transcription.words,
     )
+    canary_transcript = TranscriptToMerge(
+        model_name=canary.transcription.model_name,
+        words=canary.transcription.words,
+    )
+    match model_info.mode:
+        case AsrModelMode.PARAKEET_CANARY_CONSENSUS:
+            transcription = parakeet_canary_consensus_transcription(
+                audio_path=str(audio_path),
+                speaker_track=speaker_track,
+                audio_duration_seconds=audio_duration_seconds,
+                parakeet=parakeet_transcript,
+                canary=canary_transcript,
+            )
+        case AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED:
+            transcription = filtered_parakeet_canary_union_transcription(
+                audio_path=str(audio_path),
+                speaker_track=speaker_track,
+                audio_duration_seconds=audio_duration_seconds,
+                parakeet=parakeet_transcript,
+                canary=canary_transcript,
+            )
+        case _:
+            raise ValueError(f"Unsupported Parakeet-Canary model mode: {model_info.mode.value}")
     return AsrModelRun(
         model=model_info,
         transcription=transcription,
@@ -326,6 +396,16 @@ def model_info_for_mode(
 def selected_model_runs(
     selected_models: tuple[AsrModelMode, ...],
     source_runs: tuple[AsrModelRun, ...],
+) -> tuple[AsrModelRun, ...]:
+    return tuple(
+        source_run_for_mode(source_runs=source_runs, model_mode=model_mode)
+        for model_mode in selected_models
+    )
+
+
+def filtered_remote_model_runs(
+    selected_models: tuple[AsrModelMode, ...],
+    dependency_runs: tuple[AsrModelRun, ...],
     model_infos: tuple[AsrModelInfo, ...],
     frame_power_pair: CrosstalkFramePower | None,
     audio_path: Path,
@@ -333,30 +413,40 @@ def selected_model_runs(
     audio_duration_seconds: float,
     reference_words: tuple[Word, ...],
 ) -> tuple[AsrModelRun, ...]:
-    runs: list[AsrModelRun] = []
-    for model_mode in selected_models:
-        if not is_filtered_model(model_mode):
-            runs.append(source_run_for_mode(source_runs=source_runs, model_mode=model_mode))
-            continue
-        assert frame_power_pair is not None
-        runs.append(
-            crosstalk_filtered_model_run(
-                model_info=model_info_for_mode(
-                    model_infos=model_infos,
-                    model_mode=model_mode,
-                ),
-                source_run=source_run_for_mode(
-                    source_runs=source_runs,
-                    model_mode=source_mode_for_filtered_model(model_mode),
-                ),
-                frame_power_pair=frame_power_pair,
-                audio_path=audio_path,
-                speaker_track=speaker_track,
-                audio_duration_seconds=audio_duration_seconds,
-                reference_words=reference_words,
-            )
+    filtered_remote_modes = filtered_remote_dependencies(selected_models)
+    if not filtered_remote_modes:
+        return ()
+    assert frame_power_pair is not None
+    return tuple(
+        crosstalk_filtered_model_run(
+            model_info=model_info_for_mode(
+                model_infos=model_infos,
+                model_mode=filtered_mode_for_remote_model(model_mode),
+            ),
+            source_run=source_run_for_mode(
+                source_runs=dependency_runs,
+                model_mode=model_mode,
+            ),
+            frame_power_pair=frame_power_pair,
+            audio_path=audio_path,
+            speaker_track=speaker_track,
+            audio_duration_seconds=audio_duration_seconds,
+            reference_words=reference_words,
         )
-    return tuple(runs)
+        for model_mode in filtered_remote_modes
+    )
+
+
+def filtered_remote_dependencies(
+    selected_models: tuple[AsrModelMode, ...],
+) -> tuple[AsrModelMode, ...]:
+    model_modes: tuple[AsrModelMode, ...] = ()
+    for selected_model in selected_models:
+        if is_filtered_model(selected_model):
+            model_modes = unique_model_modes(
+                (*model_modes, *remote_dependencies_for_model_mode(selected_model))
+            )
+    return tuple(model_mode for model_mode in REMOTE_ASR_MODEL_MODES if model_mode in model_modes)
 
 
 def crosstalk_filtered_model_run(
