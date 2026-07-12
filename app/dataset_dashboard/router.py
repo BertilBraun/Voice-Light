@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
+from pydantic import Field
 
 from app.audio.wav import capped_wave_bytes
 from app.config import DATABASE_URL
@@ -18,6 +19,7 @@ from app.db.models import (
 )
 from app.db.repository import Repository
 from app.frozen_base_config import FrozenBaseModel
+from app.ingestion.discovery import DatasetLayout
 from app.ingestion.service import IngestionService
 
 router = APIRouter(prefix="/api/dataset-dashboard", tags=["dataset-dashboard"])
@@ -38,6 +40,8 @@ class IngestionJobListResponse(FrozenBaseModel):
 class LocalIngestionRequest(FrozenBaseModel):
     dataset_name: str
     root_path: str
+    layout: DatasetLayout = DatasetLayout.TWO_AUDIO_FILES
+    max_workers: int = Field(default=4, ge=1, le=32)
 
 
 class IngestionQueueResponse(FrozenBaseModel):
@@ -124,7 +128,11 @@ def ingest_local_dataset(
         )
     ingestion_service = IngestionService(repository())
     background_tasks.add_task(
-        ingestion_service.ingest_local_dataset, request.dataset_name, root_path
+        ingestion_service.ingest_local_dataset,
+        request.dataset_name,
+        root_path,
+        request.layout,
+        request.max_workers,
     )
     return IngestionQueueResponse(status="queued")
 

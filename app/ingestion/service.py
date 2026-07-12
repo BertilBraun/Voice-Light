@@ -1,36 +1,70 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
+from app.audio import AudioTrack, load_audio
 from app.db.models import DatasetCreate, DatasetStorageKind, JobStatus, TrackSide
 from app.db.repository import AudioMetadataInput, QualityResultInput, Repository, SampleTrackInput
-from app.ingestion.discovery import discover_two_track_samples
-from app.quality.audio import load_audio
+from app.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
 from app.quality.models import QualityResult
 from app.quality.service import score_two_track_sample
+from app.storage.base import StorageBackend
 from app.storage.local import LocalStorageBackend
+
+
+@dataclass(frozen=True)
+class ProcessedSample:
+    discovered: DiscoveredSample
+    speaker1_audio: AudioTrack
+    speaker2_audio: AudioTrack
+    quality_result: QualityResult
 
 
 class IngestionService:
     def __init__(self, repository: Repository) -> None:
         self.repository = repository
 
-    def ingest_local_dataset(self, dataset_name: str, root: Path) -> None:
-        job = self.repository.create_ingestion_job(
-            str(root), f"Queued ingestion for {dataset_name}"
+    def ingest_local_dataset(
+        self,
+        dataset_name: str,
+        root: Path,
+        layout: DatasetLayout = DatasetLayout.TWO_AUDIO_FILES,
+        max_workers: int = 4,
+    ) -> None:
+        self.ingest_dataset(
+            dataset_name=dataset_name,
+            root=root.resolve().as_posix(),
+            storage=LocalStorageBackend(),
+            storage_kind=DatasetStorageKind.LOCAL,
+            layout=layout,
+            max_workers=max_workers,
         )
-        storage = LocalStorageBackend()
+
+    def ingest_dataset(
+        self,
+        dataset_name: str,
+        root: str,
+        storage: StorageBackend,
+        storage_kind: DatasetStorageKind,
+        layout: DatasetLayout,
+        max_workers: int,
+    ) -> None:
+        if max_workers < 1:
+            raise ValueError("max_workers must be at least 1")
+        job = self.repository.create_ingestion_job(root, f"Queued ingestion for {dataset_name}")
         try:
             dataset = self.repository.upsert_dataset(
                 DatasetCreate(
                     name=dataset_name,
-                    storage_kind=DatasetStorageKind.LOCAL,
-                    root_uri=str(root.resolve()),
-                    description="Local two-track dataset",
+                    storage_kind=storage_kind,
+                    root_uri=root,
+                    description=f"{layout.value} dataset",
                 )
             )
-            samples = discover_two_track_samples(storage, root)
+            samples = discover_samples(storage, root, layout)
             self.repository.update_ingestion_job(
                 job.id,
                 JobStatus.RUNNING,
@@ -40,77 +74,26 @@ class IngestionService:
             )
             processed_samples = 0
             failed_samples = 0
-            for discovered_sample in samples:
-                try:
-                    sample = self.repository.upsert_sample(
-                        dataset.id, discovered_sample.external_id
-                    )
-                    speaker1_metadata = load_audio(discovered_sample.speaker1_path).metadata
-                    speaker2_metadata = load_audio(discovered_sample.speaker2_path).metadata
-                    speaker1_track = self.repository.upsert_sample_track(
-                        sample.id,
-                        SampleTrackInput(
-                            side=TrackSide.SPEAKER1,
-                            speaker_index=1,
-                            storage_uri=str(discovered_sample.speaker1_path),
-                            access_uri=storage.access_uri(str(discovered_sample.speaker1_path)),
-                            duration_seconds=speaker1_metadata.duration_seconds,
-                            sample_rate=speaker1_metadata.sample_rate,
-                            channels=speaker1_metadata.channels,
-                            sample_count=speaker1_metadata.sample_count,
-                        ),
-                    )
-                    speaker2_track = self.repository.upsert_sample_track(
-                        sample.id,
-                        SampleTrackInput(
-                            side=TrackSide.SPEAKER2,
-                            speaker_index=2,
-                            storage_uri=str(discovered_sample.speaker2_path),
-                            access_uri=storage.access_uri(str(discovered_sample.speaker2_path)),
-                            duration_seconds=speaker2_metadata.duration_seconds,
-                            sample_rate=speaker2_metadata.sample_rate,
-                            channels=speaker2_metadata.channels,
-                            sample_count=speaker2_metadata.sample_count,
-                        ),
-                    )
-                    self.repository.upsert_audio_metadata(
-                        AudioMetadataInput(
-                            sample_track_id=speaker1_track.id,
-                            duration_seconds=speaker1_metadata.duration_seconds,
-                            sample_rate=speaker1_metadata.sample_rate,
-                            channels=speaker1_metadata.channels,
-                            sample_count=speaker1_metadata.sample_count,
-                            payload=speaker1_metadata.model_dump(),
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(process_sample, storage, discovered_sample)
+                    for discovered_sample in samples
+                ]
+                for future in as_completed(futures):
+                    try:
+                        persist_processed_sample(
+                            self.repository, dataset.id, storage, future.result()
                         )
+                        processed_samples += 1
+                    except Exception:
+                        failed_samples += 1
+                    self.repository.update_ingestion_job(
+                        job.id,
+                        JobStatus.RUNNING,
+                        f"Processed {processed_samples + failed_samples} of {len(samples)} samples",
+                        processed_samples=processed_samples,
+                        failed_samples=failed_samples,
                     )
-                    self.repository.upsert_audio_metadata(
-                        AudioMetadataInput(
-                            sample_track_id=speaker2_track.id,
-                            duration_seconds=speaker2_metadata.duration_seconds,
-                            sample_rate=speaker2_metadata.sample_rate,
-                            channels=speaker2_metadata.channels,
-                            sample_count=speaker2_metadata.sample_count,
-                            payload=speaker2_metadata.model_dump(),
-                        )
-                    )
-                    quality_result = score_two_track_sample(
-                        discovered_sample.external_id,
-                        discovered_sample.speaker1_path,
-                        discovered_sample.speaker2_path,
-                    )
-                    self.repository.insert_quality_result(
-                        quality_result_input(sample.id, quality_result)
-                    )
-                    processed_samples += 1
-                except Exception:
-                    failed_samples += 1
-                self.repository.update_ingestion_job(
-                    job.id,
-                    JobStatus.RUNNING,
-                    f"Processed {processed_samples} of {len(samples)} samples",
-                    processed_samples=processed_samples,
-                    failed_samples=failed_samples,
-                )
             self.repository.update_ingestion_job(
                 job.id,
                 JobStatus.COMPLETED,
@@ -125,6 +108,70 @@ class IngestionService:
                 "Ingestion failed",
                 error=f"{type(error).__name__}: {error}",
             )
+
+
+def process_sample(storage: StorageBackend, discovered: DiscoveredSample) -> ProcessedSample:
+    speaker1_audio = load_audio(storage, discovered.speaker1_path)
+    speaker2_audio = load_audio(storage, discovered.speaker2_path)
+    speaker1_uri = storage.access_uri(discovered.speaker1_path)
+    speaker2_uri = storage.access_uri(discovered.speaker2_path)
+    return ProcessedSample(
+        discovered=discovered,
+        speaker1_audio=speaker1_audio,
+        speaker2_audio=speaker2_audio,
+        quality_result=score_two_track_sample(
+            sample_id=discovered.external_id,
+            speaker1_audio=speaker1_audio,
+            speaker2_audio=speaker2_audio,
+            speaker1_uri=speaker1_uri,
+            speaker2_uri=speaker2_uri,
+        ),
+    )
+
+
+def persist_processed_sample(
+    repository: Repository,
+    dataset_id: UUID,
+    storage: StorageBackend,
+    processed: ProcessedSample,
+) -> None:
+    sample = repository.upsert_sample(dataset_id, processed.discovered.external_id)
+    repository.update_sample_duration(
+        sample.id,
+        min(
+            processed.speaker1_audio.metadata.duration_seconds,
+            processed.speaker2_audio.metadata.duration_seconds,
+        ),
+    )
+    for side, speaker_index, path, audio in (
+        (TrackSide.SPEAKER1, 1, processed.discovered.speaker1_path, processed.speaker1_audio),
+        (TrackSide.SPEAKER2, 2, processed.discovered.speaker2_path, processed.speaker2_audio),
+    ):
+        metadata = audio.metadata
+        track = repository.upsert_sample_track(
+            sample.id,
+            SampleTrackInput(
+                side=side,
+                speaker_index=speaker_index,
+                storage_uri=path,
+                access_uri=storage.access_uri(path),
+                duration_seconds=metadata.duration_seconds,
+                sample_rate=metadata.sample_rate,
+                channels=metadata.channels,
+                sample_count=metadata.sample_count,
+            ),
+        )
+        repository.upsert_audio_metadata(
+            AudioMetadataInput(
+                sample_track_id=track.id,
+                duration_seconds=metadata.duration_seconds,
+                sample_rate=metadata.sample_rate,
+                channels=metadata.channels,
+                sample_count=metadata.sample_count,
+                payload=metadata.model_dump(),
+            )
+        )
+    repository.insert_quality_result(quality_result_input(sample.id, processed.quality_result))
 
 
 def quality_result_input(sample_id: UUID, quality_result: QualityResult) -> QualityResultInput:

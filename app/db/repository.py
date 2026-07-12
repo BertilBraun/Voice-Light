@@ -230,6 +230,21 @@ class Repository:
         assert row is not None
         return sample_record(row)
 
+    def update_sample_duration(self, sample_id: UUID, duration_seconds: float) -> SampleRecord:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                UPDATE samples
+                SET duration_seconds = %s, updated_at = now()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (duration_seconds, sample_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Sample not found: {sample_id}")
+        return sample_record(row)
+
     def upsert_sample_track(self, sample_id: UUID, track: SampleTrackInput) -> SampleTrackRecord:
         with self.connection() as connection:
             row = connection.execute(

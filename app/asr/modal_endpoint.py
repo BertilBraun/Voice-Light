@@ -22,7 +22,8 @@ from app.asr.schemas import (
     RemoteAsrResponse,
     TimestampedWord,
 )
-from app.quality.audio import load_audio
+from app.audio import load_audio
+from app.storage.local import LocalStorageBackend
 
 MODEL_CACHE_VOLUME_NAME = "voice-light-asr-model-cache"
 MODEL_CACHE_DIR = "/model-cache"
@@ -106,7 +107,9 @@ class AsrModelServer:
             audio_file.write(audio_bytes)
             audio_path = Path(audio_file.name)
         try:
-            audio_duration_seconds = load_audio(audio_path).metadata.duration_seconds
+            audio_duration_seconds = load_audio(
+                LocalStorageBackend(), audio_path.as_posix()
+            ).metadata.duration_seconds
             results = transcribe_requested_models(
                 model_cache=self.model_cache,
                 model_ids=request.models,

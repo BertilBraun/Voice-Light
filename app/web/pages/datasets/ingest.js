@@ -17,6 +17,8 @@ async function submitIngestion(event) {
   const payload = {
     dataset_name: document.querySelector("#dataset-name").value.trim(),
     root_path: document.querySelector("#root-path").value.trim(),
+    layout: document.querySelector("#dataset-layout").value,
+    max_workers: Number(document.querySelector("#max-workers").value),
   };
   try {
     await postJson("/api/dataset-dashboard/ingest/local", payload);

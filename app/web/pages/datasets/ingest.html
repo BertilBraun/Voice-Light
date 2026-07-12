@@ -35,6 +35,17 @@
               required
             />
           </label>
+          <label>
+            Sample layout
+            <select id="dataset-layout" name="layout">
+              <option value="two_audio_files">Exactly two audio files</option>
+              <option value="mix_and_two_speakers">Mix and two speaker files</option>
+            </select>
+          </label>
+          <label>
+            Parallel workers
+            <input id="max-workers" name="max_workers" type="number" value="4" min="1" max="32" />
+          </label>
           <button type="submit">Start ingestion</button>
         </form>
         <pre id="error-output" class="error-output" hidden></pre>

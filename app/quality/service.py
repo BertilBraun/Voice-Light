@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from app.quality.audio import load_audio
+from app.audio import AudioTrack
 from app.quality.audio_quality import (
     energy_envelope_correlation,
     inactive_track_leakage_db,
@@ -24,14 +22,14 @@ from app.quality.vad import VadConfig, detect_speech_segments_pair
 
 def score_two_track_sample(
     sample_id: str,
-    speaker1_path: Path,
-    speaker2_path: Path,
+    speaker1_audio: AudioTrack,
+    speaker2_audio: AudioTrack,
+    speaker1_uri: str,
+    speaker2_uri: str,
     config: RunConfig | None = None,
 ) -> QualityResult:
     effective_config = config if config is not None else RunConfig()
     try:
-        speaker1_audio = load_audio(speaker1_path)
-        speaker2_audio = load_audio(speaker2_path)
         sample_rate = min(speaker1_audio.metadata.sample_rate, speaker2_audio.metadata.sample_rate)
         if speaker1_audio.metadata.sample_rate != speaker2_audio.metadata.sample_rate:
             raise ValueError("speaker tracks must have matching sample rates")
@@ -122,8 +120,8 @@ def score_two_track_sample(
             metric_version=effective_config.metric_version,
             sample_id=sample_id,
             status=ProcessingStatus.COMPLETED,
-            speaker1_uri=str(speaker1_path),
-            speaker2_uri=str(speaker2_path),
+            speaker1_uri=speaker1_uri,
+            speaker2_uri=speaker2_uri,
             duration_seconds=duration_seconds,
             interaction_density=density_metrics,
             timing_reliability=timing_metrics,
@@ -140,8 +138,8 @@ def score_two_track_sample(
             metric_version=effective_config.metric_version,
             sample_id=sample_id,
             status=ProcessingStatus.FAILED,
-            speaker1_uri=str(speaker1_path),
-            speaker2_uri=str(speaker2_path),
+            speaker1_uri=speaker1_uri,
+            speaker2_uri=speaker2_uri,
             duration_seconds=None,
             interaction_density=None,
             timing_reliability=None,

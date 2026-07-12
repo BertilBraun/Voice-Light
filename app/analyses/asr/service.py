@@ -42,9 +42,10 @@ from app.asr.models.parsing import (
 from app.asr.schemas import AsrModelId, AsrTranscriptResult, TimestampedWord
 from app.asr.service import AsrTranscriptCache, RemoteAsrClientFactory, cached_asr_transcripts
 from app.asr.transcript import ReferenceTranscript, SpeakerTrack, TranscriptionResult, Word
+from app.audio import load_audio
 from app.audio.wav import capped_wave_bytes
 from app.data.sessions import SpeakerName, session_audio_path
-from app.quality.audio import load_audio
+from app.storage.local import LocalStorageBackend
 
 CROSSTALK_FILTER_CONFIG = CrosstalkFilterConfig()
 
@@ -67,7 +68,9 @@ def analyze_asr(
     )
     capped_audio_path = write_capped_analysis_audio(source_path)
     try:
-        analyzed_duration_seconds = load_audio(capped_audio_path).metadata.duration_seconds
+        analyzed_duration_seconds = load_audio(
+            LocalStorageBackend(), capped_audio_path.as_posix()
+        ).metadata.duration_seconds
         model_infos = available_asr_models()
         requested_model_ids = remote_model_ids_for_selected_modes(selected_models)
         cached_response = cached_asr_transcripts(
