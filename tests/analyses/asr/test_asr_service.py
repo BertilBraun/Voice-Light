@@ -56,6 +56,13 @@ def test_remote_model_ids_expand_merged_consensus_dependencies() -> None:
     )
 
 
+def test_remote_model_ids_expand_parakeet_canary_consensus_dependencies() -> None:
+    assert remote_model_ids_for_selected_modes((AsrModelMode.PARAKEET_CANARY_CONSENSUS,)) == (
+        AsrModelId.PARAKEET_TDT,
+        AsrModelId.CANARY,
+    )
+
+
 def test_remote_model_ids_do_not_duplicate_explicit_dependencies() -> None:
     assert remote_model_ids_for_selected_modes(
         (

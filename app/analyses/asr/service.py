@@ -6,6 +6,7 @@ from pathlib import Path
 from app.analyses.asr.merger import (
     TranscriptToMerge,
     merged_consensus_transcription,
+    parakeet_canary_consensus_transcription,
 )
 from app.analyses.asr.models import (
     AsrAnalysisResponse,
@@ -62,6 +63,13 @@ def available_asr_models() -> tuple[AsrModelInfo, ...]:
             mode=AsrModelMode.NEMOTRON_3_5,
             label="Nemotron 3.5 ASR streaming 0.6B",
             description="NVIDIA Nemotron transcript aligned with WhisperX word timestamps.",
+        ),
+        AsrModelInfo(
+            mode=AsrModelMode.PARAKEET_CANARY_CONSENSUS,
+            label="Parakeet + Canary timing consensus",
+            description=(
+                "Only aligned words with start and end timestamps within 200ms; uses their overlap."
+            ),
         ),
         AsrModelInfo(
             mode=AsrModelMode.MERGED_CONSENSUS,
@@ -124,6 +132,24 @@ def analyze_asr(
                     reference_words=reference_words,
                 ),
             )
+        if AsrModelMode.PARAKEET_CANARY_CONSENSUS in selected_models:
+            runs += (
+                parakeet_canary_consensus_model_run(
+                    model_info=model_info_by_id[AsrModelMode.PARAKEET_CANARY_CONSENSUS],
+                    parakeet=source_run_for_mode(
+                        source_runs=dependency_runs,
+                        model_mode=AsrModelMode.PARAKEET_TDT,
+                    ),
+                    canary=source_run_for_mode(
+                        source_runs=dependency_runs,
+                        model_mode=AsrModelMode.CANARY,
+                    ),
+                    audio_path=capped_audio_path,
+                    speaker_track=speaker_track,
+                    audio_duration_seconds=analyzed_duration_seconds,
+                    reference_words=reference_words,
+                ),
+            )
         return AsrAnalysisResponse(
             session_id=session_id,
             speaker_track=speaker_track,
@@ -142,10 +168,12 @@ def remote_model_ids_for_selected_modes(
     remote_model_modes = tuple(
         model_mode for model_mode in selected_models if is_remote_model(model_mode)
     )
-    if AsrModelMode.MERGED_CONSENSUS in selected_models:
-        remote_model_modes = unique_model_modes((*remote_model_modes, *REMOTE_ASR_MODEL_MODES))
+    for model_mode in selected_models:
+        remote_model_modes = unique_model_modes(
+            (*remote_model_modes, *remote_dependencies_for_model_mode(model_mode))
+        )
     if not remote_model_modes:
-        raise ValueError("Select at least one remote ASR model or merged ASR consensus.")
+        raise ValueError("Select at least one remote ASR model or ASR consensus.")
     return tuple(AsrModelId(model_mode.value) for model_mode in remote_model_modes)
 
 
@@ -159,6 +187,16 @@ def unique_model_modes(model_modes: tuple[AsrModelMode, ...]) -> tuple[AsrModelM
 
 def is_remote_model(model_mode: AsrModelMode) -> bool:
     return model_mode in REMOTE_ASR_MODEL_MODES
+
+
+def remote_dependencies_for_model_mode(model_mode: AsrModelMode) -> tuple[AsrModelMode, ...]:
+    match model_mode:
+        case AsrModelMode.MERGED_CONSENSUS:
+            return REMOTE_ASR_MODEL_MODES
+        case AsrModelMode.PARAKEET_CANARY_CONSENSUS:
+            return (AsrModelMode.PARAKEET_TDT, AsrModelMode.CANARY)
+        case _:
+            return ()
 
 
 def speaker_name_for_track(speaker_track: SpeakerTrack) -> SpeakerName:
@@ -235,6 +273,48 @@ def merged_asr_model_run(
             transcription=transcription,
         ),
     )
+
+
+def parakeet_canary_consensus_model_run(
+    model_info: AsrModelInfo,
+    parakeet: AsrModelRun,
+    canary: AsrModelRun,
+    audio_path: Path,
+    speaker_track: SpeakerTrack,
+    audio_duration_seconds: float,
+    reference_words: tuple[Word, ...],
+) -> AsrModelRun:
+    transcription = parakeet_canary_consensus_transcription(
+        audio_path=str(audio_path),
+        speaker_track=speaker_track,
+        audio_duration_seconds=audio_duration_seconds,
+        parakeet=TranscriptToMerge(
+            model_name=parakeet.transcription.model_name,
+            words=parakeet.transcription.words,
+        ),
+        canary=TranscriptToMerge(
+            model_name=canary.transcription.model_name,
+            words=canary.transcription.words,
+        ),
+    )
+    return AsrModelRun(
+        model=model_info,
+        transcription=transcription,
+        metrics=metrics_for_model(
+            audio_path=audio_path,
+            reference_words=reference_words,
+            transcription=transcription,
+        ),
+    )
+
+
+def source_run_for_mode(
+    source_runs: tuple[AsrModelRun, ...], model_mode: AsrModelMode
+) -> AsrModelRun:
+    for source_run in source_runs:
+        if source_run.transcription.model_name == model_mode.value:
+            return source_run
+    raise ValueError(f"Missing ASR transcript for model: {model_mode.value}")
 
 
 def metrics_for_model(

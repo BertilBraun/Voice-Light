@@ -11,6 +11,7 @@ class AsrModelMode(StrEnum):
     WHISPERX = "whisperx_large_v3"
     CANARY = "canary_1b_v2"
     NEMOTRON_3_5 = "nemotron_3_5_asr_streaming_0_6b"
+    PARAKEET_CANARY_CONSENSUS = "parakeet_canary_consensus"
     MERGED_CONSENSUS = "merged_consensus"
 
 

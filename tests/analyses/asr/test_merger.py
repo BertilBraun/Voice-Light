@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.analyses.asr.merger import merged_words
+from app.analyses.asr.merger import agreeing_conservative_words, merged_words
 from app.asr_quality.schemas import Word
 
 
@@ -31,3 +31,18 @@ def test_merged_words_keep_disagreements_in_timeline_order() -> None:
         Word(text="there", start_seconds=0.5, end_seconds=0.8),
         Word(text="world", start_seconds=0.9, end_seconds=1.15),
     )
+
+
+def test_agreeing_conservative_words_uses_only_timestamp_agreement() -> None:
+    merged = agreeing_conservative_words(
+        primary=(
+            Word(text="hello", start_seconds=0.0, end_seconds=0.4),
+            Word(text="world", start_seconds=0.5, end_seconds=0.9),
+        ),
+        secondary=(
+            Word(text="hello", start_seconds=0.1, end_seconds=0.3),
+            Word(text="world", start_seconds=0.5, end_seconds=1.2),
+        ),
+    )
+
+    assert merged == (Word(text="hello", start_seconds=0.1, end_seconds=0.3),)
