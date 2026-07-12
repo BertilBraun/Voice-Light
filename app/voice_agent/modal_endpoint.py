@@ -16,9 +16,20 @@ model_cache = modal.Volume.from_name("voice-light-agent-model-cache", create_if_
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.10")
     .entrypoint([])
-    .apt_install("ffmpeg", "git", "git-lfs", "libsndfile1", "libsox-dev", "sox")
+    .apt_install(
+        "build-essential",
+        "clang",
+        "ffmpeg",
+        "git",
+        "git-lfs",
+        "libsndfile1",
+        "libsox-dev",
+        "sox",
+    )
     .run_commands(
         "git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice",
+        "pip install --upgrade pip 'setuptools<81' wheel",
+        "pip install --no-build-isolation openai-whisper==20231117",
         "pip install -r /opt/CosyVoice/requirements.txt",
     )
     .uv_pip_install(
@@ -26,6 +37,8 @@ image = (
         "huggingface-hub>=1.23.0",
         "pydantic>=2.0.0",
         "silero-vad>=6.2.1",
+        "torch==2.6.0",
+        "torchaudio==2.6.0",
         "transformers>=5.13.0",
     )
     .env(

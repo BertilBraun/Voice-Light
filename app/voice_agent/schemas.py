@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
 from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter
@@ -8,7 +8,7 @@ from pydantic import Field, TypeAdapter
 from app.frozen_base_config import FrozenBaseModel
 
 
-class ClientEventType(StrEnum):
+class ClientEventType(str, Enum):
     SESSION_START = "session.start"
     SESSION_STOP = "session.stop"
 
@@ -26,7 +26,7 @@ ClientEvent = Annotated[SessionStartEvent | SessionStopEvent, Field(discriminato
 client_event_adapter: TypeAdapter[ClientEvent] = TypeAdapter(ClientEvent)
 
 
-class ServerEventType(StrEnum):
+class ServerEventType(str, Enum):
     SESSION_READY = "session.ready"
     VAD_STARTED = "vad.started"
     VAD_STOPPED = "vad.stopped"
