@@ -11,7 +11,7 @@ class LocalStorageBackend:
             raise ValueError(f"Storage root does not exist: {root}")
         for path in sorted(root_path.rglob("*")):
             if path.is_file():
-                yield str(path)
+                yield path.as_posix()
 
     def open(self, path: str) -> object:
         return Path(path).open("rb")
