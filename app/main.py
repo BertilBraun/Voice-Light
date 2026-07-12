@@ -45,6 +45,14 @@ def asr_analysis_page() -> FileResponse:
     )
 
 
+@app.get("/voice-agent")
+def voice_agent_page() -> FileResponse:
+    return FileResponse(
+        WEB_ROOT / "pages" / "voice-agent" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/datasets")
 def dataset_dashboard_page() -> FileResponse:
     return FileResponse(

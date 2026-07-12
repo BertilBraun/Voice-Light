@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Streaming Voice Agent · Voice Light</title>
+    <link rel="stylesheet" href="/pages/voice-agent/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <a href="/">Voice Light</a>
+        <span id="connection-status" data-state="idle">Disconnected</span>
+      </header>
+
+      <section class="hero">
+        <p class="eyebrow">Cascaded voice prototype</p>
+        <h1>Speak naturally.</h1>
+        <p>Audio streams to ASR continuously. A response starts after the end of your turn.</p>
+      </section>
+
+      <section class="controls">
+        <label for="endpoint-url">Modal WebSocket endpoint</label>
+        <input id="endpoint-url" type="url" placeholder="wss://…modal.run/session" />
+        <div class="buttons">
+          <button id="start-button" type="button">Start microphone</button>
+          <button id="stop-button" type="button" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section class="conversation" aria-live="polite">
+        <article>
+          <div class="speaker">You <span id="vad-status">waiting</span></div>
+          <p id="user-transcript" class="transcript placeholder">Your transcript will appear here.</p>
+        </article>
+        <article>
+          <div class="speaker">Assistant <span id="playback-status">waiting</span></div>
+          <p id="assistant-transcript" class="transcript placeholder">The response will appear here.</p>
+        </article>
+      </section>
+
+      <details>
+        <summary>Session events</summary>
+        <ol id="event-log"></ol>
+      </details>
+    </main>
+    <script type="module" src="/pages/voice-agent/app.js"></script>
+  </body>
+</html>
