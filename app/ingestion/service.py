@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import UUID
 
-from app.audio import AudioTrack, load_audio
+from app.config import REMOTE_QUALITY_API_KEY, REMOTE_QUALITY_ENDPOINT_URL
 from app.db.models import DatasetCreate, DatasetStorageKind, JobStatus, TrackSide
 from app.db.repository import AudioMetadataInput, QualityResultInput, Repository, SampleTrackInput
 from app.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
-from app.quality.models import QualityResult
-from app.quality.service import score_two_track_sample
+from app.quality.client import HttpRemoteQualityClient, RemoteQualityClient
+from app.quality.models import AudioMetadata, QualityResult
+from app.quality.remote_models import (
+    AudioSource,
+    RemoteQualityRequest,
+    UploadedAudioSource,
+    UriAudioSource,
+)
 from app.storage.base import StorageBackend
 from app.storage.local import LocalStorageBackend
 
@@ -18,14 +26,22 @@ from app.storage.local import LocalStorageBackend
 @dataclass(frozen=True)
 class ProcessedSample:
     discovered: DiscoveredSample
-    speaker1_audio: AudioTrack
-    speaker2_audio: AudioTrack
+    speaker1_metadata: AudioMetadata
+    speaker2_metadata: AudioMetadata
     quality_result: QualityResult
 
 
 class IngestionService:
-    def __init__(self, repository: Repository) -> None:
+    def __init__(
+        self,
+        repository: Repository,
+        remote_quality_client: RemoteQualityClient | None = None,
+    ) -> None:
         self.repository = repository
+        self.remote_quality_client = remote_quality_client or HttpRemoteQualityClient(
+            REMOTE_QUALITY_ENDPOINT_URL,
+            REMOTE_QUALITY_API_KEY,
+        )
 
     def ingest_local_dataset(
         self,
@@ -76,7 +92,12 @@ class IngestionService:
             failed_samples = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [
-                    executor.submit(process_sample, storage, discovered_sample)
+                    executor.submit(
+                        process_sample,
+                        storage,
+                        discovered_sample,
+                        self.remote_quality_client,
+                    )
                     for discovered_sample in samples
                 ]
                 for future in as_completed(futures):
@@ -110,22 +131,33 @@ class IngestionService:
             )
 
 
-def process_sample(storage: StorageBackend, discovered: DiscoveredSample) -> ProcessedSample:
-    speaker1_audio = load_audio(storage, discovered.speaker1_path)
-    speaker2_audio = load_audio(storage, discovered.speaker2_path)
-    speaker1_uri = storage.access_uri(discovered.speaker1_path)
-    speaker2_uri = storage.access_uri(discovered.speaker2_path)
+def process_sample(
+    storage: StorageBackend,
+    discovered: DiscoveredSample,
+    remote_quality_client: RemoteQualityClient,
+) -> ProcessedSample:
+    response = remote_quality_client.analyze(
+        RemoteQualityRequest(
+            sample_id=discovered.external_id,
+            speaker1=remote_audio_source(storage, discovered.speaker1_path),
+            speaker2=remote_audio_source(storage, discovered.speaker2_path),
+        )
+    )
     return ProcessedSample(
         discovered=discovered,
-        speaker1_audio=speaker1_audio,
-        speaker2_audio=speaker2_audio,
-        quality_result=score_two_track_sample(
-            sample_id=discovered.external_id,
-            speaker1_audio=speaker1_audio,
-            speaker2_audio=speaker2_audio,
-            speaker1_uri=speaker1_uri,
-            speaker2_uri=speaker2_uri,
-        ),
+        speaker1_metadata=response.speaker1_metadata,
+        speaker2_metadata=response.speaker2_metadata,
+        quality_result=response.quality_result,
+    )
+
+
+def remote_audio_source(storage: StorageBackend, path: str) -> AudioSource:
+    access_uri = storage.access_uri(path)
+    if urlparse(access_uri).scheme in {"http", "https"}:
+        return UriAudioSource(uri=access_uri)
+    return UploadedAudioSource(
+        filename=Path(path).name,
+        audio_base64=base64.b64encode(storage.read(path)).decode("ascii"),
     )
 
 
@@ -139,15 +171,14 @@ def persist_processed_sample(
     repository.update_sample_duration(
         sample.id,
         min(
-            processed.speaker1_audio.metadata.duration_seconds,
-            processed.speaker2_audio.metadata.duration_seconds,
+            processed.speaker1_metadata.duration_seconds,
+            processed.speaker2_metadata.duration_seconds,
         ),
     )
-    for side, speaker_index, path, audio in (
-        (TrackSide.SPEAKER1, 1, processed.discovered.speaker1_path, processed.speaker1_audio),
-        (TrackSide.SPEAKER2, 2, processed.discovered.speaker2_path, processed.speaker2_audio),
+    for side, speaker_index, path, metadata in (
+        (TrackSide.SPEAKER1, 1, processed.discovered.speaker1_path, processed.speaker1_metadata),
+        (TrackSide.SPEAKER2, 2, processed.discovered.speaker2_path, processed.speaker2_metadata),
     ):
-        metadata = audio.metadata
         track = repository.upsert_sample_track(
             sample.id,
             SampleTrackInput(

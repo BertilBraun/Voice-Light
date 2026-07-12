@@ -70,3 +70,20 @@ For DB-backed dataset pages outside Docker, set `VOICE_LIGHT_DATABASE_URL` and r
 ```powershell
 uv run python -m app.db.migrate
 ```
+
+Dataset ingestion also requires the remote quality-analysis service:
+
+```text
+VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL
+VOICE_LIGHT_REMOTE_QUALITY_API_KEY
+```
+
+Deploy the Modal quality endpoint with:
+
+```powershell
+uv run modal deploy .\app\quality\modal_endpoint.py
+```
+
+Local audio is uploaded to the endpoint. Remote storage backends can provide an HTTP or HTTPS
+access URI, including a presigned S3 URL, which Modal downloads into temporary storage for the
+duration of the analysis.
