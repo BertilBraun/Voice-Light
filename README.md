@@ -39,6 +39,8 @@ http://127.0.0.1:8000/analyses/asr
 ```
 
 See [ASR analysis](docs/asr-analysis.md) for the model, caching, and post-processing workflow.
+See [turn-taking adapter training](docs/turn-taking-training.md) for the dataset contract, model
+choice, training schedule, and runnable training prototype.
 
 The Compose app mounts the repository `data/` directory at `/app/data` in the
 container. For local LUEL ingestion, use:
