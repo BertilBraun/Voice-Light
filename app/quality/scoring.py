@@ -174,6 +174,10 @@ def combine_audio_quality_metrics(
         raise ValueError("speaker1 must contain speaker1 quality")
     if speaker2.side != SpeakerSide.SPEAKER2:
         raise ValueError("speaker2 must contain speaker2 quality")
+    if duration_gap_seconds < 0.0:
+        raise ValueError("duration_gap_seconds must not be negative")
+    if duration_gap_ratio < 0.0:
+        raise ValueError("duration_gap_ratio must not be negative")
     duration_score = penalty_above(duration_gap_ratio, 0.01, 0.10)
     correlation_score = (
         1.0 if track_correlation is None else penalty_above(abs(track_correlation), 0.15, 0.50)

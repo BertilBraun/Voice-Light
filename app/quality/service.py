@@ -9,6 +9,7 @@ from app.quality.audio_quality import (
 )
 from app.quality.events import extract_event_candidates
 from app.quality.models import ProcessingStatus, QualityResult, RunConfig, SpeakerSide
+from app.quality.preprocessing import prepare_audio_track
 from app.quality.scoring import (
     calibrated_quality_score,
     calibration_flags,
@@ -30,41 +31,42 @@ def score_two_track_sample(
 ) -> QualityResult:
     effective_config = config if config is not None else RunConfig()
     try:
-        sample_rate = min(speaker1_audio.metadata.sample_rate, speaker2_audio.metadata.sample_rate)
-        if speaker1_audio.metadata.sample_rate != speaker2_audio.metadata.sample_rate:
-            raise ValueError("speaker tracks must have matching sample rates")
+        prepared_speaker1_audio = prepare_audio_track(speaker1_audio)
+        prepared_speaker2_audio = prepare_audio_track(speaker2_audio)
+        sample_rate = prepared_speaker1_audio.metadata.sample_rate
         speaker1_vad, speaker2_vad = detect_speech_segments_pair(
-            speaker1_audio.samples,
-            speaker2_audio.samples,
+            prepared_speaker1_audio.samples,
+            prepared_speaker2_audio.samples,
             sample_rate,
             VadConfig(),
         )
         duration_seconds = min(
-            speaker1_audio.metadata.duration_seconds,
-            speaker2_audio.metadata.duration_seconds,
+            prepared_speaker1_audio.metadata.duration_seconds,
+            prepared_speaker2_audio.metadata.duration_seconds,
         )
         event_candidates = extract_event_candidates(speaker1_vad, speaker2_vad, duration_seconds)
         stored_event_candidates = event_candidates[: effective_config.max_events_per_sample]
         speaker1_quality = track_audio_quality(
-            speaker1_audio.samples,
-            speaker1_audio.metadata.sample_rate,
-            speaker1_audio.metadata.channels,
+            prepared_speaker1_audio.samples,
+            prepared_speaker1_audio.metadata.sample_rate,
+            prepared_speaker1_audio.metadata.channels,
             speaker1_vad,
             SpeakerSide.SPEAKER1,
         )
         speaker2_quality = track_audio_quality(
-            speaker2_audio.samples,
-            speaker2_audio.metadata.sample_rate,
-            speaker2_audio.metadata.channels,
+            prepared_speaker2_audio.samples,
+            prepared_speaker2_audio.metadata.sample_rate,
+            prepared_speaker2_audio.metadata.channels,
             speaker2_vad,
             SpeakerSide.SPEAKER2,
         )
         max_duration_seconds = max(
-            speaker1_audio.metadata.duration_seconds,
-            speaker2_audio.metadata.duration_seconds,
+            prepared_speaker1_audio.metadata.duration_seconds,
+            prepared_speaker2_audio.metadata.duration_seconds,
         )
         duration_gap_seconds = abs(
-            speaker1_audio.metadata.duration_seconds - speaker2_audio.metadata.duration_seconds
+            prepared_speaker1_audio.metadata.duration_seconds
+            - prepared_speaker2_audio.metadata.duration_seconds
         )
         audio_metrics = combine_audio_quality_metrics(
             speaker1=speaker1_quality,
@@ -73,23 +75,26 @@ def score_two_track_sample(
             duration_gap_ratio=duration_gap_seconds / max_duration_seconds
             if max_duration_seconds > 0.0
             else 0.0,
-            track_correlation=track_correlation(speaker1_audio.samples, speaker2_audio.samples),
+            track_correlation=track_correlation(
+                prepared_speaker1_audio.samples,
+                prepared_speaker2_audio.samples,
+            ),
             energy_envelope_correlation=energy_envelope_correlation(
-                speaker1_audio.samples,
-                speaker2_audio.samples,
-                speaker1_audio.metadata.sample_rate,
+                prepared_speaker1_audio.samples,
+                prepared_speaker2_audio.samples,
+                prepared_speaker1_audio.metadata.sample_rate,
             ),
             speaker1_leakage_db=inactive_track_leakage_db(
-                speaker1_audio.samples,
+                prepared_speaker1_audio.samples,
                 speaker1_vad,
                 speaker2_vad,
-                speaker1_audio.metadata.sample_rate,
+                prepared_speaker1_audio.metadata.sample_rate,
             ),
             speaker2_leakage_db=inactive_track_leakage_db(
-                speaker2_audio.samples,
+                prepared_speaker2_audio.samples,
                 speaker2_vad,
                 speaker1_vad,
-                speaker2_audio.metadata.sample_rate,
+                prepared_speaker2_audio.metadata.sample_rate,
             ),
         )
         density_metrics = compute_interaction_density_metrics(
