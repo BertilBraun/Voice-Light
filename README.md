@@ -38,6 +38,8 @@ http://127.0.0.1:8000/analyses/end-of-turn
 http://127.0.0.1:8000/analyses/asr
 ```
 
+See [ASR analysis](docs/asr-analysis.md) for the model, caching, and post-processing workflow.
+
 The Compose app mounts the repository `data/` directory at `/app/data` in the
 container. For local LUEL ingestion, use:
 
