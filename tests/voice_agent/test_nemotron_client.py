@@ -45,8 +45,12 @@ def test_nemotron_session_streams_partial_and_final_text() -> None:
         session = NemotronStreamingSession(worker=worker, worker_lock=asyncio.Lock())
 
         assert await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2)) is None
-        await asyncio.sleep(0.01)
-        assert await session.add_audio(b"") == "hello"
+        partial_text: str | None = None
+        async with asyncio.timeout(1.0):
+            while partial_text is None:
+                await asyncio.sleep(0.01)
+                partial_text = await session.add_audio(b"")
+        assert partial_text == "hello"
         assert await session.finish() == "hello world"
 
         assert [command.type for command in worker.commands] == [
