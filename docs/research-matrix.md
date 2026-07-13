@@ -42,8 +42,8 @@ The first benchmark should compare Qwen3-1.7B against LiquidAI LFM2.5-1.2B for T
 
 | Rank | Candidate | Fit | Streaming Mechanism | Latency Signal | Notes |
 | ---: | --- | --- | --- | --- | --- |
-| 1 | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) 12Hz 0.6B / 1.7B | Best current local first bet. | Designed for streaming TTS, with local package and Web UI. | Reported first-packet latency down to 97 ms. | Apache-2.0, English support, voice cloning/design/instruction control. Very new, so streaming API claims need hands-on verification. |
-| 2 | [CosyVoice 2 / 3](https://github.com/FunAudioLLM/CosyVoice) | Most mature practical local option. | Text-in/audio-out bi-streaming, server paths, vLLM support. | Claimed latency as low as 150 ms. | Apache-2.0 repo, active ecosystem, 0.5B family. Use as maturity fallback if Qwen3-TTS is not usable enough. |
+| 1 | [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) | Best deployment fit for the current prototype. | Official Python iterator yields decoded 24 kHz chunks incrementally. | About 200 ms first chunk and about 6x real time on an M4 CPU. | MIT, 100M, current releases, voice cloning, and no GPU VRAM. Selected for integration because it shares the modern Torch stack and leaves the 4090 to ASR/LLM. |
+| 2 | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) 12Hz 0.6B / 1.7B | Strongest near-term quality challenger. | Streaming model architecture, but supported local Python methods currently return complete waveforms. | Reported first-packet latency down to 97 ms. | Apache-2.0 and strong English voices. Current package constrains Transformers 4.x, conflicting with Nemotron's 5.x runtime. Re-evaluate when its online serving API is stable. |
 | 3 | [Kyutai TTS](https://kyutai.org/tts/) / [Delayed Streams Modeling](https://github.com/kyutai-labs/delayed-streams-modeling) | Strong architecture fit for voice agents. | Delayed streams modeling can begin audio before full text is available. | Needs measurement locally. | 1.6B, PyTorch research stack and Rust websocket server. Larger and less plug-and-play than CosyVoice. |
 | 4 | [VoXtream2](https://github.com/herimor/voxtream) | Best research architecture for true incremental TTS. | Full-stream text/phoneme input to audio frames. | Reported 74 ms first-packet latency and 4x realtime. | Smaller ecosystem, but highly relevant for barge-in and incremental generation research. |
 | 5 | [ZONOS2](https://github.com/Zyphra/ZONOS2) | Experimental quality/voice cloning candidate. | Local server with documented `stream: true`. | Needs measurement. | MIT, English tier-1, CUDA server, Mini-SGLang backend. New and experimental. |
@@ -52,7 +52,10 @@ The first benchmark should compare Qwen3-1.7B against LiquidAI LFM2.5-1.2B for T
 | 8 | [Orpheus TTS](https://github.com/canopyai/Orpheus-TTS) | Naturalness baseline. | Output streaming from prompt through generator. | Around 200 ms streaming claims. | Apache-2.0, vLLM-based; not clean incremental text input. |
 | 9 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) | Tiny sanity baseline. | Segment/generator-based. | Very fast but no hard streaming-agent TTFA target. | Apache-licensed weights, easy local usage. Not top-tier for expressive incremental TTS. |
 
-Current recommendation: hosted APIs are out of scope for the main research stack. Start with Qwen3-TTS 0.6B on the rented NVIDIA GPU, compare immediately against CosyVoice 0.5B, then test VoXtream2 and Kyutai for research-aligned incremental behavior.
+Current recommendation: use Pocket TTS for the deployable prototype and benchmark it on the rented
+machine. Revisit Qwen3-TTS 0.6B as the first quality challenger once its supported local API exposes
+incremental audio without a conflicting Transformers environment. CosyVoice is removed because its
+observed latency, gaps, and dependency split are unacceptable for this prototype.
 
 ## Turn-Taking Datasets
 
@@ -89,7 +92,7 @@ Recommended label framing for the adapter: train multi-task labels rather than a
 
 - Does CANDOR provide speaker-separated media, mixed Zoom media, or only speaker-attributed transcripts over mixed media?
 - How accurate are CANDOR timestamps and Backbiter/Audiophile-derived backchannel labels after manual audit?
-- Does Qwen3-TTS local streaming actually accept incremental text and emit playable audio before the full sentence?
+- When will Qwen3-TTS expose its streaming architecture through a stable incremental local API that is compatible with the Nemotron runtime?
 - Can Nemotron Speech Streaming English expose stable intermediate encoder/RNNT features without modifying too much of NeMo?
 - Does Qwen3-1.7B in non-thinking mode beat LiquidAI LFM2.5-1.2B on real TTFT while preserving conversational quality?
 
@@ -100,10 +103,9 @@ Use one fully local/single-machine research stack first:
 - ASR: NVIDIA Nemotron Speech Streaming English 0.6B at 160 ms and 560 ms chunk settings.
 - LLM: Qwen3-1.7B on vLLM with automatic prefix caching and non-thinking mode.
 - LLM challenger: LiquidAI LFM2.5-1.2B-Instruct for raw speed and memory comparison.
-- TTS: Qwen3-TTS 12Hz 0.6B first, CosyVoice 0.5B fallback, then VoXtream2/Kyutai for deeper incremental streaming research.
+- TTS: Pocket TTS for the first deployable prototype; Qwen3-TTS 0.6B as the first quality challenger.
 - Turn-taking data: CANDOR acquisition first; EgoCom, EasyCom, and DiPCo immediate inspection/audit.
 
 The first measurable comparison should report cold LLM generation, system-prompt-prefilled generation, conversation-prefilled generation, and stable-user-prefix-prefilled generation separately.
 
 The first dataset task should build a one-hour manual audit set across CANDOR, EgoCom, EasyCom, and DiPCo to verify timestamp quality, overlap labels, backchannels, interruptions, laughter, and whether the audio is speaker-separated or only diarized/mixed.
-
