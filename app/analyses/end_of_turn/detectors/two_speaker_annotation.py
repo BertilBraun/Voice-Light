@@ -111,36 +111,14 @@ class TwoSpeakerAnnotationDetector:
         metadata_location = _speaker_metadata_location(wave_path=speaker1_path)
         turns = _read_transcript_turns(metadata_path=metadata_location.metadata_path)
         analysis_end_seconds = _analysis_end_seconds(turns=turns)
-        clipped_turns = _clipped_turns(turns=turns, analysis_end_seconds=analysis_end_seconds)
-        if not clipped_turns:
-            raise ValueError(
-                f"LUEL metadata has no timed transcript turns inside the analysis window: "
-                f"{metadata_location.metadata_path}"
-            )
-
-        classified_turns = _classified_turns(
+        return analyze_two_speaker_turns(
             speaker1_path=speaker1_path,
-            turns=clipped_turns,
+            turns=turns,
+            analysis_end_seconds=analysis_end_seconds,
+            result_name=self.info.mode.value,
+            description=self.info.description,
             turn_gap_seconds=self.turn_gap_seconds,
             internal_pause_seconds=self.internal_pause_seconds,
-        )
-        end_of_turn_events = _end_of_turn_events(
-            speech_segments=classified_turns.speech_segments,
-            analysis_end_seconds=analysis_end_seconds,
-            min_silence_seconds=self.turn_gap_seconds,
-        )
-
-        return BaselineResult(
-            name=self.info.mode.value,
-            description=self.info.description,
-            frame_seconds=self.internal_pause_seconds,
-            min_silence_seconds=self.turn_gap_seconds,
-            threshold=self.turn_gap_seconds,
-            speech_segments=classified_turns.speech_segments,
-            pause_spans=classified_turns.pause_spans,
-            backchannel_spans=classified_turns.backchannel_spans,
-            end_of_turn_events=end_of_turn_events,
-            interruption_spans=classified_turns.interruption_spans,
         )
 
 
@@ -680,6 +658,44 @@ def _required_float(value: JsonValue, field_name: str) -> float:
             return float(value)
         case _:
             raise ValueError(f"Expected `{field_name}` to be a number.")
+
+
+def analyze_two_speaker_turns(
+    speaker1_path: Path,
+    turns: list[TranscriptTurn],
+    analysis_end_seconds: float,
+    result_name: str,
+    description: str,
+    turn_gap_seconds: float,
+    internal_pause_seconds: float,
+) -> BaselineResult:
+    clipped_turns = _clipped_turns(turns=turns, analysis_end_seconds=analysis_end_seconds)
+    if not clipped_turns:
+        raise ValueError("No timed two-speaker transcript turns exist inside the analysis window.")
+
+    classified_turns = _classified_turns(
+        speaker1_path=speaker1_path,
+        turns=clipped_turns,
+        turn_gap_seconds=turn_gap_seconds,
+        internal_pause_seconds=internal_pause_seconds,
+    )
+    end_of_turn_events = _end_of_turn_events(
+        speech_segments=classified_turns.speech_segments,
+        analysis_end_seconds=analysis_end_seconds,
+        min_silence_seconds=turn_gap_seconds,
+    )
+    return BaselineResult(
+        name=result_name,
+        description=description,
+        frame_seconds=internal_pause_seconds,
+        min_silence_seconds=turn_gap_seconds,
+        threshold=turn_gap_seconds,
+        speech_segments=classified_turns.speech_segments,
+        pause_spans=classified_turns.pause_spans,
+        backchannel_spans=classified_turns.backchannel_spans,
+        end_of_turn_events=end_of_turn_events,
+        interruption_spans=classified_turns.interruption_spans,
+    )
 
 
 def _rounded_seconds(seconds: float) -> float:

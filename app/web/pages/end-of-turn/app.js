@@ -21,9 +21,9 @@ const context = canvas.getContext("2d");
 const speaker1Audio = document.querySelector("#speaker1-audio");
 const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
-const ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS = 120000;
+const ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS = 1800000;
 const CLICK_DRAG_TOLERANCE_PIXELS = 4;
-const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors-v2";
+const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors-v3";
 const DEFAULT_DETECTOR_MODES = new Set([
   "naive_vad_floor",
   "naive_vad_fast",
@@ -32,6 +32,7 @@ const DEFAULT_DETECTOR_MODES = new Set([
   "pipecat_smart_turn_v3",
   "transcript_gap",
   "two_speaker_annotation",
+  "asr_two_speaker_annotation",
 ]);
 const AUDIO_SOURCE_VERSION = "pcm16-blob-v1";
 

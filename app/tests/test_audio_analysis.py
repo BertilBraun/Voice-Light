@@ -81,6 +81,7 @@ def test_available_detectors_include_vad_variants() -> None:
         "pipecat_smart_turn_v3",
         "transcript_gap",
         "two_speaker_annotation",
+        "asr_two_speaker_annotation",
         "turnsense",
     }
 
