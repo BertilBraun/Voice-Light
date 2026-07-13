@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.config import (
+from app.local.config import (
     LOCAL_DATABASE_URL,
     configured_compute_url,
     configured_database_url,

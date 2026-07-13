@@ -33,5 +33,5 @@ VOICE_LIGHT_COMPUTE_URL=http://<vast-ip>:8000
 VOICE_LIGHT_COMPUTE_TOKEN=<matching bearer token>
 ```
 
-Then run `uv run python -m app.server` and open the prototype page. TLS, DNS, instance lifecycle,
+Then run `uv run python -m app.local.server` and open the prototype page. TLS, DNS, instance lifecycle,
 and storage provisioning remain deliberately outside this prototype.

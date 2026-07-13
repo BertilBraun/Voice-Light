@@ -6,10 +6,10 @@ import time
 from dataclasses import dataclass
 from typing import TypeVar
 
-from app.asr.models.registry import AsrModelCache
-from app.compute.models import PocketSpeechSynthesizer, TransformersLanguageModel
+from app.compute.asr.models.registry import AsrModelCache
+from app.compute.voice.models import PocketSpeechSynthesizer, TransformersLanguageModel
+from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
 from app.shared.compute_api import ModelStage, ModelStageStatus
-from app.voice_agent.nemotron_client import NemotronStreamingTranscriber
 
 logger = logging.getLogger(__name__)
 ModelType = TypeVar("ModelType")

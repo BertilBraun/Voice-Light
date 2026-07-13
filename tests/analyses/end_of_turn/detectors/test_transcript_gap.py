@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
-from app.analyses.end_of_turn.detectors.transcript_gap import (
+from app.local.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
+from app.local.analyses.end_of_turn.detectors.transcript_gap import (
     TranscriptGapDetector,
     transcript_gap_detector,
 )
-from app.analyses.end_of_turn.service import (
+from app.local.analyses.end_of_turn.service import (
     BackchannelSpan,
     EndOfTurnEvent,
     PauseSpan,

@@ -8,21 +8,21 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from app.analyses.asr.router import router as asr_analysis_router
-from app.analyses.end_of_turn.router import router as end_of_turn_router
-from app.asr.router import router as asr_router
-from app.audio.wav import capped_wave_bytes
-from app.config import COMPUTE_BASE_URL, COMPUTE_TOKEN, WEB_ROOT
-from app.data.sessions import SpeakerName, list_sessions, session_audio_path, session_to_json
-from app.dataset_dashboard.router import router as dataset_dashboard_router
-from app.local.compute_voice import (
+from app.local.analyses.asr.router import router as asr_analysis_router
+from app.local.analyses.end_of_turn.router import router as end_of_turn_router
+from app.local.asr.router import router as asr_router
+from app.local.config import COMPUTE_BASE_URL, COMPUTE_TOKEN, WEB_ROOT
+from app.local.dashboard.router import router as dataset_dashboard_router
+from app.local.data.sessions import SpeakerName, list_sessions, session_audio_path, session_to_json
+from app.local.voice.compute_client import (
     RemoteComputeVoiceChannel,
     RemoteLanguageModel,
     RemoteSpeechSynthesizer,
     RemoteStreamingTranscriber,
 )
-from app.local.speech_detection import SileroSpeechDetector
-from app.voice_agent.session import SessionPolicy, VoiceAgentSession, send_session_error
+from app.local.voice.session import SessionPolicy, VoiceAgentSession, send_session_error
+from app.local.voice.speech_detection import SileroSpeechDetector
+from app.shared.audio.wav import capped_wave_bytes
 
 app = FastAPI(title="Voice Light")
 app.include_router(asr_router)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import queue
 
-from app.voice_agent.asr_worker_protocol import (
+from app.compute.voice.asr_worker_protocol import (
     AsrAudioCommand,
     AsrWorkerCommand,
     AsrWorkerCommandType,
@@ -12,7 +12,7 @@ from app.voice_agent.asr_worker_protocol import (
     FinalAsrEvent,
     PartialAsrEvent,
 )
-from app.voice_agent.nemotron_client import (
+from app.compute.voice.nemotron_client import (
     STREAMING_CHUNK_BYTE_COUNT,
     NemotronStreamingSession,
 )

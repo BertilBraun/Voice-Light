@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.voice_agent.text_chunking import TextChunk, WordTextChunker
+from app.local.voice.text_chunking import TextChunk, WordTextChunker
 
 
 def test_emits_after_eight_streamed_words() -> None:

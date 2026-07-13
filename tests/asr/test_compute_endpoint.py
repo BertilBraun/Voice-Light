@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.asr.models.base import TimedTranscription
-from app.asr.schemas import AsrModelId, TimestampedWord
-from app.compute.batch_asr import transcribe_requested_models
+from app.compute.asr.models.base import TimedTranscription
+from app.compute.asr.service import transcribe_requested_models
+from app.shared.asr import AsrModelId, TimestampedWord
 
 
 @dataclass

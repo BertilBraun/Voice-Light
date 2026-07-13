@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.audio.waveform import full_waveform_envelope
+from app.shared.audio.waveform import full_waveform_envelope
 
 
 def test_full_waveform_envelope_covers_complete_file(tmp_path: Path) -> None:

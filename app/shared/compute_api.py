@@ -5,8 +5,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter
 
-from app.frozen_base_config import FrozenBaseModel
-from app.quality.models import AudioMetadata
+from app.shared.base_model import FrozenBaseModel
+from app.shared.quality import AudioMetadata, QualityResult
 
 
 class HealthStatus(StrEnum):
@@ -48,6 +48,12 @@ class QualityAnalysisUpload(FrozenBaseModel):
     sample_id: str
     speaker1_original_metadata: AudioMetadata | None
     speaker2_original_metadata: AudioMetadata | None
+
+
+class QualityAnalysisResponse(FrozenBaseModel):
+    speaker1_metadata: AudioMetadata
+    speaker2_metadata: AudioMetadata
+    quality_result: QualityResult
 
 
 class ConversationRole(StrEnum):

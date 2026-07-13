@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import Field, model_validator
 
-from app.frozen_base_config import FrozenBaseModel
+from app.shared.base_model import FrozenBaseModel
 
 
 class PolicyClass(StrEnum):

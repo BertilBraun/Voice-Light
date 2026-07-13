@@ -8,8 +8,8 @@ from collections.abc import AsyncIterator
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
-from app.voice_agent.interfaces import TranscriptionSession
-from app.voice_agent.session import SessionPolicy, VoiceAgentSession
+from app.local.voice.interfaces import TranscriptionSession
+from app.local.voice.session import SessionPolicy, VoiceAgentSession
 
 
 class FakeSpeechDetector:

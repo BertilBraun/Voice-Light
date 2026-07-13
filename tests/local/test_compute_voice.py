@@ -4,7 +4,7 @@ import asyncio
 import base64
 from collections.abc import AsyncIterator
 
-from app.local.compute_voice import (
+from app.local.voice.compute_client import (
     RemoteLanguageModel,
     RemoteSpeechSynthesizer,
     RemoteTranscriptionSession,

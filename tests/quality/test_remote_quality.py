@@ -7,16 +7,20 @@ from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
 
-from app.ingestion.discovery import DiscoveredSample
-from app.ingestion.service import pending_discovered_samples, process_sample, remote_audio_source
-from app.quality.models import AudioMetadata, ProcessingStatus, QualityResult
-from app.quality.remote_models import (
+from app.local.ingestion.discovery import DiscoveredSample
+from app.local.ingestion.service import (
+    pending_discovered_samples,
+    process_sample,
+    remote_audio_source,
+)
+from app.local.quality.remote_models import (
     LocalAudioSource,
     RemoteQualityRequest,
-    RemoteQualityResponse,
     UriAudioSource,
 )
-from app.storage.local import LocalStorageBackend
+from app.shared.compute_api import QualityAnalysisResponse
+from app.shared.quality import AudioMetadata, ProcessingStatus, QualityResult
+from app.shared.storage.local import LocalStorageBackend
 
 
 @dataclass
@@ -39,10 +43,10 @@ class MemoryStorage:
 
 @dataclass
 class RecordingQualityClient:
-    response: RemoteQualityResponse
+    response: QualityAnalysisResponse
     requests: list[RemoteQualityRequest] = field(default_factory=list)
 
-    def analyze(self, request: RemoteQualityRequest) -> RemoteQualityResponse:
+    def analyze(self, request: RemoteQualityRequest) -> QualityAnalysisResponse:
         self.requests.append(request)
         return self.response
 
@@ -87,7 +91,7 @@ def test_process_sample_uses_remote_metadata_and_quality_result() -> None:
     )
     quality_result = failed_quality_result()
     client = RecordingQualityClient(
-        RemoteQualityResponse(
+        QualityAnalysisResponse(
             speaker1_metadata=metadata,
             speaker2_metadata=metadata,
             quality_result=quality_result,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.analyses.end_of_turn.detectors.livekit_text_turn import (
+from app.local.analyses.end_of_turn.detectors.livekit_text_turn import (
     CandidateTranscriptTurn,
     ChatMessagePayload,
     TranscriptTurn,
@@ -14,7 +14,7 @@ from app.analyses.end_of_turn.detectors.livekit_text_turn import (
     _speaker_speech_segments,
     _transcript_turn,
 )
-from app.analyses.end_of_turn.service import SpeechSegment
+from app.local.analyses.end_of_turn.service import SpeechSegment
 
 
 @dataclass(frozen=True)

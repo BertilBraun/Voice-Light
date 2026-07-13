@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.audio import load_audio
-from app.storage.local import LocalStorageBackend
+from app.shared.audio import load_audio
+from app.shared.storage.local import LocalStorageBackend
 
 
 def test_load_audio_decodes_metadata_and_samples(tmp_path: Path) -> None:

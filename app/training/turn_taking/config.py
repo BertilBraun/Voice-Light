@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from app.frozen_base_config import FrozenBaseModel
+from app.shared.base_model import FrozenBaseModel
 
 
 class AdapterConfig(FrozenBaseModel):

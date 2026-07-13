@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.analyses.asr.merger import merged_words, parakeet_canary_union_words
-from app.asr.transcript import Word
+from app.local.analyses.asr.merger import merged_words, parakeet_canary_union_words
+from app.local.asr.transcript import Word
 
 
 def test_merged_words_average_timestamps_for_matching_tokens() -> None:

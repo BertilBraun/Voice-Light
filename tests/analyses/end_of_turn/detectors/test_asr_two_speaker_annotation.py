@@ -3,21 +3,21 @@ from pathlib import Path
 
 import pytest
 
-from app.analyses.asr.models import (
+from app.local.analyses.asr.models import (
     AsrAnalysisResponse,
     AsrModelInfo,
     AsrModelMode,
     AsrModelRun,
 )
-from app.analyses.end_of_turn.detectors import asr_two_speaker_annotation as asr_annotation
-from app.analyses.end_of_turn.detectors.asr_two_speaker_annotation import (
+from app.local.analyses.end_of_turn.detectors import asr_two_speaker_annotation as asr_annotation
+from app.local.analyses.end_of_turn.detectors.asr_two_speaker_annotation import (
     ASR_MODEL_MODE,
     asr_two_speaker_annotation_detector,
     asr_two_speaker_annotation_detectors,
     merged_asr_turns,
 )
-from app.asr.service import AsrTranscriptCache, RemoteAsrClientFactory
-from app.asr.transcript import SpeakerTrack, TranscriptionResult, Word
+from app.local.asr.service import AsrTranscriptCache, RemoteAsrClientFactory
+from app.local.asr.transcript import SpeakerTrack, TranscriptionResult, Word
 
 
 def test_merged_asr_turns_groups_each_speaker_and_orders_channels_by_time() -> None:

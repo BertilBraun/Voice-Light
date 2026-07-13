@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from app.analyses.end_of_turn.detectors.livekit_v1_mini import (
+from app.local.analyses.end_of_turn.detectors.livekit_v1_mini import (
     EOT_MAX_SAMPLES,
     VAD_WINDOW_SAMPLES,
     CandidatePause,
@@ -14,7 +14,7 @@ from app.analyses.end_of_turn.detectors.livekit_v1_mini import (
     _model_window,
     _speech_segments_from_vad,
 )
-from app.analyses.end_of_turn.service import SpeechSegment
+from app.local.analyses.end_of_turn.service import SpeechSegment
 
 
 @dataclass

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.analyses.asr.crosstalk import (
+from app.local.analyses.asr.crosstalk import (
     CrosstalkFilterConfig,
     CrosstalkFramePower,
     filter_crosstalk_words,
 )
-from app.asr.transcript import Word
+from app.local.asr.transcript import Word
 
 
 def test_filter_crosstalk_words_removes_quiet_and_other_dominant_words() -> None:

@@ -6,13 +6,13 @@ import numpy as np
 import pytest
 import torch
 
-from app.analyses.end_of_turn.detectors.pipecat_smart_turn_v2 import (
+from app.local.analyses.end_of_turn.detectors.pipecat_smart_turn_v2 import (
     SmartTurnInferenceComponents,
     _candidate_speech_segments,
     _model_window_audio,
     _smart_turn_events,
 )
-from app.analyses.end_of_turn.service import SpeechSegment
+from app.local.analyses.end_of_turn.service import SpeechSegment
 
 
 @dataclass(frozen=True)

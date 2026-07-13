@@ -56,7 +56,7 @@ Postgres data is stored in the `voice-light-postgres` Docker volume.
 Start the FastAPI server from the repository root:
 
 ```powershell
-uv run python -m app.server
+uv run python -m app.local.server
 ```
 
 Then open:
@@ -73,7 +73,7 @@ this repository's Compose configuration at
 `VOICE_LIGHT_DATABASE_URL` only when using a different database. Run migrations with:
 
 ```powershell
-uv run python -m app.db.migrate
+uv run python -m app.local.db.migrate
 ```
 
 Batch ASR, dataset quality analysis, and the voice prototype require the compute backend:

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from app.ingestion.discovery import DatasetLayout, discover_samples
-from app.storage.local import LocalStorageBackend
+from app.local.ingestion.discovery import DatasetLayout, discover_samples
+from app.shared.storage.local import LocalStorageBackend
 
 
 @pytest.mark.parametrize("suffix", [".wav", ".mp3", ".m4a", ".ogg", ".flac"])

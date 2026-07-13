@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from app.asr.schemas import (
+from app.local.asr.service import cached_asr_transcripts
+from app.shared.asr import (
     AsrModelId,
     AsrTranscriptResult,
     RemoteAsrRequest,
     RemoteAsrResponse,
     TimestampedWord,
 )
-from app.asr.service import cached_asr_transcripts
 
 
 @dataclass

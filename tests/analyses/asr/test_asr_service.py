@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.analyses.asr.models import AsrModelMode
-from app.analyses.asr.service import (
+from app.local.analyses.asr.models import AsrModelMode
+from app.local.analyses.asr.service import (
     filtered_remote_dependencies,
     remote_model_ids_for_selected_modes,
     transcription_result_from_cached_asr,
 )
-from app.asr.schemas import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TimestampedWord
-from app.asr.transcript import SpeakerTrack, Word
+from app.local.asr.transcript import SpeakerTrack, Word
+from app.shared.asr import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TimestampedWord
 
 
 def test_transcription_result_from_cached_asr_preserves_words_and_runtime() -> None:

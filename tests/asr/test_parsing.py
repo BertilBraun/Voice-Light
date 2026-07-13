@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-from app.asr.models.parsing import merge_timestamp_pieces, words_from_whisperx_output
-from app.asr.transcript import Word
+from app.compute.asr.models.parsing import merge_timestamp_pieces, words_from_whisperx_output
+from app.shared.asr import TimestampedWord
 
 
 def test_merge_parakeet_timestamp_pieces_combines_word_fragments() -> None:
     words = merge_timestamp_pieces(
         [
-            Word(text=" there", start_seconds=0.0, end_seconds=0.2),
-            Word(text="'", start_seconds=0.2, end_seconds=0.25),
-            Word(text="s", start_seconds=0.25, end_seconds=0.3),
-            Word(text=" audio", start_seconds=0.4, end_seconds=0.7),
+            TimestampedWord(text=" there", start_seconds=0.0, end_seconds=0.2),
+            TimestampedWord(text="'", start_seconds=0.2, end_seconds=0.25),
+            TimestampedWord(text="s", start_seconds=0.25, end_seconds=0.3),
+            TimestampedWord(text=" audio", start_seconds=0.4, end_seconds=0.7),
         ]
     )
 
     assert words == (
         [
-            Word(text="there's", start_seconds=0.0, end_seconds=0.3),
-            Word(text="audio", start_seconds=0.4, end_seconds=0.7),
+            TimestampedWord(text="there's", start_seconds=0.0, end_seconds=0.3),
+            TimestampedWord(text="audio", start_seconds=0.4, end_seconds=0.7),
         ]
     )
 
@@ -37,6 +37,6 @@ def test_words_from_whisperx_output_extracts_aligned_words() -> None:
     )
 
     assert words == [
-        Word(text="hello", start_seconds=1.0, end_seconds=1.3, confidence=0.9),
-        Word(text="world", start_seconds=1.4, end_seconds=1.9, confidence=0.8),
+        TimestampedWord(text="hello", start_seconds=1.0, end_seconds=1.3, confidence=0.9),
+        TimestampedWord(text="world", start_seconds=1.4, end_seconds=1.9, confidence=0.8),
     ]

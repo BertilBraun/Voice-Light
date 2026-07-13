@@ -4,14 +4,14 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
-from app.analyses.end_of_turn.detectors.turnsense import (
+from app.local.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
+from app.local.analyses.end_of_turn.detectors.turnsense import (
     TurnsenseDetector,
     TurnsenseLabel,
     TurnsensePrediction,
     turnsense_detector,
 )
-from app.analyses.end_of_turn.service import EndOfTurnEvent, SpeechSegment
+from app.local.analyses.end_of_turn.service import EndOfTurnEvent, SpeechSegment
 
 
 def test_turnsense_detector_classifies_speaker1_candidate_boundaries(

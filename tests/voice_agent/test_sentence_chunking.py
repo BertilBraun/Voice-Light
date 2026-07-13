@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.voice_agent.sentence_chunking import SentenceTextChunker
+from app.local.voice.sentence_chunking import SentenceTextChunker
 
 
 @pytest.mark.parametrize(

@@ -19,7 +19,7 @@ services:
     build: .
     environment:
       VOICE_LIGHT_DATABASE_URL: postgresql://voice_light:voice_light@postgres:5432/voice_light
-    command: ["python", "-m", "app.db.migrate"]
+    command: ["python", "-m", "app.local.db.migrate"]
     depends_on:
       postgres:
         condition: service_healthy

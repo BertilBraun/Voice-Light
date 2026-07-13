@@ -17,4 +17,4 @@ COPY app ./app
 
 EXPOSE 8000
 
-CMD ["python", "-m", "app.server"]
+CMD ["python", "-m", "app.local.server"]

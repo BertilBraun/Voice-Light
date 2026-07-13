@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.analyses.end_of_turn.detectors.silero_vad import (
+from app.local.analyses.end_of_turn.detectors.silero_vad import (
     SileroSpeechTimestamp,
     _end_of_turn_events,
     _resample_audio,
     _speech_segments_from_silero_timestamps,
 )
-from app.analyses.end_of_turn.service import SpeechSegment
+from app.local.analyses.end_of_turn.service import SpeechSegment
 
 
 def test_speech_segments_from_silero_timestamps_preserve_seconds() -> None:

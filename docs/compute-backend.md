@@ -7,6 +7,19 @@ Voice Light is split into two deployable applications:
 - The compute application (`app.compute.main`) owns disposable model processes and caches. It has
   no database dependency and exposes authenticated, typed compute APIs.
 
+The Python package mirrors that deployment boundary:
+
+- `app/local/` contains analyses, batch-ASR orchestration, database access, ingestion, the dataset
+  dashboard, browser voice sessions, and web assets.
+- `app/compute/` contains batch-ASR model execution, quality scoring, and streaming ASR/LLM/TTS
+  execution.
+- `app/shared/` contains only typed compute API models and reusable audio, quality, and storage
+  primitives needed on both sides.
+- `app/training/` remains an offline application and does not participate in either runtime.
+
+Compute and shared modules must never import local modules. Local modules may call compute only
+through the schemas in `app.shared` and the authenticated HTTP/WebSocket clients.
+
 The browser WebSocket terminates at the local application. For each browser voice session, the
 local application opens one authenticated WebSocket to the compute backend. That connection
 multiplexes stateful Nemotron ASR audio, LLM token deltas, and Pocket TTS audio chunks. Keeping one

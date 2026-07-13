@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.analyses.end_of_turn.service import (
+from app.local.analyses.end_of_turn.service import (
     BackchannelSpan,
     BaselineResult,
     EndOfTurnEvent,

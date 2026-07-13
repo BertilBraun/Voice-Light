@@ -9,8 +9,8 @@ import torch
 from huggingface_hub import snapshot_download
 from pocket_tts import TTSModel
 
-from app.compute.models import LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION
-from app.voice_agent.nemotron_worker import MODEL_NAME, MODEL_REVISION
+from app.compute.voice.models import LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION
+from app.compute.voice.nemotron_worker import MODEL_NAME, MODEL_REVISION
 
 
 def main(arguments: Sequence[str] | None = None) -> None:

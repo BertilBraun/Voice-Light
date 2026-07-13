@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from app.ingestion.service import quality_result_input
-from app.quality.models import ProcessingStatus, QualityResult
+from app.local.ingestion.service import quality_result_input
+from app.shared.quality import ProcessingStatus, QualityResult
 
 
 def test_quality_result_input_preserves_failed_payload() -> None:

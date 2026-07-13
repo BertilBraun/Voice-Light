@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from app.analyses.asr.metrics import timestamp_metrics
-from app.asr.alignment import align_words, word_error_counts
-from app.asr.normalization import normalize_token
-from app.asr.transcript import Word
+from app.local.analyses.asr.metrics import timestamp_metrics
+from app.local.asr.alignment import align_words, word_error_counts
+from app.local.asr.normalization import normalize_token
+from app.local.asr.transcript import Word
 
 
 def test_alignment_counts_insertions_deletions_and_substitutions() -> None:

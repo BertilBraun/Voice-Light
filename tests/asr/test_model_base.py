@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.asr.models.base import cuda_device
+from app.compute.asr.models.base import cuda_device
 
 
 def test_cuda_device_fails_when_cuda_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

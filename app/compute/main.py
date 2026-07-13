@@ -12,14 +12,14 @@ from fastapi import Depends, FastAPI, Response, WebSocket
 from starlette.requests import Request
 from starlette.responses import Response as StarletteResponse
 
-from app.asr.schemas import RemoteAsrRequest, RemoteAsrResponse
+from app.compute.asr.service import transcribe_request
 from app.compute.auth import BearerTokenAuthorizer
-from app.compute.batch_asr import transcribe_request
 from app.compute.config import ComputeSettings
-from app.compute.quality import analyze_uploaded_quality
+from app.compute.quality.router import analyze_uploaded_quality
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope, configure_logging, gpu_memory
-from app.compute.voice import run_voice_compute_session
+from app.compute.voice.router import run_voice_compute_session
+from app.shared.asr import RemoteAsrRequest, RemoteAsrResponse
 from app.shared.compute_api import HealthStatus, LivenessResponse, ReadinessResponse
 
 logger = logging.getLogger(__name__)
