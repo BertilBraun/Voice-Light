@@ -56,8 +56,9 @@ app = modal.App("VoiceLightAgent")
 @app.cls(
     image=image,
     gpu="L40S",
-    min_containers=1,
+    min_containers=0,
     max_containers=1,
+    scaledown_window=300,
     timeout=43_200,
     volumes={MODEL_CACHE_DIRECTORY: model_cache},
 )

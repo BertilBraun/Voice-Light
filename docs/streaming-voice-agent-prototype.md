@@ -40,8 +40,9 @@ $env:PYTHONUTF8='1'
 uv run modal deploy .\app\voice_agent\modal_endpoint.py
 ```
 
-The deployed class keeps one L40S container warm and admits one session at a time. Remove
-`min_containers=1` when an always-warm paid GPU is not desired.
+The deployed class scales to zero, admits one session at a time, and keeps the L40S container
+available for five minutes after the last session ends. A new session after scale-down incurs the
+model-loading cold start; an active WebSocket session is not interrupted by the idle window.
 
 ## Current Limitation
 
