@@ -213,7 +213,7 @@ function createSynchronizedPlayback(sample) {
 
   const tracks = document.createElement("div");
   tracks.className = "track-grid";
-  const audioElements = sample.tracks.map((track) => {
+  const trackPlayers = sample.tracks.map((track) => {
     const card = document.createElement("div");
     card.className = `track-card ${track.side}`;
     const trackTitle = document.createElement("strong");
@@ -221,13 +221,32 @@ function createSynchronizedPlayback(sample) {
     const metadata = document.createElement("span");
     metadata.className = "muted";
     metadata.textContent = `${formatSeconds(track.duration_seconds)} · ${track.sample_rate || "?"} Hz · ${track.channels || "?"} ch`;
+    const waveformBox = document.createElement("div");
+    waveformBox.className = "waveform-box";
+    const canvas = document.createElement("canvas");
+    canvas.className = "waveform-canvas";
+    canvas.width = 1200;
+    canvas.height = 100;
+    canvas.setAttribute("aria-label", `${formatSpeaker(track.side)} full recording waveform`);
+    const waveformStatus = document.createElement("span");
+    waveformStatus.className = "waveform-status";
+    waveformStatus.textContent = "Building full waveform…";
+    waveformBox.append(canvas, waveformStatus);
     const audio = document.createElement("audio");
     audio.preload = "metadata";
     audio.src = `/api/dataset-dashboard/audio/${sample.sample.id}/${track.side}`;
-    card.append(trackTitle, metadata, audio);
+    card.append(trackTitle, metadata, waveformBox, audio);
     tracks.appendChild(card);
-    return audio;
+    const player = { audio, canvas, waveformStatus, baseWaveform: null };
+    canvas.addEventListener("click", (event) => {
+      const bounds = canvas.getBoundingClientRect();
+      const ratio = Math.min(Math.max((event.clientX - bounds.left) / bounds.width, 0), 1);
+      seekTo(ratio * duration());
+    });
+    void loadTrackWaveform(sample.sample.id, track.side, player).then(update);
+    return player;
   });
+  const audioElements = trackPlayers.map((player) => player.audio);
   section.append(heading, controls, tracks);
 
   const master = audioElements[0];
@@ -251,6 +270,11 @@ function createSynchronizedPlayback(sample) {
     clock.textContent = `${formatClock(currentTime)} / ${sharedDuration > 0 ? formatClock(sharedDuration) : "--:--"}`;
     playButton.textContent = master.paused ? "Play both" : "Pause both";
     status.textContent = audioElements.length === 2 ? "Speaker 1 + Speaker 2" : `${audioElements.length} track(s)`;
+    for (const player of trackPlayers) {
+      const trackDuration = player.audio.duration;
+      const progress = Number.isFinite(trackDuration) && trackDuration > 0 ? currentTime / trackDuration : 0;
+      renderWaveformProgress(player, progress);
+    }
     if (!seeking && !master.paused) {
       for (const audio of audioElements.slice(1)) {
         if (Math.abs(audio.currentTime - currentTime) > 0.08) {
@@ -323,6 +347,64 @@ function createSynchronizedPlayback(sample) {
       });
     },
   };
+}
+
+async function loadTrackWaveform(sampleId, side, player) {
+  try {
+    const waveform = await fetchJson(`/api/dataset-dashboard/waveform/${sampleId}/${side}?points=1200`);
+    player.baseWaveform = drawWaveformEnvelope(player.canvas, waveform.points);
+    player.waveformStatus.textContent = `Full recording · ${formatClock(waveform.duration_seconds)}`;
+  } catch (error) {
+    player.waveformStatus.textContent = error instanceof Error ? error.message : "Waveform unavailable";
+  }
+}
+
+function drawWaveformEnvelope(canvas, points) {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return null;
+  }
+  const width = canvas.width;
+  const height = canvas.height;
+  const midpoint = height / 2;
+  context.fillStyle = "#f8fafc";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = "#d7dde5";
+  context.beginPath();
+  context.moveTo(0, midpoint + 0.5);
+  context.lineTo(width, midpoint + 0.5);
+  context.stroke();
+  context.strokeStyle = "#386d9d";
+  context.lineWidth = 1;
+  context.beginPath();
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const x = (index / Math.max(points.length - 1, 1)) * width;
+    context.moveTo(x, midpoint - point.maximum_amplitude * midpoint * 0.9);
+    context.lineTo(x, midpoint - point.minimum_amplitude * midpoint * 0.9);
+  }
+  context.stroke();
+  return context.getImageData(0, 0, width, height);
+}
+
+function renderWaveformProgress(player, progress) {
+  if (!player.baseWaveform) {
+    return;
+  }
+  const context = player.canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+  context.putImageData(player.baseWaveform, 0, 0);
+  const position = Math.min(Math.max(progress, 0), 1) * player.canvas.width;
+  context.fillStyle = "rgba(29, 79, 122, 0.14)";
+  context.fillRect(0, 0, position, player.canvas.height);
+  context.strokeStyle = "#b45309";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(position, 0);
+  context.lineTo(position, player.canvas.height);
+  context.stroke();
 }
 
 function createMetricSection(title, metrics) {

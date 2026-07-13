@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from uuid import UUID
 
@@ -8,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import Field
 
-from app.audio.wav import capped_wave_bytes
+from app.audio.waveform import full_waveform_envelope
 from app.config import DATABASE_URL
 from app.db.models import (
     DashboardSample,
@@ -46,6 +45,17 @@ class LocalIngestionRequest(FrozenBaseModel):
 
 class IngestionQueueResponse(FrozenBaseModel):
     status: str
+
+
+class WaveformPointResponse(FrozenBaseModel):
+    minimum_amplitude: float
+    maximum_amplitude: float
+
+
+class WaveformResponse(FrozenBaseModel):
+    duration_seconds: float
+    sample_rate: int
+    points: tuple[WaveformPointResponse, ...]
 
 
 def repository() -> Repository:
@@ -138,9 +148,42 @@ def ingest_local_dataset(
 
 
 @router.get("/audio/{sample_id}/{side}")
-def sample_audio(
-    sample_id: UUID, side: TrackSide, background_tasks: BackgroundTasks
-) -> FileResponse:
+def sample_audio(sample_id: UUID, side: TrackSide) -> FileResponse:
+    source_path = sample_track_path(sample_id=sample_id, side=side)
+    return FileResponse(
+        source_path,
+        media_type="audio/wav",
+        filename=source_path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@router.get("/waveform/{sample_id}/{side}")
+def sample_waveform(
+    sample_id: UUID,
+    side: TrackSide,
+    points: int = Query(default=1200, ge=100, le=5000),
+) -> WaveformResponse:
+    source_path = sample_track_path(sample_id=sample_id, side=side)
+    try:
+        envelope = full_waveform_envelope(wave_path=source_path, point_count=points)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return WaveformResponse(
+        duration_seconds=envelope.duration_seconds,
+        sample_rate=envelope.sample_rate,
+        points=tuple(
+            WaveformPointResponse(
+                minimum_amplitude=point.minimum_amplitude,
+                maximum_amplitude=point.maximum_amplitude,
+            )
+            for point in envelope.points
+        ),
+    )
+
+
+def sample_track_path(sample_id: UUID, side: TrackSide) -> Path:
     try:
         matched_sample = repository().get_dashboard_sample(sample_id)
     except ValueError as error:
@@ -149,25 +192,6 @@ def sample_audio(
     if matched_track is None:
         raise HTTPException(status_code=404, detail=f"Track not found: {side.value}")
     source_path = Path(matched_track.access_uri)
-    playback_wave_path = write_playback_wave_file(source_path)
-    background_tasks.add_task(delete_file, playback_wave_path)
-    return FileResponse(
-        playback_wave_path,
-        media_type="audio/wav",
-        filename=playback_wave_path.name,
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-def write_playback_wave_file(wave_path: Path) -> Path:
-    with tempfile.NamedTemporaryFile(
-        prefix=f"{wave_path.stem}_dataset_playback_",
-        suffix=".wav",
-        delete=False,
-    ) as playback_wave_file:
-        playback_wave_file.write(capped_wave_bytes(wave_path=wave_path))
-        return Path(playback_wave_file.name)
-
-
-def delete_file(path: Path) -> None:
-    path.unlink(missing_ok=True)
+    if not source_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Audio file not found: {source_path}")
+    return source_path
