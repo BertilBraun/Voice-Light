@@ -67,7 +67,10 @@ http://127.0.0.1:8000
 
 Set `VOICE_LIGHT_PORT` to use a different port.
 
-For DB-backed dataset pages outside Docker, set `VOICE_LIGHT_DATABASE_URL` and run:
+For DB-backed dataset pages outside Docker, the app defaults to the Postgres service exposed by
+this repository's Compose configuration at
+`postgresql://voice_light:voice_light@127.0.0.1:5432/voice_light`. Override
+`VOICE_LIGHT_DATABASE_URL` only when using a different database. Run migrations with:
 
 ```powershell
 uv run python -m app.db.migrate
