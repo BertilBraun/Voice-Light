@@ -7,7 +7,11 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 from app.asr.models.base import cuda_device, load_time_seconds, timestamped_word_from_word
-from app.asr.models.parsing import CANARY_IDENTIFIER, words_from_nemo_timestamps
+from app.asr.models.parsing import (
+    CANARY_IDENTIFIER,
+    CANARY_REVISION,
+    words_from_nemo_timestamps,
+)
 from app.asr.schemas import AsrModelId, TimestampedWord
 
 
@@ -21,7 +25,10 @@ class CanaryAsrModel:
 
     def load(self) -> None:
         self.device = cuda_device()
-        self.model = nemo_asr.models.ASRModel.from_pretrained(model_name=CANARY_IDENTIFIER)
+        self.model = nemo_asr.models.ASRModel.from_pretrained(
+            model_name=CANARY_IDENTIFIER,
+            revision=CANARY_REVISION,
+        )
         self.model.to(self.device)
         self.model.eval()
 

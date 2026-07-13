@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from app.config import (
-    DEFAULT_REMOTE_QUALITY_ENDPOINT_URL,
     LOCAL_DATABASE_URL,
+    configured_compute_url,
     configured_database_url,
-    configured_remote_quality_endpoint_url,
 )
 
 
@@ -19,9 +18,8 @@ def test_database_url_environment_override_takes_precedence() -> None:
     assert configured_database_url({"VOICE_LIGHT_DATABASE_URL": configured_url}) == configured_url
 
 
-def test_remote_quality_endpoint_has_deployed_default() -> None:
-    assert configured_remote_quality_endpoint_url({}) == DEFAULT_REMOTE_QUALITY_ENDPOINT_URL
-    assert (
-        configured_remote_quality_endpoint_url({"VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL": ""})
-        == DEFAULT_REMOTE_QUALITY_ENDPOINT_URL
+def test_compute_url_is_explicit_and_strips_trailing_slash() -> None:
+    assert configured_compute_url({}) == ""
+    assert configured_compute_url({"VOICE_LIGHT_COMPUTE_URL": "https://gpu.example/"}) == (
+        "https://gpu.example"
     )

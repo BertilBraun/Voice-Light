@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.asr.modal_endpoint import transcribe_requested_models
 from app.asr.models.base import TimedTranscription
 from app.asr.schemas import AsrModelId, TimestampedWord
+from app.compute.batch_asr import transcribe_requested_models
 
 
 @dataclass

@@ -28,6 +28,7 @@ from app.voice_agent.asr_worker_protocol import (
 )
 
 MODEL_NAME: Final = "nvidia/nemotron-speech-streaming-en-0.6b"
+MODEL_REVISION: Final = "df1f0fe9dfdf05152936192b4c8c7653d53bf557"
 INPUT_SAMPLE_RATE: Final = 16_000
 PCM_BYTES_PER_SAMPLE: Final = 2
 NUM_LOOKAHEAD_TOKENS: Final = 1
@@ -176,12 +177,16 @@ class NemotronRecognition:
 def main() -> None:
     processor = cast(
         NemotronAsrStreamingProcessor,
-        AutoProcessor.from_pretrained(MODEL_NAME),
+        AutoProcessor.from_pretrained(MODEL_NAME, revision=MODEL_REVISION),
     )
     processor.set_num_lookahead_tokens(NUM_LOOKAHEAD_TOKENS)
     model = cast(
         NemotronAsrStreamingForRNNT,
-        AutoModelForRNNT.from_pretrained(MODEL_NAME, dtype=torch.bfloat16).to("cuda"),
+        AutoModelForRNNT.from_pretrained(
+            MODEL_NAME,
+            revision=MODEL_REVISION,
+            dtype=torch.bfloat16,
+        ).to("cuda"),
     )
     output_lock = threading.Lock()
     with output_lock:

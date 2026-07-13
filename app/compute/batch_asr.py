@@ -3,17 +3,14 @@ from __future__ import annotations
 import base64
 import binascii
 import importlib.metadata
-import os
 import tempfile
 from pathlib import Path
-from typing import Annotated, Protocol
+from typing import Protocol
 
-import modal
 import torch
-from fastapi import Header, HTTPException
+from fastapi import HTTPException
 
 from app.asr.models.base import TimedTranscription
-from app.asr.models.registry import AsrModelCache
 from app.asr.schemas import (
     AsrModelId,
     AsrRuntimeStats,
@@ -25,101 +22,34 @@ from app.asr.schemas import (
 from app.audio import load_audio
 from app.storage.local import LocalStorageBackend
 
-MODEL_CACHE_VOLUME_NAME = "voice-light-asr-model-cache"
-MODEL_CACHE_DIR = "/model-cache"
-HUGGING_FACE_CACHE_DIR = f"{MODEL_CACHE_DIR}/huggingface"
-TORCH_CACHE_DIR = f"{MODEL_CACHE_DIR}/torch"
-NEMO_CACHE_DIR = f"{MODEL_CACHE_DIR}/nemo"
-
 
 class RemoteAsrModelCache(Protocol):
     def transcribe(self, model_id: AsrModelId, audio_path: Path) -> TimedTranscription: ...
 
 
-model_cache_volume = modal.Volume.from_name(
-    MODEL_CACHE_VOLUME_NAME,
-    create_if_missing=True,
-    version=2,
-)
-
-modal_image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.4.0-devel-ubuntu22.04",
-        add_python="3.12",
-    )
-    .entrypoint([])
-    .env(
-        {
-            "HF_HOME": HUGGING_FACE_CACHE_DIR,
-            "HF_HUB_CACHE": f"{HUGGING_FACE_CACHE_DIR}/hub",
-            "HUGGINGFACE_HUB_CACHE": f"{HUGGING_FACE_CACHE_DIR}/hub",
-            "TRANSFORMERS_CACHE": f"{HUGGING_FACE_CACHE_DIR}/transformers",
-            "XDG_CACHE_HOME": MODEL_CACHE_DIR,
-            "TORCH_HOME": TORCH_CACHE_DIR,
-            "NEMO_CACHE_DIR": NEMO_CACHE_DIR,
-            "HF_XET_HIGH_PERFORMANCE": "1",
-        }
-    )
-    .apt_install("ffmpeg", "libsndfile1", "build-essential", "git")
-    .uv_pip_install(
-        "Cython>=3.0.0",
-        "fastapi[standard]>=0.115.0",
-        "faster-whisper>=1.1.0",
-        "librosa>=0.11.0",
-        "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main",
-        "numpy>=2.0.0",
-        "packaging>=24.0",
-        "pydantic>=2.0.0",
-        "torch>=2.13.0",
-        "transformers>=5.13.0",
-        "whisperx>=3.7.0",
-    )
-    .add_local_python_source("app")
-)
-
-app = modal.App("VoiceLight")
-
-
-@app.cls(
-    image=modal_image,
-    gpu="A10G",
-    timeout=600,
-    max_containers=1,
-    scaledown_window=300,
-    secrets=[modal.Secret.from_name("voice-light-asr")],
-    volumes={MODEL_CACHE_DIR: model_cache_volume},
-)
-@modal.concurrent(max_inputs=20, target_inputs=20)
-class AsrModelServer:
-    @modal.enter()
-    def setup(self) -> None:
-        self.model_cache = AsrModelCache()
-
-    @modal.fastapi_endpoint(method="POST")
-    def transcribe(
-        self,
-        request: RemoteAsrRequest,
-        authorization: Annotated[str | None, Header()] = None,
-    ) -> RemoteAsrResponse:
-        authorize_request(authorization=authorization)
-        audio_bytes = decode_audio(audio_base64=request.audio_base64)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
-            audio_file.write(audio_bytes)
-            audio_path = Path(audio_file.name)
-        try:
-            audio_duration_seconds = load_audio(
-                LocalStorageBackend(), audio_path.as_posix()
-            ).metadata.duration_seconds
-            results = transcribe_requested_models(
-                model_cache=self.model_cache,
+def transcribe_request(
+    model_cache: RemoteAsrModelCache,
+    request: RemoteAsrRequest,
+) -> RemoteAsrResponse:
+    audio_bytes = decode_audio(audio_base64=request.audio_base64)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
+        audio_file.write(audio_bytes)
+        audio_path = Path(audio_file.name)
+    try:
+        audio_duration_seconds = load_audio(
+            LocalStorageBackend(),
+            audio_path.as_posix(),
+        ).metadata.duration_seconds
+        return RemoteAsrResponse(
+            results=transcribe_requested_models(
+                model_cache=model_cache,
                 model_ids=request.models,
                 audio_path=audio_path,
                 audio_duration_seconds=audio_duration_seconds,
             )
-            model_cache_volume.commit()
-            return RemoteAsrResponse(results=results)
-        finally:
-            audio_path.unlink(missing_ok=True)
+        )
+    finally:
+        audio_path.unlink(missing_ok=True)
 
 
 def transcribe_requested_models(
@@ -147,10 +77,7 @@ def transcribe_model(
 ) -> AsrTranscriptResult:
     reset_peak_gpu_memory_stats()
     return transcript_result_from_model_output(
-        transcription=model_cache.transcribe(
-            model_id=model_id,
-            audio_path=audio_path,
-        ),
+        transcription=model_cache.transcribe(model_id=model_id, audio_path=audio_path),
         audio_duration_seconds=audio_duration_seconds,
     )
 
@@ -180,12 +107,6 @@ def transcript_result_from_model_output(
     )
 
 
-def authorize_request(authorization: str | None) -> None:
-    expected_api_key = os.environ["VOICE_LIGHT_REMOTE_ASR_API_KEY"]
-    if authorization != f"Bearer {expected_api_key}":
-        raise HTTPException(status_code=401, detail="Invalid ASR API key.")
-
-
 def decode_audio(audio_base64: str) -> bytes:
     try:
         return base64.b64decode(audio_base64, validate=True)
@@ -197,7 +118,10 @@ def transcript_text(words: tuple[TimestampedWord, ...]) -> str:
     return " ".join(word.text.strip() for word in words if word.text.strip())
 
 
-def real_time_factor(processing_time_seconds: float, audio_duration_seconds: float) -> float | None:
+def real_time_factor(
+    processing_time_seconds: float,
+    audio_duration_seconds: float,
+) -> float | None:
     if audio_duration_seconds <= 0.0:
         return None
     return processing_time_seconds / audio_duration_seconds

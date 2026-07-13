@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final, Protocol, TextIO
 
@@ -21,7 +22,7 @@ from app.voice_agent.asr_worker_protocol import (
 )
 from app.voice_agent.interfaces import TranscriptionSession
 
-NEMOTRON_PYTHON_PATH: Final = Path("/opt/nemotron-venv/bin/python")
+NEMOTRON_PYTHON_PATH: Final = Path(sys.executable)
 STREAMING_CHUNK_DURATION_MS: Final = 80
 INPUT_SAMPLE_RATE: Final = 16_000
 PCM_BYTES_PER_SAMPLE: Final = 2
@@ -82,6 +83,9 @@ class NemotronStreamingTranscriber:
 
     def start_session(self) -> TranscriptionSession:
         return NemotronStreamingSession(worker=self.worker, worker_lock=self.worker_lock)
+
+    def close(self) -> None:
+        self.worker.close()
 
 
 class NemotronStreamingSession:

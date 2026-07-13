@@ -1,157 +1,108 @@
 from __future__ import annotations
 
-import json
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from queue import Queue
 from typing import Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-from uuid import uuid4
 
-import modal
+import httpx
 
+from app.quality.models import AudioMetadata
 from app.quality.remote_models import (
-    QUALITY_INPUT_VOLUME_COUNT,
     AudioSource,
     LocalAudioSource,
     RemoteQualityRequest,
     RemoteQualityResponse,
     UriAudioSource,
-    VolumeAudioSource,
-    quality_input_volume_name,
 )
 from app.quality.transport import prepare_quality_transport_audio
-
-quality_input_volume_slots: Queue[int] = Queue()
-for quality_input_volume_index in range(QUALITY_INPUT_VOLUME_COUNT):
-    quality_input_volume_slots.put(quality_input_volume_index)
+from app.shared.compute_api import QualityAnalysisUpload
 
 
 class RemoteQualityClient(Protocol):
     def analyze(self, request: RemoteQualityRequest) -> RemoteQualityResponse: ...
 
 
-class VolumeUpload(Protocol):
-    def put_file(self, local_file: str, remote_path: str) -> None: ...
+@dataclass(frozen=True)
+class PreparedQualityAudio:
+    path: Path
+    original_metadata: AudioMetadata | None
 
 
 class HttpRemoteQualityClient:
     def __init__(self, endpoint_url: str, api_key: str) -> None:
         if not endpoint_url:
-            raise ValueError("VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL is required for ingestion.")
+            raise ValueError("VOICE_LIGHT_COMPUTE_URL is required for ingestion.")
         if not api_key:
-            raise ValueError("VOICE_LIGHT_REMOTE_QUALITY_API_KEY is required for ingestion.")
+            raise ValueError("VOICE_LIGHT_COMPUTE_TOKEN is required for ingestion.")
         self.endpoint_url = endpoint_url
         self.api_key = api_key
 
     def analyze(self, request: RemoteQualityRequest) -> RemoteQualityResponse:
-        if not has_local_source(request.speaker1) and not has_local_source(request.speaker2):
-            return self._send(request)
-        request_identifier = str(uuid4())
-        volume_index = quality_input_volume_slots.get()
-        volume = modal.Volume.from_name(
-            quality_input_volume_name(volume_index),
-            create_if_missing=True,
-            version=2,
-        )
-        try:
-            staged_request = stage_local_sources(
-                request,
-                volume,
-                volume_index,
-                request_identifier,
+        with tempfile.TemporaryDirectory(prefix="voice-light-quality-transport-") as directory_name:
+            directory = Path(directory_name)
+            speaker1 = prepare_audio_source(request.speaker1, directory, 1)
+            speaker2 = prepare_audio_source(request.speaker2, directory, 2)
+            upload = QualityAnalysisUpload(
+                sample_id=request.sample_id,
+                speaker1_original_metadata=speaker1.original_metadata,
+                speaker2_original_metadata=speaker2.original_metadata,
             )
-            return self._send(staged_request)
-        finally:
-            volume.remove_file(request_identifier, recursive=True)
-            quality_input_volume_slots.put(volume_index)
-
-    def _send(self, request: RemoteQualityRequest) -> RemoteQualityResponse:
-        request_body = json.dumps(request.model_dump(mode="json")).encode("utf-8")
-        http_request = Request(
-            self.endpoint_url,
-            data=request_body,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+            with (
+                speaker1.path.open("rb") as speaker1_file,
+                speaker2.path.open("rb") as speaker2_file,
+            ):
+                response = httpx.post(
+                    self.endpoint_url,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    files=[
+                        (
+                            "request_json",
+                            (None, upload.model_dump_json(), "application/json"),
+                        ),
+                        ("speaker1", (speaker1.path.name, speaker1_file, "audio/flac")),
+                        ("speaker2", (speaker2.path.name, speaker2_file, "audio/flac")),
+                    ],
+                    timeout=900.0,
+                )
         try:
-            with urlopen(http_request, timeout=900) as response:
-                payload = response.read().decode("utf-8")
-        except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
             raise ValueError(
-                f"Remote quality request failed with HTTP {error.code}: {detail}"
+                f"Remote quality request failed with HTTP {response.status_code}: {response.text}"
             ) from error
-        except URLError as error:
-            raise ValueError(f"Remote quality request failed: {error.reason}") from error
-        return RemoteQualityResponse.model_validate_json(payload)
+        return RemoteQualityResponse.model_validate_json(response.text)
 
 
-def stage_local_sources(
-    request: RemoteQualityRequest,
-    volume: modal.Volume,
-    volume_index: int,
-    request_identifier: str,
-) -> RemoteQualityRequest:
-    with tempfile.TemporaryDirectory(prefix="voice-light-quality-transport-") as directory_name:
-        directory = Path(directory_name)
-        prepared_speaker1 = prepare_staging_source(request.speaker1, directory, 1)
-        prepared_speaker2 = prepare_staging_source(request.speaker2, directory, 2)
-        with volume.batch_upload(force=True) as upload:
-            speaker1 = stage_audio_source(
-                prepared_speaker1, upload, volume_index, request_identifier, 1
-            )
-            speaker2 = stage_audio_source(
-                prepared_speaker2, upload, volume_index, request_identifier, 2
-            )
-    return request.model_copy(update={"speaker1": speaker1, "speaker2": speaker2})
-
-
-def prepare_staging_source(
+def prepare_audio_source(
     source: AudioSource,
     directory: Path,
     speaker_index: int,
-) -> AudioSource:
+) -> PreparedQualityAudio:
+    input_path = materialize_audio_source(source, directory, speaker_index)
+    output_path = directory / f"speaker{speaker_index}.flac"
+    prepare_quality_transport_audio(input_path, output_path)
     match source:
         case LocalAudioSource():
-            output_path = directory / f"speaker{speaker_index}.flac"
-            prepare_quality_transport_audio(Path(source.path), output_path)
-            return source.model_copy(
-                update={"filename": output_path.name, "path": str(output_path)}
-            )
-        case UriAudioSource() | VolumeAudioSource():
-            return source
+            original_metadata = source.original_metadata
+        case UriAudioSource():
+            original_metadata = None
+    return PreparedQualityAudio(path=output_path, original_metadata=original_metadata)
 
 
-def has_local_source(source: AudioSource) -> bool:
-    match source:
-        case LocalAudioSource():
-            return True
-        case UriAudioSource() | VolumeAudioSource():
-            return False
-
-
-def stage_audio_source(
+def materialize_audio_source(
     source: AudioSource,
-    upload: VolumeUpload,
-    volume_index: int,
-    request_identifier: str,
+    directory: Path,
     speaker_index: int,
-) -> VolumeAudioSource | UriAudioSource:
+) -> Path:
     match source:
         case LocalAudioSource():
-            remote_path = (
-                f"/{request_identifier}/speaker{speaker_index}{Path(source.filename).suffix}"
-            )
-            upload.put_file(source.path, remote_path)
-            return VolumeAudioSource(
-                volume_index=volume_index,
-                path=remote_path.lstrip("/"),
-                original_metadata=source.original_metadata,
-            )
-        case UriAudioSource() | VolumeAudioSource():
-            return source
+            return Path(source.path)
+        case UriAudioSource():
+            path = directory / f"speaker{speaker_index}.input"
+            with httpx.stream("GET", source.uri, timeout=300.0) as response:
+                response.raise_for_status()
+                with path.open("wb") as output:
+                    for chunk in response.iter_bytes():
+                        output.write(chunk)
+            return path

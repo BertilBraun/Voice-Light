@@ -4,15 +4,16 @@ from pathlib import Path
 from threading import Lock
 
 from faster_whisper import WhisperModel
+from huggingface_hub import snapshot_download
 
-from app.asr.models.base import cuda_device, load_time_seconds, timestamped_word_from_word
-from app.asr.models.text_alignment import WhisperxTextAligner
+from app.asr.models.base import cuda_device, load_time_seconds
+from app.asr.models.parsing import WHISPER_IDENTIFIER, WHISPER_REVISION
 from app.asr.schemas import AsrModelId, TimestampedWord
 
 
 class WhisperxAsrModel:
     model_id = AsrModelId.WHISPERX
-    package_names = ("torch", "whisperx", "faster-whisper")
+    package_names = ("torch", "faster-whisper")
 
     def __init__(self) -> None:
         self.inference_lock = Lock()
@@ -20,29 +21,29 @@ class WhisperxAsrModel:
 
     def load(self) -> None:
         self.device = cuda_device()
-        self.model = WhisperModel("large-v3", device=self.device, compute_type="float16")
-        self.aligner = WhisperxTextAligner(device=self.device)
+        model_path = snapshot_download(
+            WHISPER_IDENTIFIER,
+            revision=WHISPER_REVISION,
+        )
+        self.model = WhisperModel(model_path, device=self.device, compute_type="float16")
 
     def transcribe(self, audio_path: Path) -> tuple[TimestampedWord, ...]:
         with self.inference_lock:
             segments, transcription_info = self.model.transcribe(
                 str(audio_path),
                 beam_size=5,
-                word_timestamps=False,
+                word_timestamps=True,
                 vad_filter=False,
             )
-            transcription_segments = [
-                {
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text,
-                }
+            words = [
+                TimestampedWord(
+                    text=word.word,
+                    start_seconds=word.start,
+                    end_seconds=word.end,
+                    confidence=word.probability,
+                )
                 for segment in segments
+                for word in (segment.words or ())
             ]
-            language_code = str(transcription_info.language)
-            words = self.aligner.align_segments(
-                audio_path=audio_path,
-                segments=transcription_segments,
-                language_code=language_code,
-            )
-        return tuple(timestamped_word_from_word(word) for word in words)
+            del transcription_info
+        return tuple(words)

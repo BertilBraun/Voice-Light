@@ -3,6 +3,10 @@
 !/app/data/
 
 .venv/
+.env.compute
+/.cache/compute/
+/logs/compute/
+/run/compute/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

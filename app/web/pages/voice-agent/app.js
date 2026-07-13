@@ -20,7 +20,7 @@ let stopRequested = false;
 let displayedGenerationId;
 const intentionallyClosedSockets = new WeakSet();
 
-endpointInput.value = localStorage.getItem("voiceAgentEndpoint") ?? "";
+endpointInput.value = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/voice/session`;
 startButton.addEventListener("click", startSession);
 stopButton.addEventListener("click", stopSession);
 
@@ -30,7 +30,6 @@ async function startSession() {
     setConnection("error", "Invalid endpoint", "Enter a WebSocket URL beginning with ws:// or wss://.");
     return;
   }
-  localStorage.setItem("voiceAgentEndpoint", endpoint);
   stopRequested = false;
   startButton.disabled = true;
   startButton.textContent = "Starting…";

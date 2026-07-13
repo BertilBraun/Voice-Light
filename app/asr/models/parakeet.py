@@ -7,7 +7,11 @@ import librosa
 from transformers import AutoModelForTDT, AutoProcessor
 
 from app.asr.models.base import cuda_device, load_time_seconds, timestamped_word_from_word
-from app.asr.models.parsing import PARAKEET_IDENTIFIER, words_from_parakeet_timestamps
+from app.asr.models.parsing import (
+    PARAKEET_IDENTIFIER,
+    PARAKEET_REVISION,
+    words_from_parakeet_timestamps,
+)
 from app.asr.schemas import AsrModelId, TimestampedWord
 
 
@@ -20,8 +24,15 @@ class ParakeetAsrModel:
         self.model_loading_time_seconds = load_time_seconds(self.load)
 
     def load(self) -> None:
-        self.processor = AutoProcessor.from_pretrained(PARAKEET_IDENTIFIER)
-        self.model = AutoModelForTDT.from_pretrained(PARAKEET_IDENTIFIER, dtype="auto")
+        self.processor = AutoProcessor.from_pretrained(
+            PARAKEET_IDENTIFIER,
+            revision=PARAKEET_REVISION,
+        )
+        self.model = AutoModelForTDT.from_pretrained(
+            PARAKEET_IDENTIFIER,
+            revision=PARAKEET_REVISION,
+            dtype="auto",
+        )
         self.device = cuda_device()
         self.model.to(self.device)
         self.sample_rate = int(self.processor.feature_extractor.sampling_rate)

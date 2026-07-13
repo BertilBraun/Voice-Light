@@ -8,9 +8,13 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonRecord: TypeAlias = dict[str, JsonScalar]
 
 PARAKEET_IDENTIFIER = "nvidia/parakeet-tdt-0.6b-v3"
-WHISPERX_IDENTIFIER = "whisperx/large-v3"
+PARAKEET_REVISION = "7c35754d166cca382ad1e53e68b01e7c575f3a1d"
+WHISPER_IDENTIFIER = "Systran/faster-whisper-large-v3"
+WHISPER_REVISION = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
 CANARY_IDENTIFIER = "nvidia/canary-1b-v2"
+CANARY_REVISION = "87bc52657add533cd0156b3fc1aef027280754bf"
 NEMOTRON_3_5_IDENTIFIER = "nvidia/nemotron-3.5-asr-streaming-0.6b"
+NEMOTRON_3_5_REVISION = "f3d333391852ba876df169dcc9ba902d25b6ab0b"
 
 
 def words_from_parakeet_timestamps(decoded_timestamps: object) -> list[Word]:

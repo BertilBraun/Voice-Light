@@ -69,7 +69,7 @@ def test_local_audio_source_is_uploaded(tmp_path: Path) -> None:
     )
 
 
-def test_presigned_audio_source_is_downloaded_by_modal() -> None:
+def test_presigned_audio_source_is_sent_as_remote_uri() -> None:
     source = remote_audio_source(
         MemoryStorage(b"unused", "https://bucket.example/audio.wav?signature=value"),
         "audio.wav",

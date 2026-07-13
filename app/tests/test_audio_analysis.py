@@ -15,7 +15,7 @@ from app.analyses.end_of_turn.service import SpeechSegment
 from app.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS, capped_wave_bytes
 from app.data.sessions import list_sessions
 from app.data.transcripts import read_transcript_turns
-from app.main import delete_file, write_playback_wave_file
+from app.local.main import delete_file, write_playback_wave_file
 
 
 @pytest.mark.parametrize(

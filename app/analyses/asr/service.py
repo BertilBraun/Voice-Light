@@ -37,7 +37,7 @@ from app.asr.models.parsing import (
     CANARY_IDENTIFIER,
     NEMOTRON_3_5_IDENTIFIER,
     PARAKEET_IDENTIFIER,
-    WHISPERX_IDENTIFIER,
+    WHISPER_IDENTIFIER,
 )
 from app.asr.schemas import AsrModelId, AsrTranscriptResult, TimestampedWord
 from app.asr.service import AsrTranscriptCache, RemoteAsrClientFactory, cached_asr_transcripts
@@ -555,7 +555,7 @@ def model_identifier_for_model_id(model_id: AsrModelId) -> str:
         case AsrModelId.PARAKEET_TDT:
             return PARAKEET_IDENTIFIER
         case AsrModelId.WHISPERX:
-            return WHISPERX_IDENTIFIER
+            return WHISPER_IDENTIFIER
         case AsrModelId.CANARY:
             return CANARY_IDENTIFIER
         case AsrModelId.NEMOTRON_3_5:

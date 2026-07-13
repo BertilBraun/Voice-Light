@@ -10,9 +10,9 @@ from app.asr.schemas import RemoteAsrRequest, RemoteAsrResponse
 class HttpRemoteAsrClient:
     def __init__(self, endpoint_url: str, api_key: str) -> None:
         if not endpoint_url:
-            raise ValueError("VOICE_LIGHT_REMOTE_ASR_ENDPOINT_URL is required for uncached ASR.")
+            raise ValueError("VOICE_LIGHT_COMPUTE_URL is required for uncached ASR.")
         if not api_key:
-            raise ValueError("VOICE_LIGHT_REMOTE_ASR_API_KEY is required for uncached ASR.")
+            raise ValueError("VOICE_LIGHT_COMPUTE_TOKEN is required for uncached ASR.")
         self.endpoint_url = endpoint_url
         self.api_key = api_key
 

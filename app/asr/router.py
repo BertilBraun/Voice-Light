@@ -8,7 +8,7 @@ from app.asr.client import HttpRemoteAsrClient
 from app.asr.repository import AsrTranscriptRepository
 from app.asr.schemas import CachedAsrRequest, CachedAsrResponse
 from app.asr.service import cached_asr_transcripts
-from app.config import DATABASE_URL, REMOTE_ASR_API_KEY, REMOTE_ASR_ENDPOINT_URL
+from app.config import COMPUTE_TOKEN, DATABASE_URL, REMOTE_ASR_ENDPOINT_URL
 
 router = APIRouter(prefix="/api/asr", tags=["asr"])
 
@@ -35,5 +35,5 @@ def asr_transcript_repository() -> AsrTranscriptRepository:
 def remote_asr_client() -> HttpRemoteAsrClient:
     return HttpRemoteAsrClient(
         endpoint_url=REMOTE_ASR_ENDPOINT_URL,
-        api_key=REMOTE_ASR_API_KEY,
+        api_key=COMPUTE_TOKEN,
     )

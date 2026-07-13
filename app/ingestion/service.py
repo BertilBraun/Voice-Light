@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from app.audio import probe_local_audio_metadata
-from app.config import REMOTE_QUALITY_API_KEY, REMOTE_QUALITY_ENDPOINT_URL
+from app.config import COMPUTE_TOKEN, REMOTE_QUALITY_ENDPOINT_URL
 from app.db.models import DatasetCreate, DatasetStorageKind, JobStatus, TrackSide
 from app.db.repository import AudioMetadataInput, QualityResultInput, Repository, SampleTrackInput
 from app.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
@@ -40,7 +40,7 @@ class IngestionService:
         self.repository = repository
         self.remote_quality_client = remote_quality_client or HttpRemoteQualityClient(
             REMOTE_QUALITY_ENDPOINT_URL,
-            REMOTE_QUALITY_API_KEY,
+            COMPUTE_TOKEN,
         )
 
     def ingest_local_dataset(
