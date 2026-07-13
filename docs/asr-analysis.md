@@ -13,11 +13,11 @@ than 300 ms apart are displayed as one speech block.
 
 ## Processing
 
-Raw Parakeet, WhisperX, Canary, and Nemotron inference runs on Modal. Results are cached in
+Raw Parakeet, faster-Whisper, Canary, and Nemotron inference runs on the compute backend. Results are cached in
 Postgres by audio content hash and model ID, so repeated analysis does not invoke a cached model
 again.
 
-Local derived modes do not call Modal:
+Local derived modes do not call the compute backend:
 
 - The Parakeet + Canary union retains Parakeet words and adds non-overlapping Canary coverage.
 - The merged consensus progressively aligns all four model transcripts.
@@ -35,13 +35,14 @@ The local app requires:
 
 ```text
 VOICE_LIGHT_DATABASE_URL
-VOICE_LIGHT_REMOTE_ASR_ENDPOINT_URL
-VOICE_LIGHT_REMOTE_ASR_API_KEY
+VOICE_LIGHT_COMPUTE_URL
+VOICE_LIGHT_COMPUTE_TOKEN
 ```
 
-Reusable APIs are `POST /api/asr/transcriptions`, `GET /api/asr/models`, and
-`POST /api/asr/analyze`. Deploy the remote model server with:
+Reusable local APIs are `POST /api/asr/transcriptions`, `GET /api/asr/models`, and
+`POST /api/asr/analyze`. Start the compute model server on the rented machine with:
 
-```powershell
-uv run modal deploy .\app\asr\modal_endpoint.py
+```bash
+bash deployment/compute/bootstrap.sh
+bash deployment/compute/start.sh
 ```

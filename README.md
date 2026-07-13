@@ -76,23 +76,47 @@ this repository's Compose configuration at
 uv run python -m app.db.migrate
 ```
 
-Dataset ingestion also requires the remote quality-analysis service:
+Batch ASR, dataset quality analysis, and the voice prototype require the compute backend:
 
 ```text
-VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL
-VOICE_LIGHT_REMOTE_QUALITY_API_KEY
+VOICE_LIGHT_COMPUTE_URL=http://<vast-ip>:8000
+VOICE_LIGHT_COMPUTE_TOKEN=<token from the compute .env.compute file>
 ```
 
-The deployed project endpoint is the default for `VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL`; set
-that variable only to target a different deployment. The API key defaults to
-`VOICE_LIGHT_REMOTE_ASR_API_KEY` when `VOICE_LIGHT_REMOTE_QUALITY_API_KEY` is not set.
+The compute URL has no implicit deployment default. The local application fails clearly when a
+compute-backed operation is requested without these values.
 
-Deploy the Modal quality endpoint with:
+## Vast.ai compute backend
 
-```powershell
-uv run modal deploy .\app\quality\modal_endpoint.py
+On a newly rented Ubuntu RTX 4090 instance:
+
+```bash
+git clone <repository-url>
+cd Voice-Light
+bash deployment/compute/bootstrap.sh
+bash deployment/compute/start.sh
 ```
 
-Local audio is staged in a temporary request directory on a Modal Volume and deleted after the
-request. Remote storage backends can provide an HTTP or HTTPS access URI, including a presigned
-S3 URL, which Modal downloads into temporary storage for the duration of the analysis.
+`bootstrap.sh` installs Linux audio/compiler packages, installs uv, synchronizes the locked Python
+3.12 environment, validates the RTX 4090/CUDA runtime, caches required voice models, and performs
+import and Pocket TTS streaming smoke tests. It creates an ignored `.env.compute` containing a new
+bearer token. Copy the token securely into `VOICE_LIGHT_COMPUTE_TOKEN` on the local machine.
+
+After a later pull, restart with:
+
+```bash
+git pull
+bash deployment/compute/start.sh
+```
+
+The start command synchronizes only changed dependencies, stops the tracked process, and starts one
+server on the configured port. Operational commands are:
+
+```bash
+bash deployment/compute/status.sh
+bash deployment/compute/stop.sh
+.venv/bin/python deployment/compute/benchmark_tts.py
+```
+
+See [provider-neutral compute backend](docs/compute-backend.md) for the deployment boundary,
+endpoints, authentication, readiness behavior, and TTS decision.
