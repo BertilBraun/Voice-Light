@@ -33,11 +33,14 @@ class FakeTranscriptionSession:
 
 
 class FakeLanguageModel:
+    def __init__(self) -> None:
+        self.conversations: list[tuple[tuple[str, str], ...]] = []
+
     async def stream_response(
         self,
         conversation: tuple[tuple[str, str], ...],
     ) -> AsyncIterator[str]:
-        assert conversation == (("user", "hello agent"),)
+        self.conversations.append(conversation)
         yield "One two three four "
         yield "five six seven eight."
 
@@ -54,6 +57,7 @@ class FakeSpeechSynthesizer:
 
 def test_full_session_streams_text_and_framed_audio() -> None:
     web_app = FastAPI()
+    language_model = FakeLanguageModel()
 
     @web_app.websocket("/session")
     async def endpoint(websocket: WebSocket) -> None:
@@ -61,7 +65,7 @@ def test_full_session_streams_text_and_framed_audio() -> None:
             websocket=websocket,
             speech_detector=FakeSpeechDetector(),
             transcriber=FakeTranscriber(),
-            language_model=FakeLanguageModel(),
+            language_model=language_model,
             speech_synthesizer=FakeSpeechSynthesizer(),
             policy=SessionPolicy(silence_duration_ms=40, pre_roll_duration_ms=20),
         )
@@ -84,6 +88,16 @@ def test_full_session_streams_text_and_framed_audio() -> None:
             elif message.get("text") is not None:
                 messages.append(json.loads(message["text"])["type"])
 
+        websocket.send_bytes(b"\x01\x00" * 320)
+        websocket.send_bytes(b"\x00\x00" * 320)
+        websocket.send_bytes(b"\x00\x00" * 320)
+
+        second_response_ended = False
+        while not second_response_ended:
+            message = websocket.receive()
+            if message.get("text") is not None:
+                second_response_ended = json.loads(message["text"])["type"] == "assistant.audio.end"
+
         websocket.send_json({"type": "session.stop"})
 
     assert "vad.started" in messages
@@ -94,3 +108,11 @@ def test_full_session_streams_text_and_framed_audio() -> None:
     assert audio_frame is not None
     assert struct.unpack("<II", audio_frame[:8]) == (1, 0)
     assert audio_frame[8:] == b"\x01\x00\x02\x00"
+    assert language_model.conversations == [
+        (("user", "hello agent"),),
+        (
+            ("user", "hello agent"),
+            ("assistant", "One two three four five six seven eight."),
+            ("user", "hello agent"),
+        ),
+    ]

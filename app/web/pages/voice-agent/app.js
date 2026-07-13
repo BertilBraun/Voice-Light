@@ -77,6 +77,7 @@ async function setupPlayback() {
 
 function handleMessage(event) {
   if (event.data instanceof ArrayBuffer) {
+    if (playbackContext?.state === "suspended") void playbackContext.resume();
     const view = new DataView(event.data);
     const generationId = view.getUint32(0, true);
     const pcm = event.data.slice(8);
@@ -89,7 +90,10 @@ function handleMessage(event) {
   if (message.type === "vad.stopped") vadStatus.textContent = "thinking";
   if (message.type === "transcript.partial" || message.type === "transcript.final") setTranscript(userTranscript, message.text);
   if (message.type === "assistant.text.delta") appendTranscript(assistantTranscript, message.text);
-  if (message.type === "assistant.audio.start") playbackStatus.textContent = "speaking";
+  if (message.type === "assistant.audio.start") {
+    if (playbackContext?.state === "suspended") void playbackContext.resume();
+    playbackStatus.textContent = "speaking";
+  }
   if (message.type === "assistant.audio.end") playbackStatus.textContent = "waiting";
   if (message.type === "assistant.cancel") {
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });

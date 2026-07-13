@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import struct
 from collections import deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -29,6 +30,7 @@ from app.voice_agent.schemas import (
     TranscriptEvent,
     client_event_adapter,
 )
+from app.voice_agent.sentence_chunking import SentenceTextChunker
 
 INPUT_SAMPLE_RATE = 16_000
 PCM_BYTES_PER_SAMPLE = 2
@@ -170,6 +172,16 @@ class VoiceAgentSession:
         self.generation_task = asyncio.create_task(self._generate_response(self.generation_id))
 
     async def _generate_response(self, generation_id: int) -> None:
+        sentence_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def sentences() -> AsyncIterator[str]:
+            while (sentence := await sentence_queue.get()) is not None:
+                yield sentence
+
+        audio_task = asyncio.create_task(
+            self._stream_speech(generation_id=generation_id, sentences=sentences())
+        )
+        sentence_chunker = SentenceTextChunker()
         response_parts: list[str] = []
         try:
             async for text_delta in self.language_model.stream_response(tuple(self.conversation)):
@@ -177,32 +189,46 @@ class VoiceAgentSession:
                 await self._send_event(
                     AssistantTextDeltaEvent(generation_id=generation_id, text=text_delta)
                 )
+                for sentence in sentence_chunker.add_text(text_delta):
+                    await sentence_queue.put(sentence)
             response_text = "".join(response_parts).strip()
             if not response_text:
                 raise RuntimeError("The language model returned an empty response.")
             self.conversation.append(("assistant", response_text))
-            await self._stream_speech(generation_id=generation_id, text=response_text)
+            for sentence in sentence_chunker.finish():
+                await sentence_queue.put(sentence)
+            await sentence_queue.put(None)
+            await audio_task
         except asyncio.CancelledError:
+            if not audio_task.done():
+                audio_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await audio_task
             raise
         except Exception as error:
+            if not audio_task.done():
+                audio_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await audio_task
             await self._send_event(ErrorEvent(message=f"Response generation failed: {error}"))
 
     async def _stream_speech(
         self,
         generation_id: int,
-        text: str,
+        sentences: AsyncIterator[str],
     ) -> None:
         sequence_number = 0
         started = False
-        async for pcm_bytes in self.speech_synthesizer.stream_audio(text):
-            if not started:
-                started = True
-                await self._send_audio_boundary(
-                    ServerEventType.ASSISTANT_AUDIO_START, generation_id
-                )
-            header = struct.pack("<II", generation_id, sequence_number)
-            await self.websocket.send_bytes(header + pcm_bytes)
-            sequence_number += 1
+        async for sentence in sentences:
+            async for pcm_bytes in self.speech_synthesizer.stream_audio(sentence):
+                if not started:
+                    started = True
+                    await self._send_audio_boundary(
+                        ServerEventType.ASSISTANT_AUDIO_START, generation_id
+                    )
+                header = struct.pack("<II", generation_id, sequence_number)
+                await self.websocket.send_bytes(header + pcm_bytes)
+                sequence_number += 1
         if started:
             await self._send_audio_boundary(ServerEventType.ASSISTANT_AUDIO_END, generation_id)
 

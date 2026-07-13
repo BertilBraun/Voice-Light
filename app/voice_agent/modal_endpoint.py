@@ -8,7 +8,7 @@ from fastapi import FastAPI, WebSocket
 from app.voice_agent.session import SessionPolicy, VoiceAgentSession, send_session_error
 
 MODEL_CACHE_DIRECTORY = "/model-cache"
-COSYVOICE_DIRECTORY = Path(MODEL_CACHE_DIRECTORY) / "CosyVoice3"
+COSYVOICE_DIRECTORY = Path(MODEL_CACHE_DIRECTORY) / "CosyVoice2"
 PROMPT_AUDIO_PATH = Path("/opt/CosyVoice/asset/zero_shot_prompt.wav")
 HUGGING_FACE_CACHE_DIRECTORY = f"{MODEL_CACHE_DIRECTORY}/huggingface"
 MODELSCOPE_CACHE_DIRECTORY = f"{MODEL_CACHE_DIRECTORY}/modelscope"
@@ -37,12 +37,12 @@ image = (
     )
     .uv_pip_install(
         "fastapi[standard]>=0.115.0",
-        "huggingface-hub>=1.23.0",
+        "huggingface-hub>=0.30.0,<1.0",
         "pydantic>=2.0.0",
         "silero-vad>=6.2.1",
-        "torch==2.6.0",
-        "torchaudio==2.6.0",
-        "transformers>=5.13.0",
+        "torch==2.3.1",
+        "torchaudio==2.3.1",
+        "transformers==4.51.3",
     )
     .env(
         {
@@ -63,7 +63,7 @@ app = modal.App("VoiceLightAgent")
 
 @app.cls(
     image=image,
-    gpu="L40S",
+    gpu="L4",
     min_containers=0,
     max_containers=1,
     scaledown_window=30,
@@ -77,18 +77,18 @@ class VoiceAgentServer:
         from huggingface_hub import snapshot_download
 
         from app.voice_agent.runtime import (
-            BufferedNemotronTranscriber,
+            BufferedWhisperTranscriber,
             CosyVoiceSpeechSynthesizer,
             SileroSpeechDetector,
             TransformersLanguageModel,
         )
 
         snapshot_download(
-            "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            "FunAudioLLM/CosyVoice2-0.5B",
             local_dir=COSYVOICE_DIRECTORY,
         )
         self.speech_detector_type = SileroSpeechDetector
-        self.transcriber = BufferedNemotronTranscriber()
+        self.transcriber = BufferedWhisperTranscriber()
         self.language_model = TransformersLanguageModel()
         self.speech_synthesizer = CosyVoiceSpeechSynthesizer(
             model_directory=COSYVOICE_DIRECTORY,

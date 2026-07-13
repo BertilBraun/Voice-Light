@@ -1,30 +1,36 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import numpy as np
 import torch
+import whisper
 from pydantic import BaseModel
 from silero_vad import VADIterator, load_silero_vad
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TextIteratorStreamer,
-    pipeline,
 )
-from transformers.pipelines import AutomaticSpeechRecognitionPipeline
+from whisper.model import Whisper
 
 from app.voice_agent.interfaces import TranscriptionSession
 
 INPUT_SAMPLE_RATE: Final = 16_000
-COSYVOICE_SYSTEM_PROMPT: Final = "You are a helpful assistant.<|endofprompt|>"
+LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-0.6B"
+LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
+    "You are a voice agent. Keep responses short, factual, conversational, and easy to speak "
+    "aloud. Use plain text without Markdown or emoji."
+)
+COSYVOICE_ENGLISH_LANGUAGE_TAG: Final = "<|en|>"
 
 
-class AsrPipelineOutput(BaseModel):
+class WhisperTranscriptionOutput(BaseModel):
     text: str
 
 
@@ -54,22 +60,22 @@ class SileroSpeechDetector:
         return self.speech_active
 
 
-class BufferedNemotronTranscriber:
+class BufferedWhisperTranscriber:
     def __init__(self) -> None:
-        self.pipeline: AutomaticSpeechRecognitionPipeline = pipeline(
-            task="automatic-speech-recognition",
-            model="nvidia/nemotron-speech-streaming-en-0.6b",
-            device=0,
-            dtype=torch.bfloat16,
+        download_directory = Path(os.environ["XDG_CACHE_HOME"]) / "whisper"
+        self.model = whisper.load_model(
+            "small.en",
+            device="cuda",
+            download_root=download_directory.as_posix(),
         )
 
     def start_session(self) -> TranscriptionSession:
-        return BufferedNemotronSession(self.pipeline)
+        return BufferedWhisperSession(self.model)
 
 
-class BufferedNemotronSession:
-    def __init__(self, asr_pipeline: AutomaticSpeechRecognitionPipeline) -> None:
-        self.pipeline = asr_pipeline
+class BufferedWhisperSession:
+    def __init__(self, model: Whisper) -> None:
+        self.model = model
         self.audio_bytes = bytearray()
         self.last_text = ""
 
@@ -88,18 +94,23 @@ class BufferedNemotronSession:
 
     def _transcribe(self) -> str:
         samples = np.frombuffer(self.audio_bytes, dtype="<i2").astype(np.float32) / 32_768.0
-        raw_output = self.pipeline({"array": samples, "sampling_rate": INPUT_SAMPLE_RATE})
-        output = AsrPipelineOutput.model_validate(raw_output)
+        raw_output = self.model.transcribe(
+            samples,
+            language="en",
+            fp16=True,
+            temperature=0.0,
+        )
+        output = WhisperTranscriptionOutput.model_validate(cast(dict[str, object], raw_output))
         return output.text
 
 
 class TransformersLanguageModel:
     def __init__(self) -> None:
-        model_name = "Qwen/Qwen3-1.7B"
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(LANGUAGE_MODEL_NAME)
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            dtype=torch.bfloat16,
+            LANGUAGE_MODEL_NAME,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="sdpa",
         ).to("cuda")
 
     async def stream_response(
@@ -107,7 +118,7 @@ class TransformersLanguageModel:
         conversation: tuple[tuple[str, str], ...],
     ) -> AsyncIterator[str]:
         messages = [
-            {"role": "system", "content": "You are a concise, friendly voice assistant."},
+            {"role": "system", "content": LANGUAGE_MODEL_SYSTEM_PROMPT},
             *({"role": role, "content": content} for role, content in conversation),
         ]
         prompt = self.tokenizer.apply_chat_template(
@@ -161,7 +172,7 @@ class CosyVoiceSpeechSynthesizer:
         def synthesize() -> None:
             try:
                 outputs = self.model.inference_cross_lingual(
-                    f"{COSYVOICE_SYSTEM_PROMPT}{text}",
+                    f"{COSYVOICE_ENGLISH_LANGUAGE_TAG}{text}",
                     self.prompt_audio_path.as_posix(),
                     stream=True,
                 )
