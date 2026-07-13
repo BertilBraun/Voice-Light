@@ -33,13 +33,15 @@ def available_asr_models() -> tuple[AsrModelInfo, ...]:
         ),
         AsrModelInfo(
             mode=AsrModelMode.WHISPERX,
-            label="WhisperX large-v3",
-            description="Faster-Whisper transcription plus WhisperX word alignment.",
+            label="Faster-Whisper large-v3",
+            description="Faster-Whisper transcription with native word timestamps.",
         ),
         AsrModelInfo(
             mode=AsrModelMode.WHISPERX_CROSSTALK_FILTERED,
-            label="WhisperX - crosstalk filtered",
-            description="WhisperX words filtered by rolling loudness and other-channel dominance.",
+            label="Faster-Whisper - crosstalk filtered",
+            description=(
+                "Faster-Whisper words filtered by rolling loudness and other-channel dominance."
+            ),
         ),
         AsrModelInfo(
             mode=AsrModelMode.CANARY,
@@ -54,7 +56,7 @@ def available_asr_models() -> tuple[AsrModelInfo, ...]:
         AsrModelInfo(
             mode=AsrModelMode.NEMOTRON_3_5,
             label="Nemotron 3.5 ASR streaming 0.6B",
-            description="NVIDIA Nemotron transcript aligned with WhisperX word timestamps.",
+            description="NVIDIA Nemotron transcript with an utterance-level timing span.",
         ),
         AsrModelInfo(
             mode=AsrModelMode.NEMOTRON_3_5_CROSSTALK_FILTERED,
