@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import queue
 import threading
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Final
 
@@ -22,7 +21,7 @@ from transformers.pipelines import AutomaticSpeechRecognitionPipeline
 from app.voice_agent.interfaces import TranscriptionSession
 
 INPUT_SAMPLE_RATE: Final = 16_000
-PARTIAL_TRANSCRIPTION_INTERVAL_SAMPLES: Final = 12_800
+COSYVOICE_SYSTEM_PROMPT: Final = "You are a helpful assistant.<|endofprompt|>"
 
 
 class AsrPipelineOutput(BaseModel):
@@ -34,7 +33,9 @@ class SileroSpeechDetector:
         self.iterator = VADIterator(
             load_silero_vad(),
             sampling_rate=INPUT_SAMPLE_RATE,
-            threshold=0.5,
+            threshold=0.4,
+            min_silence_duration_ms=250,
+            speech_pad_ms=100,
         )
         self.pending_samples = np.empty(0, dtype=np.float32)
         self.speech_active = False
@@ -70,17 +71,11 @@ class BufferedNemotronSession:
     def __init__(self, asr_pipeline: AutomaticSpeechRecognitionPipeline) -> None:
         self.pipeline = asr_pipeline
         self.audio_bytes = bytearray()
-        self.samples_at_last_partial = 0
         self.last_text = ""
 
     async def add_audio(self, pcm_bytes: bytes) -> str | None:
         self.audio_bytes.extend(pcm_bytes)
-        sample_count = len(self.audio_bytes) // 2
-        if sample_count - self.samples_at_last_partial < PARTIAL_TRANSCRIPTION_INTERVAL_SAMPLES:
-            return None
-        self.samples_at_last_partial = sample_count
-        self.last_text = await asyncio.to_thread(self._transcribe)
-        return self.last_text
+        return None
 
     async def finish(self) -> str:
         if not self.audio_bytes:
@@ -132,7 +127,7 @@ class TransformersLanguageModel:
             kwargs={
                 **model_inputs,
                 "streamer": streamer,
-                "max_new_tokens": 160,
+                "max_new_tokens": 256,
                 "do_sample": True,
                 "temperature": 0.6,
                 "top_p": 0.9,
@@ -159,26 +154,25 @@ class CosyVoiceSpeechSynthesizer:
     def sample_rate(self) -> int:
         return int(self.model.sample_rate)
 
-    async def stream_audio(self, text_chunks: AsyncIterator[str]) -> AsyncIterator[bytes]:
-        text_queue: queue.Queue[str | None] = queue.Queue()
+    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
         audio_queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue()
         event_loop = asyncio.get_running_loop()
-
-        def text_generator() -> Iterator[str]:
-            while (text := text_queue.get()) is not None:
-                yield text
 
         def synthesize() -> None:
             try:
                 outputs = self.model.inference_cross_lingual(
-                    text_generator(),
+                    f"{COSYVOICE_SYSTEM_PROMPT}{text}",
                     self.prompt_audio_path.as_posix(),
                     stream=True,
                 )
+                produced_audio = False
                 for output in outputs:
+                    produced_audio = True
                     speech = output["tts_speech"].squeeze().detach().cpu().numpy()
                     pcm = (np.clip(speech, -1.0, 1.0) * 32_767.0).astype("<i2").tobytes()
                     event_loop.call_soon_threadsafe(audio_queue.put_nowait, pcm)
+                if not produced_audio:
+                    raise RuntimeError("CosyVoice produced no audio.")
             except Exception as error:
                 event_loop.call_soon_threadsafe(audio_queue.put_nowait, error)
             finally:
@@ -186,18 +180,10 @@ class CosyVoiceSpeechSynthesizer:
 
         synthesis_thread = threading.Thread(target=synthesize, daemon=True)
         synthesis_thread.start()
-
-        async def supply_text() -> None:
-            async for text in text_chunks:
-                text_queue.put(text)
-            text_queue.put(None)
-
-        supply_task = asyncio.create_task(supply_text())
         while (audio := await audio_queue.get()) is not None:
             if isinstance(audio, Exception):
                 raise audio
             yield audio
-        await supply_task
         await asyncio.to_thread(synthesis_thread.join)
 
 

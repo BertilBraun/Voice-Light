@@ -18,13 +18,12 @@ PCM16 frames and plays the 24 kHz PCM16 chunks returned by CosyVoice.
 ## Pipeline
 
 - Silero VAD processes microphone audio continuously.
-- Nemotron Speech Streaming English 0.6B produces accumulated-audio partial transcripts.
-- A 400 ms VAD silence window commits the turn.
+- Nemotron Speech Streaming English 0.6B transcribes the complete committed turn.
+- Silero uses a 0.4 speech threshold with a 0.25 release threshold, retains 300 ms of pre-roll,
+  and commits after about one second of silence.
 - Qwen3-1.7B generates a non-thinking response through a token streamer.
-- Text is sent to CosyVoice at eight words, or at six or seven words when the chunk ends a
-  sentence. Only the last chunk may contain fewer than six words.
-- CosyVoice 3 0.5B accepts the text generator and streams 24 kHz PCM audio back over the same
-  WebSocket.
+- The complete response is sent to CosyVoice 3 0.5B after Qwen finishes. CosyVoice then streams
+  24 kHz PCM audio back over the same WebSocket.
 
 Binary server messages begin with two little-endian unsigned 32-bit integers: generation ID and
 sequence number. The remaining bytes are mono PCM16 audio. Generation IDs let the browser discard
@@ -48,10 +47,11 @@ volume, so cold starts reload cached files instead of downloading them again.
 
 ## Current Limitation
 
-The `BufferedNemotronTranscriber` implements the streaming interface but transcribes accumulated
-audio every 800 ms. It does not yet retain Nemotron's encoder/RNNT cache. Replace this adapter with
-the Transformers input-feature generator described by the Nemotron model card before treating ASR
-latency or GPU utilization as representative of the intended architecture.
+The `BufferedNemotronTranscriber` implements the streaming interface but currently runs one
+accumulated-audio transcription after VAD commits the turn. It does not yet retain Nemotron's
+encoder/RNNT cache. Replace this adapter with the Transformers input-feature generator described by
+the Nemotron model card before treating ASR latency or GPU utilization as representative of the
+intended architecture.
 
-The session orchestration, VAD, LLM token stream, CosyVoice text generator, audio stream, and browser
+The session orchestration, VAD, LLM token stream, CosyVoice synthesis, audio stream, and browser
 playback do not depend on that replacement.

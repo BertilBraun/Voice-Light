@@ -13,7 +13,7 @@ from app.voice_agent.session import SessionPolicy, VoiceAgentSession
 
 class FakeSpeechDetector:
     def process_audio(self, pcm_bytes: bytes) -> bool:
-        return pcm_bytes != b"\x00\x00"
+        return any(pcm_bytes)
 
 
 class FakeTranscriber:
@@ -47,10 +47,9 @@ class FakeSpeechSynthesizer:
     def sample_rate(self) -> int:
         return 24_000
 
-    async def stream_audio(self, text_chunks: AsyncIterator[str]) -> AsyncIterator[bytes]:
-        async for text in text_chunks:
-            assert text == "One two three four five six seven eight."
-            yield b"\x01\x00\x02\x00"
+    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
+        assert text == "One two three four five six seven eight."
+        yield b"\x01\x00\x02\x00"
 
 
 def test_full_session_streams_text_and_framed_audio() -> None:
@@ -64,7 +63,7 @@ def test_full_session_streams_text_and_framed_audio() -> None:
             transcriber=FakeTranscriber(),
             language_model=FakeLanguageModel(),
             speech_synthesizer=FakeSpeechSynthesizer(),
-            policy=SessionPolicy(silence_duration_ms=40, audio_frame_duration_ms=20),
+            policy=SessionPolicy(silence_duration_ms=40, pre_roll_duration_ms=20),
         )
         await session.run()
 
@@ -72,9 +71,9 @@ def test_full_session_streams_text_and_framed_audio() -> None:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
         assert websocket.receive_json()["type"] == "session.ready"
 
-        websocket.send_bytes(b"\x01\x00")
-        websocket.send_bytes(b"\x00\x00")
-        websocket.send_bytes(b"\x00\x00")
+        websocket.send_bytes(b"\x01\x00" * 320)
+        websocket.send_bytes(b"\x00\x00" * 320)
+        websocket.send_bytes(b"\x00\x00" * 320)
 
         messages: list[str] = []
         audio_frame: bytes | None = None

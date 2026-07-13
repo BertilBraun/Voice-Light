@@ -3,14 +3,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import struct
-from collections.abc import AsyncIterator
+from collections import deque
 from dataclasses import dataclass
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.frozen_base_config import FrozenBaseModel
-from app.voice_agent.interfaces import LanguageModel, SpeechDetector, SpeechSynthesizer, Transcriber
+from app.voice_agent.interfaces import (
+    LanguageModel,
+    SpeechDetector,
+    SpeechSynthesizer,
+    Transcriber,
+    TranscriptionSession,
+)
 from app.voice_agent.schemas import (
     AssistantAudioBoundaryEvent,
     AssistantTextDeltaEvent,
@@ -23,15 +29,15 @@ from app.voice_agent.schemas import (
     TranscriptEvent,
     client_event_adapter,
 )
-from app.voice_agent.text_chunking import WordTextChunker
 
 INPUT_SAMPLE_RATE = 16_000
+PCM_BYTES_PER_SAMPLE = 2
 
 
 @dataclass(frozen=True)
 class SessionPolicy:
-    silence_duration_ms: int = 400
-    audio_frame_duration_ms: int = 20
+    silence_duration_ms: int = 750
+    pre_roll_duration_ms: int = 300
 
 
 class VoiceAgentSession:
@@ -55,7 +61,7 @@ class VoiceAgentSession:
         self.conversation: list[tuple[str, str]] = []
         self.generation_task: asyncio.Task[None] | None = None
         self.generation_id = 0
-        self.audio_time_ms = 0
+        self.audio_sample_count = 0
 
     async def run(self) -> None:
         await self.websocket.accept()
@@ -102,35 +108,41 @@ class VoiceAgentSession:
     async def _recognition_loop(self) -> None:
         transcription = self.transcriber.start_session()
         speech_active = False
-        silent_frames = 0
-        required_silent_frames = (
-            self.policy.silence_duration_ms // self.policy.audio_frame_duration_ms
-        )
+        silent_samples = 0
+        pre_roll_chunks: deque[bytes] = deque()
+        pre_roll_samples = 0
+        required_silent_samples = _milliseconds_to_samples(self.policy.silence_duration_ms)
+        maximum_pre_roll_samples = _milliseconds_to_samples(self.policy.pre_roll_duration_ms)
         try:
             while (pcm_bytes := await self.audio_queue.get()) is not None:
-                self.audio_time_ms += self.policy.audio_frame_duration_ms
+                sample_count = _pcm_sample_count(pcm_bytes)
+                self.audio_sample_count += sample_count
                 is_speech = self.speech_detector.process_audio(pcm_bytes)
-                if is_speech:
-                    silent_frames = 0
-                    if not speech_active:
-                        speech_active = True
-                        await self._send_speech_state(ServerEventType.VAD_STARTED)
-                    partial_text = await transcription.add_audio(pcm_bytes)
-                    if partial_text:
-                        await self._send_transcript(
-                            ServerEventType.TRANSCRIPT_PARTIAL, partial_text
-                        )
-                    continue
                 if not speech_active:
+                    pre_roll_chunks.append(pcm_bytes)
+                    pre_roll_samples += sample_count
+                    while pre_roll_samples > maximum_pre_roll_samples:
+                        pre_roll_samples -= _pcm_sample_count(pre_roll_chunks.popleft())
+                    if not is_speech:
+                        continue
+                    speech_active = True
+                    silent_samples = 0
+                    await self._send_speech_state(ServerEventType.VAD_STARTED)
+                    for pre_roll_chunk in pre_roll_chunks:
+                        await self._add_transcription_audio(transcription, pre_roll_chunk)
+                    pre_roll_chunks.clear()
+                    pre_roll_samples = 0
                     continue
-                silent_frames += 1
-                partial_text = await transcription.add_audio(pcm_bytes)
-                if partial_text:
-                    await self._send_transcript(ServerEventType.TRANSCRIPT_PARTIAL, partial_text)
-                if silent_frames < required_silent_frames:
+
+                await self._add_transcription_audio(transcription, pcm_bytes)
+                if is_speech:
+                    silent_samples = 0
+                    continue
+                silent_samples += sample_count
+                if silent_samples < required_silent_samples:
                     continue
                 speech_active = False
-                silent_frames = 0
+                silent_samples = 0
                 await self._send_speech_state(ServerEventType.VAD_STOPPED)
                 final_text = (await transcription.finish()).strip()
                 await transcription.close()
@@ -139,6 +151,15 @@ class VoiceAgentSession:
                     await self._commit_turn(final_text)
         finally:
             await transcription.close()
+
+    async def _add_transcription_audio(
+        self,
+        transcription: TranscriptionSession,
+        pcm_bytes: bytes,
+    ) -> None:
+        partial_text = await transcription.add_audio(pcm_bytes)
+        if partial_text:
+            await self._send_transcript(ServerEventType.TRANSCRIPT_PARTIAL, partial_text)
 
     async def _commit_turn(self, text: str) -> None:
         await self._send_transcript(ServerEventType.TRANSCRIPT_FINAL, text)
@@ -149,16 +170,6 @@ class VoiceAgentSession:
         self.generation_task = asyncio.create_task(self._generate_response(self.generation_id))
 
     async def _generate_response(self, generation_id: int) -> None:
-        text_queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-        async def text_chunks() -> AsyncIterator[str]:
-            while (text := await text_queue.get()) is not None:
-                yield text
-
-        audio_task = asyncio.create_task(
-            self._stream_speech(generation_id=generation_id, text_chunks=text_chunks())
-        )
-        chunker = WordTextChunker()
         response_parts: list[str] = []
         try:
             async for text_delta in self.language_model.stream_response(tuple(self.conversation)):
@@ -166,28 +177,24 @@ class VoiceAgentSession:
                 await self._send_event(
                     AssistantTextDeltaEvent(generation_id=generation_id, text=text_delta)
                 )
-                for text_chunk in chunker.add_text(text_delta):
-                    await text_queue.put(text_chunk.text)
-            for text_chunk in chunker.finish():
-                await text_queue.put(text_chunk.text)
-            await text_queue.put(None)
-            await audio_task
-            self.conversation.append(("assistant", "".join(response_parts).strip()))
+            response_text = "".join(response_parts).strip()
+            if not response_text:
+                raise RuntimeError("The language model returned an empty response.")
+            self.conversation.append(("assistant", response_text))
+            await self._stream_speech(generation_id=generation_id, text=response_text)
         except asyncio.CancelledError:
-            await text_queue.put(None)
-            audio_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await audio_task
             raise
+        except Exception as error:
+            await self._send_event(ErrorEvent(message=f"Response generation failed: {error}"))
 
     async def _stream_speech(
         self,
         generation_id: int,
-        text_chunks: AsyncIterator[str],
+        text: str,
     ) -> None:
         sequence_number = 0
         started = False
-        async for pcm_bytes in self.speech_synthesizer.stream_audio(text_chunks):
+        async for pcm_bytes in self.speech_synthesizer.stream_audio(text):
             if not started:
                 started = True
                 await self._send_audio_boundary(
@@ -209,7 +216,8 @@ class VoiceAgentSession:
         await self._send_audio_boundary(ServerEventType.ASSISTANT_CANCEL, cancelled_generation_id)
 
     async def _send_speech_state(self, event_type: ServerEventType) -> None:
-        await self._send_event(SpeechStateEvent(type=event_type, audio_time_ms=self.audio_time_ms))
+        audio_time_ms = self.audio_sample_count * 1_000 // INPUT_SAMPLE_RATE
+        await self._send_event(SpeechStateEvent(type=event_type, audio_time_ms=audio_time_ms))
 
     async def _send_transcript(self, event_type: ServerEventType, text: str) -> None:
         await self._send_event(TranscriptEvent(type=event_type, text=text))
@@ -227,3 +235,11 @@ async def send_session_error(websocket: WebSocket, error: Exception) -> None:
     event = ErrorEvent(message=str(error))
     with contextlib.suppress(RuntimeError):
         await websocket.send_text(event.model_dump_json())
+
+
+def _pcm_sample_count(pcm_bytes: bytes) -> int:
+    return len(pcm_bytes) // PCM_BYTES_PER_SAMPLE
+
+
+def _milliseconds_to_samples(duration_ms: int) -> int:
+    return duration_ms * INPUT_SAMPLE_RATE // 1_000
