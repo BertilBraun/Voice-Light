@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import struct
 from collections.abc import AsyncIterator
@@ -21,6 +22,11 @@ class FakeTranscriber:
         return FakeTranscriptionSession()
 
 
+class DelayedFakeTranscriber:
+    def start_session(self) -> TranscriptionSession:
+        return DelayedFakeTranscriptionSession()
+
+
 class FakeTranscriptionSession:
     async def add_audio(self, pcm_bytes: bytes) -> str | None:
         return "hello" if pcm_bytes != b"\x00\x00" else None
@@ -30,6 +36,12 @@ class FakeTranscriptionSession:
 
     async def close(self) -> None:
         pass
+
+
+class DelayedFakeTranscriptionSession(FakeTranscriptionSession):
+    async def finish(self) -> str:
+        await asyncio.sleep(0.1)
+        return await super().finish()
 
 
 class FakeLanguageModel:
@@ -116,3 +128,46 @@ def test_full_session_streams_text_and_framed_audio() -> None:
             ("user", "hello agent"),
         ),
     ]
+
+
+def test_vad_continues_while_previous_turn_is_transcribed() -> None:
+    web_app = FastAPI()
+
+    @web_app.websocket("/session")
+    async def endpoint(websocket: WebSocket) -> None:
+        session = VoiceAgentSession(
+            websocket=websocket,
+            speech_detector=FakeSpeechDetector(),
+            transcriber=DelayedFakeTranscriber(),
+            language_model=FakeLanguageModel(),
+            speech_synthesizer=FakeSpeechSynthesizer(),
+            policy=SessionPolicy(silence_duration_ms=40, pre_roll_duration_ms=20),
+        )
+        await session.run()
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        assert websocket.receive_json()["type"] == "session.ready"
+
+        for pcm_bytes in (
+            b"\x01\x00" * 320,
+            b"\x00\x00" * 320,
+            b"\x00\x00" * 320,
+            b"\x01\x00" * 320,
+            b"\x00\x00" * 320,
+            b"\x00\x00" * 320,
+        ):
+            websocket.send_bytes(pcm_bytes)
+
+        event_types: list[str] = []
+        while "transcript.final" not in event_types:
+            message = websocket.receive()
+            if message.get("text") is not None:
+                event_types.append(json.loads(message["text"])["type"])
+
+        websocket.send_json({"type": "session.stop"})
+
+    second_vad_started = [
+        index for index, event_type in enumerate(event_types) if event_type == "vad.started"
+    ][1]
+    assert second_vad_started < event_types.index("transcript.final")

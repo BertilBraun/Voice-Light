@@ -22,12 +22,15 @@ from whisper.model import Whisper
 from app.voice_agent.interfaces import TranscriptionSession
 
 INPUT_SAMPLE_RATE: Final = 16_000
-LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-0.6B"
+LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-1.7B"
 LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
-    "You are a voice agent. Keep responses short, factual, conversational, and easy to speak "
-    "aloud. Use plain text without Markdown or emoji."
+    "You are a voice agent. Answer the user's latest request directly in at most two short "
+    "sentences and at most 40 words. Use the conversation history only as context. Do not repeat "
+    "earlier answers. Use factual, conversational plain text without Markdown or emoji."
 )
 COSYVOICE_ENGLISH_LANGUAGE_TAG: Final = "<|en|>"
+COSYVOICE_PROMPT_TEXT: Final = "希望你以后能够做的比我还好呦。"
+COSYVOICE_SPEAKER_ID: Final = "voice-light-prompt"
 
 
 class WhisperTranscriptionOutput(BaseModel):
@@ -64,7 +67,7 @@ class BufferedWhisperTranscriber:
     def __init__(self) -> None:
         download_directory = Path(os.environ["XDG_CACHE_HOME"]) / "whisper"
         self.model = whisper.load_model(
-            "small.en",
+            "base.en",
             device="cuda",
             download_root=download_directory.as_posix(),
         )
@@ -138,10 +141,8 @@ class TransformersLanguageModel:
             kwargs={
                 **model_inputs,
                 "streamer": streamer,
-                "max_new_tokens": 256,
-                "do_sample": True,
-                "temperature": 0.6,
-                "top_p": 0.9,
+                "max_new_tokens": 64,
+                "do_sample": False,
             },
             daemon=True,
         )
@@ -160,6 +161,12 @@ class CosyVoiceSpeechSynthesizer:
 
         self.model = AutoModel(model_dir=model_directory.as_posix(), fp16=True)
         self.prompt_audio_path = prompt_audio_path
+        speaker_added = self.model.add_zero_shot_spk(
+            COSYVOICE_PROMPT_TEXT,
+            self.prompt_audio_path.as_posix(),
+            COSYVOICE_SPEAKER_ID,
+        )
+        assert speaker_added is True
 
     @property
     def sample_rate(self) -> int:
@@ -173,7 +180,8 @@ class CosyVoiceSpeechSynthesizer:
             try:
                 outputs = self.model.inference_cross_lingual(
                     f"{COSYVOICE_ENGLISH_LANGUAGE_TAG}{text}",
-                    self.prompt_audio_path.as_posix(),
+                    "",
+                    zero_shot_spk_id=COSYVOICE_SPEAKER_ID,
                     stream=True,
                 )
                 produced_audio = False

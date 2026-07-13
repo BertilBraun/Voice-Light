@@ -63,7 +63,7 @@ app = modal.App("VoiceLightAgent")
 
 @app.cls(
     image=image,
-    gpu="L4",
+    gpu="L40S",
     min_containers=0,
     max_containers=1,
     scaledown_window=30,

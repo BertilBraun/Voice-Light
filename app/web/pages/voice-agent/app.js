@@ -17,6 +17,8 @@ let captureContext;
 let playbackContext;
 let playbackNode;
 let stopRequested = false;
+let microphoneTransmissionEnabled = false;
+let displayedGenerationId;
 const intentionallyClosedSockets = new WeakSet();
 
 endpointInput.value = localStorage.getItem("voiceAgentEndpoint") ?? "";
@@ -55,6 +57,7 @@ async function startSession() {
     if (stopRequested) return;
     startButton.textContent = "Microphone active";
     vadStatus.textContent = "ready";
+    microphoneTransmissionEnabled = true;
     setConnection("ready", "Ready to talk", "Ready — you can speak now.");
   } catch (error) {
     await stopMedia();
@@ -119,7 +122,7 @@ async function setupCapture(stream) {
   const silentGain = captureContext.createGain();
   silentGain.gain.value = 0;
   captureNode.port.onmessage = ({ data }) => {
-    if (socket?.readyState === WebSocket.OPEN) socket.send(data);
+    if (microphoneTransmissionEnabled && socket?.readyState === WebSocket.OPEN) socket.send(data);
   };
   source.connect(captureNode).connect(silentGain).connect(captureContext.destination);
 }
@@ -144,19 +147,39 @@ function handleMessage(event) {
   const message = JSON.parse(event.data);
   logEvent(message);
   if (message.type === "vad.started") vadStatus.textContent = "speaking";
-  if (message.type === "vad.stopped") vadStatus.textContent = "thinking";
+  if (message.type === "vad.stopped") {
+    vadStatus.textContent = "thinking";
+  }
   if (message.type === "transcript.partial" || message.type === "transcript.final") setTranscript(userTranscript, message.text);
-  if (message.type === "assistant.text.delta") appendTranscript(assistantTranscript, message.text);
+  if (message.type === "assistant.text.delta") {
+    if (displayedGenerationId !== message.generation_id) {
+      displayedGenerationId = message.generation_id;
+      setTranscript(assistantTranscript, "");
+    }
+    appendTranscript(assistantTranscript, message.text);
+    playbackStatus.textContent = "generating";
+  }
   if (message.type === "assistant.audio.start") {
+    microphoneTransmissionEnabled = false;
     if (playbackContext?.state === "suspended") void playbackContext.resume();
     playbackStatus.textContent = "speaking";
   }
-  if (message.type === "assistant.audio.end") playbackStatus.textContent = "waiting";
+  if (message.type === "assistant.audio.end") {
+    microphoneTransmissionEnabled = true;
+    vadStatus.textContent = "ready";
+    playbackStatus.textContent = "waiting";
+  }
   if (message.type === "assistant.cancel") {
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
+    microphoneTransmissionEnabled = true;
+    vadStatus.textContent = "ready";
     playbackStatus.textContent = "cancelled";
   }
-  if (message.type === "error") setConnection("error", "Server error", message.message);
+  if (message.type === "error") {
+    microphoneTransmissionEnabled = true;
+    vadStatus.textContent = "ready";
+    setConnection("error", "Server error", message.message);
+  }
 }
 
 async function stopSession() {
@@ -181,7 +204,7 @@ async function stopMedia() {
   playbackContext = undefined;
 }
 
-function resetControls() { startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
+function resetControls() { microphoneTransmissionEnabled = false; displayedGenerationId = undefined; startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
 function setConnection(state, text, guidance) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; sessionGuidance.dataset.state = state; sessionGuidance.textContent = guidance; }
 function setTranscript(element, text) { element.textContent = text; element.classList.remove("placeholder"); }
 function appendTranscript(element, text) { if (element.classList.contains("placeholder")) setTranscript(element, text); else element.textContent += text; }
