@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import wave
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from io import BytesIO
+from pathlib import Path
 from typing import BinaryIO
 
 from app.ingestion.discovery import DiscoveredSample
-from app.ingestion.service import process_sample, remote_audio_source
+from app.ingestion.service import pending_discovered_samples, process_sample, remote_audio_source
 from app.quality.models import AudioMetadata, ProcessingStatus, QualityResult
 from app.quality.remote_models import (
     LocalAudioSource,
@@ -14,6 +16,7 @@ from app.quality.remote_models import (
     RemoteQualityResponse,
     UriAudioSource,
 )
+from app.storage.local import LocalStorageBackend
 
 
 @dataclass
@@ -44,10 +47,26 @@ class RecordingQualityClient:
         return self.response
 
 
-def test_local_audio_source_is_uploaded() -> None:
-    source = remote_audio_source(MemoryStorage(b"audio", "C:/audio.wav"), "audio.wav")
+def test_local_audio_source_is_uploaded(tmp_path: Path) -> None:
+    audio_path = tmp_path / "audio.wav"
+    with wave.open(str(audio_path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16_000)
+        writer.writeframes(b"\x00\x00" * 16_000)
 
-    assert source == LocalAudioSource(filename="audio.wav", path="audio.wav")
+    source = remote_audio_source(LocalStorageBackend(), str(audio_path))
+
+    assert source == LocalAudioSource(
+        filename="audio.wav",
+        path=str(audio_path),
+        original_metadata=AudioMetadata(
+            duration_seconds=1.0,
+            sample_rate=16_000,
+            channels=1,
+            sample_count=16_000,
+        ),
+    )
 
 
 def test_presigned_audio_source_is_downloaded_by_modal() -> None:
@@ -76,7 +95,7 @@ def test_process_sample_uses_remote_metadata_and_quality_result() -> None:
     )
 
     processed = process_sample(
-        MemoryStorage(b"audio", "C:/audio.wav"),
+        MemoryStorage(b"audio", "https://bucket.example/audio.wav"),
         DiscoveredSample("sample", "speaker1.wav", "speaker2.wav"),
         client,
     )
@@ -85,6 +104,15 @@ def test_process_sample_uses_remote_metadata_and_quality_result() -> None:
     assert processed.speaker2_metadata == metadata
     assert processed.quality_result == quality_result
     assert len(client.requests) == 1
+
+
+def test_pending_discovered_samples_skips_completed_identifiers() -> None:
+    samples = [
+        DiscoveredSample("completed", "first.wav", "second.wav"),
+        DiscoveredSample("pending", "third.wav", "fourth.wav"),
+    ]
+
+    assert pending_discovered_samples(samples, {"completed"}) == [samples[1]]
 
 
 def failed_quality_result() -> QualityResult:

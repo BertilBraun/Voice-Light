@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from queue import Queue
 from typing import Protocol
@@ -20,6 +21,7 @@ from app.quality.remote_models import (
     VolumeAudioSource,
     quality_input_volume_name,
 )
+from app.quality.transport import prepare_quality_transport_audio
 
 quality_input_volume_slots: Queue[int] = Queue()
 for quality_input_volume_index in range(QUALITY_INPUT_VOLUME_COUNT):
@@ -95,10 +97,34 @@ def stage_local_sources(
     volume_index: int,
     request_identifier: str,
 ) -> RemoteQualityRequest:
-    with volume.batch_upload(force=True) as upload:
-        speaker1 = stage_audio_source(request.speaker1, upload, volume_index, request_identifier, 1)
-        speaker2 = stage_audio_source(request.speaker2, upload, volume_index, request_identifier, 2)
+    with tempfile.TemporaryDirectory(prefix="voice-light-quality-transport-") as directory_name:
+        directory = Path(directory_name)
+        prepared_speaker1 = prepare_staging_source(request.speaker1, directory, 1)
+        prepared_speaker2 = prepare_staging_source(request.speaker2, directory, 2)
+        with volume.batch_upload(force=True) as upload:
+            speaker1 = stage_audio_source(
+                prepared_speaker1, upload, volume_index, request_identifier, 1
+            )
+            speaker2 = stage_audio_source(
+                prepared_speaker2, upload, volume_index, request_identifier, 2
+            )
     return request.model_copy(update={"speaker1": speaker1, "speaker2": speaker2})
+
+
+def prepare_staging_source(
+    source: AudioSource,
+    directory: Path,
+    speaker_index: int,
+) -> AudioSource:
+    match source:
+        case LocalAudioSource():
+            output_path = directory / f"speaker{speaker_index}.flac"
+            prepare_quality_transport_audio(Path(source.path), output_path)
+            return source.model_copy(
+                update={"filename": output_path.name, "path": str(output_path)}
+            )
+        case UriAudioSource() | VolumeAudioSource():
+            return source
 
 
 def has_local_source(source: AudioSource) -> bool:
@@ -125,6 +151,7 @@ def stage_audio_source(
             return VolumeAudioSource(
                 volume_index=volume_index,
                 path=remote_path.lstrip("/"),
+                original_metadata=source.original_metadata,
             )
         case UriAudioSource() | VolumeAudioSource():
             return source

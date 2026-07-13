@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import av
 import numpy as np
@@ -14,6 +15,30 @@ from app.storage.base import StorageBackend
 class AudioTrack:
     samples: NDArray[np.float32]
     metadata: AudioMetadata
+
+
+def probe_local_audio_metadata(path: Path) -> AudioMetadata:
+    with av.open(path) as container:
+        if not container.streams.audio:
+            raise ValueError(f"Audio stream not found: {path}")
+        stream = container.streams.audio[0]
+        sample_rate = stream.codec_context.sample_rate
+        channels = stream.codec_context.channels
+        if sample_rate is None or channels is None:
+            raise ValueError(f"Audio stream metadata is incomplete: {path}")
+        if stream.duration is not None and stream.time_base is not None:
+            duration_seconds = float(stream.duration * stream.time_base)
+        elif container.duration is not None:
+            duration_seconds = container.duration / 1_000_000
+        else:
+            raise ValueError(f"Audio duration is unavailable: {path}")
+        sample_count = stream.frames if stream.frames > 0 else round(duration_seconds * sample_rate)
+    return AudioMetadata(
+        duration_seconds=duration_seconds,
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_count=sample_count,
+    )
 
 
 def load_audio(storage: StorageBackend, path: str) -> AudioTrack:

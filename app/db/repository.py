@@ -230,6 +230,25 @@ class Repository:
         assert row is not None
         return sample_record(row)
 
+    def completed_quality_sample_ids(
+        self,
+        dataset_id: UUID,
+        metric_version: str,
+    ) -> set[str]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT samples.external_id
+                FROM samples
+                JOIN quality_results ON quality_results.sample_id = samples.id
+                WHERE samples.dataset_id = %s
+                  AND quality_results.metric_version = %s
+                  AND quality_results.status = 'completed'
+                """,
+                (dataset_id, metric_version),
+            ).fetchall()
+        return {str(row["external_id"]) for row in rows}
+
     def update_sample_duration(self, sample_id: UUID, duration_seconds: float) -> SampleRecord:
         with self.connection() as connection:
             row = connection.execute(

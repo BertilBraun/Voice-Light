@@ -12,6 +12,7 @@ import modal
 from fastapi import Header, HTTPException
 
 from app.audio import load_audio
+from app.quality.models import AudioMetadata
 from app.quality.remote_models import (
     QUALITY_INPUT_VOLUME_COUNT,
     AudioSource,
@@ -87,8 +88,8 @@ def analyze(
             speaker2_uri="speaker2",
         )
         return RemoteQualityResponse(
-            speaker1_metadata=speaker1_audio.metadata,
-            speaker2_metadata=speaker2_audio.metadata,
+            speaker1_metadata=original_audio_metadata(request.speaker1, speaker1_audio.metadata),
+            speaker2_metadata=original_audio_metadata(request.speaker2, speaker2_audio.metadata),
             quality_result=quality_result,
         )
 
@@ -137,6 +138,17 @@ def volume_indexes_for_source(source: AudioSource) -> tuple[int, ...]:
             return (source.volume_index,)
         case LocalAudioSource() | UriAudioSource():
             return ()
+
+
+def original_audio_metadata(
+    source: AudioSource,
+    decoded_metadata: AudioMetadata,
+) -> AudioMetadata:
+    match source:
+        case VolumeAudioSource() | LocalAudioSource():
+            return source.original_metadata
+        case UriAudioSource():
+            return decoded_metadata
 
 
 def authorize_request(authorization: str | None) -> None:

@@ -6,12 +6,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
+from app.audio import probe_local_audio_metadata
 from app.config import REMOTE_QUALITY_API_KEY, REMOTE_QUALITY_ENDPOINT_URL
 from app.db.models import DatasetCreate, DatasetStorageKind, JobStatus, TrackSide
 from app.db.repository import AudioMetadataInput, QualityResultInput, Repository, SampleTrackInput
 from app.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
 from app.quality.client import HttpRemoteQualityClient, RemoteQualityClient
-from app.quality.models import AudioMetadata, QualityResult
+from app.quality.models import METRIC_VERSION, AudioMetadata, QualityResult
 from app.quality.remote_models import (
     AudioSource,
     LocalAudioSource,
@@ -80,14 +81,21 @@ class IngestionService:
                 )
             )
             samples = discover_samples(storage, root, layout)
+            completed_sample_ids = self.repository.completed_quality_sample_ids(
+                dataset.id,
+                METRIC_VERSION,
+            )
+            pending_samples = pending_discovered_samples(samples, completed_sample_ids)
+            skipped_samples = len(samples) - len(pending_samples)
             self.repository.update_ingestion_job(
                 job.id,
                 JobStatus.RUNNING,
-                f"Discovered {len(samples)} samples",
+                f"Discovered {len(samples)} samples; skipped {skipped_samples} completed samples",
                 dataset_id=dataset.id,
                 total_samples=len(samples),
+                processed_samples=skipped_samples,
             )
-            processed_samples = 0
+            processed_samples = skipped_samples
             failed_samples = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [
@@ -97,7 +105,7 @@ class IngestionService:
                         discovered_sample,
                         self.remote_quality_client,
                     )
-                    for discovered_sample in samples
+                    for discovered_sample in pending_samples
                 ]
                 for future in as_completed(futures):
                     try:
@@ -130,6 +138,13 @@ class IngestionService:
             )
 
 
+def pending_discovered_samples(
+    samples: list[DiscoveredSample],
+    completed_sample_ids: set[str],
+) -> list[DiscoveredSample]:
+    return [sample for sample in samples if sample.external_id not in completed_sample_ids]
+
+
 def process_sample(
     storage: StorageBackend,
     discovered: DiscoveredSample,
@@ -157,6 +172,7 @@ def remote_audio_source(storage: StorageBackend, path: str) -> AudioSource:
     return LocalAudioSource(
         filename=Path(path).name,
         path=path,
+        original_metadata=probe_local_audio_metadata(Path(path)),
     )
 
 

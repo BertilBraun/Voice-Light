@@ -18,12 +18,14 @@ class LocalAudioSource(FrozenBaseModel):
     kind: Literal["local"] = "local"
     filename: str
     path: str
+    original_metadata: AudioMetadata
 
 
 class VolumeAudioSource(FrozenBaseModel):
     kind: Literal["volume"] = "volume"
     volume_index: int = Field(ge=0, lt=QUALITY_INPUT_VOLUME_COUNT)
     path: str
+    original_metadata: AudioMetadata
 
 
 class UriAudioSource(FrozenBaseModel):
