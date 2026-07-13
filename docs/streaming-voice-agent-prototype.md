@@ -42,7 +42,9 @@ uv run modal deploy .\app\voice_agent\modal_endpoint.py
 
 The deployed class scales to zero, admits one session at a time, and keeps the L40S container
 available for five minutes after the last session ends. A new session after scale-down incurs the
-model-loading cold start; an active WebSocket session is not interrupted by the idle window.
+model-loading cold start; an active WebSocket session is not interrupted by the idle window. The
+Hugging Face, ModelScope, and Torch caches share the persistent `voice-light-agent-model-cache`
+volume, so cold starts reload cached files instead of downloading them again.
 
 ## Current Limitation
 

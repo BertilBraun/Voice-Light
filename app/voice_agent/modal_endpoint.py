@@ -10,6 +10,9 @@ from app.voice_agent.session import SessionPolicy, VoiceAgentSession, send_sessi
 MODEL_CACHE_DIRECTORY = "/model-cache"
 COSYVOICE_DIRECTORY = Path(MODEL_CACHE_DIRECTORY) / "CosyVoice3"
 PROMPT_AUDIO_PATH = Path("/opt/CosyVoice/asset/zero_shot_prompt.wav")
+HUGGING_FACE_CACHE_DIRECTORY = f"{MODEL_CACHE_DIRECTORY}/huggingface"
+MODELSCOPE_CACHE_DIRECTORY = f"{MODEL_CACHE_DIRECTORY}/modelscope"
+TORCH_CACHE_DIRECTORY = f"{MODEL_CACHE_DIRECTORY}/torch"
 
 model_cache = modal.Volume.from_name("voice-light-agent-model-cache", create_if_missing=True)
 
@@ -43,8 +46,13 @@ image = (
     )
     .env(
         {
-            "HF_HOME": f"{MODEL_CACHE_DIRECTORY}/huggingface",
+            "HF_HOME": HUGGING_FACE_CACHE_DIRECTORY,
+            "HF_HUB_CACHE": f"{HUGGING_FACE_CACHE_DIRECTORY}/hub",
+            "HUGGINGFACE_HUB_CACHE": f"{HUGGING_FACE_CACHE_DIRECTORY}/hub",
+            "MODELSCOPE_CACHE": MODELSCOPE_CACHE_DIRECTORY,
             "PYTHONPATH": "/opt/CosyVoice:/opt/CosyVoice/third_party/Matcha-TTS",
+            "TORCH_HOME": TORCH_CACHE_DIRECTORY,
+            "XDG_CACHE_HOME": MODEL_CACHE_DIRECTORY,
         }
     )
     .add_local_python_source("app")
@@ -79,7 +87,6 @@ class VoiceAgentServer:
             "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
             local_dir=COSYVOICE_DIRECTORY,
         )
-        model_cache.commit()
         self.speech_detector_type = SileroSpeechDetector
         self.transcriber = BufferedNemotronTranscriber()
         self.language_model = TransformersLanguageModel()
@@ -87,6 +94,7 @@ class VoiceAgentServer:
             model_directory=COSYVOICE_DIRECTORY,
             prompt_audio_path=PROMPT_AUDIO_PATH,
         )
+        model_cache.commit()
 
     @modal.asgi_app()
     def web_app(self) -> FastAPI:
