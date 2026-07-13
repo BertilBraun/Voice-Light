@@ -22,8 +22,9 @@ const speaker1Audio = document.querySelector("#speaker1-audio");
 const speaker2Audio = document.querySelector("#speaker2-audio");
 const ANALYSIS_CACHE_SIZE = 20;
 const ANALYSIS_REQUEST_TIMEOUT_MILLISECONDS = 1800000;
+const TIMELINE_LEFT_PADDING = 140;
 const CLICK_DRAG_TOLERANCE_PIXELS = 4;
-const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors-v3";
+const DETECTOR_SELECTION_STORAGE_KEY = "voice-light-end-of-turn-detectors-v4";
 const DEFAULT_DETECTOR_MODES = new Set([
   "naive_vad_floor",
   "naive_vad_fast",
@@ -33,6 +34,7 @@ const DEFAULT_DETECTOR_MODES = new Set([
   "transcript_gap",
   "two_speaker_annotation",
   "asr_two_speaker_annotation",
+  "asr_two_speaker_annotation_speaker2",
 ]);
 const AUDIO_SOURCE_VERSION = "pcm16-blob-v1";
 
@@ -378,7 +380,7 @@ function drawTimeline() {
     rows.push({ label: "Speaker 2", waveform: analysis.speaker2_waveform, color: "#8d4d1f" });
   }
 
-  const leftPad = 92;
+  const leftPad = TIMELINE_LEFT_PADDING;
   const rightPad = 16;
   const trackWidth = layout.width - leftPad - rightPad;
   const waveTop = 44;
@@ -485,7 +487,7 @@ function drawWaveform(row, leftPad, top, trackWidth, height) {
 function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   context.fillStyle = "#1e2528";
   context.font = "13px sans-serif";
-  context.fillText(baselineResult.name, 0, top + 26);
+  context.fillText(baselineLabel(baselineResult.name), 0, top + 26);
   context.fillStyle = "#f3f5f6";
   context.fillRect(leftPad, top, trackWidth, 42);
 
@@ -516,14 +518,11 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
     "rgba(126, 87, 194, 0.5)",
     "rgba(90, 54, 153, 0.75)",
   );
-  drawBaselineSpans(
-    baselineResult.interruption_spans ?? [],
+  drawInterruptionMarkers(
+    baselineResult.interruption_events ?? [],
     leftPad,
-    top + 3,
+    top,
     trackWidth,
-    36,
-    "rgba(202, 80, 16, 0.42)",
-    "rgba(146, 50, 8, 0.8)",
   );
 
   context.strokeStyle = "#c2322d";
@@ -540,10 +539,46 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   });
   context.font = "12px sans-serif";
   context.fillText(
-    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length} | interruptions ${(baselineResult.interruption_spans ?? []).length}`,
+    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length} | interruptions ${(baselineResult.interruption_events ?? []).length}`,
     leftPad,
     top + 62,
   );
+}
+
+function baselineLabel(name) {
+  if (name === "asr_two_speaker_annotation") {
+    return "ASR · Speaker 1";
+  }
+  if (name === "asr_two_speaker_annotation_speaker2") {
+    return "ASR · Speaker 2";
+  }
+  return name;
+}
+
+function drawInterruptionMarkers(interruptions, leftPad, top, trackWidth) {
+  context.strokeStyle = "rgba(146, 50, 8, 0.95)";
+  context.fillStyle = "rgba(202, 80, 16, 0.9)";
+  context.lineWidth = 2;
+  interruptions.forEach((interruption) => {
+    if (
+      interruption.time_seconds < viewportStartSeconds ||
+      interruption.time_seconds > viewportEndSeconds
+    ) {
+      return;
+    }
+    const x = leftPad + secondsToRatio(interruption.time_seconds) * trackWidth;
+    context.beginPath();
+    context.moveTo(x, top + 2);
+    context.lineTo(x, top + 40);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(x, top + 2);
+    context.lineTo(x - 4, top + 9);
+    context.lineTo(x + 4, top + 9);
+    context.closePath();
+    context.fill();
+  });
+  context.lineWidth = 1;
 }
 
 function drawBaselineSpans(spans, leftPad, top, trackWidth, height, fillStyle, strokeStyle) {
@@ -930,7 +965,7 @@ function zoomAtPointer(event) {
 
 function eventIsOverWaveform(event) {
   const rect = canvas.getBoundingClientRect();
-  const leftPad = 92;
+  const leftPad = TIMELINE_LEFT_PADDING;
   const rightPad = 16;
   const trackWidth = rect.width - leftPad - rightPad;
   const x = event.clientX - rect.left;
@@ -954,7 +989,7 @@ function eventIsOverWaveform(event) {
 
 function eventToSeconds(event) {
   const rect = canvas.getBoundingClientRect();
-  const leftPad = 92;
+  const leftPad = TIMELINE_LEFT_PADDING;
   const rightPad = 16;
   const trackWidth = rect.width - leftPad - rightPad;
   const x = event.clientX - rect.left;

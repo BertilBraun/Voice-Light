@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 
 from app.analyses.asr.models import AsrModelMode
 from app.analyses.asr.service import analyze_asr
 from app.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
+from app.analyses.end_of_turn.cache import LeastRecentlyUsedCache
 from app.analyses.end_of_turn.detectors.two_speaker_annotation import (
     INTERNAL_PAUSE_SECONDS,
     OTHER_SPEAKER,
@@ -24,17 +26,64 @@ from app.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
 from app.config import COMPUTE_TOKEN, DATABASE_URL, REMOTE_ASR_ENDPOINT_URL
 
 ASR_MODEL_MODE = AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED
+TRANSCRIPT_PAIR_CACHE_SIZE = 20
 
 
 @dataclass(frozen=True)
-class AsrTwoSpeakerAnnotationDetector:
-    info: EndOfTurnDetectorInfo
-    turn_gap_seconds: float
-    internal_pause_seconds: float
-    cache: AsrTranscriptCache
-    remote_client_factory: RemoteAsrClientFactory
+class AsrTranscriptPairCacheKey:
+    speaker1_path: Path
+    speaker1_modified_ns: int
+    speaker1_size_bytes: int
+    speaker2_path: Path
+    speaker2_modified_ns: int
+    speaker2_size_bytes: int
 
-    def analyze(self, speaker1_path: Path) -> BaselineResult:
+
+@dataclass(frozen=True)
+class AsrTranscriptPair:
+    turns: tuple[TranscriptTurn, ...]
+    analysis_end_seconds: float
+    speaker2_path: Path
+
+
+class AsrTwoSpeakerTranscriptSource:
+    def __init__(
+        self,
+        cache: AsrTranscriptCache,
+        remote_client_factory: RemoteAsrClientFactory,
+    ) -> None:
+        self.cache = cache
+        self.remote_client_factory = remote_client_factory
+        self._transcript_pair_cache = LeastRecentlyUsedCache[
+            AsrTranscriptPairCacheKey, AsrTranscriptPair
+        ](capacity=TRANSCRIPT_PAIR_CACHE_SIZE)
+        self._load_lock = Lock()
+
+    def load(self, speaker1_path: Path) -> AsrTranscriptPair:
+        speaker2_path = _speaker2_path(speaker1_path=speaker1_path)
+        cache_key = _transcript_pair_cache_key(
+            speaker1_path=speaker1_path,
+            speaker2_path=speaker2_path,
+        )
+        with self._load_lock:
+            cached_pair = self._transcript_pair_cache.get(cache_key=cache_key)
+            if cached_pair is not None:
+                return cached_pair
+            transcript_pair = self._load_uncached(
+                speaker1_path=speaker1_path,
+                speaker2_path=speaker2_path,
+            )
+            self._transcript_pair_cache.put(
+                cache_key=cache_key,
+                cache_value=transcript_pair,
+            )
+            return transcript_pair
+
+    def _load_uncached(
+        self,
+        speaker1_path: Path,
+        speaker2_path: Path,
+    ) -> AsrTranscriptPair:
         session_identifier = _session_identifier(speaker1_path=speaker1_path)
         speaker1_response = analyze_asr(
             session_id=session_identifier,
@@ -54,42 +103,106 @@ class AsrTwoSpeakerAnnotationDetector:
         )
         if len(speaker1_response.runs) != 1 or len(speaker2_response.runs) != 1:
             raise ValueError("ASR two-speaker annotation requires one transcript per speaker.")
-
         turns = merged_asr_turns(
             speaker1_words=speaker1_response.runs[0].transcription.words,
             speaker2_words=speaker2_response.runs[0].transcription.words,
-            turn_gap_seconds=self.turn_gap_seconds,
+            turn_gap_seconds=TURN_GAP_SECONDS,
         )
-        analysis_end_seconds = min(
-            speaker1_response.analyzed_duration_seconds,
-            speaker2_response.analyzed_duration_seconds,
-            ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
+        return AsrTranscriptPair(
+            turns=tuple(turns),
+            analysis_end_seconds=min(
+                speaker1_response.analyzed_duration_seconds,
+                speaker2_response.analyzed_duration_seconds,
+                ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
+            ),
+            speaker2_path=speaker2_path,
         )
+
+
+@dataclass(frozen=True)
+class AsrTwoSpeakerAnnotationDetector:
+    info: EndOfTurnDetectorInfo
+    target_track: SpeakerTrack
+    transcript_source: AsrTwoSpeakerTranscriptSource
+    turn_gap_seconds: float
+    internal_pause_seconds: float
+
+    def analyze(self, speaker1_path: Path) -> BaselineResult:
+        transcript_pair = self.transcript_source.load(speaker1_path=speaker1_path)
+        match self.target_track:
+            case SpeakerTrack.SPEAKER1:
+                target_path = speaker1_path
+                target_speaker = TARGET_SPEAKER
+                other_speaker = OTHER_SPEAKER
+            case SpeakerTrack.SPEAKER2:
+                target_path = transcript_pair.speaker2_path
+                target_speaker = OTHER_SPEAKER
+                other_speaker = TARGET_SPEAKER
         return analyze_two_speaker_turns(
-            speaker1_path=speaker1_path,
-            turns=turns,
-            analysis_end_seconds=analysis_end_seconds,
+            speaker1_path=target_path,
+            turns=list(transcript_pair.turns),
+            analysis_end_seconds=transcript_pair.analysis_end_seconds,
             result_name=self.info.mode.value,
             description=self.info.description,
             turn_gap_seconds=self.turn_gap_seconds,
             internal_pause_seconds=self.internal_pause_seconds,
+            target_speaker=target_speaker,
+            other_speaker=other_speaker,
+            include_vad_backchannels=False,
         )
 
 
-def asr_two_speaker_annotation_detector() -> AsrTwoSpeakerAnnotationDetector:
-    return AsrTwoSpeakerAnnotationDetector(
-        info=EndOfTurnDetectorInfo(
-            mode=EndOfTurnDetectorMode.ASR_TWO_SPEAKER_ANNOTATION,
-            label="ASR two-speaker annotation",
-            description=(
-                "Speaker 1 labels from cached Parakeet + Canary timing-union transcripts "
-                "for both channels, independently crosstalk-filtered before merging."
-            ),
-        ),
-        turn_gap_seconds=TURN_GAP_SECONDS,
-        internal_pause_seconds=INTERNAL_PAUSE_SECONDS,
+def asr_two_speaker_annotation_detectors() -> tuple[
+    AsrTwoSpeakerAnnotationDetector,
+    AsrTwoSpeakerAnnotationDetector,
+]:
+    transcript_source = AsrTwoSpeakerTranscriptSource(
         cache=AsrTranscriptRepository(database_url=DATABASE_URL),
         remote_client_factory=remote_asr_client,
+    )
+    return (
+        _asr_two_speaker_annotation_detector(
+            mode=EndOfTurnDetectorMode.ASR_TWO_SPEAKER_ANNOTATION,
+            target_track=SpeakerTrack.SPEAKER1,
+            label="ASR two-speaker annotation - Speaker 1",
+            transcript_source=transcript_source,
+        ),
+        _asr_two_speaker_annotation_detector(
+            mode=EndOfTurnDetectorMode.ASR_TWO_SPEAKER_ANNOTATION_SPEAKER2,
+            target_track=SpeakerTrack.SPEAKER2,
+            label="ASR two-speaker annotation - Speaker 2",
+            transcript_source=transcript_source,
+        ),
+    )
+
+
+def asr_two_speaker_annotation_detector() -> AsrTwoSpeakerAnnotationDetector:
+    return asr_two_speaker_annotation_detectors()[0]
+
+
+def _asr_two_speaker_annotation_detector(
+    mode: EndOfTurnDetectorMode,
+    target_track: SpeakerTrack,
+    label: str,
+    transcript_source: AsrTwoSpeakerTranscriptSource | None = None,
+) -> AsrTwoSpeakerAnnotationDetector:
+    source = transcript_source or AsrTwoSpeakerTranscriptSource(
+        cache=AsrTranscriptRepository(database_url=DATABASE_URL),
+        remote_client_factory=remote_asr_client,
+    )
+    return AsrTwoSpeakerAnnotationDetector(
+        info=EndOfTurnDetectorInfo(
+            mode=mode,
+            label=label,
+            description=(
+                f"{label} from cached Parakeet + Canary timing-union transcripts for "
+                "both channels, independently crosstalk-filtered before merging."
+            ),
+        ),
+        target_track=target_track,
+        transcript_source=source,
+        turn_gap_seconds=TURN_GAP_SECONDS,
+        internal_pause_seconds=INTERNAL_PAUSE_SECONDS,
     )
 
 
@@ -172,3 +285,27 @@ def _session_identifier(speaker1_path: Path) -> str:
     if not session_identifier:
         raise ValueError(f"Could not derive session identifier from WAV path: {speaker1_path}")
     return session_identifier
+
+
+def _speaker2_path(speaker1_path: Path) -> Path:
+    session_identifier = _session_identifier(speaker1_path=speaker1_path)
+    speaker2_path = speaker1_path.with_name(f"{session_identifier}_speaker2.wav")
+    if not speaker2_path.is_file():
+        raise ValueError(f"Missing speaker 2 WAV beside speaker 1 WAV: {speaker2_path}")
+    return speaker2_path
+
+
+def _transcript_pair_cache_key(
+    speaker1_path: Path,
+    speaker2_path: Path,
+) -> AsrTranscriptPairCacheKey:
+    speaker1_status = speaker1_path.stat()
+    speaker2_status = speaker2_path.stat()
+    return AsrTranscriptPairCacheKey(
+        speaker1_path=speaker1_path,
+        speaker1_modified_ns=speaker1_status.st_mtime_ns,
+        speaker1_size_bytes=speaker1_status.st_size,
+        speaker2_path=speaker2_path,
+        speaker2_modified_ns=speaker2_status.st_mtime_ns,
+        speaker2_size_bytes=speaker2_status.st_size,
+    )

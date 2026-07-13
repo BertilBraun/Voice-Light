@@ -12,7 +12,7 @@ from app.analyses.end_of_turn.service import (
     BackchannelSpan,
     BaselineResult,
     EndOfTurnEvent,
-    InterruptionSpan,
+    InterruptionEvent,
     PauseSpan,
     SpeechSegment,
 )
@@ -30,8 +30,6 @@ VAD_FRAME_SECONDS = 0.03
 VAD_MIN_SPEECH_SECONDS = 0.12
 VAD_MIN_SILENCE_SECONDS = 0.4
 INTERRUPTION_PRE_END_MIN_SECONDS = 0.1
-INTERRUPTION_PRE_END_MAX_SECONDS = 1.0
-INTERRUPTION_CONTINUATION_SECONDS = 0.5
 ROUND_SECONDS_DIGITS = 6
 BACKCHANNEL_TOKENS = {
     "yeah",
@@ -98,7 +96,7 @@ class ClassifiedTurns:
     speech_segments: list[SpeechSegment]
     pause_spans: list[PauseSpan]
     backchannel_spans: list[BackchannelSpan]
-    interruption_spans: list[InterruptionSpan]
+    interruption_events: list[InterruptionEvent]
 
 
 @dataclass(frozen=True)
@@ -297,16 +295,24 @@ def _classified_turns(
     turns: list[TranscriptTurn],
     turn_gap_seconds: float,
     internal_pause_seconds: float,
+    target_speaker: str,
+    other_speaker: str,
+    include_vad_backchannels: bool,
 ) -> ClassifiedTurns:
     speech_segments: list[SpeechSegment] = []
     pause_spans: list[PauseSpan] = []
     transcript_backchannels: list[BackchannelSpan] = []
-    interruption_spans: list[InterruptionSpan] = []
+    interruption_events: list[InterruptionEvent] = []
 
     for turn_index, turn in enumerate(turns):
-        if turn.speaker != TARGET_SPEAKER:
+        if turn.speaker != target_speaker:
             continue
-        if _is_contextual_backchannel(turns=turns, turn_index=turn_index):
+        if _is_contextual_backchannel(
+            turns=turns,
+            turn_index=turn_index,
+            target_speaker=target_speaker,
+            other_speaker=other_speaker,
+        ):
             transcript_backchannels.append(_backchannel_span(turn=turn, text=turn.text))
             continue
         speech_segments.append(_speech_segment(turn=turn))
@@ -316,13 +322,21 @@ def _classified_turns(
                 internal_pause_seconds=internal_pause_seconds,
             )
         )
-        interruption_span = _interruption_span(turns=turns, turn_index=turn_index)
-        if interruption_span is not None:
-            interruption_spans.append(interruption_span)
+        interruption_event = _interruption_event(
+            turns=turns,
+            turn_index=turn_index,
+            other_speaker=other_speaker,
+        )
+        if interruption_event is not None:
+            interruption_events.append(interruption_event)
 
-    vad_backchannels = _vad_backchannel_spans(
-        speaker1_path=speaker1_path,
-        target_turns=[turn for turn in turns if turn.speaker == TARGET_SPEAKER],
+    vad_backchannels = (
+        _vad_backchannel_spans(
+            speaker1_path=speaker1_path,
+            target_turns=[turn for turn in turns if turn.speaker == target_speaker],
+        )
+        if include_vad_backchannels
+        else []
     )
     backchannel_spans = sorted(
         transcript_backchannels + vad_backchannels,
@@ -336,19 +350,37 @@ def _classified_turns(
         speech_segments=merged_speech_segments,
         pause_spans=pause_spans,
         backchannel_spans=backchannel_spans,
-        interruption_spans=interruption_spans,
+        interruption_events=interruption_events,
     )
 
 
-def _is_contextual_backchannel(turns: list[TranscriptTurn], turn_index: int) -> bool:
+def _is_contextual_backchannel(
+    turns: list[TranscriptTurn],
+    turn_index: int,
+    target_speaker: str,
+    other_speaker: str,
+) -> bool:
     turn = turns[turn_index]
     if not _is_short_backchannel_text(turn=turn):
         return False
-    if _answers_previous_question(turns=turns, turn_index=turn_index):
+    if _answers_previous_question(
+        turns=turns,
+        turn_index=turn_index,
+        other_speaker=other_speaker,
+    ):
         return False
-    if _target_speaker_has_adjacent_content(turns=turns, turn_index=turn_index):
+    if _target_speaker_has_adjacent_content(
+        turns=turns,
+        turn_index=turn_index,
+        target_speaker=target_speaker,
+        other_speaker=other_speaker,
+    ):
         return False
-    return _other_speaker_continues(turns=turns, turn_index=turn_index)
+    return _other_speaker_continues(
+        turns=turns,
+        turn_index=turn_index,
+        other_speaker=other_speaker,
+    )
 
 
 def _is_short_backchannel_text(turn: TranscriptTurn) -> bool:
@@ -373,33 +405,58 @@ def _is_short_backchannel_text(turn: TranscriptTurn) -> bool:
     return all(_is_laugh_token(token=token) for token in normalized_tokens)
 
 
-def _answers_previous_question(turns: list[TranscriptTurn], turn_index: int) -> bool:
-    previous_turn = _previous_other_speaker_turn(turns=turns, turn_index=turn_index)
+def _answers_previous_question(
+    turns: list[TranscriptTurn],
+    turn_index: int,
+    other_speaker: str,
+) -> bool:
+    previous_turn = _previous_speaker_turn(
+        turns=turns,
+        turn_index=turn_index,
+        speaker=other_speaker,
+    )
     if previous_turn is None:
         return False
     return previous_turn.text.strip().endswith("?")
 
 
-def _target_speaker_has_adjacent_content(turns: list[TranscriptTurn], turn_index: int) -> bool:
+def _target_speaker_has_adjacent_content(
+    turns: list[TranscriptTurn],
+    turn_index: int,
+    target_speaker: str,
+    other_speaker: str,
+) -> bool:
     current_turn = turns[turn_index]
     for earlier_turn in reversed(turns[:turn_index]):
-        if earlier_turn.speaker == OTHER_SPEAKER:
+        if earlier_turn.speaker == other_speaker:
             break
-        if earlier_turn.speaker == TARGET_SPEAKER:
+        if earlier_turn.speaker == target_speaker:
             return current_turn.start_seconds - earlier_turn.end_seconds <= TURN_GAP_SECONDS
 
     for later_turn in turns[turn_index + 1 :]:
-        if later_turn.speaker == OTHER_SPEAKER:
+        if later_turn.speaker == other_speaker:
             return False
-        if later_turn.speaker == TARGET_SPEAKER:
+        if later_turn.speaker == target_speaker:
             return later_turn.start_seconds - current_turn.end_seconds <= TURN_GAP_SECONDS
     return False
 
 
-def _other_speaker_continues(turns: list[TranscriptTurn], turn_index: int) -> bool:
+def _other_speaker_continues(
+    turns: list[TranscriptTurn],
+    turn_index: int,
+    other_speaker: str,
+) -> bool:
     current_turn = turns[turn_index]
-    previous_turn = _previous_other_speaker_turn(turns=turns, turn_index=turn_index)
-    next_turn = _next_other_speaker_turn(turns=turns, turn_index=turn_index)
+    previous_turn = _previous_speaker_turn(
+        turns=turns,
+        turn_index=turn_index,
+        speaker=other_speaker,
+    )
+    next_turn = _next_speaker_turn(
+        turns=turns,
+        turn_index=turn_index,
+        speaker=other_speaker,
+    )
     previous_is_near = (
         previous_turn is not None
         and current_turn.start_seconds - previous_turn.end_seconds <= INTERNAL_PAUSE_SECONDS
@@ -411,22 +468,24 @@ def _other_speaker_continues(turns: list[TranscriptTurn], turn_index: int) -> bo
     return previous_is_near or next_is_near
 
 
-def _previous_other_speaker_turn(
+def _previous_speaker_turn(
     turns: list[TranscriptTurn],
     turn_index: int,
+    speaker: str,
 ) -> TranscriptTurn | None:
     for previous_turn in reversed(turns[:turn_index]):
-        if previous_turn.speaker == OTHER_SPEAKER:
+        if previous_turn.speaker == speaker:
             return previous_turn
     return None
 
 
-def _next_other_speaker_turn(
+def _next_speaker_turn(
     turns: list[TranscriptTurn],
     turn_index: int,
+    speaker: str,
 ) -> TranscriptTurn | None:
     for next_turn in turns[turn_index + 1 :]:
-        if next_turn.speaker == OTHER_SPEAKER:
+        if next_turn.speaker == speaker:
             return next_turn
     return None
 
@@ -536,27 +595,26 @@ def _segment_overlaps_turns(
     )
 
 
-def _interruption_span(
+def _interruption_event(
     turns: list[TranscriptTurn],
     turn_index: int,
-) -> InterruptionSpan | None:
+    other_speaker: str,
+) -> InterruptionEvent | None:
     turn = turns[turn_index]
-    previous_turn = _previous_other_speaker_turn(turns=turns, turn_index=turn_index)
+    previous_turn = _previous_speaker_turn(
+        turns=turns,
+        turn_index=turn_index,
+        speaker=other_speaker,
+    )
     if previous_turn is None:
         return None
 
     start_before_other_end_seconds = previous_turn.end_seconds - turn.start_seconds
     if start_before_other_end_seconds < INTERRUPTION_PRE_END_MIN_SECONDS:
         return None
-    if start_before_other_end_seconds > INTERRUPTION_PRE_END_MAX_SECONDS:
-        return None
-    if turn.end_seconds - previous_turn.end_seconds < INTERRUPTION_CONTINUATION_SECONDS:
-        return None
 
-    return InterruptionSpan(
-        start_seconds=_rounded_seconds(turn.start_seconds),
-        end_seconds=_rounded_seconds(turn.end_seconds),
-        duration_seconds=_rounded_seconds(turn.end_seconds - turn.start_seconds),
+    return InterruptionEvent(
+        time_seconds=_rounded_seconds(turn.start_seconds),
         interrupted_speaker=previous_turn.speaker,
         interrupting_speaker=turn.speaker,
         text=turn.text,
@@ -668,6 +726,9 @@ def analyze_two_speaker_turns(
     description: str,
     turn_gap_seconds: float,
     internal_pause_seconds: float,
+    target_speaker: str = TARGET_SPEAKER,
+    other_speaker: str = OTHER_SPEAKER,
+    include_vad_backchannels: bool = True,
 ) -> BaselineResult:
     clipped_turns = _clipped_turns(turns=turns, analysis_end_seconds=analysis_end_seconds)
     if not clipped_turns:
@@ -678,6 +739,9 @@ def analyze_two_speaker_turns(
         turns=clipped_turns,
         turn_gap_seconds=turn_gap_seconds,
         internal_pause_seconds=internal_pause_seconds,
+        target_speaker=target_speaker,
+        other_speaker=other_speaker,
+        include_vad_backchannels=include_vad_backchannels,
     )
     end_of_turn_events = _end_of_turn_events(
         speech_segments=classified_turns.speech_segments,
@@ -694,7 +758,7 @@ def analyze_two_speaker_turns(
         pause_spans=classified_turns.pause_spans,
         backchannel_spans=classified_turns.backchannel_spans,
         end_of_turn_events=end_of_turn_events,
-        interruption_spans=classified_turns.interruption_spans,
+        interruption_events=classified_turns.interruption_events,
     )
 
 

@@ -52,10 +52,8 @@ class BackchannelSpan:
 
 
 @dataclass(frozen=True)
-class InterruptionSpan:
-    start_seconds: float
-    end_seconds: float
-    duration_seconds: float
+class InterruptionEvent:
+    time_seconds: float
     interrupted_speaker: str
     interrupting_speaker: str
     text: str
@@ -72,7 +70,7 @@ class BaselineResult:
     pause_spans: list[PauseSpan]
     backchannel_spans: list[BackchannelSpan]
     end_of_turn_events: list[EndOfTurnEvent]
-    interruption_spans: list[InterruptionSpan] = field(default_factory=list)
+    interruption_events: list[InterruptionEvent] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -82,6 +82,7 @@ def test_available_detectors_include_vad_variants() -> None:
         "transcript_gap",
         "two_speaker_annotation",
         "asr_two_speaker_annotation",
+        "asr_two_speaker_annotation_speaker2",
         "turnsense",
     }
 

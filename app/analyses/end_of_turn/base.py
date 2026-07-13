@@ -18,6 +18,7 @@ class EndOfTurnDetectorMode(StrEnum):
     TRANSCRIPT_GAP = "transcript_gap"
     TWO_SPEAKER_ANNOTATION = "two_speaker_annotation"
     ASR_TWO_SPEAKER_ANNOTATION = "asr_two_speaker_annotation"
+    ASR_TWO_SPEAKER_ANNOTATION_SPEAKER2 = "asr_two_speaker_annotation_speaker2"
     LIVEKIT_TEXT_TURN = "livekit_text_turn"
     TURNSENSE = "turnsense"
 

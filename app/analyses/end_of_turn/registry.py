@@ -13,7 +13,7 @@ from app.analyses.end_of_turn.cache import (
     LeastRecentlyUsedCache,
 )
 from app.analyses.end_of_turn.detectors.asr_two_speaker_annotation import (
-    asr_two_speaker_annotation_detector,
+    asr_two_speaker_annotation_detectors,
 )
 from app.analyses.end_of_turn.detectors.livekit_v1_mini import livekit_v1_mini_detector
 from app.analyses.end_of_turn.detectors.naive_vad import (
@@ -49,7 +49,7 @@ _DETECTORS: tuple[EndOfTurnDetector, ...] = (
     pipecat_smart_turn_v3_detector(),
     transcript_gap_detector(),
     two_speaker_annotation_detector(),
-    asr_two_speaker_annotation_detector(),
+    *asr_two_speaker_annotation_detectors(),
     turnsense_detector(),
 )
 
