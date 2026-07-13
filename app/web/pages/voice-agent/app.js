@@ -17,7 +17,6 @@ let captureContext;
 let playbackContext;
 let playbackNode;
 let stopRequested = false;
-let microphoneTransmissionEnabled = false;
 let displayedGenerationId;
 const intentionallyClosedSockets = new WeakSet();
 
@@ -57,7 +56,6 @@ async function startSession() {
     if (stopRequested) return;
     startButton.textContent = "Microphone active";
     vadStatus.textContent = "ready";
-    microphoneTransmissionEnabled = true;
     setConnection("ready", "Ready to talk", "Ready — you can speak now.");
   } catch (error) {
     await stopMedia();
@@ -122,7 +120,7 @@ async function setupCapture(stream) {
   const silentGain = captureContext.createGain();
   silentGain.gain.value = 0;
   captureNode.port.onmessage = ({ data }) => {
-    if (microphoneTransmissionEnabled && socket?.readyState === WebSocket.OPEN) socket.send(data);
+    if (socket?.readyState === WebSocket.OPEN) socket.send(data);
   };
   source.connect(captureNode).connect(silentGain).connect(captureContext.destination);
 }
@@ -160,23 +158,19 @@ function handleMessage(event) {
     playbackStatus.textContent = "generating";
   }
   if (message.type === "assistant.audio.start") {
-    microphoneTransmissionEnabled = false;
     if (playbackContext?.state === "suspended") void playbackContext.resume();
     playbackStatus.textContent = "speaking";
   }
   if (message.type === "assistant.audio.end") {
-    microphoneTransmissionEnabled = true;
     vadStatus.textContent = "ready";
     playbackStatus.textContent = "waiting";
   }
   if (message.type === "assistant.cancel") {
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
-    microphoneTransmissionEnabled = true;
     vadStatus.textContent = "ready";
     playbackStatus.textContent = "cancelled";
   }
   if (message.type === "error") {
-    microphoneTransmissionEnabled = true;
     vadStatus.textContent = "ready";
     setConnection("error", "Server error", message.message);
   }
@@ -204,7 +198,7 @@ async function stopMedia() {
   playbackContext = undefined;
 }
 
-function resetControls() { microphoneTransmissionEnabled = false; displayedGenerationId = undefined; startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
+function resetControls() { displayedGenerationId = undefined; startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
 function setConnection(state, text, guidance) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; sessionGuidance.dataset.state = state; sessionGuidance.textContent = guidance; }
 function setTranscript(element, text) { element.textContent = text; element.classList.remove("placeholder"); }
 function appendTranscript(element, text) { if (element.classList.contains("placeholder")) setTranscript(element, text); else element.textContent += text; }

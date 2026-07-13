@@ -1,40 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Final, cast
+from typing import Final
 
 import numpy as np
 import torch
-import whisper
-from pydantic import BaseModel
 from silero_vad import VADIterator, load_silero_vad
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TextIteratorStreamer,
 )
-from whisper.model import Whisper
-
-from app.voice_agent.interfaces import TranscriptionSession
 
 INPUT_SAMPLE_RATE: Final = 16_000
 LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-1.7B"
 LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
-    "You are a voice agent. Answer the user's latest request directly in at most two short "
-    "sentences and at most 40 words. Use the conversation history only as context. Do not repeat "
-    "earlier answers. Use factual, conversational plain text without Markdown or emoji."
+    "You are a conversational voice agent. Respond naturally and directly to the user's latest "
+    "message. Use the complete conversation history as context and do not repeat earlier answers. "
+    "Use plain text without Markdown or emoji."
 )
 COSYVOICE_ENGLISH_LANGUAGE_TAG: Final = "<|en|>"
 COSYVOICE_PROMPT_TEXT: Final = "希望你以后能够做的比我还好呦。"
 COSYVOICE_SPEAKER_ID: Final = "voice-light-prompt"
-
-
-class WhisperTranscriptionOutput(BaseModel):
-    text: str
 
 
 class SileroSpeechDetector:
@@ -61,50 +51,6 @@ class SileroSpeechDetector:
             if event is not None and "end" in event:
                 self.speech_active = False
         return self.speech_active
-
-
-class BufferedWhisperTranscriber:
-    def __init__(self) -> None:
-        download_directory = Path(os.environ["XDG_CACHE_HOME"]) / "whisper"
-        self.model = whisper.load_model(
-            "base.en",
-            device="cuda",
-            download_root=download_directory.as_posix(),
-        )
-
-    def start_session(self) -> TranscriptionSession:
-        return BufferedWhisperSession(self.model)
-
-
-class BufferedWhisperSession:
-    def __init__(self, model: Whisper) -> None:
-        self.model = model
-        self.audio_bytes = bytearray()
-        self.last_text = ""
-
-    async def add_audio(self, pcm_bytes: bytes) -> str | None:
-        self.audio_bytes.extend(pcm_bytes)
-        return None
-
-    async def finish(self) -> str:
-        if not self.audio_bytes:
-            return ""
-        self.last_text = await asyncio.to_thread(self._transcribe)
-        return self.last_text
-
-    async def close(self) -> None:
-        self.audio_bytes.clear()
-
-    def _transcribe(self) -> str:
-        samples = np.frombuffer(self.audio_bytes, dtype="<i2").astype(np.float32) / 32_768.0
-        raw_output = self.model.transcribe(
-            samples,
-            language="en",
-            fp16=True,
-            temperature=0.0,
-        )
-        output = WhisperTranscriptionOutput.model_validate(cast(dict[str, object], raw_output))
-        return output.text
 
 
 class TransformersLanguageModel:
@@ -141,8 +87,10 @@ class TransformersLanguageModel:
             kwargs={
                 **model_inputs,
                 "streamer": streamer,
-                "max_new_tokens": 64,
-                "do_sample": False,
+                "max_new_tokens": 256,
+                "do_sample": True,
+                "temperature": 0.6,
+                "top_p": 0.9,
             },
             daemon=True,
         )

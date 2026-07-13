@@ -22,11 +22,6 @@ class FakeTranscriber:
         return FakeTranscriptionSession()
 
 
-class DelayedFakeTranscriber:
-    def start_session(self) -> TranscriptionSession:
-        return DelayedFakeTranscriptionSession()
-
-
 class FakeTranscriptionSession:
     async def add_audio(self, pcm_bytes: bytes) -> str | None:
         return "hello" if pcm_bytes != b"\x00\x00" else None
@@ -36,12 +31,6 @@ class FakeTranscriptionSession:
 
     async def close(self) -> None:
         pass
-
-
-class DelayedFakeTranscriptionSession(FakeTranscriptionSession):
-    async def finish(self) -> str:
-        await asyncio.sleep(0.1)
-        return await super().finish()
 
 
 class FakeLanguageModel:
@@ -65,6 +54,16 @@ class FakeSpeechSynthesizer:
     async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
         assert text == "One two three four five six seven eight."
         yield b"\x01\x00\x02\x00"
+
+
+class SlowSpeechSynthesizer:
+    @property
+    def sample_rate(self) -> int:
+        return 24_000
+
+    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
+        yield b"\x01\x00\x02\x00"
+        await asyncio.sleep(10)
 
 
 def test_full_session_streams_text_and_framed_audio() -> None:
@@ -130,7 +129,7 @@ def test_full_session_streams_text_and_framed_audio() -> None:
     ]
 
 
-def test_vad_continues_while_previous_turn_is_transcribed() -> None:
+def test_user_speech_cancels_active_assistant_playback() -> None:
     web_app = FastAPI()
 
     @web_app.websocket("/session")
@@ -138,9 +137,9 @@ def test_vad_continues_while_previous_turn_is_transcribed() -> None:
         session = VoiceAgentSession(
             websocket=websocket,
             speech_detector=FakeSpeechDetector(),
-            transcriber=DelayedFakeTranscriber(),
+            transcriber=FakeTranscriber(),
             language_model=FakeLanguageModel(),
-            speech_synthesizer=FakeSpeechSynthesizer(),
+            speech_synthesizer=SlowSpeechSynthesizer(),
             policy=SessionPolicy(silence_duration_ms=40, pre_roll_duration_ms=20),
         )
         await session.run()
@@ -148,26 +147,20 @@ def test_vad_continues_while_previous_turn_is_transcribed() -> None:
     with TestClient(web_app).websocket_connect("/session") as websocket:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
         assert websocket.receive_json()["type"] == "session.ready"
+        websocket.send_bytes(b"\x01\x00" * 320)
+        websocket.send_bytes(b"\x00\x00" * 320)
+        websocket.send_bytes(b"\x00\x00" * 320)
 
-        for pcm_bytes in (
-            b"\x01\x00" * 320,
-            b"\x00\x00" * 320,
-            b"\x00\x00" * 320,
-            b"\x01\x00" * 320,
-            b"\x00\x00" * 320,
-            b"\x00\x00" * 320,
-        ):
-            websocket.send_bytes(pcm_bytes)
-
-        event_types: list[str] = []
-        while "transcript.final" not in event_types:
+        event_type = ""
+        while event_type != "assistant.audio.start":
             message = websocket.receive()
             if message.get("text") is not None:
-                event_types.append(json.loads(message["text"])["type"])
+                event_type = json.loads(message["text"])["type"]
+
+        websocket.send_bytes(b"\x01\x00" * 320)
+        while event_type != "assistant.cancel":
+            message = websocket.receive()
+            if message.get("text") is not None:
+                event_type = json.loads(message["text"])["type"]
 
         websocket.send_json({"type": "session.stop"})
-
-    second_vad_started = [
-        index for index, event_type in enumerate(event_types) if event_type == "vad.started"
-    ][1]
-    assert second_vad_started < event_types.index("transcript.final")

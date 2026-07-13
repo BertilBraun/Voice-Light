@@ -18,16 +18,18 @@ PCM16 frames and plays the 24 kHz PCM16 chunks returned by CosyVoice.
 ## Pipeline
 
 - Silero VAD processes microphone audio continuously.
-- Whisper Base English transcribes the complete committed turn.
+- Nemotron Speech Streaming English 0.6B receives 80 ms audio chunks continuously and emits
+  partial transcripts while the user speaks. Its cache-aware RNNT state is retained for the turn.
 - Silero uses a 0.4 speech threshold with a 0.25 release threshold, retains 300 ms of pre-roll,
   and commits about 500 ms after Silero reports the end of speech.
-- Qwen3-1.7B generates a short, deterministic, non-thinking response with the full in-session
-  conversation history.
+- Qwen3-1.7B generates a conversational, non-thinking response with the full ordered in-session
+  system, user, and assistant message history.
 - Each completed sentence is sent to CosyVoice 2 0.5B immediately. The reference-speaker features
   are computed once at startup and reused across synthesis calls. CosyVoice streams 24 kHz PCM audio
   over the WebSocket.
-- Browser capture pauses during assistant playback to prevent acoustic echo from creating false
-  user turns. This prototype therefore does not support barge-in once playback has begun.
+- Browser capture remains active during assistant playback. A new VAD speech-start event cancels
+  generation and clears queued playback immediately, allowing barge-in. Browser echo cancellation
+  remains enabled on the microphone stream.
 
 Binary server messages begin with two little-endian unsigned 32-bit integers: generation ID and
 sequence number. The remaining bytes are mono PCM16 audio. Generation IDs let the browser discard
@@ -51,11 +53,9 @@ volume, so cold starts reload cached files instead of downloading them again.
 
 ## Current Limitation
 
-The `BufferedWhisperTranscriber` runs one accumulated-audio transcription after VAD commits the
-turn. VAD ingestion continues concurrently while finalized turns are transcribed, but Whisper does
-not produce partial transcripts. It is a reliability baseline that keeps CosyVoice on its supported
-Transformers and Torch versions. A cache-aware streaming ASR should run in a separately pinned
-service before treating ASR latency as representative of the intended architecture.
+Nemotron requires Transformers 5.13 or newer while CosyVoice2 is pinned to Transformers 4.51.3.
+Nemotron therefore runs in an isolated Python environment and subprocess inside the same Modal GPU
+container. This preserves both supported dependency sets without adding a second billed GPU.
 
 The session orchestration, VAD, LLM token stream, CosyVoice synthesis, audio stream, and browser
 playback do not depend on that replacement.

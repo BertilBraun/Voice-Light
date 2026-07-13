@@ -60,7 +60,6 @@ class VoiceAgentSession:
         self.policy = policy
         self.session_id = str(uuid4())
         self.audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
-        self.transcription_queue: asyncio.Queue[TranscriptionSession | None] = asyncio.Queue()
         self.conversation: list[tuple[str, str]] = []
         self.generation_task: asyncio.Task[None] | None = None
         self.generation_id = 0
@@ -70,15 +69,13 @@ class VoiceAgentSession:
         await self.websocket.accept()
         receive_task = asyncio.create_task(self._receive_loop())
         recognition_task = asyncio.create_task(self._recognition_loop())
-        finalization_task = asyncio.create_task(self._transcription_finalization_loop())
         try:
-            await asyncio.gather(receive_task, recognition_task, finalization_task)
+            await asyncio.gather(receive_task, recognition_task)
         except WebSocketDisconnect:
             pass
         finally:
             receive_task.cancel()
             recognition_task.cancel()
-            finalization_task.cancel()
             await self._cancel_generation()
 
     async def _receive_loop(self) -> None:
@@ -132,6 +129,7 @@ class VoiceAgentSession:
                         continue
                     speech_active = True
                     silent_samples = 0
+                    await self._cancel_generation()
                     await self._send_speech_state(ServerEventType.VAD_STARTED)
                     for pre_roll_chunk in pre_roll_chunks:
                         await self._add_transcription_audio(transcription, pre_roll_chunk)
@@ -149,20 +147,13 @@ class VoiceAgentSession:
                 speech_active = False
                 silent_samples = 0
                 await self._send_speech_state(ServerEventType.VAD_STOPPED)
-                await self.transcription_queue.put(transcription)
+                final_text = (await transcription.finish()).strip()
+                await transcription.close()
                 transcription = self.transcriber.start_session()
+                if final_text:
+                    await self._commit_turn(final_text)
         finally:
             await transcription.close()
-            await self.transcription_queue.put(None)
-
-    async def _transcription_finalization_loop(self) -> None:
-        while (transcription := await self.transcription_queue.get()) is not None:
-            try:
-                final_text = (await transcription.finish()).strip()
-            finally:
-                await transcription.close()
-            if final_text:
-                await self._commit_turn(final_text)
 
     async def _add_transcription_audio(
         self,

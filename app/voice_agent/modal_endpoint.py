@@ -34,6 +34,11 @@ image = (
         "pip install --upgrade pip 'setuptools<81' wheel",
         "pip install --no-build-isolation openai-whisper==20231117",
         "pip install -r /opt/CosyVoice/requirements.txt",
+        "python -m venv /opt/nemotron-venv",
+        "/opt/nemotron-venv/bin/pip install "
+        "'numpy>=1.26,<2' 'pydantic>=2.0' torch==2.6.0 "
+        "'transformers>=5.13.0,<5.14.0'",
+        "/opt/nemotron-venv/bin/pip install librosa==0.10.2",
     )
     .uv_pip_install(
         "fastapi[standard]>=0.115.0",
@@ -76,8 +81,8 @@ class VoiceAgentServer:
     def setup(self) -> None:
         from huggingface_hub import snapshot_download
 
+        from app.voice_agent.nemotron_client import NemotronStreamingTranscriber
         from app.voice_agent.runtime import (
-            BufferedWhisperTranscriber,
             CosyVoiceSpeechSynthesizer,
             SileroSpeechDetector,
             TransformersLanguageModel,
@@ -88,7 +93,7 @@ class VoiceAgentServer:
             local_dir=COSYVOICE_DIRECTORY,
         )
         self.speech_detector_type = SileroSpeechDetector
-        self.transcriber = BufferedWhisperTranscriber()
+        self.transcriber = NemotronStreamingTranscriber()
         self.language_model = TransformersLanguageModel()
         self.speech_synthesizer = CosyVoiceSpeechSynthesizer(
             model_directory=COSYVOICE_DIRECTORY,
