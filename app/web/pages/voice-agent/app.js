@@ -4,6 +4,7 @@ const endpointInput = document.querySelector("#endpoint-url");
 const startButton = document.querySelector("#start-button");
 const stopButton = document.querySelector("#stop-button");
 const connectionStatus = document.querySelector("#connection-status");
+const sessionGuidance = document.querySelector("#session-guidance");
 const vadStatus = document.querySelector("#vad-status");
 const playbackStatus = document.querySelector("#playback-status");
 const userTranscript = document.querySelector("#user-transcript");
@@ -15,6 +16,8 @@ let microphoneStream;
 let captureContext;
 let playbackContext;
 let playbackNode;
+let stopRequested = false;
+const intentionallyClosedSockets = new WeakSet();
 
 endpointInput.value = localStorage.getItem("voiceAgentEndpoint") ?? "";
 startButton.addEventListener("click", startSession);
@@ -23,34 +26,88 @@ stopButton.addEventListener("click", stopSession);
 async function startSession() {
   const endpoint = endpointInput.value.trim();
   if (!endpoint.startsWith("wss://") && !endpoint.startsWith("ws://")) {
-    setConnection("error", "Enter a WebSocket URL");
+    setConnection("error", "Invalid endpoint", "Enter a WebSocket URL beginning with ws:// or wss://.");
     return;
   }
   localStorage.setItem("voiceAgentEndpoint", endpoint);
+  stopRequested = false;
   startButton.disabled = true;
+  startButton.textContent = "Starting…";
+  stopButton.disabled = false;
+  setConnection("starting", "Server starting…", "Waking the server. This can take about a minute after it has scaled down.");
   try {
     await setupPlayback();
+    socket = await openSocket(endpoint);
+    setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
+    const sessionReady = waitForSessionReady(socket);
+    socket.send(JSON.stringify({ type: "session.start", input_sample_rate: INPUT_SAMPLE_RATE }));
+    await sessionReady;
+    if (stopRequested) return;
+    setConnection("connected", "Connecting microphone…", "Allow microphone access if your browser asks for it.");
     microphoneStream = await navigator.mediaDevices.getUserMedia({
       audio: { autoGainControl: true, channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
-    socket = await openSocket(endpoint);
-    socket.send(JSON.stringify({ type: "session.start", input_sample_rate: INPUT_SAMPLE_RATE }));
+    if (stopRequested) {
+      microphoneStream.getTracks().forEach((track) => track.stop());
+      return;
+    }
     await setupCapture(microphoneStream);
-    stopButton.disabled = false;
+    if (stopRequested) return;
+    startButton.textContent = "Microphone active";
+    vadStatus.textContent = "ready";
+    setConnection("ready", "Ready to talk", "Ready — you can speak now.");
   } catch (error) {
-    setConnection("error", error.message);
-    await stopSession();
+    await stopMedia();
+    if (socket) {
+      intentionallyClosedSockets.add(socket);
+      socket.close();
+    }
+    resetControls();
+    if (stopRequested) setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
+    else setConnection("error", "Connection problem", error.message);
   }
 }
 
 function openSocket(endpoint) {
   return new Promise((resolve, reject) => {
     const candidate = new WebSocket(endpoint);
+    let opened = false;
+    socket = candidate;
     candidate.binaryType = "arraybuffer";
-    candidate.addEventListener("open", () => { socket = candidate; setConnection("connected", "Connected"); resolve(candidate); }, { once: true });
+    candidate.addEventListener("open", () => { opened = true; resolve(candidate); }, { once: true });
     candidate.addEventListener("error", () => reject(new Error("WebSocket connection failed.")), { once: true });
     candidate.addEventListener("message", handleMessage);
-    candidate.addEventListener("close", () => { setConnection("idle", "Disconnected"); stopMedia(); });
+    candidate.addEventListener("close", () => {
+      if (!opened) reject(new Error("The server connection closed before it was ready."));
+      void stopMedia();
+      resetControls();
+      if (intentionallyClosedSockets.has(candidate)) return;
+      if (stopRequested) setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
+      else setConnection("error", "Connection closed", "The server connection closed unexpectedly. Start again to reconnect.");
+    });
+  });
+}
+
+function waitForSessionReady(candidate) {
+  return new Promise((resolve, reject) => {
+    function onMessage(event) {
+      if (event.data instanceof ArrayBuffer) return;
+      const message = JSON.parse(event.data);
+      if (message.type === "session.ready") {
+        cleanup();
+        resolve(message);
+      } else if (message.type === "error") {
+        cleanup();
+        reject(new Error(message.message));
+      }
+    }
+    function onClose() { cleanup(); reject(new Error("The server closed before the session was ready.")); }
+    function cleanup() {
+      candidate.removeEventListener("message", onMessage);
+      candidate.removeEventListener("close", onClose);
+    }
+    candidate.addEventListener("message", onMessage);
+    candidate.addEventListener("close", onClose);
   });
 }
 
@@ -99,15 +156,20 @@ function handleMessage(event) {
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
     playbackStatus.textContent = "cancelled";
   }
-  if (message.type === "error") setConnection("error", message.message);
+  if (message.type === "error") setConnection("error", "Server error", message.message);
 }
 
 async function stopSession() {
+  stopRequested = true;
+  setConnection("connected", "Stopping…", "Closing the microphone and server connection.");
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session.stop" }));
-  socket?.close();
+  if (socket) {
+    intentionallyClosedSockets.add(socket);
+    socket.close();
+  }
   await stopMedia();
-  startButton.disabled = false;
-  stopButton.disabled = true;
+  resetControls();
+  setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
 }
 
 async function stopMedia() {
@@ -119,7 +181,8 @@ async function stopMedia() {
   playbackContext = undefined;
 }
 
-function setConnection(state, text) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; }
+function resetControls() { startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
+function setConnection(state, text, guidance) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; sessionGuidance.dataset.state = state; sessionGuidance.textContent = guidance; }
 function setTranscript(element, text) { element.textContent = text; element.classList.remove("placeholder"); }
 function appendTranscript(element, text) { if (element.classList.contains("placeholder")) setTranscript(element, text); else element.textContent += text; }
 function logEvent(message) { const item = document.createElement("li"); item.textContent = `${new Date().toLocaleTimeString()} ${message.type}`; eventLog.prepend(item); }
