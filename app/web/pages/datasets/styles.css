@@ -44,6 +44,11 @@ h2 {
   margin-bottom: 12px;
 }
 
+h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
 #status {
   margin-top: 4px;
   color: #627083;
@@ -157,13 +162,168 @@ nav a:hover {
   gap: 14px;
 }
 
-.audio-grid {
+.detail-heading,
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-heading h2 {
+  margin-bottom: 2px;
+  font-size: 19px;
+}
+
+.muted {
+  color: #69778a;
+  font-size: 12px;
+}
+
+.quality-section {
   display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dde3ea;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metric-card {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #ffffff;
+  border: 1px solid #e4e9ef;
+}
+
+.metric-card span {
+  overflow: hidden;
+  color: #69778a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-card strong {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-badge {
+  min-width: 58px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 19px;
+  font-weight: 750;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-good {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.score-medium {
+  color: #854d0e;
+  background: #fef9c3;
+}
+
+.score-bad {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.score-unknown {
+  color: #526174;
+  background: #edf1f5;
+}
+
+.playback-controls {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
   gap: 10px;
 }
 
-audio {
-  width: 100%;
+.play-button {
+  min-width: 92px;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: #ffffff;
+  background: #1d4f7a;
+  cursor: pointer;
+}
+
+.seek {
+  min-width: 0;
+  accent-color: #1d4f7a;
+}
+
+.playback-clock {
+  min-width: 92px;
+  color: #435063;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.track-grid,
+.audio-quality-tracks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.track-card {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 4px solid #4979a8;
+  border-radius: 5px;
+  background: #ffffff;
+}
+
+.track-card.speaker2 {
+  border-left-color: #b56b38;
+}
+
+.track-card audio {
+  display: none;
+}
+
+.audio-quality-card {
+  padding: 10px;
+  border-radius: 6px;
+  background: #ffffff;
+  border: 1px solid #e4e9ef;
+}
+
+.audio-quality-card dl {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 10px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.audio-quality-card dt {
+  color: #69778a;
+}
+
+.audio-quality-card dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .chips {
@@ -180,6 +340,68 @@ audio {
   color: #435063;
 }
 
+.warning-chip {
+  color: #8a4b08;
+  border-color: #e7c58d;
+  background: #fff8e8;
+}
+
+.event-counts {
+  margin-bottom: 2px;
+}
+
+.event-section summary,
+.raw-details summary {
+  color: #1d4f7a;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.event-list {
+  display: grid;
+  max-height: 310px;
+  margin-top: 8px;
+  overflow: auto;
+  border: 1px solid #e0e6ec;
+  border-radius: 6px;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(130px, 1.2fr) auto;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  color: #435063;
+  background: #ffffff;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.event-row:last-child {
+  border-bottom: 0;
+}
+
+.event-row:hover {
+  background: #eef5fb;
+}
+
+.event-row span:last-child {
+  font-variant-numeric: tabular-nums;
+}
+
+.raw-details {
+  display: grid;
+  gap: 8px;
+}
+
+.raw-details[open] summary {
+  margin-bottom: 8px;
+}
+
 pre {
   max-height: 260px;
   overflow: auto;
@@ -194,5 +416,30 @@ pre {
   .filters,
   .content-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .metric-grid,
+  .track-grid,
+  .audio-quality-tracks {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .playback-controls {
+    grid-template-columns: auto 1fr;
+  }
+
+  .playback-clock {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+
+  .event-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .event-row span:nth-child(2) {
+    display: none;
   }
 }
