@@ -83,6 +83,10 @@ VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL
 VOICE_LIGHT_REMOTE_QUALITY_API_KEY
 ```
 
+The deployed project endpoint is the default for `VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL`; set
+that variable only to target a different deployment. The API key defaults to
+`VOICE_LIGHT_REMOTE_ASR_API_KEY` when `VOICE_LIGHT_REMOTE_QUALITY_API_KEY` is not set.
+
 Deploy the Modal quality endpoint with:
 
 ```powershell

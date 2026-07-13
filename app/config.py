@@ -3,10 +3,20 @@ from collections.abc import Mapping
 from pathlib import Path
 
 LOCAL_DATABASE_URL = "postgresql://voice_light:voice_light@127.0.0.1:5432/voice_light"
+DEFAULT_REMOTE_QUALITY_ENDPOINT_URL = (
+    "https://bertil-braun-private--voicelightquality-analyze.modal.run"
+)
 
 
 def configured_database_url(environment: Mapping[str, str]) -> str:
     return environment.get("VOICE_LIGHT_DATABASE_URL") or LOCAL_DATABASE_URL
+
+
+def configured_remote_quality_endpoint_url(environment: Mapping[str, str]) -> str:
+    return (
+        environment.get("VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL")
+        or DEFAULT_REMOTE_QUALITY_ENDPOINT_URL
+    )
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -18,7 +28,7 @@ MIGRATIONS_ROOT = APP_ROOT / "db" / "migrations"
 DATABASE_URL = configured_database_url(os.environ)
 REMOTE_ASR_ENDPOINT_URL = os.environ.get("VOICE_LIGHT_REMOTE_ASR_ENDPOINT_URL", "")
 REMOTE_ASR_API_KEY = os.environ.get("VOICE_LIGHT_REMOTE_ASR_API_KEY", "")
-REMOTE_QUALITY_ENDPOINT_URL = os.environ.get("VOICE_LIGHT_REMOTE_QUALITY_ENDPOINT_URL", "")
+REMOTE_QUALITY_ENDPOINT_URL = configured_remote_quality_endpoint_url(os.environ)
 REMOTE_QUALITY_API_KEY = os.environ.get(
     "VOICE_LIGHT_REMOTE_QUALITY_API_KEY",
     REMOTE_ASR_API_KEY,
