@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from threading import Lock
+from queue import Queue
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -11,16 +11,19 @@ from uuid import uuid4
 import modal
 
 from app.quality.remote_models import (
+    QUALITY_INPUT_VOLUME_COUNT,
     AudioSource,
     LocalAudioSource,
     RemoteQualityRequest,
     RemoteQualityResponse,
     UriAudioSource,
     VolumeAudioSource,
+    quality_input_volume_name,
 )
 
-QUALITY_INPUT_VOLUME_NAME = "voice-light-quality-inputs"
-quality_input_upload_lock = Lock()
+quality_input_volume_slots: Queue[int] = Queue()
+for quality_input_volume_index in range(QUALITY_INPUT_VOLUME_COUNT):
+    quality_input_volume_slots.put(quality_input_volume_index)
 
 
 class RemoteQualityClient(Protocol):
@@ -44,16 +47,23 @@ class HttpRemoteQualityClient:
         if not has_local_source(request.speaker1) and not has_local_source(request.speaker2):
             return self._send(request)
         request_identifier = str(uuid4())
+        volume_index = quality_input_volume_slots.get()
         volume = modal.Volume.from_name(
-            QUALITY_INPUT_VOLUME_NAME,
+            quality_input_volume_name(volume_index),
             create_if_missing=True,
             version=2,
         )
-        staged_request = stage_local_sources(request, volume, request_identifier)
         try:
+            staged_request = stage_local_sources(
+                request,
+                volume,
+                volume_index,
+                request_identifier,
+            )
             return self._send(staged_request)
         finally:
             volume.remove_file(request_identifier, recursive=True)
+            quality_input_volume_slots.put(volume_index)
 
     def _send(self, request: RemoteQualityRequest) -> RemoteQualityResponse:
         request_body = json.dumps(request.model_dump(mode="json")).encode("utf-8")
@@ -82,11 +92,12 @@ class HttpRemoteQualityClient:
 def stage_local_sources(
     request: RemoteQualityRequest,
     volume: modal.Volume,
+    volume_index: int,
     request_identifier: str,
 ) -> RemoteQualityRequest:
-    with quality_input_upload_lock, volume.batch_upload(force=True) as upload:
-        speaker1 = stage_audio_source(request.speaker1, upload, request_identifier, 1)
-        speaker2 = stage_audio_source(request.speaker2, upload, request_identifier, 2)
+    with volume.batch_upload(force=True) as upload:
+        speaker1 = stage_audio_source(request.speaker1, upload, volume_index, request_identifier, 1)
+        speaker2 = stage_audio_source(request.speaker2, upload, volume_index, request_identifier, 2)
     return request.model_copy(update={"speaker1": speaker1, "speaker2": speaker2})
 
 
@@ -101,6 +112,7 @@ def has_local_source(source: AudioSource) -> bool:
 def stage_audio_source(
     source: AudioSource,
     upload: VolumeUpload,
+    volume_index: int,
     request_identifier: str,
     speaker_index: int,
 ) -> VolumeAudioSource | UriAudioSource:
@@ -110,6 +122,9 @@ def stage_audio_source(
                 f"/{request_identifier}/speaker{speaker_index}{Path(source.filename).suffix}"
             )
             upload.put_file(source.path, remote_path)
-            return VolumeAudioSource(path=remote_path.lstrip("/"))
+            return VolumeAudioSource(
+                volume_index=volume_index,
+                path=remote_path.lstrip("/"),
+            )
         case UriAudioSource() | VolumeAudioSource():
             return source

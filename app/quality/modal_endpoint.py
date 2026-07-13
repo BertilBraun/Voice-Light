@@ -13,12 +13,14 @@ from fastapi import Header, HTTPException
 
 from app.audio import load_audio
 from app.quality.remote_models import (
+    QUALITY_INPUT_VOLUME_COUNT,
     AudioSource,
     LocalAudioSource,
     RemoteQualityRequest,
     RemoteQualityResponse,
     UriAudioSource,
     VolumeAudioSource,
+    quality_input_volume_name,
 )
 from app.quality.service import score_two_track_sample
 from app.storage.local import LocalStorageBackend
@@ -36,11 +38,16 @@ modal_image = (
 )
 
 app = modal.App("VoiceLightQuality")
-QUALITY_INPUT_MOUNT = Path("/quality-inputs")
-quality_input_volume = modal.Volume.from_name(
-    "voice-light-quality-inputs",
-    create_if_missing=True,
-    version=2,
+quality_input_mounts = tuple(
+    Path(f"/quality-inputs/{volume_index}") for volume_index in range(QUALITY_INPUT_VOLUME_COUNT)
+)
+quality_input_volumes = tuple(
+    modal.Volume.from_name(
+        quality_input_volume_name(volume_index),
+        create_if_missing=True,
+        version=2,
+    )
+    for volume_index in range(QUALITY_INPUT_VOLUME_COUNT)
 )
 
 
@@ -52,7 +59,10 @@ quality_input_volume = modal.Volume.from_name(
     max_containers=20,
     scaledown_window=120,
     secrets=[modal.Secret.from_name("voice-light-asr")],
-    volumes={QUALITY_INPUT_MOUNT.as_posix(): quality_input_volume},
+    volumes={
+        mount.as_posix(): volume
+        for mount, volume in zip(quality_input_mounts, quality_input_volumes, strict=True)
+    },
 )
 @modal.concurrent(max_inputs=1)
 @modal.fastapi_endpoint(method="POST")
@@ -61,7 +71,7 @@ def analyze(
     authorization: Annotated[str | None, Header()] = None,
 ) -> RemoteQualityResponse:
     authorize_request(authorization)
-    quality_input_volume.reload()
+    reload_request_volumes(request)
     with tempfile.TemporaryDirectory(prefix="voice-light-quality-") as temporary_directory:
         directory = Path(temporary_directory)
         speaker1_path = materialize_audio_source(request.speaker1, directory, "speaker1")
@@ -89,7 +99,7 @@ def materialize_audio_source(source: AudioSource, directory: Path, stem: str) ->
             relative_path = Path(source.path.lstrip("/\\"))
             if ".." in relative_path.parts:
                 raise HTTPException(status_code=400, detail="Invalid quality input volume path.")
-            path = QUALITY_INPUT_MOUNT / relative_path
+            path = quality_input_mounts[source.volume_index] / relative_path
             if not path.is_file():
                 raise HTTPException(status_code=400, detail="Quality input file was not found.")
             return path
@@ -109,6 +119,24 @@ def materialize_audio_source(source: AudioSource, directory: Path, stem: str) ->
             raise HTTPException(
                 status_code=400, detail="Local audio must be staged before request."
             )
+
+
+def reload_request_volumes(request: RemoteQualityRequest) -> None:
+    volume_indexes = {
+        volume_index
+        for source in (request.speaker1, request.speaker2)
+        for volume_index in volume_indexes_for_source(source)
+    }
+    for volume_index in volume_indexes:
+        quality_input_volumes[volume_index].reload()
+
+
+def volume_indexes_for_source(source: AudioSource) -> tuple[int, ...]:
+    match source:
+        case VolumeAudioSource():
+            return (source.volume_index,)
+        case LocalAudioSource() | UriAudioSource():
+            return ()
 
 
 def authorize_request(authorization: str | None) -> None:
