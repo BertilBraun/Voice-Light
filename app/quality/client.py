@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Lock
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -19,6 +20,7 @@ from app.quality.remote_models import (
 )
 
 QUALITY_INPUT_VOLUME_NAME = "voice-light-quality-inputs"
+quality_input_upload_lock = Lock()
 
 
 class RemoteQualityClient(Protocol):
@@ -82,7 +84,7 @@ def stage_local_sources(
     volume: modal.Volume,
     request_identifier: str,
 ) -> RemoteQualityRequest:
-    with volume.batch_upload(force=True) as upload:
+    with quality_input_upload_lock, volume.batch_upload(force=True) as upload:
         speaker1 = stage_audio_source(request.speaker1, upload, request_identifier, 1)
         speaker2 = stage_audio_source(request.speaker2, upload, request_identifier, 2)
     return request.model_copy(update={"speaker1": speaker1, "speaker2": speaker2})
