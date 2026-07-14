@@ -25,6 +25,8 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "JSON.stringify(message.messages, null, 2)" in script_response.text
     assert "recordedInputChunks.push(data.slice(0))" in script_response.text
     assert "createPcmWav(recordedInputChunks, INPUT_SAMPLE_RATE)" in script_response.text
+    assert "new AudioContext({ sampleRate: INPUT_SAMPLE_RATE })" in script_response.text
+    assert 'console.info("Voice input capture"' in script_response.text
     assert 'message.type === "assistant.text.delta"' in script_response.text
     assert 'message.type === "assistant.cancel"' in script_response.text
     assert 'message.type === "assistant.audio.sentence"' in script_response.text
@@ -36,6 +38,6 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'data.type === "sentence" && data.generationId > this.cancelledGenerationId' in (
         worklet_response.text
     )
-    assert "this.previousSample" in capture_worklet_response.text
-    assert "lowerIndex < 0 ? this.previousSample" in capture_worklet_response.text
-    assert "this.sourcePosition -= input.length" in capture_worklet_response.text
+    assert "new Int16Array(input.length)" in capture_worklet_response.text
+    assert "input[index]" in capture_worklet_response.text
+    assert "sourcePosition" not in capture_worklet_response.text
