@@ -21,32 +21,37 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
         this.cancelledGenerationId = Math.max(this.cancelledGenerationId, data.generationId);
         this.endedGenerationId = -1;
       } else if (data.type === "audio" && data.generationId > this.cancelledGenerationId) {
-        if (data.generationId > this.generationId) {
-          this.chunks = [];
-          this.queuedSampleCount = 0;
-          this.sourcePosition = 0;
-          this.sentencePlayback.clear();
-          this.progressSentenceIds.clear();
-          this.generationId = data.generationId;
-          this.endedGenerationId = -1;
-        }
+        if (data.generationId > this.generationId) this.startGeneration(data.generationId);
         if (data.generationId === this.generationId) {
           const samples = new Int16Array(data.pcm);
           this.chunks.push({ samples, sentenceId: data.sentenceId });
           this.queuedSampleCount += samples.length;
         }
-      } else if (data.type === "sentence" && data.generationId === this.generationId) {
-        const playback = this.sentencePlayback.get(data.sentenceId) ?? { playedSamples: 0 };
-        playback.totalSamples = data.totalSamples;
-        playback.characterCount = data.characterCount;
-        playback.reportedCharacterOffset ??= 0;
-        this.sentencePlayback.set(data.sentenceId, playback);
-        this.reportSentenceProgress(data.sentenceId);
+      } else if (data.type === "sentence" && data.generationId > this.cancelledGenerationId) {
+        if (data.generationId > this.generationId) this.startGeneration(data.generationId);
+        if (data.generationId === this.generationId) {
+          const playback = this.sentencePlayback.get(data.sentenceId) ?? { playedSamples: 0 };
+          playback.totalSamples = data.totalSamples;
+          playback.characterCount = data.characterCount;
+          playback.reportedCharacterOffset ??= 0;
+          this.sentencePlayback.set(data.sentenceId, playback);
+          this.reportSentenceProgress(data.sentenceId);
+        }
       } else if (data.type === "end" && data.generationId === this.generationId) {
         this.endedGenerationId = data.generationId;
         this.reportCompletionIfDrained();
       }
     };
+  }
+
+  startGeneration(generationId) {
+    this.chunks = [];
+    this.queuedSampleCount = 0;
+    this.sourcePosition = 0;
+    this.sentencePlayback.clear();
+    this.progressSentenceIds.clear();
+    this.generationId = generationId;
+    this.endedGenerationId = -1;
   }
 
   process(_inputs, outputs) {

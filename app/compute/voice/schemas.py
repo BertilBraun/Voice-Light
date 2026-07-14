@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter
 
+from app.compute.voice.conversation import ConversationRole
 from app.shared.base_model import FrozenBaseModel
 
 
@@ -50,6 +51,7 @@ class VoiceServerEventType(StrEnum):
     TRANSCRIPT_PARTIAL = "transcript.partial"
     TRANSCRIPT_FINAL = "transcript.final"
     TURN_COMMITTED = "turn.committed"
+    LLM_HISTORY = "llm.history"
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
@@ -77,6 +79,17 @@ class TranscriptEvent(FrozenBaseModel):
         VoiceServerEventType.TURN_COMMITTED,
     ]
     text: str
+
+
+class LlmHistoryMessage(FrozenBaseModel):
+    role: ConversationRole
+    content: str
+
+
+class LlmHistoryEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.LLM_HISTORY] = VoiceServerEventType.LLM_HISTORY
+    generation_id: int = Field(gt=0)
+    messages: tuple[LlmHistoryMessage, ...]
 
 
 class AssistantTextDeltaEvent(FrozenBaseModel):
@@ -116,6 +129,7 @@ VoiceServerEvent = Annotated[
     SessionReadyEvent
     | SpeechStateEvent
     | TranscriptEvent
+    | LlmHistoryEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioSentenceEvent

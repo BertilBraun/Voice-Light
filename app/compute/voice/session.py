@@ -24,6 +24,8 @@ from app.compute.voice.schemas import (
     AssistantAudioSentenceEvent,
     AssistantTextDeltaEvent,
     ErrorEvent,
+    LlmHistoryEvent,
+    LlmHistoryMessage,
     PlaybackCompleteEvent,
     PlaybackProgressEvent,
     SessionReadyEvent,
@@ -52,6 +54,7 @@ class SessionPolicy:
 @dataclass
 class ActiveGeneration:
     generation_id: int
+    prompt_messages: tuple[ConversationMessage, ...]
     task: asyncio.Task[None] | None = None
     response_text: str = ""
     acknowledged_offset: int = 0
@@ -218,8 +221,20 @@ class VoiceSession:
         await self._send_transcript(VoiceServerEventType.TURN_COMMITTED, text)
         self.conversation.append(ConversationMessage(role=ConversationRole.USER, content=text))
         await self._cancel_generation(send_event=True)
-        generation = ActiveGeneration(generation_id=self.next_generation_id)
+        generation = ActiveGeneration(
+            generation_id=self.next_generation_id,
+            prompt_messages=tuple(self.conversation),
+        )
         self.next_generation_id += 1
+        await self._send_event(
+            LlmHistoryEvent(
+                generation_id=generation.generation_id,
+                messages=tuple(
+                    LlmHistoryMessage(role=message.role, content=message.content)
+                    for message in generation.prompt_messages
+                ),
+            )
+        )
         generation.task = asyncio.create_task(self._run_generation(generation))
         self.active_generation = generation
 
@@ -254,7 +269,7 @@ class VoiceSession:
         sentence_chunker = SentenceTextChunker()
         next_sentence_offset = 0
         try:
-            async for text_delta in self.language_model.stream_response(tuple(self.conversation)):
+            async for text_delta in self.language_model.stream_response(generation.prompt_messages):
                 generation.response_text += text_delta
                 await self._send_event(
                     AssistantTextDeltaEvent(
@@ -307,20 +322,13 @@ class VoiceSession:
         started = False
         sentence_id = 0
         async for sentence in sentences:
+            sentence_audio: list[bytes] = []
             sentence_sample_count = 0
             async for pcm_bytes in self.speech_synthesizer.stream_audio(sentence.text):
                 if len(pcm_bytes) % PCM_BYTES_PER_SAMPLE != 0:
                     raise ValueError("TTS PCM16 frames must contain complete samples.")
-                if not started:
-                    started = True
-                    await self._send_audio_boundary(
-                        VoiceServerEventType.ASSISTANT_AUDIO_START,
-                        generation_id,
-                    )
-                header = struct.pack("<III", generation_id, sequence_number, sentence_id)
-                await self._send_audio(header + pcm_bytes)
+                sentence_audio.append(pcm_bytes)
                 sentence_sample_count += _pcm_sample_count(pcm_bytes)
-                sequence_number += 1
             if sentence_sample_count == 0:
                 raise RuntimeError("The speech synthesizer returned no sentence audio.")
             generation = self.active_generation
@@ -338,6 +346,16 @@ class VoiceSession:
                     sample_count=sentence_sample_count,
                 )
             )
+            if not started:
+                started = True
+                await self._send_audio_boundary(
+                    VoiceServerEventType.ASSISTANT_AUDIO_START,
+                    generation_id,
+                )
+            for pcm_bytes in sentence_audio:
+                header = struct.pack("<III", generation_id, sequence_number, sentence_id)
+                await self._send_audio(header + pcm_bytes)
+                sequence_number += 1
             sentence_id += 1
         if started:
             await self._send_audio_boundary(

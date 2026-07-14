@@ -270,6 +270,11 @@ function handleMessage(event) {
     updateUserDraft(message.text);
   }
   if (message.type === "turn.committed") commitUserTurn(message.text);
+  if (message.type === "llm.history") {
+    console.groupCollapsed(`LLM history for generation ${message.generation_id}`);
+    console.table(message.messages);
+    console.groupEnd();
+  }
   if (message.type === "assistant.text.delta") {
     const turn = assistantTurn(message.generation_id);
     turn.appendText(message.text);

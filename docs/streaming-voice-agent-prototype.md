@@ -27,19 +27,22 @@ validated playback offsets enter model history.
 - NVIDIA Nemotron Speech Streaming English 0.6B receives stateful 80 ms chunks until the session
   finalizes the utterance. One worker serializes active ASR streams across WebSocket sessions.
 - Qwen3-1.7B receives the complete ordered conversation and streams non-thinking text deltas.
+- Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
+  that generation. The browser logs the snapshot to its developer console for prompt inspection.
 - Completed sentence chunks enter Pocket TTS while Qwen continues generating later text.
 - A new authoritative server speech-start cancels the active Qwen/TTS task and tells the browser
   to discard that generation's queued audio.
 
 Generated assistant text appears immediately as muted text. Each independently synthesized
-sentence retains its generated-text range and exact PCM sample count. The playback worklet reports
-played samples, and the page linearly interpolates character-level visual progress within the
-sentence. Whenever playback crosses the end of a word, the page acknowledges that generated-text
-offset. The server validates generation ID, sentence ID, word boundary, range, and monotonicity,
-then updates one assistant entry in model history. Interrupted entries retain the acknowledged
-whole-word prefix with a trailing `...`; generated but unplayed text remains visible and muted but
-does not enter model history. Completely drained playback commits the full response without an
-ellipsis.
+sentence is buffered until its exact PCM sample count is known. The server sends its text and sample
+metadata before its audio so interpolation is available from the first played sample. The playback
+worklet reports played samples, and the page linearly interpolates character-level visual progress
+within the sentence. Whenever playback crosses the end of a word, the page acknowledges that
+generated-text offset. The server validates generation ID, sentence ID, word boundary, range, and
+monotonicity, then updates one assistant entry in model history. Interrupted entries retain the
+acknowledged whole-word prefix with a trailing `...`; generated but unplayed text remains visible
+and muted but does not enter model history. Completely drained playback commits the full response
+without an ellipsis.
 
 ## Protocol
 
@@ -54,14 +57,14 @@ All microphone audio uses unwrapped binary PCM16 messages. A bounded server queu
 ingestion from recognition and applies backpressure if the single ASR worker cannot keep up.
 
 Server-to-browser JSON events include `session.ready`, VAD boundaries, partial/final transcripts,
-turn commitment, assistant text deltas, per-sentence audio metadata, generation audio boundaries,
-cancellation, and errors. `assistant.audio.sentence` identifies a sentence's generation, sentence
-ID, generated-text range, and exact PCM sample count. Assistant binary frames begin with three
-little-endian unsigned 32-bit integers: generation ID, sequence number, and sentence ID. Remaining
-bytes are mono PCM16 at the `output_sample_rate` announced by `session.ready`. The browser rejects
-stale/cancelled generations and out-of-sequence frames. Its playback worklet resamples from the
-announced server rate to the browser AudioContext rate while retaining per-sentence sample
-progress.
+turn commitment, the exact `llm.history` snapshot, assistant text deltas, per-sentence audio
+metadata, generation audio boundaries, cancellation, and errors. `assistant.audio.sentence`
+identifies a sentence's generation, sentence ID, generated-text range, and exact PCM sample count
+before that sentence's audio frames arrive. Assistant binary frames begin with three little-endian
+unsigned 32-bit integers: generation ID, sequence number, and sentence ID. Remaining bytes are mono
+PCM16 at the `output_sample_rate` announced by `session.ready`. The browser rejects stale/cancelled
+generations and out-of-sequence frames. Its playback worklet resamples from the announced server
+rate to the browser AudioContext rate while retaining per-sentence sample progress.
 
 The voice research WebSocket is intentionally unauthenticated so the browser can connect directly.
 Other compute HTTP APIs retain bearer-token authentication. The compute service rejects voice

@@ -156,6 +156,13 @@ def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
     assert "transcript.partial" in event_types
     assert "transcript.final" in event_types
     assert "turn.committed" in event_types
+    assert [event for event in first_events if event["type"] == "llm.history"] == [
+        {
+            "type": "llm.history",
+            "generation_id": 1,
+            "messages": [{"role": "user", "content": "hello agent"}],
+        }
+    ]
     assert "assistant.text.delta" in event_types
     assert "assistant.audio.start" in event_types
     assert second_events[-1]["generation_id"] == 2
@@ -187,9 +194,11 @@ def test_sentence_audio_metadata_preserves_text_and_sample_boundaries() -> None:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
         websocket.receive_json()
         send_turn(websocket)
-        events, audio_frame = receive_until(websocket, "assistant.audio.end")
+        events_before_audio, audio_frame = receive_until_audio(websocket)
+        events_after_audio, _ = receive_until(websocket, "assistant.audio.end")
         websocket.send_json({"type": "session.stop"})
 
+    events = events_before_audio + events_after_audio
     sentence_events = [event for event in events if event["type"] == "assistant.audio.sentence"]
     assert sentence_events == [
         {
@@ -211,7 +220,8 @@ def test_sentence_audio_metadata_preserves_text_and_sample_boundaries() -> None:
     ]
     assert speech_synthesizer.sentences == ["Hello world.", "Next thing!"]
     assert audio_frame is not None
-    assert struct.unpack("<III", audio_frame[:12]) == (1, 1, 1)
+    assert struct.unpack("<III", audio_frame[:12]) == (1, 0, 0)
+    assert any(event["type"] == "assistant.audio.sentence" for event in events_before_audio)
 
 
 def test_user_speech_cancels_generation_and_does_not_commit_assistant_tail() -> None:
@@ -272,6 +282,7 @@ def test_repeated_interruptions_preserve_acknowledged_word_prefixes() -> None:
     language_model = FakeLanguageModel()
     transcriber = RecordingTranscriber()
     web_app = create_test_app(transcriber, language_model, FakeSpeechSynthesizer())
+    history_events: list[dict[str, str | int | list[dict[str, str]]]] = []
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
@@ -280,6 +291,7 @@ def test_repeated_interruptions_preserve_acknowledged_word_prefixes() -> None:
 
         for generation_id, text_offset in ((1, 7), (2, 13), (3, 18)):
             events, _ = receive_until(websocket, "assistant.audio.sentence")
+            history_events.extend(event for event in events if event["type"] == "llm.history")
             sentence_event = events[-1]
             assert sentence_event == {
                 "type": "assistant.audio.sentence",
@@ -326,7 +338,8 @@ def test_repeated_interruptions_preserve_acknowledged_word_prefixes() -> None:
             websocket.send_bytes(SILENCE_CHUNK)
             websocket.send_bytes(SILENCE_CHUNK)
 
-        receive_until(websocket, "assistant.text.delta")
+        final_events, _ = receive_until(websocket, "assistant.text.delta")
+        history_events.extend(event for event in final_events if event["type"] == "llm.history")
         websocket.send_json({"type": "session.stop"})
 
     assert language_model.conversations == [
@@ -361,6 +374,11 @@ def test_repeated_interruptions_preserve_acknowledged_word_prefixes() -> None:
             ),
             ConversationMessage(role=ConversationRole.USER, content="hello agent"),
         ),
+    ]
+    assert [event["generation_id"] for event in history_events] == [1, 2, 3, 4]
+    assert [event["messages"] for event in history_events] == [
+        [{"role": message.role.value, "content": message.content} for message in conversation]
+        for conversation in language_model.conversations
     ]
 
 
@@ -455,8 +473,8 @@ def send_turn(websocket: WebSocketTestSession) -> None:
 def receive_until(
     websocket: WebSocketTestSession,
     terminal_event_type: str,
-) -> tuple[list[dict[str, str | int]], bytes | None]:
-    events: list[dict[str, str | int]] = []
+) -> tuple[list[dict[str, str | int | list[dict[str, str]]]], bytes | None]:
+    events: list[dict[str, str | int | list[dict[str, str]]]] = []
     audio_frame: bytes | None = None
     while not events or events[-1]["type"] != terminal_event_type:
         message = websocket.receive()
@@ -465,3 +483,15 @@ def receive_until(
         elif message.get("text") is not None:
             events.append(json.loads(message["text"]))
     return events, audio_frame
+
+
+def receive_until_audio(
+    websocket: WebSocketTestSession,
+) -> tuple[list[dict[str, str | int | list[dict[str, str]]]], bytes]:
+    events: list[dict[str, str | int | list[dict[str, str]]]] = []
+    while True:
+        message = websocket.receive()
+        if message.get("bytes") is not None:
+            return events, message["bytes"]
+        if message.get("text") is not None:
+            events.append(json.loads(message["text"]))
