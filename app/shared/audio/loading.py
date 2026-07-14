@@ -41,7 +41,11 @@ def probe_local_audio_metadata(path: Path) -> AudioMetadata:
     )
 
 
-def load_audio(storage: StorageBackend, path: str) -> AudioTrack:
+def load_audio(
+    storage: StorageBackend,
+    path: str,
+    target_sample_rate: int | None = None,
+) -> AudioTrack:
     with storage.open(path) as source:
         with av.open(source) as container:
             if not container.streams.audio:
@@ -51,10 +55,13 @@ def load_audio(storage: StorageBackend, path: str) -> AudioTrack:
             channels = stream.codec_context.channels
             if sample_rate is None or channels is None:
                 raise ValueError(f"Audio stream metadata is incomplete: {path}")
+            output_sample_rate = (
+                target_sample_rate if target_sample_rate is not None else sample_rate
+            )
             resampler = av.AudioResampler(
                 format="fltp",
                 layout=stream.codec_context.layout.name,
-                rate=sample_rate,
+                rate=output_sample_rate,
             )
             sample_parts = [
                 resampled_frame.to_ndarray().T
@@ -72,9 +79,9 @@ def load_audio(storage: StorageBackend, path: str) -> AudioTrack:
     return AudioTrack(
         samples=samples,
         metadata=AudioMetadata(
-            duration_seconds=len(samples) / sample_rate,
-            sample_rate=sample_rate,
-            channels=channels,
+            duration_seconds=len(samples) / output_sample_rate,
+            sample_rate=output_sample_rate,
+            channels=samples.shape[1] if samples.ndim == 2 else channels,
             sample_count=len(samples),
         ),
     )

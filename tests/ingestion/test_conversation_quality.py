@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import wave
+from pathlib import Path
+
+import pytest
+
+from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
+    OTHER_SPEAKER,
+    TARGET_SPEAKER,
+    TranscriptTurn,
+)
+from app.local.db.models import SampleListFilter
+from app.local.db.repository import dashboard_filter_sql
+from app.local.ingestion.conversation import conversation_annotation
+from app.local.ingestion.discovery import DiscoveredSample
+from app.local.ingestion.service import process_local_sample
+from app.shared.quality import (
+    AnnotationPoint,
+    AnnotationSpan,
+    SpeakerConversationAnnotation,
+    SpeakerSide,
+)
+from app.shared.storage.local import LocalStorageBackend
+
+
+def test_dashboard_summary_filter_reuses_sample_filters() -> None:
+    filter_sql = dashboard_filter_sql(
+        SampleListFilter(
+            quality_min=0.9,
+            overlap_ratio_max=0.1,
+            flag="track_leakage_risk",
+        )
+    )
+
+    assert "latest_quality.total_quality_score >= %s" in filter_sql.where_clause
+    assert "latest_quality.overlap_ratio <= %s" in filter_sql.where_clause
+    assert "%s = ANY(samples.quality_flags)" in filter_sql.where_clause
+    assert filter_sql.parameters == (0.9, "track_leakage_risk", 0.1)
+
+
+def test_duration_mismatch_is_invalid_without_running_asr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    speaker1_path = tmp_path / "sample_speaker1.wav"
+    speaker2_path = tmp_path / "sample_speaker2.wav"
+    write_silent_wave(speaker1_path, duration_seconds=100.0)
+    write_silent_wave(speaker2_path, duration_seconds=90.0)
+
+    def fail_analysis(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ASR annotation must not run for invalid track durations")
+
+    monkeypatch.setattr("app.local.ingestion.service.analyze_conversation", fail_analysis)
+    processed = process_local_sample(
+        storage=LocalStorageBackend(),
+        discovered=DiscoveredSample(
+            external_id="sample",
+            speaker1_path=str(speaker1_path),
+            speaker2_path=str(speaker2_path),
+        ),
+        database_url="unused",
+    )
+
+    assert processed.quality_result.status.value == "invalid"
+    assert "duration_mismatch_invalid" in processed.quality_result.calibration_flags
+
+
+def test_conversation_annotation_counts_speaker_transitions_and_events() -> None:
+    speaker1 = speaker_annotation(
+        side=SpeakerSide.SPEAKER1,
+        speech_duration_seconds=30.0,
+        turn_count=2,
+        pause_count=1,
+        backchannel_count=1,
+        interruption_count=0,
+    )
+    speaker2 = speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        speech_duration_seconds=20.0,
+        turn_count=1,
+        pause_count=0,
+        backchannel_count=0,
+        interruption_count=1,
+    )
+    turns = [
+        transcript_turn(TARGET_SPEAKER, 0.0, 10.0),
+        transcript_turn(OTHER_SPEAKER, 10.0, 20.0),
+        transcript_turn(OTHER_SPEAKER, 20.0, 30.0),
+        transcript_turn(TARGET_SPEAKER, 30.0, 40.0),
+    ]
+
+    annotation = conversation_annotation(
+        turns=turns,
+        duration_seconds=60.0,
+        speaker1=speaker1,
+        speaker2=speaker2,
+    )
+
+    assert annotation.turn_count == 3
+    assert annotation.turn_taking_count == 2
+    assert annotation.interaction_count == 4
+    assert annotation.pause_count == 1
+    assert annotation.backchannel_count == 1
+    assert annotation.interruption_count == 1
+    assert annotation.usable_event_count == 6
+    assert annotation.events_per_hour == 360.0
+    assert annotation.speaker_balance_score == 0.8
+
+
+def speaker_annotation(
+    side: SpeakerSide,
+    speech_duration_seconds: float,
+    turn_count: int,
+    pause_count: int,
+    backchannel_count: int,
+    interruption_count: int,
+) -> SpeakerConversationAnnotation:
+    return SpeakerConversationAnnotation(
+        side=side,
+        speech_segments=(),
+        pauses=tuple(
+            AnnotationSpan(start_seconds=0.0, end_seconds=1.0, text=None)
+            for _ in range(pause_count)
+        ),
+        backchannels=tuple(
+            AnnotationSpan(start_seconds=0.0, end_seconds=1.0, text="yes")
+            for _ in range(backchannel_count)
+        ),
+        turns=tuple(
+            AnnotationPoint(time_seconds=1.0, confidence=None, text=None) for _ in range(turn_count)
+        ),
+        interruptions=tuple(
+            AnnotationPoint(time_seconds=1.0, confidence=0.9, text="interrupt")
+            for _ in range(interruption_count)
+        ),
+        segment_targets=(),
+        connection_targets=(),
+        speech_duration_seconds=speech_duration_seconds,
+        pause_duration_seconds=float(pause_count),
+        backchannel_duration_seconds=float(backchannel_count),
+    )
+
+
+def transcript_turn(speaker: str, start_seconds: float, end_seconds: float) -> TranscriptTurn:
+    return TranscriptTurn(
+        speaker=speaker,
+        text="turn",
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        words=[],
+    )
+
+
+def write_silent_wave(path: Path, duration_seconds: float) -> None:
+    sample_rate = 100
+    with wave.open(str(path), "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(2)
+        wave_writer.setframerate(sample_rate)
+        wave_writer.writeframes(b"\x00\x00" * round(duration_seconds * sample_rate))

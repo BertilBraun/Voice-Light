@@ -18,6 +18,7 @@ def test_quality_result_input_preserves_failed_payload() -> None:
         interaction_density=None,
         timing_reliability=None,
         audio_quality=None,
+        conversation_annotation=None,
         event_candidates=(),
         raw_quality_score=None,
         calibrated_quality_score=None,

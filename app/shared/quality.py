@@ -6,7 +6,7 @@ from pydantic import computed_field
 
 from app.shared.base_model import FrozenBaseModel
 
-METRIC_VERSION = "quality-calibrated-v2"
+METRIC_VERSION = "quality-conversation-v3"
 QUALITY_SAMPLE_RATE = 16_000
 
 
@@ -17,6 +17,7 @@ class SpeakerSide(StrEnum):
 
 class ProcessingStatus(StrEnum):
     COMPLETED = "completed"
+    INVALID = "invalid"
     FAILED = "failed"
 
 
@@ -27,6 +28,11 @@ class EventType(StrEnum):
     INTERRUPTION = "interruption"
     BACKCHANNEL = "backchannel"
     OVERLAP = "overlap"
+
+
+class AnnotationEvidenceSource(StrEnum):
+    TRANSCRIPT = "transcript"
+    AUDIO_ACTIVITY = "audio_activity"
 
 
 class AudioMetadata(FrozenBaseModel):
@@ -123,10 +129,73 @@ class EventCandidate(FrozenBaseModel):
     overlap_seconds: float | None
 
 
+class AnnotationSpan(FrozenBaseModel):
+    start_seconds: float
+    end_seconds: float
+    text: str | None
+
+
+class AnnotationPoint(FrozenBaseModel):
+    time_seconds: float
+    confidence: float | None
+    text: str | None
+
+
+class SegmentAnnotationTarget(FrozenBaseModel):
+    start_seconds: float
+    end_seconds: float
+    text: str
+    evidence_source: AnnotationEvidenceSource
+    keep_playing_confidence: float
+    turn_confidence: float
+    interruption_confidence: float
+
+
+class ConnectionAnnotationTarget(FrozenBaseModel):
+    earlier_end_seconds: float
+    later_start_seconds: float
+    gap_seconds: float
+    pause_confidence: float
+    merge_confidence: float
+
+
+class SpeakerConversationAnnotation(FrozenBaseModel):
+    side: SpeakerSide
+    speech_segments: tuple[AnnotationSpan, ...]
+    pauses: tuple[AnnotationSpan, ...]
+    backchannels: tuple[AnnotationSpan, ...]
+    turns: tuple[AnnotationPoint, ...]
+    interruptions: tuple[AnnotationPoint, ...]
+    segment_targets: tuple[SegmentAnnotationTarget, ...]
+    connection_targets: tuple[ConnectionAnnotationTarget, ...]
+    speech_duration_seconds: float
+    pause_duration_seconds: float
+    backchannel_duration_seconds: float
+
+
+class ConversationAnnotation(FrozenBaseModel):
+    annotation_version: str
+    analyzed_duration_seconds: float
+    speaker1: SpeakerConversationAnnotation
+    speaker2: SpeakerConversationAnnotation
+    speech_segment_count: int
+    turn_count: int
+    turn_taking_count: int
+    interaction_count: int
+    pause_count: int
+    backchannel_count: int
+    interruption_count: int
+    usable_event_count: int
+    events_per_hour: float
+    speaker_balance_score: float
+    quality_score: float
+
+
 class QualityWeights(FrozenBaseModel):
-    interaction_density: float = 0.5
-    timing_reliability: float = 0.2
-    audio_quality: float = 0.3
+    interaction_density: float = 0.15
+    timing_reliability: float = 0.10
+    audio_quality: float = 0.25
+    conversation_annotation: float = 0.50
 
 
 class QualityResult(FrozenBaseModel):
@@ -139,6 +208,7 @@ class QualityResult(FrozenBaseModel):
     interaction_density: InteractionDensityMetrics | None
     timing_reliability: TimingReliabilityMetrics | None
     audio_quality: AudioQualityMetrics | None
+    conversation_annotation: ConversationAnnotation | None
     event_candidates: tuple[EventCandidate, ...]
     raw_quality_score: float | None
     calibrated_quality_score: float | None

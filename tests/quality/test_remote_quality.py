@@ -130,6 +130,7 @@ def failed_quality_result() -> QualityResult:
         interaction_density=None,
         timing_reliability=None,
         audio_quality=None,
+        conversation_annotation=None,
         event_candidates=(),
         raw_quality_score=None,
         calibrated_quality_score=None,

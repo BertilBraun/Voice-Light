@@ -13,6 +13,7 @@ const elements = {
   flagFilter: document.querySelector("#flag-filter"),
   sampleList: document.querySelector("#sample-list"),
   sampleDetail: document.querySelector("#sample-detail"),
+  conversationSummary: document.querySelector("#conversation-summary"),
 };
 
 elements.refreshButton.addEventListener("click", loadDashboard);
@@ -51,9 +52,28 @@ async function loadSamples() {
     parameters.set("flag", elements.flagFilter.value.trim());
   }
   const samplesPayload = await fetchJson(`/api/dataset-dashboard/samples?${parameters}`);
+  const summary = await fetchJson(`/api/dataset-dashboard/conversation-summary?${parameters}`);
   state.samples = samplesPayload.samples;
   elements.status.textContent = `${state.datasets.length} datasets, ${state.samples.length} samples`;
   renderSamples();
+  renderConversationSummary(summary);
+}
+
+function renderConversationSummary(summary) {
+  const section = createMetricSection("Conversation annotation overview", [
+    ["Analyzed samples", summary.analyzed_sample_count, "integer"],
+    ["Invalid samples", summary.invalid_sample_count, "integer"],
+    ["Analyzed audio", summary.analyzed_duration_seconds / 3600, "hours"],
+    ["Speech segments", summary.speech_segment_count, "integer"],
+    ["Interactions", summary.interaction_count, "integer"],
+    ["Turns", summary.turn_count, "integer"],
+    ["Turn takings", summary.turn_taking_count, "integer"],
+    ["Pauses", summary.pause_count, "integer"],
+    ["Backchannels", summary.backchannel_count, "integer"],
+    ["Interruptions", summary.interruption_count, "integer"],
+    ["Useful events", summary.usable_event_count, "integer"],
+  ]);
+  elements.conversationSummary.replaceChildren(...section.childNodes);
 }
 
 function renderDatasetOptions() {
@@ -120,6 +140,7 @@ function renderSampleDetail(sample) {
       ["Interaction", payload.interaction_density?.quality_score, "score"],
       ["Timing", payload.timing_reliability?.quality_score, "score"],
       ["Audio", payload.audio_quality?.quality_score, "score"],
+      ["Conversation", payload.conversation_annotation?.quality_score, "score"],
     ]),
   );
 
@@ -128,6 +149,23 @@ function renderSampleDetail(sample) {
   container.appendChild(playbackController.element);
 
   const interaction = payload.interaction_density || {};
+  const conversation = payload.conversation_annotation || {};
+  container.appendChild(
+    createMetricSection("ASR conversation annotation", [
+      ["Analyzed duration", conversation.analyzed_duration_seconds, "seconds"],
+      ["Speech segments", conversation.speech_segment_count, "integer"],
+      ["Interactions", conversation.interaction_count, "integer"],
+      ["Turns", conversation.turn_count, "integer"],
+      ["Turn takings", conversation.turn_taking_count, "integer"],
+      ["Pauses", conversation.pause_count, "integer"],
+      ["Backchannels", conversation.backchannel_count, "integer"],
+      ["Interruptions", conversation.interruption_count, "integer"],
+      ["Useful events", conversation.usable_event_count, "integer"],
+      ["Events / hour", conversation.events_per_hour, "number"],
+      ["Speaker balance", conversation.speaker_balance_score, "score"],
+    ]),
+  );
+
   container.appendChild(
     createMetricSection("Interaction", [
       ["Speech", interaction.speech_ratio, "percent"],
@@ -590,6 +628,10 @@ function formatMetric(value, format) {
       return `${number.toFixed(2)} s`;
     case "db":
       return `${number.toFixed(1)} dB`;
+    case "integer":
+      return String(Math.round(number));
+    case "hours":
+      return `${number.toFixed(2)} h`;
     default:
       return number.toFixed(2);
   }

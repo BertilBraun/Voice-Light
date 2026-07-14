@@ -60,6 +60,7 @@ class CachedAsrResponse(FrozenBaseModel):
 
 class RemoteAsrRequest(FrozenBaseModel):
     audio_sha256: str
+    audio_filename: str
     audio_base64: str
     models: tuple[AsrModelId, ...] = Field(min_length=1)
 

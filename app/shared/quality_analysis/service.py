@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-from app.compute.quality.audio_quality import (
+from app.shared.audio import AudioTrack
+from app.shared.quality import (
+    ConversationAnnotation,
+    ProcessingStatus,
+    QualityResult,
+    RunConfig,
+    SpeakerSide,
+)
+from app.shared.quality_analysis.audio_quality import (
     energy_envelope_correlation,
     inactive_track_leakage_db,
     track_audio_quality,
     track_correlation,
 )
-from app.compute.quality.events import extract_event_candidates
-from app.compute.quality.preprocessing import prepare_audio_track
-from app.compute.quality.scoring import (
+from app.shared.quality_analysis.events import extract_event_candidates
+from app.shared.quality_analysis.preprocessing import prepare_audio_track
+from app.shared.quality_analysis.scoring import (
     calibrated_quality_score,
     calibration_flags,
     combine_audio_quality_metrics,
@@ -16,9 +24,7 @@ from app.compute.quality.scoring import (
     compute_timing_reliability_metrics,
     total_quality_score,
 )
-from app.compute.quality.vad import VadConfig, detect_speech_segments_pair
-from app.shared.audio import AudioTrack
-from app.shared.quality import ProcessingStatus, QualityResult, RunConfig, SpeakerSide
+from app.shared.quality_analysis.vad import VadConfig, detect_speech_segments_pair
 
 
 def score_two_track_sample(
@@ -27,6 +33,7 @@ def score_two_track_sample(
     speaker2_audio: AudioTrack,
     speaker1_uri: str,
     speaker2_uri: str,
+    conversation_annotation: ConversationAnnotation | None = None,
     config: RunConfig | None = None,
 ) -> QualityResult:
     effective_config = config if config is not None else RunConfig()
@@ -113,6 +120,7 @@ def score_two_track_sample(
             interaction_density=density_metrics,
             timing_reliability=timing_metrics,
             audio_quality=audio_metrics,
+            conversation_annotation=conversation_annotation,
             weights=effective_config.weights,
         )
         calibrated_score = calibrated_quality_score(
@@ -120,6 +128,13 @@ def score_two_track_sample(
             density_metrics,
             timing_metrics,
             audio_metrics,
+            conversation_annotation,
+        )
+        result_flags = calibration_flags(
+            density_metrics,
+            timing_metrics,
+            audio_metrics,
+            conversation_annotation,
         )
         return QualityResult(
             metric_version=effective_config.metric_version,
@@ -131,10 +146,11 @@ def score_two_track_sample(
             interaction_density=density_metrics,
             timing_reliability=timing_metrics,
             audio_quality=audio_metrics,
+            conversation_annotation=conversation_annotation,
             event_candidates=stored_event_candidates,
             raw_quality_score=raw_quality_score,
             calibrated_quality_score=calibrated_score,
-            calibration_flags=calibration_flags(density_metrics, timing_metrics, audio_metrics),
+            calibration_flags=result_flags,
             total_quality_score=calibrated_score,
             error=None,
         )
@@ -149,6 +165,7 @@ def score_two_track_sample(
             interaction_density=None,
             timing_reliability=None,
             audio_quality=None,
+            conversation_annotation=None,
             event_candidates=(),
             raw_quality_score=None,
             calibrated_quality_score=None,

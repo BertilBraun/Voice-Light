@@ -16,6 +16,7 @@ from app.local.db.models import (
     AsrRunStatus,
     AsrWordRecord,
     AudioMetadataRecord,
+    ConversationDatasetSummary,
     DashboardSample,
     DatasetCreate,
     DatasetRecord,
@@ -27,6 +28,7 @@ from app.local.db.models import (
     SampleTrackRecord,
     TrackSide,
 )
+from app.shared.quality import METRIC_VERSION
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,16 @@ class QualityResultInput:
     interaction_density_score: float | None
     timing_reliability_score: float | None
     audio_quality_score: float | None
+    conversation_quality_score: float | None
+    interaction_count: int | None
+    speech_segment_count: int | None
+    turn_count: int | None
+    turn_taking_count: int | None
+    pause_count: int | None
+    backchannel_count: int | None
+    interruption_count: int | None
+    usable_event_count: int | None
+    conversation_events_per_hour: float | None
     speech_ratio: float | None
     silence_ratio: float | None
     overlap_ratio: float | None
@@ -108,6 +120,12 @@ class AsrEvaluationInput:
     end_mean_absolute_error: float | None
     end_p90_absolute_error: float | None
     payload: dict[str, object]
+
+
+@dataclass(frozen=True)
+class DashboardFilterSql:
+    where_clause: str
+    parameters: tuple[object, ...]
 
 
 class Repository:
@@ -243,7 +261,7 @@ class Repository:
                 JOIN quality_results ON quality_results.sample_id = samples.id
                 WHERE samples.dataset_id = %s
                   AND quality_results.metric_version = %s
-                  AND quality_results.status = 'completed'
+                  AND quality_results.status IN ('completed', 'invalid')
                 """,
                 (dataset_id, metric_version),
             ).fetchall()
@@ -336,11 +354,19 @@ class Repository:
                 INSERT INTO quality_results (
                   sample_id, metric_version, status, total_quality_score, raw_quality_score,
                   calibrated_quality_score, interaction_density_score, timing_reliability_score,
-                  audio_quality_score, speech_ratio, silence_ratio, overlap_ratio,
+                  audio_quality_score, conversation_quality_score,
+                  interaction_count, speech_segment_count, turn_count, turn_taking_count,
+                  pause_count,
+                  backchannel_count, interruption_count, usable_event_count,
+                  conversation_events_per_hour, speech_ratio, silence_ratio, overlap_ratio,
                   duration_mismatch_seconds, track_correlation, energy_envelope_correlation,
                   flags, payload
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s, %s, %s
+                )
                 RETURNING *
                 """,
                 (
@@ -353,6 +379,16 @@ class Repository:
                     quality_result.interaction_density_score,
                     quality_result.timing_reliability_score,
                     quality_result.audio_quality_score,
+                    quality_result.conversation_quality_score,
+                    quality_result.interaction_count,
+                    quality_result.speech_segment_count,
+                    quality_result.turn_count,
+                    quality_result.turn_taking_count,
+                    quality_result.pause_count,
+                    quality_result.backchannel_count,
+                    quality_result.interruption_count,
+                    quality_result.usable_event_count,
+                    quality_result.conversation_events_per_hour,
                     quality_result.speech_ratio,
                     quality_result.silence_ratio,
                     quality_result.overlap_ratio,
@@ -492,65 +528,8 @@ class Repository:
         return asr_evaluation_record(row)
 
     def list_dashboard_samples(self, sample_filter: SampleListFilter) -> list[DashboardSample]:
-        filters: list[str] = []
-        parameters: list[object] = []
-        if sample_filter.dataset_id is not None:
-            filters.append("samples.dataset_id = %s")
-            parameters.append(sample_filter.dataset_id)
-        if sample_filter.quality_min is not None:
-            filters.append("latest_quality.total_quality_score >= %s")
-            parameters.append(sample_filter.quality_min)
-        if sample_filter.quality_max is not None:
-            filters.append("latest_quality.total_quality_score <= %s")
-            parameters.append(sample_filter.quality_max)
-        if sample_filter.duration_min is not None:
-            filters.append("samples.duration_seconds >= %s")
-            parameters.append(sample_filter.duration_min)
-        if sample_filter.duration_max is not None:
-            filters.append("samples.duration_seconds <= %s")
-            parameters.append(sample_filter.duration_max)
-        if sample_filter.flag is not None:
-            filters.append("%s = ANY(samples.quality_flags)")
-            parameters.append(sample_filter.flag)
-        if sample_filter.speech_ratio_min is not None:
-            filters.append("latest_quality.speech_ratio >= %s")
-            parameters.append(sample_filter.speech_ratio_min)
-        if sample_filter.speech_ratio_max is not None:
-            filters.append("latest_quality.speech_ratio <= %s")
-            parameters.append(sample_filter.speech_ratio_max)
-        if sample_filter.overlap_ratio_min is not None:
-            filters.append("latest_quality.overlap_ratio >= %s")
-            parameters.append(sample_filter.overlap_ratio_min)
-        if sample_filter.overlap_ratio_max is not None:
-            filters.append("latest_quality.overlap_ratio <= %s")
-            parameters.append(sample_filter.overlap_ratio_max)
-        if sample_filter.silence_ratio_min is not None:
-            filters.append("latest_quality.silence_ratio >= %s")
-            parameters.append(sample_filter.silence_ratio_min)
-        if sample_filter.silence_ratio_max is not None:
-            filters.append("latest_quality.silence_ratio <= %s")
-            parameters.append(sample_filter.silence_ratio_max)
-        if sample_filter.asr_model is not None:
-            filters.append("latest_asr_run.model_name = %s")
-            parameters.append(sample_filter.asr_model)
-        if sample_filter.wer_min is not None:
-            filters.append("latest_asr_evaluation.wer >= %s")
-            parameters.append(sample_filter.wer_min)
-        if sample_filter.wer_max is not None:
-            filters.append("latest_asr_evaluation.wer <= %s")
-            parameters.append(sample_filter.wer_max)
-        if sample_filter.timestamp_p90_max is not None:
-            filters.append(
-                """
-                LEAST(
-                  COALESCE(latest_asr_evaluation.start_p90_absolute_error, 'Infinity'::float),
-                  COALESCE(latest_asr_evaluation.end_p90_absolute_error, 'Infinity'::float)
-                ) <= %s
-                """
-            )
-            parameters.append(sample_filter.timestamp_p90_max)
-        where_clause = "WHERE " + " AND ".join(filters) if filters else ""
-        parameters.extend([sample_filter.limit, sample_filter.offset])
+        filter_sql = dashboard_filter_sql(sample_filter)
+        parameters = (*filter_sql.parameters, sample_filter.limit, sample_filter.offset)
         with self.connection() as connection:
             rows = connection.execute(
                 f"""
@@ -582,13 +561,68 @@ class Repository:
                 ) AS latest_asr_run ON true
                 LEFT JOIN asr_evaluations AS latest_asr_evaluation
                   ON latest_asr_evaluation.asr_run_id = latest_asr_run.id
-                {where_clause}
+                {filter_sql.where_clause}
                 ORDER BY samples.updated_at DESC, samples.external_id
                 LIMIT %s OFFSET %s
                 """,
                 parameters,
             ).fetchall()
         return [dashboard_sample_from_row(row) for row in rows]
+
+    def conversation_dataset_summary(
+        self, sample_filter: SampleListFilter
+    ) -> ConversationDatasetSummary:
+        filter_sql = dashboard_filter_sql(sample_filter)
+        query_parameters = (METRIC_VERSION, *filter_sql.parameters)
+        with self.connection() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                  COUNT(latest_quality.id)::integer AS analyzed_sample_count,
+                  COUNT(latest_quality.id) FILTER (
+                    WHERE latest_quality.status = 'invalid'
+                  )::integer AS invalid_sample_count,
+                  COALESCE(SUM(samples.duration_seconds) FILTER (
+                    WHERE latest_quality.id IS NOT NULL
+                  ), 0.0)::double precision AS analyzed_duration_seconds,
+                  COALESCE(SUM(latest_quality.speech_segment_count), 0)::integer
+                    AS speech_segment_count,
+                  COALESCE(SUM(latest_quality.interaction_count), 0)::integer
+                    AS interaction_count,
+                  COALESCE(SUM(latest_quality.turn_count), 0)::integer AS turn_count,
+                  COALESCE(SUM(latest_quality.turn_taking_count), 0)::integer
+                    AS turn_taking_count,
+                  COALESCE(SUM(latest_quality.pause_count), 0)::integer AS pause_count,
+                  COALESCE(SUM(latest_quality.backchannel_count), 0)::integer
+                    AS backchannel_count,
+                  COALESCE(SUM(latest_quality.interruption_count), 0)::integer
+                    AS interruption_count,
+                  COALESCE(SUM(latest_quality.usable_event_count), 0)::integer
+                    AS usable_event_count
+                FROM samples
+                LEFT JOIN LATERAL (
+                  SELECT *
+                  FROM quality_results
+                  WHERE quality_results.sample_id = samples.id
+                    AND quality_results.metric_version = %s
+                  ORDER BY created_at DESC
+                  LIMIT 1
+                ) AS latest_quality ON true
+                LEFT JOIN LATERAL (
+                  SELECT *
+                  FROM asr_runs
+                  WHERE asr_runs.sample_id = samples.id
+                  ORDER BY created_at DESC
+                  LIMIT 1
+                ) AS latest_asr_run ON true
+                LEFT JOIN asr_evaluations AS latest_asr_evaluation
+                  ON latest_asr_evaluation.asr_run_id = latest_asr_run.id
+                {filter_sql.where_clause}
+                """,
+                query_parameters,
+            ).fetchone()
+        assert row is not None
+        return ConversationDatasetSummary(dataset_id=sample_filter.dataset_id, **row)
 
     def get_dashboard_sample(self, sample_id: UUID) -> DashboardSample:
         with self.connection() as connection:
@@ -629,6 +663,68 @@ class Repository:
         if row is None:
             raise ValueError(f"Sample not found: {sample_id}")
         return dashboard_sample_from_row(row)
+
+
+def dashboard_filter_sql(sample_filter: SampleListFilter) -> DashboardFilterSql:
+    filters: list[str] = []
+    parameters: list[object] = []
+    if sample_filter.dataset_id is not None:
+        filters.append("samples.dataset_id = %s")
+        parameters.append(sample_filter.dataset_id)
+    if sample_filter.quality_min is not None:
+        filters.append("latest_quality.total_quality_score >= %s")
+        parameters.append(sample_filter.quality_min)
+    if sample_filter.quality_max is not None:
+        filters.append("latest_quality.total_quality_score <= %s")
+        parameters.append(sample_filter.quality_max)
+    if sample_filter.duration_min is not None:
+        filters.append("samples.duration_seconds >= %s")
+        parameters.append(sample_filter.duration_min)
+    if sample_filter.duration_max is not None:
+        filters.append("samples.duration_seconds <= %s")
+        parameters.append(sample_filter.duration_max)
+    if sample_filter.flag is not None:
+        filters.append("%s = ANY(samples.quality_flags)")
+        parameters.append(sample_filter.flag)
+    if sample_filter.speech_ratio_min is not None:
+        filters.append("latest_quality.speech_ratio >= %s")
+        parameters.append(sample_filter.speech_ratio_min)
+    if sample_filter.speech_ratio_max is not None:
+        filters.append("latest_quality.speech_ratio <= %s")
+        parameters.append(sample_filter.speech_ratio_max)
+    if sample_filter.overlap_ratio_min is not None:
+        filters.append("latest_quality.overlap_ratio >= %s")
+        parameters.append(sample_filter.overlap_ratio_min)
+    if sample_filter.overlap_ratio_max is not None:
+        filters.append("latest_quality.overlap_ratio <= %s")
+        parameters.append(sample_filter.overlap_ratio_max)
+    if sample_filter.silence_ratio_min is not None:
+        filters.append("latest_quality.silence_ratio >= %s")
+        parameters.append(sample_filter.silence_ratio_min)
+    if sample_filter.silence_ratio_max is not None:
+        filters.append("latest_quality.silence_ratio <= %s")
+        parameters.append(sample_filter.silence_ratio_max)
+    if sample_filter.asr_model is not None:
+        filters.append("latest_asr_run.model_name = %s")
+        parameters.append(sample_filter.asr_model)
+    if sample_filter.wer_min is not None:
+        filters.append("latest_asr_evaluation.wer >= %s")
+        parameters.append(sample_filter.wer_min)
+    if sample_filter.wer_max is not None:
+        filters.append("latest_asr_evaluation.wer <= %s")
+        parameters.append(sample_filter.wer_max)
+    if sample_filter.timestamp_p90_max is not None:
+        filters.append(
+            """
+            LEAST(
+              COALESCE(latest_asr_evaluation.start_p90_absolute_error, 'Infinity'::float),
+              COALESCE(latest_asr_evaluation.end_p90_absolute_error, 'Infinity'::float)
+            ) <= %s
+            """
+        )
+        parameters.append(sample_filter.timestamp_p90_max)
+    where_clause = "WHERE " + " AND ".join(filters) if filters else ""
+    return DashboardFilterSql(where_clause=where_clause, parameters=tuple(parameters))
 
 
 def dataset_record(row: dict[str, object]) -> DatasetRecord:

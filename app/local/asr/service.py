@@ -61,6 +61,7 @@ def cached_asr_transcripts(
         remote_response = remote_client_factory().transcribe(
             RemoteAsrRequest(
                 audio_sha256=audio_sha256,
+                audio_filename=audio_path.name,
                 audio_base64=base64.b64encode(audio_bytes).decode("ascii"),
                 models=missing_model_ids,
             )

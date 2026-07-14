@@ -31,6 +31,8 @@ services:
       VOICE_LIGHT_HOST: 0.0.0.0
       VOICE_LIGHT_PORT: "8000"
       VOICE_LIGHT_RELOAD: "false"
+      VOICE_LIGHT_COMPUTE_URL: ${VOICE_LIGHT_COMPUTE_URL:-}
+      VOICE_LIGHT_COMPUTE_TOKEN: ${VOICE_LIGHT_COMPUTE_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -2,16 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.compute.quality.utils import (
-    clamp,
-    median,
-    penalty_above,
-    per_hour,
-    safe_ratio,
-    score_between,
-)
 from app.shared.quality import (
     AudioQualityMetrics,
+    ConversationAnnotation,
     EventCandidate,
     EventType,
     InteractionDensityMetrics,
@@ -20,6 +13,14 @@ from app.shared.quality import (
     TimingReliabilityMetrics,
     TrackAudioQuality,
     TrackVadResult,
+)
+from app.shared.quality_analysis.utils import (
+    clamp,
+    median,
+    penalty_above,
+    per_hour,
+    safe_ratio,
+    score_between,
 )
 
 
@@ -194,14 +195,13 @@ def combine_audio_quality_metrics(
         if energy_envelope_correlation is None
         else penalty_above(max(0.0, energy_envelope_correlation), 0.20, 0.70)
     )
-    leakage_score = min(
-        leakage_db_score(speaker1_leakage_db), leakage_db_score(speaker2_leakage_db)
+    track_leakage_risk = (track_correlation is not None and abs(track_correlation) >= 0.35) or (
+        energy_envelope_correlation is not None and energy_envelope_correlation >= 0.35
     )
-    track_leakage_risk = (
-        (track_correlation is not None and abs(track_correlation) >= 0.35)
-        or (energy_envelope_correlation is not None and energy_envelope_correlation >= 0.35)
-        or leakage_db_risk(speaker1_leakage_db)
-        or leakage_db_risk(speaker2_leakage_db)
+    leakage_score = (
+        min(leakage_db_score(speaker1_leakage_db), leakage_db_score(speaker2_leakage_db))
+        if track_leakage_risk
+        else 1.0
     )
     flags = _audio_quality_flags(speaker1, speaker2, duration_gap_ratio, track_leakage_risk)
     return AudioQualityMetrics(
@@ -249,9 +249,12 @@ def total_quality_score(
     interaction_density: InteractionDensityMetrics,
     timing_reliability: TimingReliabilityMetrics,
     audio_quality: AudioQualityMetrics,
+    conversation_annotation: ConversationAnnotation | None,
     weights: QualityWeights,
 ) -> float:
     total_weight = weights.interaction_density + weights.timing_reliability + weights.audio_quality
+    if conversation_annotation is not None:
+        total_weight += weights.conversation_annotation
     if total_weight <= 0.0:
         raise ValueError("quality weights must sum to a positive value")
     return clamp(
@@ -259,6 +262,11 @@ def total_quality_score(
             interaction_density.quality_score * weights.interaction_density
             + timing_reliability.quality_score * weights.timing_reliability
             + audio_quality.quality_score * weights.audio_quality
+            + (
+                conversation_annotation.quality_score * weights.conversation_annotation
+                if conversation_annotation is not None
+                else 0.0
+            )
         )
         / total_weight,
         0.0,
@@ -271,8 +279,11 @@ def calibrated_quality_score(
     interaction_density: InteractionDensityMetrics,
     timing_reliability: TimingReliabilityMetrics,
     audio_quality: AudioQualityMetrics,
+    conversation_annotation: ConversationAnnotation | None = None,
 ) -> float:
-    flags = calibration_flags(interaction_density, timing_reliability, audio_quality)
+    flags = calibration_flags(
+        interaction_density, timing_reliability, audio_quality, conversation_annotation
+    )
     return clamp(
         min(score_between(raw_quality_score, 0.70, 0.98), calibration_cap(flags)), 0.0, 1.0
     )
@@ -282,9 +293,13 @@ def calibration_flags(
     interaction_density: InteractionDensityMetrics,
     timing_reliability: TimingReliabilityMetrics,
     audio_quality: AudioQualityMetrics,
+    conversation_annotation: ConversationAnnotation | None = None,
 ) -> tuple[str, ...]:
     flags: list[str] = []
-    if (
+    annotated_interaction_available = (
+        conversation_annotation is not None and conversation_annotation.usable_event_count > 0
+    )
+    if not annotated_interaction_available and (
         interaction_density.speech_ratio < 0.08
         or interaction_density.usable_candidate_windows_per_hour < 25.0
     ):
@@ -298,9 +313,7 @@ def calibration_flags(
         and audio_quality.energy_envelope_correlation >= 0.75
     ):
         flags.append("shared_energy_reverb_or_bleed")
-    if leakage_db_risk(audio_quality.speaker1_leakage_db) or leakage_db_risk(
-        audio_quality.speaker2_leakage_db
-    ):
+    if audio_quality.track_leakage_risk:
         flags.append("inactive_track_leakage")
     if interaction_density.overlap_ratio >= 0.45:
         flags.append("severe_overlap")
@@ -310,7 +323,7 @@ def calibration_flags(
         flags.append("dense_overlap")
     if audio_quality.duration_gap_ratio > 0.01 and interaction_density.speech_ratio < 0.35:
         flags.append("low_interaction_duration_mismatch")
-    if timing_reliability.quality_score < 0.35:
+    if timing_reliability.quality_score < 0.35 and not annotated_interaction_available:
         flags.append("poor_timing_plausibility")
     return tuple(flags)
 

@@ -7,8 +7,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.local.asr.transcript import Word
+from app.shared.audio import load_audio
 from app.shared.audio.metrics import frame_rms
-from app.shared.audio.wav import read_mono_wave_audio
+from app.shared.quality import QUALITY_SAMPLE_RATE
+from app.shared.storage.local import LocalStorageBackend
 
 
 @dataclass(frozen=True)
@@ -37,30 +39,29 @@ def load_crosstalk_frame_power(
     other_audio_path: Path,
     config: CrosstalkFilterConfig,
 ) -> CrosstalkFramePower:
-    target_audio = read_mono_wave_audio(target_audio_path)
-    other_audio = read_mono_wave_audio(other_audio_path)
-    if target_audio.sample_rate != other_audio.sample_rate:
+    storage = LocalStorageBackend()
+    target_audio = load_audio(
+        storage, target_audio_path.as_posix(), target_sample_rate=QUALITY_SAMPLE_RATE
+    )
+    other_audio = load_audio(
+        storage, other_audio_path.as_posix(), target_sample_rate=QUALITY_SAMPLE_RATE
+    )
+    if target_audio.metadata.sample_rate != other_audio.metadata.sample_rate:
         raise ValueError("Crosstalk filtering requires matching speaker-track sample rates.")
-    frame_size = max(1, round(config.frame_duration_seconds * target_audio.sample_rate))
+    frame_size = max(1, round(config.frame_duration_seconds * target_audio.metadata.sample_rate))
     target_power = frame_power(
-        samples=normalized_samples(
-            samples=target_audio.samples,
-            sample_width=target_audio.sample_width,
-        ),
+        samples=target_audio.samples[:, 0],
         frame_size=frame_size,
     )
     other_power = frame_power(
-        samples=normalized_samples(
-            samples=other_audio.samples,
-            sample_width=other_audio.sample_width,
-        ),
+        samples=other_audio.samples[:, 0],
         frame_size=frame_size,
     )
     shared_frame_count = min(len(target_power), len(other_power))
     return CrosstalkFramePower(
         target=target_power[:shared_frame_count],
         other=other_power[:shared_frame_count],
-        frame_duration_seconds=frame_size / target_audio.sample_rate,
+        frame_duration_seconds=frame_size / target_audio.metadata.sample_rate,
     )
 
 

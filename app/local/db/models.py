@@ -101,6 +101,16 @@ class QualityResultRecord(FrozenBaseModel):
     interaction_density_score: float | None
     timing_reliability_score: float | None
     audio_quality_score: float | None
+    conversation_quality_score: float | None
+    interaction_count: int | None
+    speech_segment_count: int | None
+    turn_count: int | None
+    turn_taking_count: int | None
+    pause_count: int | None
+    backchannel_count: int | None
+    interruption_count: int | None
+    usable_event_count: int | None
+    conversation_events_per_hour: float | None
     speech_ratio: float | None
     silence_ratio: float | None
     overlap_ratio: float | None
@@ -170,6 +180,21 @@ class IngestionJobRecord(FrozenBaseModel):
     created_at: datetime
     updated_at: datetime
     finished_at: datetime | None
+
+
+class ConversationDatasetSummary(FrozenBaseModel):
+    dataset_id: UUID | None
+    analyzed_sample_count: int
+    invalid_sample_count: int
+    analyzed_duration_seconds: float
+    speech_segment_count: int
+    interaction_count: int
+    turn_count: int
+    turn_taking_count: int
+    pause_count: int
+    backchannel_count: int
+    interruption_count: int
+    usable_event_count: int
 
 
 class SampleListFilter(FrozenBaseModel):

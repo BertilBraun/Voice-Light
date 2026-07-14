@@ -6,9 +6,9 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from app.compute.quality.utils import median, safe_ratio
 from app.shared.audio.metrics import frame_rms
 from app.shared.quality import SpeakerSide, SpeechSegment, TrackVadResult
+from app.shared.quality_analysis.utils import median, safe_ratio
 
 
 @dataclass(frozen=True)

@@ -1,29 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
-from app.shared.quality import QUALITY_SAMPLE_RATE
+from app.shared.audio.transport import prepare_analysis_audio
 
 
 def prepare_quality_transport_audio(source_path: Path, output_path: Path) -> None:
-    command = (
-        "ffmpeg",
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-i",
-        str(source_path),
-        "-map",
-        "0:a:0",
-        "-ar",
-        str(QUALITY_SAMPLE_RATE),
-        "-c:a",
-        "flac",
-        "-compression_level",
-        "0",
-        str(output_path),
-    )
-    subprocess.run(command, check=True)
+    prepare_analysis_audio(source_path=source_path, output_path=output_path)

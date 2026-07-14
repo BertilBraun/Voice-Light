@@ -3,14 +3,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app.compute.quality.preprocessing import (
+from app.shared.audio import AudioTrack
+from app.shared.quality import AudioMetadata, ProcessingStatus
+from app.shared.quality_analysis.preprocessing import (
     QUALITY_SAMPLE_RATE,
     prepare_audio_track,
     resample_linear,
 )
-from app.compute.quality.service import score_two_track_sample
-from app.shared.audio import AudioTrack
-from app.shared.quality import AudioMetadata, ProcessingStatus
+from app.shared.quality_analysis.service import score_two_track_sample
 
 
 def audio_track(sample_rate: int, duration_seconds: float = 1.0) -> AudioTrack:

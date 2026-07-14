@@ -19,6 +19,7 @@ async function submitIngestion(event) {
     root_path: document.querySelector("#root-path").value.trim(),
     layout: document.querySelector("#dataset-layout").value,
     max_workers: Number(document.querySelector("#max-workers").value),
+    max_duration_hours: optionalNumber("#max-duration-hours"),
   };
   try {
     await postJson("/api/dataset-dashboard/ingest/local", payload);
@@ -28,6 +29,11 @@ async function submitIngestion(event) {
     statusElement.textContent = "Ingestion request failed";
     setError(error.message);
   }
+}
+
+function optionalNumber(selector) {
+  const value = document.querySelector(selector).value.trim();
+  return value ? Number(value) : null;
 }
 
 async function loadJobs() {

@@ -6,9 +6,9 @@ from typing import Annotated
 
 from fastapi import File, Form, UploadFile
 
-from app.compute.quality.service import score_two_track_sample
 from app.shared.audio import load_audio
 from app.shared.compute_api import QualityAnalysisResponse, QualityAnalysisUpload
+from app.shared.quality_analysis.service import score_two_track_sample
 from app.shared.storage.local import LocalStorageBackend
 
 

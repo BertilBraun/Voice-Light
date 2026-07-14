@@ -59,24 +59,26 @@ def analyze_asr(
     reference_words: tuple[Word, ...],
     cache: AsrTranscriptCache,
     remote_client_factory: RemoteAsrClientFactory,
+    source_audio_path: Path | None = None,
+    other_audio_path: Path | None = None,
+    prepared_audio_path: Path | None = None,
 ) -> AsrAnalysisResponse:
-    source_path = session_audio_path(
-        identifier=session_id,
-        speaker_name=speaker_name_for_track(speaker_track),
+    resolved_source_path = source_audio_path or session_audio_path(
+        identifier=session_id, speaker_name=speaker_name_for_track(speaker_track)
     )
-    other_source_path = session_audio_path(
-        identifier=session_id,
-        speaker_name=other_speaker_name_for_track(speaker_track),
+    resolved_other_source_path = other_audio_path or session_audio_path(
+        identifier=session_id, speaker_name=other_speaker_name_for_track(speaker_track)
     )
-    capped_audio_path = write_capped_analysis_audio(source_path)
+    analysis_audio_path = prepared_audio_path or write_capped_analysis_audio(resolved_source_path)
+    owns_analysis_audio = prepared_audio_path is None
     try:
         analyzed_duration_seconds = load_audio(
-            LocalStorageBackend(), capped_audio_path.as_posix()
+            LocalStorageBackend(), analysis_audio_path.as_posix()
         ).metadata.duration_seconds
         model_infos = available_asr_models()
         requested_model_ids = remote_model_ids_for_selected_modes(selected_models)
         cached_response = cached_asr_transcripts(
-            audio_path=capped_audio_path,
+            audio_path=analysis_audio_path,
             requested_models=requested_model_ids,
             cache=cache,
             remote_client_factory=remote_client_factory,
@@ -91,7 +93,7 @@ def analyze_asr(
                     model_id=model_id,
                     results=cached_response.results,
                 ),
-                audio_path=capped_audio_path,
+                audio_path=analysis_audio_path,
                 speaker_track=speaker_track,
                 audio_duration_seconds=analyzed_duration_seconds,
                 reference_words=reference_words,
@@ -100,8 +102,8 @@ def analyze_asr(
         )
         frame_power_pair = (
             load_crosstalk_frame_power(
-                target_audio_path=source_path,
-                other_audio_path=other_source_path,
+                target_audio_path=resolved_source_path,
+                other_audio_path=resolved_other_source_path,
                 config=CROSSTALK_FILTER_CONFIG,
             )
             if any(is_filtered_model(model_mode) for model_mode in selected_models)
@@ -112,7 +114,7 @@ def analyze_asr(
             dependency_runs=dependency_runs,
             model_infos=model_infos,
             frame_power_pair=frame_power_pair,
-            audio_path=capped_audio_path,
+            audio_path=analysis_audio_path,
             speaker_track=speaker_track,
             audio_duration_seconds=analyzed_duration_seconds,
             reference_words=reference_words,
@@ -126,7 +128,7 @@ def analyze_asr(
                         model_mode=AsrModelMode.MERGED_CONSENSUS,
                     ),
                     source_runs=dependency_runs,
-                    audio_path=capped_audio_path,
+                    audio_path=analysis_audio_path,
                     speaker_track=speaker_track,
                     audio_duration_seconds=analyzed_duration_seconds,
                     reference_words=reference_words,
@@ -147,7 +149,7 @@ def analyze_asr(
                         source_runs=dependency_runs,
                         model_mode=AsrModelMode.CANARY,
                     ),
-                    audio_path=capped_audio_path,
+                    audio_path=analysis_audio_path,
                     speaker_track=speaker_track,
                     audio_duration_seconds=analyzed_duration_seconds,
                     reference_words=reference_words,
@@ -161,7 +163,7 @@ def analyze_asr(
                         model_mode=AsrModelMode.MERGED_CONSENSUS_CROSSTALK_FILTERED,
                     ),
                     source_runs=filtered_dependency_runs,
-                    audio_path=capped_audio_path,
+                    audio_path=analysis_audio_path,
                     speaker_track=speaker_track,
                     audio_duration_seconds=analyzed_duration_seconds,
                     reference_words=reference_words,
@@ -182,7 +184,7 @@ def analyze_asr(
                         source_runs=filtered_dependency_runs,
                         model_mode=AsrModelMode.CANARY_CROSSTALK_FILTERED,
                     ),
-                    audio_path=capped_audio_path,
+                    audio_path=analysis_audio_path,
                     speaker_track=speaker_track,
                     audio_duration_seconds=analyzed_duration_seconds,
                     reference_words=reference_words,
@@ -202,7 +204,8 @@ def analyze_asr(
             runs=runs,
         )
     finally:
-        capped_audio_path.unlink(missing_ok=True)
+        if owns_analysis_audio:
+            analysis_audio_path.unlink(missing_ok=True)
 
 
 def remote_model_ids_for_selected_modes(

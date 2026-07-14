@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from app.compute.quality.utils import binary_entropy, clamp, penalty_above, safe_ratio
 from app.shared.audio.metrics import frame_rms
 from app.shared.quality import SpeakerSide, TrackAudioQuality, TrackVadResult
+from app.shared.quality_analysis.utils import binary_entropy, clamp, penalty_above, safe_ratio
 
 
 def track_audio_quality(

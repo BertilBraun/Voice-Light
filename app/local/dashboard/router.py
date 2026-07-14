@@ -9,6 +9,7 @@ from pydantic import Field
 
 from app.local.config import DATABASE_URL
 from app.local.db.models import (
+    ConversationDatasetSummary,
     DashboardSample,
     DatasetRecord,
     IngestionJobRecord,
@@ -40,7 +41,8 @@ class LocalIngestionRequest(FrozenBaseModel):
     dataset_name: str
     root_path: str
     layout: DatasetLayout = DatasetLayout.TWO_AUDIO_FILES
-    max_workers: int = Field(default=4, ge=1, le=32)
+    max_workers: int = Field(default=1, ge=1, le=4)
+    max_duration_hours: float | None = Field(default=None, gt=0.0)
 
 
 class IngestionQueueResponse(FrozenBaseModel):
@@ -68,6 +70,26 @@ def repository() -> Repository:
 def list_datasets() -> DatasetListResponse:
     try:
         return DatasetListResponse(datasets=tuple(repository().list_datasets()))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/conversation-summary")
+def conversation_summary(
+    dataset_id: UUID | None = None,
+    quality_min: float | None = None,
+    overlap_ratio_max: float | None = None,
+    flag: str | None = None,
+) -> ConversationDatasetSummary:
+    try:
+        return repository().conversation_dataset_summary(
+            SampleListFilter(
+                dataset_id=dataset_id,
+                quality_min=quality_min,
+                overlap_ratio_max=overlap_ratio_max,
+                flag=flag,
+            )
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -143,6 +165,7 @@ def ingest_local_dataset(
         root_path,
         request.layout,
         request.max_workers,
+        request.max_duration_hours,
     )
     return IngestionQueueResponse(status="queued")
 

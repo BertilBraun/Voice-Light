@@ -32,7 +32,10 @@ def transcribe_request(
     request: RemoteAsrRequest,
 ) -> RemoteAsrResponse:
     audio_bytes = decode_audio(audio_base64=request.audio_base64)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
+    audio_suffix = Path(request.audio_filename).suffix
+    if not audio_suffix:
+        raise ValueError("ASR audio filename must have a file extension.")
+    with tempfile.NamedTemporaryFile(suffix=audio_suffix, delete=False) as audio_file:
         audio_file.write(audio_bytes)
         audio_path = Path(audio_file.name)
     try:
