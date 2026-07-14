@@ -31,7 +31,7 @@ MODEL_NAME: Final = "nvidia/nemotron-speech-streaming-en-0.6b"
 MODEL_REVISION: Final = "df1f0fe9dfdf05152936192b4c8c7653d53bf557"
 INPUT_SAMPLE_RATE: Final = 16_000
 PCM_BYTES_PER_SAMPLE: Final = 2
-NUM_LOOKAHEAD_TOKENS: Final = 1
+NUM_LOOKAHEAD_TOKENS: Final = 6
 
 
 @dataclass(frozen=True)

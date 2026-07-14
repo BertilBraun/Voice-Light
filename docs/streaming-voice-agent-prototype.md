@@ -24,11 +24,14 @@ validated playback offsets enter model history.
 - The session retains 300 ms of pre-roll and waits another 500 ms after Silero becomes inactive.
   Thus the configured acoustic silence before commitment is approximately 750 ms, plus frame
   scheduling, rather than 500 ms total.
-- NVIDIA Nemotron Speech Streaming English 0.6B receives stateful 80 ms chunks until the session
-  finalizes the utterance. One worker serializes active ASR streams across WebSocket sessions.
+- NVIDIA Nemotron Speech Streaming English 0.6B uses its 560 ms lookahead configuration until the
+  session finalizes the utterance. One worker serializes active ASR streams across WebSocket
+  sessions. The browser preserves resampling phase and boundary samples when converting microphone
+  audio to 16 kHz PCM.
 - Qwen3-1.7B receives the complete ordered conversation and streams non-thinking text deltas.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
-  that generation. The browser logs the snapshot to its developer console for prompt inspection.
+  that generation. The browser logs both a table and the complete formatted JSON snapshot to its
+  developer console for prompt inspection.
 - Completed sentence chunks enter Pocket TTS while Qwen continues generating later text.
 - A new authoritative server speech-start cancels the active Qwen/TTS task and tells the browser
   to discard that generation's queued audio.

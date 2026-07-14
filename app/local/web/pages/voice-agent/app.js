@@ -273,6 +273,7 @@ function handleMessage(event) {
   if (message.type === "llm.history") {
     console.groupCollapsed(`LLM history for generation ${message.generation_id}`);
     console.table(message.messages);
+    console.log(JSON.stringify(message.messages, null, 2));
     console.groupEnd();
   }
   if (message.type === "assistant.text.delta") {

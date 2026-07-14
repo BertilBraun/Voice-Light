@@ -23,7 +23,8 @@ LANGUAGE_MODEL_REVISION: Final = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "You are a conversational voice agent. Respond naturally and directly to the user's latest "
     "message. Use the complete conversation history as context and do not repeat earlier answers. "
-    "Use plain text without Markdown or emoji."
+    "Start with substantive content instead of filler acknowledgements such as 'Sure' or 'Of "
+    "course.' Use plain text without Markdown or emoji."
 )
 POCKET_TTS_LANGUAGE: Final = "english"
 POCKET_TTS_VOICE: Final = "alba"

@@ -9,6 +9,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     with TestClient(app) as client:
         page_response = client.get("/voice-agent")
         script_response = client.get("/pages/voice-agent/app.js")
+        capture_worklet_response = client.get("/pages/voice-agent/capture-worklet.js")
         worklet_response = client.get("/pages/voice-agent/playback-worklet.js")
 
     assert page_response.status_code == 200
@@ -19,6 +20,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "turn.committed"' in script_response.text
     assert 'message.type === "llm.history"' in script_response.text
     assert "console.table(message.messages)" in script_response.text
+    assert "JSON.stringify(message.messages, null, 2)" in script_response.text
     assert 'message.type === "assistant.text.delta"' in script_response.text
     assert 'message.type === "assistant.cancel"' in script_response.text
     assert 'message.type === "assistant.audio.sentence"' in script_response.text
@@ -30,3 +32,6 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'data.type === "sentence" && data.generationId > this.cancelledGenerationId' in (
         worklet_response.text
     )
+    assert "this.previousSample" in capture_worklet_response.text
+    assert "lowerIndex < 0 ? this.previousSample" in capture_worklet_response.text
+    assert "this.sourcePosition -= input.length" in capture_worklet_response.text
