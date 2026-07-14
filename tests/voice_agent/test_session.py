@@ -96,6 +96,32 @@ class SlowSpeechSynthesizer:
         await asyncio.sleep(10)
 
 
+class SentenceLanguageModel:
+    def __init__(self) -> None:
+        self.conversations: list[tuple[ConversationMessage, ...]] = []
+
+    async def stream_response(
+        self,
+        conversation: tuple[ConversationMessage, ...],
+    ) -> AsyncIterator[str]:
+        self.conversations.append(conversation)
+        yield "Hello world. "
+        yield "Next thing!"
+
+
+class RecordingSpeechSynthesizer:
+    def __init__(self) -> None:
+        self.sentences: list[str] = []
+
+    @property
+    def sample_rate(self) -> int:
+        return 24_000
+
+    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
+        self.sentences.append(text)
+        yield b"\x01\x00" * (len(self.sentences) + 1)
+
+
 def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
     language_model = FakeLanguageModel()
     transcriber = RecordingTranscriber()
@@ -109,6 +135,14 @@ def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
 
         send_turn(websocket)
         first_events, audio_frame = receive_until(websocket, "assistant.audio.end")
+        websocket.send_json(
+            {
+                "type": "playback.progress",
+                "generation_id": 1,
+                "sentence_id": 0,
+                "text_offset": 3,
+            }
+        )
         websocket.send_json({"type": "playback.complete", "generation_id": 1})
 
         send_turn(websocket)
@@ -126,8 +160,8 @@ def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
     assert "assistant.audio.start" in event_types
     assert second_events[-1]["generation_id"] == 2
     assert audio_frame is not None
-    assert struct.unpack("<II", audio_frame[:8]) == (1, 0)
-    assert audio_frame[8:] == b"\x01\x00\x02\x00"
+    assert struct.unpack("<III", audio_frame[:12]) == (1, 0, 0)
+    assert audio_frame[12:] == b"\x01\x00\x02\x00"
     assert language_model.conversations == [
         (ConversationMessage(role=ConversationRole.USER, content="hello agent"),),
         (
@@ -141,6 +175,43 @@ def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
     ]
     assert transcriber.sessions[0].audio == [SPEECH_CHUNK, SILENCE_CHUNK, SILENCE_CHUNK]
     assert all(session.closed for session in transcriber.sessions)
+
+
+def test_sentence_audio_metadata_preserves_text_and_sample_boundaries() -> None:
+    language_model = SentenceLanguageModel()
+    transcriber = RecordingTranscriber()
+    speech_synthesizer = RecordingSpeechSynthesizer()
+    web_app = create_test_app(transcriber, language_model, speech_synthesizer)
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        events, audio_frame = receive_until(websocket, "assistant.audio.end")
+        websocket.send_json({"type": "session.stop"})
+
+    sentence_events = [event for event in events if event["type"] == "assistant.audio.sentence"]
+    assert sentence_events == [
+        {
+            "type": "assistant.audio.sentence",
+            "generation_id": 1,
+            "sentence_id": 0,
+            "text_start": 0,
+            "text_end": 12,
+            "sample_count": 2,
+        },
+        {
+            "type": "assistant.audio.sentence",
+            "generation_id": 1,
+            "sentence_id": 1,
+            "text_start": 13,
+            "text_end": 24,
+            "sample_count": 3,
+        },
+    ]
+    assert speech_synthesizer.sentences == ["Hello world.", "Next thing!"]
+    assert audio_frame is not None
+    assert struct.unpack("<III", audio_frame[:12]) == (1, 1, 1)
 
 
 def test_user_speech_cancels_generation_and_does_not_commit_assistant_tail() -> None:
@@ -192,6 +263,102 @@ def test_user_speech_cancels_tts_and_omits_partially_played_response() -> None:
         (ConversationMessage(role=ConversationRole.USER, content="hello agent"),),
         (
             ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+        ),
+    ]
+
+
+def test_repeated_interruptions_preserve_acknowledged_word_prefixes() -> None:
+    language_model = FakeLanguageModel()
+    transcriber = RecordingTranscriber()
+    web_app = create_test_app(transcriber, language_model, FakeSpeechSynthesizer())
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+
+        for generation_id, text_offset in ((1, 7), (2, 13), (3, 18)):
+            events, _ = receive_until(websocket, "assistant.audio.sentence")
+            sentence_event = events[-1]
+            assert sentence_event == {
+                "type": "assistant.audio.sentence",
+                "generation_id": generation_id,
+                "sentence_id": 0,
+                "text_start": 0,
+                "text_end": 40,
+                "sample_count": 2,
+            }
+            websocket.send_json(
+                {
+                    "type": "playback.progress",
+                    "generation_id": generation_id,
+                    "sentence_id": 0,
+                    "text_offset": 3,
+                }
+            )
+            websocket.send_json(
+                {
+                    "type": "playback.progress",
+                    "generation_id": generation_id,
+                    "sentence_id": 0,
+                    "text_offset": text_offset,
+                }
+            )
+            websocket.send_json(
+                {
+                    "type": "playback.progress",
+                    "generation_id": generation_id,
+                    "sentence_id": 0,
+                    "text_offset": text_offset + 1,
+                }
+            )
+            websocket.send_bytes(SPEECH_CHUNK)
+            receive_until(websocket, "assistant.cancel")
+            websocket.send_json(
+                {
+                    "type": "playback.progress",
+                    "generation_id": generation_id,
+                    "sentence_id": 0,
+                    "text_offset": 33,
+                }
+            )
+            websocket.send_bytes(SILENCE_CHUNK)
+            websocket.send_bytes(SILENCE_CHUNK)
+
+        receive_until(websocket, "assistant.text.delta")
+        websocket.send_json({"type": "session.stop"})
+
+    assert language_model.conversations == [
+        (ConversationMessage(role=ConversationRole.USER, content="hello agent"),),
+        (
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+            ConversationMessage(role=ConversationRole.ASSISTANT, content="One two..."),
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+        ),
+        (
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+            ConversationMessage(role=ConversationRole.ASSISTANT, content="One two..."),
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+            ConversationMessage(
+                role=ConversationRole.ASSISTANT,
+                content="One two three...",
+            ),
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+        ),
+        (
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+            ConversationMessage(role=ConversationRole.ASSISTANT, content="One two..."),
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+            ConversationMessage(
+                role=ConversationRole.ASSISTANT,
+                content="One two three...",
+            ),
+            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+            ConversationMessage(
+                role=ConversationRole.ASSISTANT,
+                content="One two three four...",
+            ),
             ConversationMessage(role=ConversationRole.USER, content="hello agent"),
         ),
     ]
@@ -256,8 +423,10 @@ def test_disconnect_closes_asr_and_cancels_active_generation() -> None:
 
 def create_test_app(
     transcriber: RecordingTranscriber,
-    language_model: FakeLanguageModel | SlowLanguageModel,
-    speech_synthesizer: FakeSpeechSynthesizer | SlowSpeechSynthesizer,
+    language_model: FakeLanguageModel | SlowLanguageModel | SentenceLanguageModel,
+    speech_synthesizer: (
+        FakeSpeechSynthesizer | SlowSpeechSynthesizer | RecordingSpeechSynthesizer
+    ),
     policy: SessionPolicy = DEFAULT_TEST_POLICY,
 ) -> FastAPI:
     web_app = FastAPI()

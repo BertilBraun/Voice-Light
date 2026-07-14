@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import struct
 from collections import deque
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -20,9 +21,11 @@ from app.compute.voice.interfaces import (
 )
 from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
+    AssistantAudioSentenceEvent,
     AssistantTextDeltaEvent,
     ErrorEvent,
     PlaybackCompleteEvent,
+    PlaybackProgressEvent,
     SessionReadyEvent,
     SessionStartEvent,
     SessionStopEvent,
@@ -50,9 +53,19 @@ class SessionPolicy:
 class ActiveGeneration:
     generation_id: int
     task: asyncio.Task[None] | None = None
-    response_text: str | None = None
+    response_text: str = ""
+    acknowledged_offset: int = 0
+    history_index: int | None = None
+    acknowledgeable_offsets: dict[int, frozenset[int]] = field(default_factory=dict)
     generation_finished: bool = False
     playback_complete: bool = False
+
+
+@dataclass(frozen=True)
+class SpeechSentence:
+    text: str
+    text_start: int
+    text_end: int
 
 
 class VoiceSession:
@@ -123,6 +136,8 @@ class VoiceSession:
                     await self._start(event)
                 case PlaybackCompleteEvent():
                     self._complete_playback(event.generation_id)
+                case PlaybackProgressEvent():
+                    self._acknowledge_playback(event)
                 case SessionStopEvent():
                     await self.audio_queue.put(None)
                     return
@@ -215,6 +230,7 @@ class VoiceSession:
             raise
         except Exception as error:
             if self.active_generation is generation:
+                self._mark_generation_interrupted(generation)
                 self.active_generation = None
                 await self._send_audio_boundary(
                     VoiceServerEventType.ASSISTANT_CANCEL,
@@ -223,9 +239,9 @@ class VoiceSession:
             await self._send_error(f"Response generation failed: {error}")
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
-        sentence_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        sentence_queue: asyncio.Queue[SpeechSentence | None] = asyncio.Queue()
 
-        async def sentences() -> AsyncIterator[str]:
+        async def sentences() -> AsyncIterator[SpeechSentence]:
             while (sentence := await sentence_queue.get()) is not None:
                 yield sentence
 
@@ -236,10 +252,10 @@ class VoiceSession:
             )
         )
         sentence_chunker = SentenceTextChunker()
-        response_parts: list[str] = []
+        next_sentence_offset = 0
         try:
             async for text_delta in self.language_model.stream_response(tuple(self.conversation)):
-                response_parts.append(text_delta)
+                generation.response_text += text_delta
                 await self._send_event(
                     AssistantTextDeltaEvent(
                         generation_id=generation.generation_id,
@@ -247,15 +263,33 @@ class VoiceSession:
                     )
                 )
                 for sentence in sentence_chunker.add_text(text_delta):
-                    await sentence_queue.put(sentence)
-            response_text = "".join(response_parts).strip()
-            if not response_text:
+                    sentence_start = generation.response_text.find(sentence, next_sentence_offset)
+                    assert sentence_start >= next_sentence_offset
+                    sentence_end = sentence_start + len(sentence)
+                    await sentence_queue.put(
+                        SpeechSentence(
+                            text=sentence,
+                            text_start=sentence_start,
+                            text_end=sentence_end,
+                        )
+                    )
+                    next_sentence_offset = sentence_end
+            if not generation.response_text.strip():
                 raise RuntimeError("The language model returned an empty response.")
             for sentence in sentence_chunker.finish():
-                await sentence_queue.put(sentence)
+                sentence_start = generation.response_text.find(sentence, next_sentence_offset)
+                assert sentence_start >= next_sentence_offset
+                sentence_end = sentence_start + len(sentence)
+                await sentence_queue.put(
+                    SpeechSentence(
+                        text=sentence,
+                        text_start=sentence_start,
+                        text_end=sentence_end,
+                    )
+                )
+                next_sentence_offset = sentence_end
             await sentence_queue.put(None)
             await audio_task
-            generation.response_text = response_text
             generation.generation_finished = True
             self._commit_assistant_if_complete(generation)
         finally:
@@ -267,21 +301,44 @@ class VoiceSession:
     async def _stream_speech(
         self,
         generation_id: int,
-        sentences: AsyncIterator[str],
+        sentences: AsyncIterator[SpeechSentence],
     ) -> None:
         sequence_number = 0
         started = False
+        sentence_id = 0
         async for sentence in sentences:
-            async for pcm_bytes in self.speech_synthesizer.stream_audio(sentence):
+            sentence_sample_count = 0
+            async for pcm_bytes in self.speech_synthesizer.stream_audio(sentence.text):
+                if len(pcm_bytes) % PCM_BYTES_PER_SAMPLE != 0:
+                    raise ValueError("TTS PCM16 frames must contain complete samples.")
                 if not started:
                     started = True
                     await self._send_audio_boundary(
                         VoiceServerEventType.ASSISTANT_AUDIO_START,
                         generation_id,
                     )
-                header = struct.pack("<II", generation_id, sequence_number)
+                header = struct.pack("<III", generation_id, sequence_number, sentence_id)
                 await self._send_audio(header + pcm_bytes)
+                sentence_sample_count += _pcm_sample_count(pcm_bytes)
                 sequence_number += 1
+            if sentence_sample_count == 0:
+                raise RuntimeError("The speech synthesizer returned no sentence audio.")
+            generation = self.active_generation
+            if generation is None or generation.generation_id != generation_id:
+                return
+            generation.acknowledgeable_offsets[sentence_id] = frozenset(
+                match.end() + sentence.text_start for match in re.finditer(r"\S+", sentence.text)
+            )
+            await self._send_event(
+                AssistantAudioSentenceEvent(
+                    generation_id=generation_id,
+                    sentence_id=sentence_id,
+                    text_start=sentence.text_start,
+                    text_end=sentence.text_end,
+                    sample_count=sentence_sample_count,
+                )
+            )
+            sentence_id += 1
         if started:
             await self._send_audio_boundary(
                 VoiceServerEventType.ASSISTANT_AUDIO_END,
@@ -294,6 +351,7 @@ class VoiceSession:
         generation = self.active_generation
         if generation is None:
             return
+        self._mark_generation_interrupted(generation)
         self.active_generation = None
         if generation.task is not None and not generation.task.done():
             generation.task.cancel()
@@ -312,18 +370,62 @@ class VoiceSession:
         generation.playback_complete = True
         self._commit_assistant_if_complete(generation)
 
+    def _acknowledge_playback(self, event: PlaybackProgressEvent) -> None:
+        generation = self.active_generation
+        if generation is None or generation.generation_id != event.generation_id:
+            return
+        valid_offsets = generation.acknowledgeable_offsets.get(event.sentence_id)
+        if valid_offsets is None or event.text_offset not in valid_offsets:
+            return
+        if event.text_offset <= generation.acknowledged_offset:
+            return
+        self._update_assistant_history(generation, event.text_offset)
+
+    def _update_assistant_history(
+        self,
+        generation: ActiveGeneration,
+        text_offset: int,
+    ) -> None:
+        assert 0 < text_offset <= len(generation.response_text)
+        content = generation.response_text[:text_offset].rstrip()
+        assert content
+        message = ConversationMessage(
+            role=ConversationRole.ASSISTANT,
+            content=content,
+        )
+        if generation.history_index is None:
+            generation.history_index = len(self.conversation)
+            self.conversation.append(message)
+        else:
+            self.conversation[generation.history_index] = message
+        generation.acknowledged_offset = text_offset
+
+    def _mark_generation_interrupted(self, generation: ActiveGeneration) -> None:
+        if generation.history_index is None:
+            return
+        if generation.generation_finished and generation.acknowledged_offset >= len(
+            generation.response_text.rstrip()
+        ):
+            return
+        message = self.conversation[generation.history_index]
+        self.conversation[generation.history_index] = ConversationMessage(
+            role=ConversationRole.ASSISTANT,
+            content=f"{message.content}...",
+        )
+
     def _commit_assistant_if_complete(self, generation: ActiveGeneration) -> None:
         if not generation.generation_finished or not generation.playback_complete:
             return
-        assert generation.response_text is not None
         if self.active_generation is not generation:
             return
-        self.conversation.append(
-            ConversationMessage(
-                role=ConversationRole.ASSISTANT,
-                content=generation.response_text,
-            )
+        complete_message = ConversationMessage(
+            role=ConversationRole.ASSISTANT,
+            content=generation.response_text.strip(),
         )
+        if generation.history_index is None:
+            self.conversation.append(complete_message)
+        else:
+            self.conversation[generation.history_index] = complete_message
         self.active_generation = None
 
     async def _send_speech_state(self, event_type: VoiceServerEventType) -> None:

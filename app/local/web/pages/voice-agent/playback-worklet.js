@@ -6,6 +6,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.chunks = [];
     this.queuedSampleCount = 0;
     this.sourcePosition = 0;
+    this.sentencePlayback = new Map();
     this.generationId = -1;
     this.cancelledGenerationId = -1;
     this.endedGenerationId = -1;
@@ -14,6 +15,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
         this.chunks = [];
         this.queuedSampleCount = 0;
         this.sourcePosition = 0;
+        this.sentencePlayback.clear();
         this.cancelledGenerationId = Math.max(this.cancelledGenerationId, data.generationId);
         this.endedGenerationId = -1;
       } else if (data.type === "audio" && data.generationId > this.cancelledGenerationId) {
@@ -21,14 +23,20 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
           this.chunks = [];
           this.queuedSampleCount = 0;
           this.sourcePosition = 0;
+          this.sentencePlayback.clear();
           this.generationId = data.generationId;
           this.endedGenerationId = -1;
         }
         if (data.generationId === this.generationId) {
-          const chunk = new Int16Array(data.pcm);
-          this.chunks.push(chunk);
-          this.queuedSampleCount += chunk.length;
+          const samples = new Int16Array(data.pcm);
+          this.chunks.push({ samples, sentenceId: data.sentenceId });
+          this.queuedSampleCount += samples.length;
         }
+      } else if (data.type === "sentence" && data.generationId === this.generationId) {
+        const playback = this.sentencePlayback.get(data.sentenceId) ?? { playedSamples: 0 };
+        playback.totalSamples = data.totalSamples;
+        this.sentencePlayback.set(data.sentenceId, playback);
+        this.reportSentenceProgress(data.sentenceId);
       } else if (data.type === "end" && data.generationId === this.generationId) {
         this.endedGenerationId = data.generationId;
         this.reportCompletionIfDrained();
@@ -64,8 +72,8 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
   sampleAt(index) {
     let remainingIndex = index;
     for (const chunk of this.chunks) {
-      if (remainingIndex < chunk.length) return chunk[remainingIndex];
-      remainingIndex -= chunk.length;
+      if (remainingIndex < chunk.samples.length) return chunk.samples[remainingIndex];
+      remainingIndex -= chunk.samples.length;
     }
     return undefined;
   }
@@ -74,15 +82,40 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     let remainingCount = count;
     while (remainingCount > 0 && this.chunks.length > 0) {
       const chunk = this.chunks[0];
-      if (remainingCount < chunk.length) {
-        this.chunks[0] = chunk.subarray(remainingCount);
+      const consumedCount = Math.min(remainingCount, chunk.samples.length);
+      this.recordPlayedSamples(chunk.sentenceId, consumedCount);
+      if (remainingCount < chunk.samples.length) {
+        this.chunks[0] = {
+          samples: chunk.samples.subarray(remainingCount),
+          sentenceId: chunk.sentenceId,
+        };
         this.queuedSampleCount -= remainingCount;
         return;
       }
-      remainingCount -= chunk.length;
-      this.queuedSampleCount -= chunk.length;
+      remainingCount -= chunk.samples.length;
+      this.queuedSampleCount -= chunk.samples.length;
       this.chunks.shift();
     }
+  }
+
+  recordPlayedSamples(sentenceId, sampleCount) {
+    const playback = this.sentencePlayback.get(sentenceId) ?? { playedSamples: 0 };
+    playback.playedSamples += sampleCount;
+    this.sentencePlayback.set(sentenceId, playback);
+    this.reportSentenceProgress(sentenceId);
+  }
+
+  reportSentenceProgress(sentenceId) {
+    const playback = this.sentencePlayback.get(sentenceId);
+    if (!playback?.totalSamples || playback.playedSamples === playback.reportedSamples) return;
+    playback.reportedSamples = playback.playedSamples;
+    this.port.postMessage({
+      type: "sentence.progress",
+      generationId: this.generationId,
+      sentenceId,
+      playedSamples: Math.min(playback.playedSamples, playback.totalSamples),
+      totalSamples: playback.totalSamples,
+    });
   }
 
   reportCompletionIfDrained() {

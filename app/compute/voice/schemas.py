@@ -12,6 +12,7 @@ class VoiceClientEventType(StrEnum):
     SESSION_START = "session.start"
     SESSION_STOP = "session.stop"
     PLAYBACK_COMPLETE = "playback.complete"
+    PLAYBACK_PROGRESS = "playback.progress"
 
 
 class SessionStartEvent(FrozenBaseModel):
@@ -28,8 +29,15 @@ class PlaybackCompleteEvent(FrozenBaseModel):
     generation_id: int = Field(gt=0)
 
 
+class PlaybackProgressEvent(FrozenBaseModel):
+    type: Literal[VoiceClientEventType.PLAYBACK_PROGRESS] = VoiceClientEventType.PLAYBACK_PROGRESS
+    generation_id: int = Field(gt=0)
+    sentence_id: int = Field(ge=0)
+    text_offset: int = Field(gt=0)
+
+
 VoiceClientEvent = Annotated[
-    SessionStartEvent | SessionStopEvent | PlaybackCompleteEvent,
+    SessionStartEvent | SessionStopEvent | PlaybackCompleteEvent | PlaybackProgressEvent,
     Field(discriminator="type"),
 ]
 voice_client_event_adapter: TypeAdapter[VoiceClientEvent] = TypeAdapter(VoiceClientEvent)
@@ -45,6 +53,7 @@ class VoiceServerEventType(StrEnum):
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
+    ASSISTANT_AUDIO_SENTENCE = "assistant.audio.sentence"
     ASSISTANT_CANCEL = "assistant.cancel"
     ERROR = "error"
 
@@ -87,6 +96,17 @@ class AssistantAudioBoundaryEvent(FrozenBaseModel):
     generation_id: int = Field(gt=0)
 
 
+class AssistantAudioSentenceEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.ASSISTANT_AUDIO_SENTENCE] = (
+        VoiceServerEventType.ASSISTANT_AUDIO_SENTENCE
+    )
+    generation_id: int = Field(gt=0)
+    sentence_id: int = Field(ge=0)
+    text_start: int = Field(ge=0)
+    text_end: int = Field(gt=0)
+    sample_count: int = Field(gt=0)
+
+
 class ErrorEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.ERROR] = VoiceServerEventType.ERROR
     message: str
@@ -98,6 +118,7 @@ VoiceServerEvent = Annotated[
     | TranscriptEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
+    | AssistantAudioSentenceEvent
     | ErrorEvent,
     Field(discriminator="type"),
 ]

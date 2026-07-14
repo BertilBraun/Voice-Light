@@ -18,3 +18,6 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "turn.committed"' in script_response.text
     assert 'message.type === "assistant.text.delta"' in script_response.text
     assert 'message.type === "assistant.cancel"' in script_response.text
+    assert 'message.type === "assistant.audio.sentence"' in script_response.text
+    assert 'type: "playback.progress"' in script_response.text
+    assert "turn-unspoken" in script_response.text

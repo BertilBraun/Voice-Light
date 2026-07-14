@@ -22,6 +22,7 @@ let audioGenerationId = -1;
 let expectedAudioSequence = 0;
 let activeUserTurn;
 const assistantTurns = new Map();
+const assistantSentences = new Map();
 const intentionallyClosedSockets = new WeakSet();
 
 class ConversationTurn {
@@ -44,6 +45,16 @@ class ConversationTurn {
 
     this.transcript = document.createElement("p");
     this.transcript.className = "turn-transcript";
+    this.text = "";
+    this.spokenOffset = 0;
+    this.acknowledgedOffset = 0;
+    if (role === "assistant") {
+      this.spokenTranscript = document.createElement("span");
+      this.spokenTranscript.className = "turn-spoken";
+      this.unspokenTranscript = document.createElement("span");
+      this.unspokenTranscript.className = "turn-unspoken";
+      this.transcript.append(this.spokenTranscript, this.unspokenTranscript);
+    }
     this.element.append(heading, this.transcript);
     conversationHistory.append(this.element);
     this.setState(state);
@@ -52,14 +63,40 @@ class ConversationTurn {
 
   setText(text) {
     const followHistory = historyIsAtEnd();
-    this.transcript.textContent = text;
+    this.text = text;
+    this.renderText();
     followConversationHistory(followHistory);
   }
 
   appendText(text) {
     const followHistory = historyIsAtEnd();
-    this.transcript.textContent += text;
+    this.text += text;
+    this.renderText();
     followConversationHistory(followHistory);
+  }
+
+  setSpokenOffset(offset) {
+    if (!this.spokenTranscript || offset <= this.spokenOffset) return;
+    this.spokenOffset = Math.min(offset, characterLength(this.text));
+    this.renderText();
+  }
+
+  acknowledgeOffset(offset) {
+    this.acknowledgedOffset = Math.max(this.acknowledgedOffset, offset);
+  }
+
+  settleInterruptedText() {
+    this.spokenOffset = this.acknowledgedOffset;
+    this.renderText();
+  }
+
+  renderText() {
+    if (!this.spokenTranscript) {
+      this.transcript.textContent = this.text;
+      return;
+    }
+    this.spokenTranscript.textContent = sliceTextByCharacterOffset(this.text, 0, this.spokenOffset);
+    this.unspokenTranscript.textContent = sliceTextByCharacterOffset(this.text, this.spokenOffset);
   }
 
   setState(state) {
@@ -182,11 +219,20 @@ async function setupPlayback(inputSampleRate) {
     processorOptions: { inputSampleRate },
   });
   playbackNode.port.onmessage = ({ data }) => {
+    if (data.type === "sentence.progress") {
+      updateSentenceProgress(data);
+      return;
+    }
     if (
       data.type === "playback.complete" &&
       data.generationId > 0 &&
       socket?.readyState === WebSocket.OPEN
     ) {
+      const turn = assistantTurns.get(data.generationId);
+      const completeOffset = characterLength(turn?.text ?? "");
+      turn?.setSpokenOffset(completeOffset);
+      turn?.acknowledgeOffset(completeOffset);
+      turn?.setState("complete");
       socket.send(JSON.stringify({ type: "playback.complete", generation_id: data.generationId }));
       vadStatus.textContent = "ready";
       playbackStatus.textContent = "waiting";
@@ -202,6 +248,7 @@ function handleMessage(event) {
     const view = new DataView(event.data);
     const generationId = view.getUint32(0, true);
     const sequenceNumber = view.getUint32(4, true);
+    const sentenceId = view.getUint32(8, true);
     if (generationId <= cancelledGenerationId) return;
     if (generationId !== audioGenerationId) {
       audioGenerationId = generationId;
@@ -209,8 +256,8 @@ function handleMessage(event) {
     }
     if (sequenceNumber !== expectedAudioSequence) return;
     expectedAudioSequence += 1;
-    const pcm = event.data.slice(8);
-    playbackNode.port.postMessage({ type: "audio", generationId, pcm }, [pcm]);
+    const pcm = event.data.slice(12);
+    playbackNode.port.postMessage({ type: "audio", generationId, sentenceId, pcm }, [pcm]);
     return;
   }
   const message = JSON.parse(event.data);
@@ -236,13 +283,33 @@ function handleMessage(event) {
   }
   if (message.type === "assistant.audio.end") {
     playbackNode.port.postMessage({ type: "end", generationId: message.generation_id });
-    assistantTurn(message.generation_id).setState("complete");
+    assistantTurn(message.generation_id).setState("speaking");
     playbackStatus.textContent = "finishing";
+  }
+  if (message.type === "assistant.audio.sentence") {
+    if (message.generation_id <= cancelledGenerationId) return;
+    const key = sentenceKey(message.generation_id, message.sentence_id);
+    assistantSentences.set(key, {
+      generationId: message.generation_id,
+      sentenceId: message.sentence_id,
+      textStart: message.text_start,
+      textEnd: message.text_end,
+      sampleCount: message.sample_count,
+      acknowledgedOffset: 0,
+    });
+    playbackNode.port.postMessage({
+      type: "sentence",
+      generationId: message.generation_id,
+      sentenceId: message.sentence_id,
+      totalSamples: message.sample_count,
+    });
   }
   if (message.type === "assistant.cancel") {
     cancelledGenerationId = Math.max(cancelledGenerationId, message.generation_id);
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
-    assistantTurns.get(message.generation_id)?.setState("cancelled");
+    const turn = assistantTurns.get(message.generation_id);
+    turn?.settleInterruptedText();
+    turn?.setState("cancelled");
     vadStatus.textContent = "ready";
     playbackStatus.textContent = "cancelled";
   }
@@ -310,8 +377,47 @@ function assistantTurn(generationId) {
 function clearConversationHistory() {
   activeUserTurn = undefined;
   assistantTurns.clear();
+  assistantSentences.clear();
   conversationEmpty.hidden = false;
   conversationHistory.replaceChildren(conversationEmpty);
+}
+
+function updateSentenceProgress(progress) {
+  if (progress.generationId <= cancelledGenerationId) return;
+  const sentence = assistantSentences.get(sentenceKey(progress.generationId, progress.sentenceId));
+  if (!sentence || sentence.sampleCount !== progress.totalSamples) return;
+  const ratio = Math.min(progress.playedSamples / progress.totalSamples, 1);
+  const characterOffset = sentence.textStart + Math.floor((sentence.textEnd - sentence.textStart) * ratio);
+  const turn = assistantTurns.get(progress.generationId);
+  if (!turn) return;
+  turn.setSpokenOffset(characterOffset);
+  const sentenceText = sliceTextByCharacterOffset(turn.text, sentence.textStart, sentence.textEnd);
+  for (const match of sentenceText.matchAll(/\S+/g)) {
+    const wordEnd = sentence.textStart + characterLength(sentenceText.slice(0, match.index + match[0].length));
+    if (wordEnd > characterOffset || wordEnd <= sentence.acknowledgedOffset) continue;
+    sentence.acknowledgedOffset = wordEnd;
+    turn.acknowledgeOffset(wordEnd);
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: "playback.progress",
+        generation_id: progress.generationId,
+        sentence_id: progress.sentenceId,
+        text_offset: wordEnd,
+      }));
+    }
+  }
+}
+
+function sentenceKey(generationId, sentenceId) {
+  return `${generationId}:${sentenceId}`;
+}
+
+function characterLength(text) {
+  return Array.from(text).length;
+}
+
+function sliceTextByCharacterOffset(text, start, end) {
+  return Array.from(text).slice(start, end).join("");
 }
 
 function historyIsAtEnd() {

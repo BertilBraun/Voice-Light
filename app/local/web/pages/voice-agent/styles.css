@@ -49,6 +49,7 @@ h2 { font-size: 24px; letter-spacing: -.025em; margin: 0; }
 .turn-speaker { color: #78d8ae; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .turn-meta { color: #718078; font-size: 11px; }
 .turn-transcript { font-size: 18px; line-height: 1.5; margin: 9px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.turn-unspoken { color: #68736c; }
 .conversation-turn[data-state="streaming"] .turn-meta,
 .conversation-turn[data-state="speaking"] .turn-meta { color: #f3d88f; }
 .conversation-turn[data-state="cancelled"] { border-color: #6b5c32; opacity: .78; }
