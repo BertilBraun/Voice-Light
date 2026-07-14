@@ -91,7 +91,7 @@ def test_duration_mismatch_is_invalid_without_running_asr(
     )
 
     assert processed.quality_result.status.value == "invalid"
-    assert "duration_mismatch_invalid" in processed.quality_result.calibration_flags
+    assert "duration_mismatch_invalid" in processed.quality_result.quality_flags
 
 
 def test_conversation_annotation_counts_speaker_transitions_and_events() -> None:

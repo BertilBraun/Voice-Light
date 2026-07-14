@@ -6,7 +6,7 @@ from pydantic import computed_field
 
 from app.shared.base_model import FrozenBaseModel
 
-METRIC_VERSION = "quality-conversation-v3"
+METRIC_VERSION = "quality-conversation-v4"
 QUALITY_SAMPLE_RATE = 16_000
 
 
@@ -191,6 +191,25 @@ class ConversationAnnotation(FrozenBaseModel):
     quality_score: float
 
 
+class ConversationEventCounts(FrozenBaseModel):
+    speech_segment_count: int
+    interaction_count: int
+    turn_count: int
+    turn_taking_count: int
+    pause_count: int
+    backchannel_count: int
+    interruption_count: int
+    usable_event_count: int
+
+
+class ConversationCountEstimate(FrozenBaseModel):
+    annotation_duration_seconds: float
+    represented_duration_seconds: float
+    scale_factor: float
+    observed: ConversationEventCounts
+    estimated: ConversationEventCounts
+
+
 class QualityWeights(FrozenBaseModel):
     interaction_density: float = 0.15
     timing_reliability: float = 0.10
@@ -209,10 +228,10 @@ class QualityResult(FrozenBaseModel):
     timing_reliability: TimingReliabilityMetrics | None
     audio_quality: AudioQualityMetrics | None
     conversation_annotation: ConversationAnnotation | None
+    conversation_count_estimate: ConversationCountEstimate | None
     event_candidates: tuple[EventCandidate, ...]
     raw_quality_score: float | None
-    calibrated_quality_score: float | None
-    calibration_flags: tuple[str, ...]
+    quality_flags: tuple[str, ...]
     total_quality_score: float | None
     error: str | None
 

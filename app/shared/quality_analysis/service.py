@@ -3,6 +3,8 @@ from __future__ import annotations
 from app.shared.audio import AudioTrack
 from app.shared.quality import (
     ConversationAnnotation,
+    ConversationCountEstimate,
+    ConversationEventCounts,
     ProcessingStatus,
     QualityResult,
     RunConfig,
@@ -17,11 +19,10 @@ from app.shared.quality_analysis.audio_quality import (
 from app.shared.quality_analysis.events import extract_event_candidates
 from app.shared.quality_analysis.preprocessing import prepare_audio_track
 from app.shared.quality_analysis.scoring import (
-    calibrated_quality_score,
-    calibration_flags,
     combine_audio_quality_metrics,
     compute_interaction_density_metrics,
     compute_timing_reliability_metrics,
+    quality_flags,
     total_quality_score,
 )
 from app.shared.quality_analysis.vad import VadConfig, detect_speech_segments_pair
@@ -123,14 +124,7 @@ def score_two_track_sample(
             conversation_annotation=conversation_annotation,
             weights=effective_config.weights,
         )
-        calibrated_score = calibrated_quality_score(
-            raw_quality_score,
-            density_metrics,
-            timing_metrics,
-            audio_metrics,
-            conversation_annotation,
-        )
-        result_flags = calibration_flags(
+        result_flags = quality_flags(
             density_metrics,
             timing_metrics,
             audio_metrics,
@@ -147,11 +141,14 @@ def score_two_track_sample(
             timing_reliability=timing_metrics,
             audio_quality=audio_metrics,
             conversation_annotation=conversation_annotation,
+            conversation_count_estimate=conversation_count_estimate(
+                annotation=conversation_annotation,
+                represented_duration_seconds=duration_seconds,
+            ),
             event_candidates=stored_event_candidates,
             raw_quality_score=raw_quality_score,
-            calibrated_quality_score=calibrated_score,
-            calibration_flags=result_flags,
-            total_quality_score=calibrated_score,
+            quality_flags=result_flags,
+            total_quality_score=raw_quality_score,
             error=None,
         )
     except Exception as error:
@@ -166,10 +163,56 @@ def score_two_track_sample(
             timing_reliability=None,
             audio_quality=None,
             conversation_annotation=None,
+            conversation_count_estimate=None,
             event_candidates=(),
             raw_quality_score=None,
-            calibrated_quality_score=None,
-            calibration_flags=(),
+            quality_flags=(),
             total_quality_score=None,
             error=f"{type(error).__name__}: {error}",
         )
+
+
+def conversation_count_estimate(
+    annotation: ConversationAnnotation | None,
+    represented_duration_seconds: float,
+) -> ConversationCountEstimate | None:
+    if annotation is None:
+        return None
+    if annotation.analyzed_duration_seconds <= 0.0:
+        raise ValueError("Conversation annotation duration must be positive.")
+    if represented_duration_seconds <= 0.0:
+        raise ValueError("Represented conversation duration must be positive.")
+    scale_factor = max(
+        1.0,
+        represented_duration_seconds / annotation.analyzed_duration_seconds,
+    )
+    observed = conversation_event_counts(annotation)
+    return ConversationCountEstimate(
+        annotation_duration_seconds=annotation.analyzed_duration_seconds,
+        represented_duration_seconds=represented_duration_seconds,
+        scale_factor=scale_factor,
+        observed=observed,
+        estimated=ConversationEventCounts(
+            speech_segment_count=round(observed.speech_segment_count * scale_factor),
+            interaction_count=round(observed.interaction_count * scale_factor),
+            turn_count=round(observed.turn_count * scale_factor),
+            turn_taking_count=round(observed.turn_taking_count * scale_factor),
+            pause_count=round(observed.pause_count * scale_factor),
+            backchannel_count=round(observed.backchannel_count * scale_factor),
+            interruption_count=round(observed.interruption_count * scale_factor),
+            usable_event_count=round(observed.usable_event_count * scale_factor),
+        ),
+    )
+
+
+def conversation_event_counts(annotation: ConversationAnnotation) -> ConversationEventCounts:
+    return ConversationEventCounts(
+        speech_segment_count=annotation.speech_segment_count,
+        interaction_count=annotation.interaction_count,
+        turn_count=annotation.turn_count,
+        turn_taking_count=annotation.turn_taking_count,
+        pause_count=annotation.pause_count,
+        backchannel_count=annotation.backchannel_count,
+        interruption_count=annotation.interruption_count,
+        usable_event_count=annotation.usable_event_count,
+    )

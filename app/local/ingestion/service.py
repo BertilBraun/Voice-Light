@@ -333,10 +333,10 @@ def invalid_duration_quality_result(
         timing_reliability=None,
         audio_quality=None,
         conversation_annotation=None,
+        conversation_count_estimate=None,
         event_candidates=(),
         raw_quality_score=0.0,
-        calibrated_quality_score=0.0,
-        calibration_flags=(
+        quality_flags=(
             "duration_mismatch_invalid",
             f"duration_gap_seconds:{duration_gap_seconds:.3f}",
             f"duration_gap_ratio:{duration_gap_ratio:.6f}",
@@ -426,7 +426,11 @@ def quality_result_input(sample_id: UUID, quality_result: QualityResult) -> Qual
     interaction_density = quality_result.interaction_density
     timing_reliability = quality_result.timing_reliability
     conversation_annotation = quality_result.conversation_annotation
-    flags = list(quality_result.calibration_flags)
+    conversation_count_estimate = quality_result.conversation_count_estimate
+    estimated_counts = (
+        conversation_count_estimate.estimated if conversation_count_estimate is not None else None
+    )
+    flags = list(quality_result.quality_flags)
     if audio_quality is not None:
         flags.extend(flag for flag in audio_quality.flags if flag not in flags)
     return QualityResultInput(
@@ -435,7 +439,6 @@ def quality_result_input(sample_id: UUID, quality_result: QualityResult) -> Qual
         status=quality_result.status.value,
         total_quality_score=quality_result.total_quality_score,
         raw_quality_score=quality_result.raw_quality_score,
-        calibrated_quality_score=quality_result.calibrated_quality_score,
         interaction_density_score=interaction_density.quality_score
         if interaction_density is not None
         else None,
@@ -469,6 +472,34 @@ def quality_result_input(sample_id: UUID, quality_result: QualityResult) -> Qual
         else None,
         usable_event_count=conversation_annotation.usable_event_count
         if conversation_annotation is not None
+        else None,
+        annotation_duration_seconds=conversation_count_estimate.annotation_duration_seconds
+        if conversation_count_estimate is not None
+        else None,
+        represented_duration_seconds=conversation_count_estimate.represented_duration_seconds
+        if conversation_count_estimate is not None
+        else None,
+        estimated_speech_segment_count=estimated_counts.speech_segment_count
+        if estimated_counts is not None
+        else None,
+        estimated_interaction_count=estimated_counts.interaction_count
+        if estimated_counts is not None
+        else None,
+        estimated_turn_count=estimated_counts.turn_count if estimated_counts is not None else None,
+        estimated_turn_taking_count=estimated_counts.turn_taking_count
+        if estimated_counts is not None
+        else None,
+        estimated_pause_count=estimated_counts.pause_count
+        if estimated_counts is not None
+        else None,
+        estimated_backchannel_count=estimated_counts.backchannel_count
+        if estimated_counts is not None
+        else None,
+        estimated_interruption_count=estimated_counts.interruption_count
+        if estimated_counts is not None
+        else None,
+        estimated_usable_event_count=estimated_counts.usable_event_count
+        if estimated_counts is not None
         else None,
         conversation_events_per_hour=conversation_annotation.events_per_hour
         if conversation_annotation is not None

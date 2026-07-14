@@ -54,6 +54,17 @@ h3 {
   color: #627083;
 }
 
+#conversation-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.summary-note {
+  color: #526174;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 #refresh-button {
   border: 1px solid #b8c2cc;
   background: #ffffff;

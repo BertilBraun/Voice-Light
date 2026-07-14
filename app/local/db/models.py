@@ -97,7 +97,6 @@ class QualityResultRecord(FrozenBaseModel):
     status: str
     total_quality_score: float | None
     raw_quality_score: float | None
-    calibrated_quality_score: float | None
     interaction_density_score: float | None
     timing_reliability_score: float | None
     audio_quality_score: float | None
@@ -110,6 +109,16 @@ class QualityResultRecord(FrozenBaseModel):
     backchannel_count: int | None
     interruption_count: int | None
     usable_event_count: int | None
+    annotation_duration_seconds: float | None
+    represented_duration_seconds: float | None
+    estimated_speech_segment_count: int | None
+    estimated_interaction_count: int | None
+    estimated_turn_count: int | None
+    estimated_turn_taking_count: int | None
+    estimated_pause_count: int | None
+    estimated_backchannel_count: int | None
+    estimated_interruption_count: int | None
+    estimated_usable_event_count: int | None
     conversation_events_per_hour: float | None
     speech_ratio: float | None
     silence_ratio: float | None
@@ -187,6 +196,7 @@ class ConversationDatasetSummary(FrozenBaseModel):
     analyzed_sample_count: int
     invalid_sample_count: int
     analyzed_duration_seconds: float
+    represented_duration_seconds: float
     speech_segment_count: int
     interaction_count: int
     turn_count: int
@@ -195,6 +205,14 @@ class ConversationDatasetSummary(FrozenBaseModel):
     backchannel_count: int
     interruption_count: int
     usable_event_count: int
+    estimated_speech_segment_count: int
+    estimated_interaction_count: int
+    estimated_turn_count: int
+    estimated_turn_taking_count: int
+    estimated_pause_count: int
+    estimated_backchannel_count: int
+    estimated_interruption_count: int
+    estimated_usable_event_count: int
 
 
 class SampleListFilter(FrozenBaseModel):

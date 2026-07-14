@@ -19,10 +19,10 @@ def test_quality_result_input_preserves_failed_payload() -> None:
         timing_reliability=None,
         audio_quality=None,
         conversation_annotation=None,
+        conversation_count_estimate=None,
         event_candidates=(),
         raw_quality_score=None,
-        calibrated_quality_score=None,
-        calibration_flags=("bad_audio",),
+        quality_flags=("bad_audio",),
         total_quality_score=None,
         error="ValueError: bad audio",
     )

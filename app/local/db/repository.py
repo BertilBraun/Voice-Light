@@ -60,7 +60,6 @@ class QualityResultInput:
     status: str
     total_quality_score: float | None
     raw_quality_score: float | None
-    calibrated_quality_score: float | None
     interaction_density_score: float | None
     timing_reliability_score: float | None
     audio_quality_score: float | None
@@ -73,6 +72,16 @@ class QualityResultInput:
     backchannel_count: int | None
     interruption_count: int | None
     usable_event_count: int | None
+    annotation_duration_seconds: float | None
+    represented_duration_seconds: float | None
+    estimated_speech_segment_count: int | None
+    estimated_interaction_count: int | None
+    estimated_turn_count: int | None
+    estimated_turn_taking_count: int | None
+    estimated_pause_count: int | None
+    estimated_backchannel_count: int | None
+    estimated_interruption_count: int | None
+    estimated_usable_event_count: int | None
     conversation_events_per_hour: float | None
     speech_ratio: float | None
     silence_ratio: float | None
@@ -353,11 +362,15 @@ class Repository:
                 """
                 INSERT INTO quality_results (
                   sample_id, metric_version, status, total_quality_score, raw_quality_score,
-                  calibrated_quality_score, interaction_density_score, timing_reliability_score,
+                  interaction_density_score, timing_reliability_score,
                   audio_quality_score, conversation_quality_score,
                   interaction_count, speech_segment_count, turn_count, turn_taking_count,
-                  pause_count,
-                  backchannel_count, interruption_count, usable_event_count,
+                  pause_count, backchannel_count, interruption_count, usable_event_count,
+                  annotation_duration_seconds, represented_duration_seconds,
+                  estimated_speech_segment_count, estimated_interaction_count,
+                  estimated_turn_count, estimated_turn_taking_count, estimated_pause_count,
+                  estimated_backchannel_count, estimated_interruption_count,
+                  estimated_usable_event_count,
                   conversation_events_per_hour, speech_ratio, silence_ratio, overlap_ratio,
                   duration_mismatch_seconds, track_correlation, energy_envelope_correlation,
                   flags, payload
@@ -365,7 +378,8 @@ class Repository:
                 VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s, %s
                 )
                 RETURNING *
                 """,
@@ -375,7 +389,6 @@ class Repository:
                     quality_result.status,
                     quality_result.total_quality_score,
                     quality_result.raw_quality_score,
-                    quality_result.calibrated_quality_score,
                     quality_result.interaction_density_score,
                     quality_result.timing_reliability_score,
                     quality_result.audio_quality_score,
@@ -388,6 +401,16 @@ class Repository:
                     quality_result.backchannel_count,
                     quality_result.interruption_count,
                     quality_result.usable_event_count,
+                    quality_result.annotation_duration_seconds,
+                    quality_result.represented_duration_seconds,
+                    quality_result.estimated_speech_segment_count,
+                    quality_result.estimated_interaction_count,
+                    quality_result.estimated_turn_count,
+                    quality_result.estimated_turn_taking_count,
+                    quality_result.estimated_pause_count,
+                    quality_result.estimated_backchannel_count,
+                    quality_result.estimated_interruption_count,
+                    quality_result.estimated_usable_event_count,
                     quality_result.conversation_events_per_hour,
                     quality_result.speech_ratio,
                     quality_result.silence_ratio,
@@ -582,9 +605,10 @@ class Repository:
                   COUNT(latest_quality.id) FILTER (
                     WHERE latest_quality.status = 'invalid'
                   )::integer AS invalid_sample_count,
-                  COALESCE(SUM(samples.duration_seconds) FILTER (
-                    WHERE latest_quality.id IS NOT NULL
-                  ), 0.0)::double precision AS analyzed_duration_seconds,
+                  COALESCE(SUM(latest_quality.annotation_duration_seconds), 0.0)::double precision
+                    AS analyzed_duration_seconds,
+                  COALESCE(SUM(latest_quality.represented_duration_seconds), 0.0)::double precision
+                    AS represented_duration_seconds,
                   COALESCE(SUM(latest_quality.speech_segment_count), 0)::integer
                     AS speech_segment_count,
                   COALESCE(SUM(latest_quality.interaction_count), 0)::integer
@@ -598,7 +622,23 @@ class Repository:
                   COALESCE(SUM(latest_quality.interruption_count), 0)::integer
                     AS interruption_count,
                   COALESCE(SUM(latest_quality.usable_event_count), 0)::integer
-                    AS usable_event_count
+                    AS usable_event_count,
+                  COALESCE(SUM(latest_quality.estimated_speech_segment_count), 0)::integer
+                    AS estimated_speech_segment_count,
+                  COALESCE(SUM(latest_quality.estimated_interaction_count), 0)::integer
+                    AS estimated_interaction_count,
+                  COALESCE(SUM(latest_quality.estimated_turn_count), 0)::integer
+                    AS estimated_turn_count,
+                  COALESCE(SUM(latest_quality.estimated_turn_taking_count), 0)::integer
+                    AS estimated_turn_taking_count,
+                  COALESCE(SUM(latest_quality.estimated_pause_count), 0)::integer
+                    AS estimated_pause_count,
+                  COALESCE(SUM(latest_quality.estimated_backchannel_count), 0)::integer
+                    AS estimated_backchannel_count,
+                  COALESCE(SUM(latest_quality.estimated_interruption_count), 0)::integer
+                    AS estimated_interruption_count,
+                  COALESCE(SUM(latest_quality.estimated_usable_event_count), 0)::integer
+                    AS estimated_usable_event_count
                 FROM samples
                 LEFT JOIN LATERAL (
                   SELECT *

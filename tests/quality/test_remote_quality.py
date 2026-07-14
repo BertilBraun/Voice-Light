@@ -131,10 +131,10 @@ def failed_quality_result() -> QualityResult:
         timing_reliability=None,
         audio_quality=None,
         conversation_annotation=None,
+        conversation_count_estimate=None,
         event_candidates=(),
         raw_quality_score=None,
-        calibrated_quality_score=None,
-        calibration_flags=(),
+        quality_flags=(),
         total_quality_score=None,
         error="test",
     )

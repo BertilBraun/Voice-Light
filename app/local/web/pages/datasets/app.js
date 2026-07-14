@@ -7,7 +7,8 @@ const state = {
 const metricDescriptions = new Map([
   ["Analyzed samples", "Samples with a current conversation-quality result, including results marked invalid."],
   ["Invalid samples", "Samples rejected before scoring, currently because the two track durations differ by more than 1%."],
-  ["Analyzed audio", "Total full recording duration represented by current results; ASR conversation annotations inspect at most the first 180 seconds per sample."],
+  ["Analyzed audio", "Total audio duration actually inspected by ASR, capped at the first 180 seconds of each sample."],
+  ["Represented audio", "Total full recording duration represented by the estimated conversation counts."],
   ["Speech segments", "ASR- and activity-derived stretches of speech found within the first 180 seconds of both tracks."],
   ["Interactions", "Turn-takings, backchannels, and interruptions detected within the first 180 seconds."],
   ["Turns", "Detected points where one speaker's contribution appears complete within the first 180 seconds."],
@@ -16,9 +17,7 @@ const metricDescriptions = new Map([
   ["Backchannels", "Short acknowledgments such as 'yeah,' 'right,' or 'mhm' that support the other speaker without taking the floor."],
   ["Interruptions", "Events where one speaker begins taking the floor before the other speaker has finished."],
   ["Useful events", "Turn completions, pauses, backchannels, and interruptions usable as annotation or training signals."],
-  ["Overall", "The final displayed quality score, currently identical to the calibrated score after rescaling and any warning caps."],
-  ["Calibrated", "The raw score linearly rescaled so 0.70 becomes 0 and 0.98 becomes 1, then limited by any warning-based caps."],
-  ["Raw", "Weighted score: 15% full-file interaction, 10% full-file timing, 25% full-file audio, and 50% first-three-minute conversation annotation."],
+  ["Overall weighted", "Weighted score: 15% full-file interaction, 10% full-file timing, 25% full-file audio, and 50% first-three-minute conversation annotation."],
   ["Interaction", "Full-recording score combining speech coverage, turn-completion rate, useful-candidate rate, and overlap."],
   ["Timing", "Full-recording average of plausible speech-segment durations and balance of detected events between speakers."],
   ["Audio", "Full-recording composite of both track scores, duration agreement, correlation, envelope correlation, and leakage."],
@@ -46,6 +45,19 @@ const metricDescriptions = new Map([
   ["Envelope correlation", "Correlation between full-recording energy envelopes; a high positive value can indicate shared audio, reverb, or bleed."],
   ["Speaker 1 leakage", "Speaker 1 track level during speaker-2-only activity relative to speaker-1-only activity; more negative is better."],
   ["Speaker 2 leakage", "Speaker 2 track level during speaker-1-only activity relative to speaker-2-only activity; more negative is better."],
+]);
+
+const estimatedMetricDescriptions = new Map([
+  ["Speech segments", "Estimated full-conversation speech segments, scaled from this sample's observed ASR annotation window."],
+  ["Interactions", "Estimated full-conversation turn-takings, backchannels, and interruptions, scaled per sample."],
+  ["Turns", "Estimated full-conversation completed speaker contributions, scaled per sample."],
+  ["Turn takings", "Estimated full-conversation transitions to the other speaker, scaled per sample."],
+  ["Pauses", "Estimated full-conversation meaningful internal silences, scaled per sample."],
+  ["Backchannels", "Estimated full-conversation short acknowledgments, scaled per sample."],
+  ["Interruptions", "Estimated full-conversation interruptions, scaled per sample."],
+  ["Useful events", "Estimated full-conversation turn completions, pauses, backchannels, and interruptions available as training signals."],
+  ["Represented duration", "The full duration represented by this sample's extrapolated conversation counts."],
+  ["Scale factor", "Full sample duration divided by the ASR annotation duration; observed counts are multiplied by this value."],
 ]);
 
 const audioTrackMetricDescriptions = new Map([
@@ -124,9 +136,20 @@ async function loadSamples() {
 }
 
 function renderConversationSummary(summary) {
-  const section = createMetricSection("Conversation annotation overview", [
+  const estimatedSection = createMetricSection("Estimated full-conversation totals", [
     ["Analyzed samples", summary.analyzed_sample_count, "integer"],
     ["Invalid samples", summary.invalid_sample_count, "integer"],
+    ["Represented audio", summary.represented_duration_seconds / 3600, "hours"],
+    ["Speech segments", summary.estimated_speech_segment_count, "estimatedInteger"],
+    ["Interactions", summary.estimated_interaction_count, "estimatedInteger"],
+    ["Turns", summary.estimated_turn_count, "estimatedInteger"],
+    ["Turn takings", summary.estimated_turn_taking_count, "estimatedInteger"],
+    ["Pauses", summary.estimated_pause_count, "estimatedInteger"],
+    ["Backchannels", summary.estimated_backchannel_count, "estimatedInteger"],
+    ["Interruptions", summary.estimated_interruption_count, "estimatedInteger"],
+    ["Useful events", summary.estimated_usable_event_count, "estimatedInteger"],
+  ]);
+  const observedSection = createMetricSection("Observed ASR annotations", [
     ["Analyzed audio", summary.analyzed_duration_seconds / 3600, "hours"],
     ["Speech segments", summary.speech_segment_count, "integer"],
     ["Interactions", summary.interaction_count, "integer"],
@@ -137,7 +160,10 @@ function renderConversationSummary(summary) {
     ["Interruptions", summary.interruption_count, "integer"],
     ["Useful events", summary.usable_event_count, "integer"],
   ]);
-  elements.conversationSummary.replaceChildren(...section.childNodes);
+  const note = document.createElement("p");
+  note.className = "summary-note";
+  note.textContent = "Estimates scale each sample's first three minutes of ASR annotations to that sample's full duration.";
+  elements.conversationSummary.replaceChildren(estimatedSection, observedSection, note);
 }
 
 function renderDatasetOptions() {
@@ -198,9 +224,7 @@ function renderSampleDetail(sample) {
 
   container.appendChild(
     createMetricSection("Quality scores", [
-      ["Overall", payload.total_quality_score, "score"],
-      ["Calibrated", payload.calibrated_quality_score, "score"],
-      ["Raw", payload.raw_quality_score, "score"],
+      ["Overall weighted", payload.total_quality_score, "score"],
       ["Interaction", payload.interaction_density?.quality_score, "score"],
       ["Timing", payload.timing_reliability?.quality_score, "score"],
       ["Audio", payload.audio_quality?.quality_score, "score"],
@@ -214,8 +238,10 @@ function renderSampleDetail(sample) {
 
   const interaction = payload.interaction_density || {};
   const conversation = payload.conversation_annotation || {};
+  const conversationEstimate = payload.conversation_count_estimate || {};
+  const estimatedConversation = conversationEstimate.estimated || {};
   container.appendChild(
-    createMetricSection("ASR conversation annotation", [
+    createMetricSection("Observed ASR conversation annotation", [
       ["Analyzed duration", conversation.analyzed_duration_seconds, "seconds"],
       ["Speech segments", conversation.speech_segment_count, "integer"],
       ["Interactions", conversation.interaction_count, "integer"],
@@ -227,6 +253,21 @@ function renderSampleDetail(sample) {
       ["Useful events", conversation.usable_event_count, "integer"],
       ["Events / hour", conversation.events_per_hour, "number"],
       ["Speaker balance", conversation.speaker_balance_score, "score"],
+    ]),
+  );
+
+  container.appendChild(
+    createMetricSection("Estimated full conversation", [
+      ["Represented duration", conversationEstimate.represented_duration_seconds, "seconds"],
+      ["Scale factor", conversationEstimate.scale_factor, "multiplier"],
+      ["Speech segments", estimatedConversation.speech_segment_count, "estimatedInteger"],
+      ["Interactions", estimatedConversation.interaction_count, "estimatedInteger"],
+      ["Turns", estimatedConversation.turn_count, "estimatedInteger"],
+      ["Turn takings", estimatedConversation.turn_taking_count, "estimatedInteger"],
+      ["Pauses", estimatedConversation.pause_count, "estimatedInteger"],
+      ["Backchannels", estimatedConversation.backchannel_count, "estimatedInteger"],
+      ["Interruptions", estimatedConversation.interruption_count, "estimatedInteger"],
+      ["Useful events", estimatedConversation.usable_event_count, "estimatedInteger"],
     ]),
   );
 
@@ -516,19 +557,22 @@ function createMetricSection(title, metrics) {
   heading.textContent = title;
   const grid = document.createElement("div");
   grid.className = "metric-grid";
+  const descriptions = title.startsWith("Estimated")
+    ? estimatedMetricDescriptions
+    : metricDescriptions;
   for (const [label, value, format] of metrics) {
     const metric = document.createElement("div");
     metric.className = "metric-card";
     const metricValue = document.createElement("strong");
     metricValue.textContent = formatMetric(value, format);
-    metric.append(createMetricLabel(label), metricValue);
+    metric.append(createMetricLabel(label, descriptions), metricValue);
     grid.appendChild(metric);
   }
   section.append(heading, grid);
   return section;
 }
 
-function createMetricLabel(label) {
+function createMetricLabel(label, descriptions) {
   const labelRow = document.createElement("div");
   labelRow.className = "metric-label-row";
   const labelText = document.createElement("span");
@@ -536,7 +580,7 @@ function createMetricLabel(label) {
   labelText.textContent = label;
   labelRow.appendChild(labelText);
 
-  const description = metricDescriptions.get(label);
+  const description = descriptions.get(label);
   if (!description) {
     return labelRow;
   }
@@ -692,7 +736,7 @@ function createScoreBadge(value) {
   const badge = document.createElement("div");
   badge.className = `score-badge ${scoreClass(value)}`;
   badge.textContent = formatMetric(value, "score");
-  const description = metricDescriptions.get("Overall");
+  const description = metricDescriptions.get("Overall weighted");
   badge.title = description;
   badge.setAttribute("aria-label", `Overall ${badge.textContent}: ${description}`);
   return badge;
@@ -744,6 +788,10 @@ function formatMetric(value, format) {
       return `${number.toFixed(1)} dB`;
     case "integer":
       return String(Math.round(number));
+    case "estimatedInteger":
+      return `≈${Math.round(number).toLocaleString()}`;
+    case "multiplier":
+      return `${number.toFixed(2)}×`;
     case "hours":
       return `${number.toFixed(2)} h`;
     default:

@@ -22,6 +22,7 @@ def dashboard_script() -> Iterator[str]:
         "Analyzed samples",
         "Invalid samples",
         "Analyzed audio",
+        "Represented audio",
         "Speech segments",
         "Interactions",
         "Turns",
@@ -30,9 +31,7 @@ def dashboard_script() -> Iterator[str]:
         "Backchannels",
         "Interruptions",
         "Useful events",
-        "Overall",
-        "Calibrated",
-        "Raw",
+        "Overall weighted",
         "Interaction",
         "Timing",
         "Audio",
@@ -65,6 +64,29 @@ def dashboard_script() -> Iterator[str]:
 def test_dataset_dashboard_explains_metric(metric_label: str, dashboard_script: str) -> None:
     assert f'["{metric_label}", "' in dashboard_script
     assert 'tooltip.role = "tooltip"' in dashboard_script
+
+
+@pytest.mark.parametrize(
+    "estimated_metric_label",
+    (
+        "Speech segments",
+        "Interactions",
+        "Turns",
+        "Turn takings",
+        "Pauses",
+        "Backchannels",
+        "Interruptions",
+        "Useful events",
+        "Represented duration",
+        "Scale factor",
+    ),
+)
+def test_dataset_dashboard_explains_estimated_metric(
+    estimated_metric_label: str,
+    dashboard_script: str,
+) -> None:
+    assert f'["{estimated_metric_label}", "' in dashboard_script
+    assert "estimatedMetricDescriptions" in dashboard_script
 
 
 @pytest.mark.parametrize(

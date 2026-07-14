@@ -274,22 +274,7 @@ def total_quality_score(
     )
 
 
-def calibrated_quality_score(
-    raw_quality_score: float,
-    interaction_density: InteractionDensityMetrics,
-    timing_reliability: TimingReliabilityMetrics,
-    audio_quality: AudioQualityMetrics,
-    conversation_annotation: ConversationAnnotation | None = None,
-) -> float:
-    flags = calibration_flags(
-        interaction_density, timing_reliability, audio_quality, conversation_annotation
-    )
-    return clamp(
-        min(score_between(raw_quality_score, 0.70, 0.98), calibration_cap(flags)), 0.0, 1.0
-    )
-
-
-def calibration_flags(
+def quality_flags(
     interaction_density: InteractionDensityMetrics,
     timing_reliability: TimingReliabilityMetrics,
     audio_quality: AudioQualityMetrics,
@@ -326,25 +311,6 @@ def calibration_flags(
     if timing_reliability.quality_score < 0.35 and not annotated_interaction_available:
         flags.append("poor_timing_plausibility")
     return tuple(flags)
-
-
-def calibration_cap(flags: tuple[str, ...]) -> float:
-    cap = 1.0
-    if "empty_or_no_interaction" in flags or "both_tracks_low_information" in flags:
-        cap = min(cap, 0.0)
-    if "very_low_rms" in flags:
-        cap = min(cap, 0.15)
-    if "shared_energy_reverb_or_bleed" in flags:
-        cap = min(cap, 0.15)
-    if "severe_overlap" in flags:
-        cap = min(cap, 0.45)
-    if "high_overlap" in flags:
-        cap = min(cap, 0.70)
-    if "low_interaction_duration_mismatch" in flags:
-        cap = min(cap, 0.30)
-    if "poor_timing_plausibility" in flags:
-        cap = min(cap, 0.25)
-    return cap
 
 
 def _count_event_types(event_candidates: tuple[EventCandidate, ...]) -> EventTypeCounts:
