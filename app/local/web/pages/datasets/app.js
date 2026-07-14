@@ -4,14 +4,66 @@ const state = {
   playbackController: null,
 };
 
-const annotationMetricDescriptions = new Map([
-  ["Interactions", "Any speaker exchange counted as a turn-taking, backchannel, or interruption."],
-  ["Turns", "A detected point where one speaker's contribution appears complete."],
-  ["Turn takings", "A transition where the next transcript segment comes from the other speaker."],
-  ["Pauses", "A meaningful silence within one speaker's ongoing contribution."],
-  ["Backchannels", "A short acknowledgment such as 'yeah,' 'right,' or 'mhm' that supports the other speaker without taking the floor."],
-  ["Interruptions", "An event where one speaker begins taking the floor before the other speaker has finished."],
-  ["Useful events", "Any detected turn completion, pause, backchannel, or interruption that can serve as an annotation or training signal."],
+const metricDescriptions = new Map([
+  ["Analyzed samples", "Samples with a current conversation-quality result, including results marked invalid."],
+  ["Invalid samples", "Samples rejected before scoring, currently because the two track durations differ by more than 1%."],
+  ["Analyzed audio", "Total full recording duration represented by current results; ASR conversation annotations inspect at most the first 180 seconds per sample."],
+  ["Speech segments", "ASR- and activity-derived stretches of speech found within the first 180 seconds of both tracks."],
+  ["Interactions", "Turn-takings, backchannels, and interruptions detected within the first 180 seconds."],
+  ["Turns", "Detected points where one speaker's contribution appears complete within the first 180 seconds."],
+  ["Turn takings", "Transitions where the next transcript segment comes from the other speaker within the first 180 seconds."],
+  ["Pauses", "Meaningful silences inside one speaker's ongoing contribution within the first 180 seconds."],
+  ["Backchannels", "Short acknowledgments such as 'yeah,' 'right,' or 'mhm' that support the other speaker without taking the floor."],
+  ["Interruptions", "Events where one speaker begins taking the floor before the other speaker has finished."],
+  ["Useful events", "Turn completions, pauses, backchannels, and interruptions usable as annotation or training signals."],
+  ["Overall", "The final displayed quality score, currently identical to the calibrated score after rescaling and any warning caps."],
+  ["Calibrated", "The raw score linearly rescaled so 0.70 becomes 0 and 0.98 becomes 1, then limited by any warning-based caps."],
+  ["Raw", "Weighted score: 15% full-file interaction, 10% full-file timing, 25% full-file audio, and 50% first-three-minute conversation annotation."],
+  ["Interaction", "Full-recording score combining speech coverage, turn-completion rate, useful-candidate rate, and overlap."],
+  ["Timing", "Full-recording average of plausible speech-segment durations and balance of detected events between speakers."],
+  ["Audio", "Full-recording composite of both track scores, duration agreement, correlation, envelope correlation, and leakage."],
+  ["Conversation", "First-three-minute average of speech coverage, useful-event density, and speaker balance."],
+  ["Analyzed duration", "Duration covered by the ASR conversation annotation, capped at 180 seconds per sample."],
+  ["Events / hour", "Useful first-three-minute annotation events normalized to an hourly rate."],
+  ["Speaker balance", "Balance of annotated speech time between speakers: 1 is equal speaking time and 0 means only one speaker spoke."],
+  ["Speech", "Fraction of the full recording where at least one track is classified as speech."],
+  ["Silence", "Fraction of the full recording where neither track is classified as speech."],
+  ["Overlap", "Fraction of the full recording where both tracks are simultaneously classified as speech."],
+  ["Candidates / hour", "Full-recording rate of turn completions, pauses, responses, interruptions, and backchannels detected by energy VAD."],
+  ["Turns / hour", "Full-recording rate of cross-speaker transitions separated by 0.05 to 2 seconds."],
+  ["Responses / hour", "Full-recording rate at which the next speaker starts within 0.70 seconds of the previous speaker."],
+  ["Interruptions / hour", "Full-recording rate of substantive overlapping starts classified as interruptions."],
+  ["Backchannels / hour", "Full-recording rate of short overlapping acknowledgments classified as backchannels."],
+  ["Median segment", "Median duration of all full-recording VAD speech segments across both tracks."],
+  ["Median turn gap", "Median silence between full-recording cross-speaker turn and response candidates."],
+  ["Median pause", "Median full-recording silence classified as an internal pause for one speaker."],
+  ["Median overlap", "Median duration of full-recording overlap candidates."],
+  ["Tiny fragments", "Fraction of full-recording VAD speech segments shorter than 0.20 seconds."],
+  ["Long segments", "Fraction of full-recording VAD speech segments longer than 30 seconds."],
+  ["Duration gap", "Absolute difference between the full lengths of the two speaker tracks."],
+  ["Duration mismatch", "Track duration gap divided by the longer track duration."],
+  ["Track correlation", "Full-recording waveform correlation between tracks; a high absolute value can indicate duplicated audio or bleed."],
+  ["Envelope correlation", "Correlation between full-recording energy envelopes; a high positive value can indicate shared audio, reverb, or bleed."],
+  ["Speaker 1 leakage", "Speaker 1 track level during speaker-2-only activity relative to speaker-1-only activity; more negative is better."],
+  ["Speaker 2 leakage", "Speaker 2 track level during speaker-1-only activity relative to speaker-2-only activity; more negative is better."],
+]);
+
+const audioTrackMetricDescriptions = new Map([
+  ["Score", "Full-track audio score combining speech coverage, RMS level, clipping, near-zero samples, peak level, and speech/silence balance."],
+  ["RMS", "Root-mean-square signal level over the full track in decibels relative to full scale."],
+  ["Peak", "Largest absolute sample amplitude in the full track, where 1.0 is digital full scale."],
+  ["Clipping", "Fraction of full-track samples at or above 99.9% of digital full scale."],
+  ["Near zero", "Fraction of full-track samples whose absolute amplitude is at most 0.0001."],
+  ["Speech", "Fraction of this full track classified as speech by energy VAD."],
+]);
+
+const eventTypeDescriptions = new Map([
+  ["turn_completion", "A cross-speaker transition with 0.05 to 2 seconds between speakers."],
+  ["pause", "At least 0.75 seconds of silence between one speaker's segments with no activity from the other speaker."],
+  ["start_response", "The next speaker starts within 0.70 seconds after the previous speaker stops."],
+  ["interruption", "A substantive speaker starts during the other speaker and overlaps for at least 0.20 seconds."],
+  ["backchannel", "A short segment of at most 0.85 seconds occurs inside the other speaker's longer contribution."],
+  ["overlap", "Both speaker tracks contain speech for at least 0.12 seconds at the same time."],
 ]);
 
 let nextMetricTooltipId = 1;
@@ -484,10 +536,15 @@ function createMetricLabel(label) {
   labelText.textContent = label;
   labelRow.appendChild(labelText);
 
-  const description = annotationMetricDescriptions.get(label);
+  const description = metricDescriptions.get(label);
   if (!description) {
     return labelRow;
   }
+  appendTooltip(labelRow, label, description);
+  return labelRow;
+}
+
+function appendTooltip(container, label, description) {
   const tooltipId = `metric-tooltip-${nextMetricTooltipId}`;
   nextMetricTooltipId += 1;
   const help = document.createElement("button");
@@ -502,8 +559,7 @@ function createMetricLabel(label) {
   tooltip.className = "metric-tooltip";
   tooltip.role = "tooltip";
   tooltip.textContent = description;
-  labelRow.append(help, tooltip);
-  return labelRow;
+  container.append(help, tooltip);
 }
 
 function createAudioQualitySection(audioQuality) {
@@ -549,6 +605,11 @@ function createAudioQualitySection(audioQuality) {
     ]) {
       const term = document.createElement("dt");
       term.textContent = label;
+      const metricDescription = audioTrackMetricDescriptions.get(label);
+      if (metricDescription) {
+        term.className = "definition-with-tooltip";
+        appendTooltip(term, `${side} ${label}`, metricDescription);
+      }
       const description = document.createElement("dd");
       description.textContent = value;
       details.append(term, description);
@@ -587,6 +648,12 @@ function createEventSection(events, playbackController) {
     const chip = document.createElement("span");
     chip.className = `chip event-${eventType}`;
     chip.textContent = `${formatEventType(eventType)} ${count}`;
+    const eventDescription = eventTypeDescriptions.get(eventType);
+    if (eventDescription) {
+      chip.title = eventDescription;
+      chip.tabIndex = 0;
+      chip.setAttribute("aria-label", `${chip.textContent}: ${eventDescription}`);
+    }
     chips.appendChild(chip);
   }
   section.appendChild(chips);
@@ -603,6 +670,10 @@ function createEventSection(events, playbackController) {
     row.addEventListener("click", () => playbackController.seekTo(event.start_seconds));
     const type = document.createElement("strong");
     type.textContent = formatEventType(event.event_type);
+    const eventDescription = eventTypeDescriptions.get(event.event_type);
+    if (eventDescription) {
+      type.title = eventDescription;
+    }
     const speakers = document.createElement("span");
     speakers.textContent = event.secondary_speaker
       ? `${formatSpeaker(event.primary_speaker)} → ${formatSpeaker(event.secondary_speaker)}`
@@ -621,6 +692,9 @@ function createScoreBadge(value) {
   const badge = document.createElement("div");
   badge.className = `score-badge ${scoreClass(value)}`;
   badge.textContent = formatMetric(value, "score");
+  const description = metricDescriptions.get("Overall");
+  badge.title = description;
+  badge.setAttribute("aria-label", `Overall ${badge.textContent}: ${description}`);
   return badge;
 }
 

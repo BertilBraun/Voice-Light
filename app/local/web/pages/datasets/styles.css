@@ -274,7 +274,9 @@ nav a:hover {
 }
 
 .metric-card:hover .metric-tooltip,
-.metric-card:focus-within .metric-tooltip {
+.metric-card:focus-within .metric-tooltip,
+.definition-with-tooltip:hover .metric-tooltip,
+.definition-with-tooltip:focus-within .metric-tooltip {
   opacity: 1;
   transform: translate(-50%, 0);
   visibility: visible;
@@ -422,6 +424,19 @@ nav a:hover {
   color: #69778a;
 }
 
+.definition-with-tooltip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.definition-with-tooltip:hover,
+.definition-with-tooltip:focus-within {
+  z-index: 10;
+}
+
 .audio-quality-card dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
@@ -439,6 +454,11 @@ nav a:hover {
   padding: 3px 8px;
   font-size: 12px;
   color: #435063;
+}
+
+.chip[tabindex="0"]:focus-visible {
+  outline: 2px solid #1d4f7a;
+  outline-offset: 2px;
 }
 
 .warning-chip {
