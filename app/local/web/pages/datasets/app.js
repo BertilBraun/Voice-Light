@@ -1,3 +1,5 @@
+import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js";
+
 const state = {
   datasets: [],
   samples: [],
@@ -232,14 +234,18 @@ function renderSampleDetail(sample) {
     ]),
   );
 
-  const playbackController = createSynchronizedPlayback(sample);
-  state.playbackController = playbackController;
-  container.appendChild(playbackController.element);
-
   const interaction = payload.interaction_density || {};
   const conversation = payload.conversation_annotation || {};
   const conversationEstimate = payload.conversation_count_estimate || {};
   const estimatedConversation = conversationEstimate.estimated || {};
+  const annotationPlaybackController = createSynchronizedPlayback(sample, {
+    title: payload.conversation_annotation
+      ? "First three minutes with ASR annotations"
+      : "First three minutes",
+    trimmed: true,
+    conversationAnnotation: payload.conversation_annotation,
+  });
+  container.appendChild(annotationPlaybackController.element);
   container.appendChild(
     createMetricSection("Observed ASR conversation annotation", [
       ["Analyzed duration", conversation.analyzed_duration_seconds, "seconds"],
@@ -311,7 +317,22 @@ function renderSampleDetail(sample) {
     container.appendChild(chips);
   }
 
-  container.appendChild(createEventSection(payload.event_candidates || [], playbackController));
+  container.appendChild(
+    createEventSection(payload.event_candidates || [], annotationPlaybackController),
+  );
+
+  const fullPlaybackController = createSynchronizedPlayback(sample, {
+    title: "Full recordings",
+    trimmed: false,
+    conversationAnnotation: null,
+  });
+  container.appendChild(fullPlaybackController.element);
+  state.playbackController = {
+    destroy() {
+      annotationPlaybackController.destroy();
+      fullPlaybackController.destroy();
+    },
+  };
 
   const rawDetails = document.createElement("details");
   rawDetails.className = "raw-details";
@@ -324,13 +345,13 @@ function renderSampleDetail(sample) {
   elements.sampleDetail.replaceChildren(container);
 }
 
-function createSynchronizedPlayback(sample) {
+function createSynchronizedPlayback(sample, playbackOptions) {
   const section = document.createElement("section");
   section.className = "quality-section playback-section";
   const heading = document.createElement("div");
   heading.className = "section-heading";
   const title = document.createElement("h3");
-  title.textContent = "Synchronized playback";
+  title.textContent = playbackOptions.title;
   const status = document.createElement("span");
   status.className = "muted";
   status.textContent = "Loading audio";
@@ -363,21 +384,31 @@ function createSynchronizedPlayback(sample) {
     trackTitle.textContent = formatSpeaker(track.side);
     const metadata = document.createElement("span");
     metadata.className = "muted";
-    metadata.textContent = `${formatSeconds(track.duration_seconds)} · ${track.sample_rate || "?"} Hz · ${track.channels || "?"} ch`;
+    const playbackDurationSeconds = playbackOptions.trimmed
+      ? Math.min(track.duration_seconds, 180)
+      : track.duration_seconds;
+    metadata.textContent = `${formatSeconds(playbackDurationSeconds)} · ${track.sample_rate || "?"} Hz · ${track.channels || "?"} ch`;
     const waveformBox = document.createElement("div");
     waveformBox.className = "waveform-box";
     const canvas = document.createElement("canvas");
-    canvas.className = "waveform-canvas";
+    canvas.className = playbackOptions.conversationAnnotation
+      ? "waveform-canvas annotated-waveform-canvas"
+      : "waveform-canvas";
     canvas.width = 1200;
-    canvas.height = 100;
-    canvas.setAttribute("aria-label", `${formatSpeaker(track.side)} full recording waveform`);
+    canvas.height = playbackOptions.conversationAnnotation ? 150 : 100;
+    canvas.setAttribute(
+      "aria-label",
+      `${formatSpeaker(track.side)} ${playbackOptions.trimmed ? "three-minute annotated" : "full recording"} waveform`,
+    );
     const waveformStatus = document.createElement("span");
     waveformStatus.className = "waveform-status";
-    waveformStatus.textContent = "Building full waveform…";
+    waveformStatus.textContent = playbackOptions.trimmed
+      ? "Building three-minute waveform…"
+      : "Building full waveform…";
     waveformBox.append(canvas, waveformStatus);
     const audio = document.createElement("audio");
     audio.preload = "metadata";
-    audio.src = `/api/dataset-dashboard/audio/${sample.sample.id}/${track.side}`;
+    audio.src = datasetAudioUrl(sample.sample.id, track.side, playbackOptions.trimmed);
     card.append(trackTitle, metadata, waveformBox, audio);
     tracks.appendChild(card);
     const player = { audio, canvas, waveformStatus, baseWaveform: null };
@@ -386,7 +417,12 @@ function createSynchronizedPlayback(sample) {
       const ratio = Math.min(Math.max((event.clientX - bounds.left) / bounds.width, 0), 1);
       seekTo(ratio * duration());
     });
-    void loadTrackWaveform(sample.sample.id, track.side, player).then(update);
+    void loadTrackWaveform(
+      sample.sample.id,
+      track.side,
+      player,
+      playbackOptions,
+    ).then(update);
     return player;
   });
   const audioElements = trackPlayers.map((player) => player.audio);
@@ -492,23 +528,48 @@ function createSynchronizedPlayback(sample) {
   };
 }
 
-async function loadTrackWaveform(sampleId, side, player) {
+async function loadTrackWaveform(sampleId, side, player, playbackOptions) {
   try {
-    const waveform = await fetchJson(`/api/dataset-dashboard/waveform/${sampleId}/${side}?points=1200`);
-    player.baseWaveform = drawWaveformEnvelope(player.canvas, waveform.points);
-    player.waveformStatus.textContent = `Full recording · ${formatClock(waveform.duration_seconds)}`;
+    const waveform = await fetchJson(
+      datasetWaveformUrl(sampleId, side, playbackOptions.trimmed),
+    );
+    player.baseWaveform = drawWaveformEnvelope(
+      player.canvas,
+      waveform.points,
+      waveform.duration_seconds,
+      annotationForSide(playbackOptions.conversationAnnotation, side),
+    );
+    const scope = playbackOptions.trimmed ? "First three minutes" : "Full recording";
+    player.waveformStatus.textContent = `${scope} · ${formatClock(waveform.duration_seconds)}`;
   } catch (error) {
     player.waveformStatus.textContent = error instanceof Error ? error.message : "Waveform unavailable";
   }
 }
 
-function drawWaveformEnvelope(canvas, points) {
+function datasetAudioUrl(sampleId, side, trimmed) {
+  const query = trimmed ? "?trimmed=true" : "";
+  return `/api/dataset-dashboard/audio/${sampleId}/${side}${query}`;
+}
+
+function datasetWaveformUrl(sampleId, side, trimmed) {
+  const trimmedQuery = trimmed ? "&trimmed=true" : "";
+  return `/api/dataset-dashboard/waveform/${sampleId}/${side}?points=1200${trimmedQuery}`;
+}
+
+function annotationForSide(conversationAnnotation, side) {
+  if (!conversationAnnotation) {
+    return null;
+  }
+  return side === "speaker1" ? conversationAnnotation.speaker1 : conversationAnnotation.speaker2;
+}
+
+function drawWaveformEnvelope(canvas, points, durationSeconds, annotation) {
   const context = canvas.getContext("2d");
   if (!context) {
     return null;
   }
   const width = canvas.width;
-  const height = canvas.height;
+  const height = annotation ? 82 : canvas.height;
   const midpoint = height / 2;
   context.fillStyle = "#f8fafc";
   context.fillRect(0, 0, width, height);
@@ -527,7 +588,18 @@ function drawWaveformEnvelope(canvas, points) {
     context.lineTo(x, midpoint - point.minimum_amplitude * midpoint * 0.9);
   }
   context.stroke();
-  return context.getImageData(0, 0, width, height);
+  if (annotation) {
+    drawAnnotationTimelineRow({
+      context,
+      annotation,
+      left: 0,
+      top: 92,
+      width,
+      viewportStartSeconds: 0,
+      viewportEndSeconds: durationSeconds,
+    });
+  }
+  return context.getImageData(0, 0, width, canvas.height);
 }
 
 function renderWaveformProgress(player, progress) {

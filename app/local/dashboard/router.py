@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import Field
 
 from app.local.config import DATABASE_URL
@@ -19,7 +19,8 @@ from app.local.db.models import (
 from app.local.db.repository import Repository
 from app.local.ingestion.discovery import DatasetLayout
 from app.local.ingestion.service import IngestionService
-from app.shared.audio.waveform import full_waveform_envelope
+from app.shared.audio.wav import capped_wave_bytes
+from app.shared.audio.waveform import capped_waveform_envelope, full_waveform_envelope
 from app.shared.base_model import FrozenBaseModel
 
 router = APIRouter(prefix="/api/dataset-dashboard", tags=["dataset-dashboard"])
@@ -171,8 +172,14 @@ def ingest_local_dataset(
 
 
 @router.get("/audio/{sample_id}/{side}")
-def sample_audio(sample_id: UUID, side: TrackSide) -> FileResponse:
+def sample_audio(sample_id: UUID, side: TrackSide, trimmed: bool = False) -> Response:
     source_path = sample_track_path(sample_id=sample_id, side=side)
+    if trimmed:
+        return Response(
+            content=capped_wave_bytes(wave_path=source_path),
+            media_type="audio/wav",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
     return FileResponse(
         source_path,
         media_type="audio/wav",
@@ -187,10 +194,15 @@ def sample_waveform(
     sample_id: UUID,
     side: TrackSide,
     points: int = Query(default=1200, ge=100, le=5000),
+    trimmed: bool = False,
 ) -> WaveformResponse:
     source_path = sample_track_path(sample_id=sample_id, side=side)
     try:
-        envelope = full_waveform_envelope(wave_path=source_path, point_count=points)
+        envelope = (
+            capped_waveform_envelope(wave_path=source_path, point_count=points)
+            if trimmed
+            else full_waveform_envelope(wave_path=source_path, point_count=points)
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return WaveformResponse(

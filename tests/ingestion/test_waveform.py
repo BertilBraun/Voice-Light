@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.shared.audio.waveform import full_waveform_envelope
+from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
+from app.shared.audio.waveform import capped_waveform_envelope, full_waveform_envelope
 
 
 def test_full_waveform_envelope_covers_complete_file(tmp_path: Path) -> None:
@@ -30,3 +31,20 @@ def test_full_waveform_envelope_covers_complete_file(tmp_path: Path) -> None:
 def test_full_waveform_envelope_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Audio file does not exist"):
         full_waveform_envelope(wave_path=tmp_path / "missing.wav", point_count=100)
+
+
+def test_capped_waveform_envelope_covers_analysis_window(tmp_path: Path) -> None:
+    wave_path = tmp_path / "long.wav"
+    sample_rate = 2
+    duration_seconds = int(ANALYSIS_AUDIO_MAX_DURATION_SECONDS) + 20
+    samples = np.arange(sample_rate * duration_seconds, dtype="<i2")
+    with wave.open(str(wave_path), "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(2)
+        wave_writer.setframerate(sample_rate)
+        wave_writer.writeframes(samples.tobytes())
+
+    envelope = capped_waveform_envelope(wave_path=wave_path, point_count=100)
+
+    assert envelope.duration_seconds == ANALYSIS_AUDIO_MAX_DURATION_SECONDS
+    assert len(envelope.points) == 100

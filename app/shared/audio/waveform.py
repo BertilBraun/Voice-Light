@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.shared.audio.wav import mono_samples
+from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS, mono_samples
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,26 @@ class WaveformEnvelope:
 
 
 def full_waveform_envelope(wave_path: Path, point_count: int) -> WaveformEnvelope:
+    return _waveform_envelope(
+        wave_path=wave_path,
+        point_count=point_count,
+        maximum_duration_seconds=None,
+    )
+
+
+def capped_waveform_envelope(wave_path: Path, point_count: int) -> WaveformEnvelope:
+    return _waveform_envelope(
+        wave_path=wave_path,
+        point_count=point_count,
+        maximum_duration_seconds=ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
+    )
+
+
+def _waveform_envelope(
+    wave_path: Path,
+    point_count: int,
+    maximum_duration_seconds: float | None,
+) -> WaveformEnvelope:
     if point_count <= 0:
         raise ValueError("point_count must be positive")
     resolved_path = wave_path.resolve()
@@ -33,6 +53,7 @@ def full_waveform_envelope(wave_path: Path, point_count: int) -> WaveformEnvelop
         wave_path=resolved_path,
         modified_nanoseconds=resolved_path.stat().st_mtime_ns,
         point_count=point_count,
+        maximum_duration_seconds=maximum_duration_seconds,
     )
 
 
@@ -41,6 +62,7 @@ def _cached_waveform_envelope(
     wave_path: Path,
     modified_nanoseconds: int,
     point_count: int,
+    maximum_duration_seconds: float | None,
 ) -> WaveformEnvelope:
     del modified_nanoseconds
     try:
@@ -48,7 +70,12 @@ def _cached_waveform_envelope(
             sample_rate = wave_reader.getframerate()
             sample_width = wave_reader.getsampwidth()
             channel_count = wave_reader.getnchannels()
-            frame_count = wave_reader.getnframes()
+            source_frame_count = wave_reader.getnframes()
+            frame_count = (
+                source_frame_count
+                if maximum_duration_seconds is None
+                else min(source_frame_count, round(sample_rate * maximum_duration_seconds))
+            )
             points = _read_waveform_points(
                 wave_reader=wave_reader,
                 frame_count=frame_count,

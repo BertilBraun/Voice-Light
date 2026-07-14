@@ -404,6 +404,10 @@ nav a:hover {
   cursor: crosshair;
 }
 
+.annotated-waveform-canvas {
+  height: 118px;
+}
+
 .waveform-status {
   position: absolute;
   right: 6px;

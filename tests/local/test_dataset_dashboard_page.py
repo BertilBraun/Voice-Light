@@ -115,3 +115,12 @@ def test_dataset_dashboard_explains_audio_track_metric(
 def test_dataset_dashboard_explains_event_type(event_type: str, dashboard_script: str) -> None:
     assert f'["{event_type}", "' in dashboard_script
     assert "eventTypeDescriptions.get(eventType)" in dashboard_script
+
+
+def test_dataset_dashboard_shows_trimmed_annotations_and_full_recordings(
+    dashboard_script: str,
+) -> None:
+    assert 'from "/pages/shared/annotation-timeline.js"' in dashboard_script
+    assert '"First three minutes with ASR annotations"' in dashboard_script
+    assert 'title: "Full recordings"' in dashboard_script
+    assert 'trimmed ? "?trimmed=true"' in dashboard_script
