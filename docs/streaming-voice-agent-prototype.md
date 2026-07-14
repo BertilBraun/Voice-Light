@@ -24,10 +24,10 @@ validated playback offsets enter model history.
 - The session retains 300 ms of pre-roll and waits another 500 ms after Silero becomes inactive.
   Thus the configured acoustic silence before commitment is approximately 750 ms, plus frame
   scheduling, rather than 500 ms total.
-- NVIDIA Nemotron Speech Streaming English 0.6B uses its 560 ms lookahead configuration until the
+- NVIDIA Nemotron Speech Streaming English 0.6B uses its 160 ms lookahead configuration until the
   session finalizes the utterance. One worker serializes active ASR streams across WebSocket
-  sessions. The browser preserves resampling phase and boundary samples when converting microphone
-  audio to 16 kHz PCM. Set `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` to `0`, `1`, `6`, or `13` to compare
+  sessions. The browser uses a native 16 kHz audio context so its resampler converts microphone
+  audio before PCM16 quantization. Set `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` to `0`, `1`, `6`, or `13` to compare
   the model's 80, 160, 560, and 1120 ms streaming configurations without changing code.
 - Qwen3-1.7B receives the complete ordered conversation and streams non-thinking text deltas.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
