@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -13,7 +13,7 @@ from app.local.analyses.end_of_turn.router import router as end_of_turn_router
 from app.local.asr.router import router as asr_router
 from app.local.config import COMPUTE_BASE_URL, COMPUTE_TOKEN, WEB_ROOT
 from app.local.dashboard.router import router as dataset_dashboard_router
-from app.local.data.sessions import SpeakerName, list_sessions, session_audio_path, session_to_json
+from app.local.data.sessions import SessionEntry, SpeakerName, list_sessions, session_audio_path
 from app.local.voice.compute_client import (
     RemoteComputeVoiceChannel,
     RemoteLanguageModel,
@@ -23,6 +23,14 @@ from app.local.voice.compute_client import (
 from app.local.voice.session import SessionPolicy, VoiceAgentSession, send_session_error
 from app.local.voice.speech_detection import SileroSpeechDetector
 from app.shared.audio.wav import capped_wave_bytes
+from app.shared.base_model import FrozenBaseModel
+
+SESSIONS_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+class SessionListResponse(FrozenBaseModel):
+    sessions: tuple[SessionEntry, ...]
+
 
 app = FastAPI(title="Voice Light")
 app.include_router(asr_router)
@@ -100,8 +108,9 @@ def dataset_ingestion_page() -> FileResponse:
 
 
 @app.get("/api/sessions")
-def sessions_api() -> dict[str, object]:
-    return {"sessions": [session_to_json(session_entry) for session_entry in list_sessions()]}
+def sessions_api(response: Response) -> SessionListResponse:
+    response.headers["Cache-Control"] = SESSIONS_CACHE_CONTROL
+    return SessionListResponse(sessions=list_sessions())
 
 
 @app.get("/api/audio/{identifier}/{speaker_name}")

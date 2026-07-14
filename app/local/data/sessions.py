@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 
 from app.local.config import SESSIONS_ROOT
+from app.shared.base_model import FrozenBaseModel
 
 
 class SpeakerName(StrEnum):
@@ -13,8 +14,7 @@ class SpeakerName(StrEnum):
     SPEAKER2 = "speaker2"
 
 
-@dataclass(frozen=True)
-class SessionEntry:
+class SessionEntry(FrozenBaseModel):
     identifier: str
     duration_seconds: float
     topic: str
@@ -23,11 +23,8 @@ class SessionEntry:
     speaker2_audio_url: str
 
 
-def session_to_json(session_entry: SessionEntry) -> dict[str, object]:
-    return asdict(session_entry)
-
-
-def list_sessions() -> list[SessionEntry]:
+@lru_cache(maxsize=1)
+def list_sessions() -> tuple[SessionEntry, ...]:
     session_entries: list[SessionEntry] = []
     for session_directory in SESSIONS_ROOT.glob("pmt_*"):
         if not session_directory.is_dir():
@@ -40,7 +37,7 @@ def list_sessions() -> list[SessionEntry]:
             continue
         session_entries.append(_session_entry_from_metadata(metadata_path=metadata_path))
 
-    return sorted(session_entries, key=lambda session_entry: session_entry.identifier)
+    return tuple(sorted(session_entries, key=lambda session_entry: session_entry.identifier))
 
 
 def session_audio_path(identifier: str, speaker_name: SpeakerName) -> Path:
