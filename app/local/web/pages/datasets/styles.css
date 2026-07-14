@@ -198,6 +198,7 @@ nav a:hover {
 .metric-card {
   display: grid;
   gap: 3px;
+  position: relative;
   min-width: 0;
   padding: 8px;
   border-radius: 6px;
@@ -205,12 +206,78 @@ nav a:hover {
   border: 1px solid #e4e9ef;
 }
 
-.metric-card span {
+.metric-label-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.metric-label-text {
   overflow: hidden;
   color: #69778a;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.metric-help {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #a9b5c2;
+  border-radius: 50%;
+  color: #526174;
+  background: #f7f9fb;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1;
+  cursor: help;
+}
+
+.metric-help:hover,
+.metric-help:focus-visible {
+  border-color: #1d4f7a;
+  color: #1d4f7a;
+  outline: none;
+}
+
+.metric-tooltip {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% - 2px);
+  left: 50%;
+  width: 250px;
+  max-width: calc(100vw - 64px);
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #1d2430;
+  box-shadow: 0 6px 18px rgb(26 35 48 / 22%);
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 3px);
+  transition: opacity 100ms ease, transform 100ms ease, visibility 100ms ease;
+  visibility: hidden;
+  white-space: normal;
+}
+
+.metric-card:hover,
+.metric-card:focus-within {
+  z-index: 10;
+}
+
+.metric-card:hover .metric-tooltip,
+.metric-card:focus-within .metric-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  visibility: visible;
 }
 
 .metric-card strong {

@@ -4,6 +4,18 @@ const state = {
   playbackController: null,
 };
 
+const annotationMetricDescriptions = new Map([
+  ["Interactions", "Any speaker exchange counted as a turn-taking, backchannel, or interruption."],
+  ["Turns", "A detected point where one speaker's contribution appears complete."],
+  ["Turn takings", "A transition where the next transcript segment comes from the other speaker."],
+  ["Pauses", "A meaningful silence within one speaker's ongoing contribution."],
+  ["Backchannels", "A short acknowledgment such as 'yeah,' 'right,' or 'mhm' that supports the other speaker without taking the floor."],
+  ["Interruptions", "An event where one speaker begins taking the floor before the other speaker has finished."],
+  ["Useful events", "Any detected turn completion, pause, backchannel, or interruption that can serve as an annotation or training signal."],
+]);
+
+let nextMetricTooltipId = 1;
+
 const elements = {
   status: document.querySelector("#status"),
   refreshButton: document.querySelector("#refresh-button"),
@@ -455,15 +467,43 @@ function createMetricSection(title, metrics) {
   for (const [label, value, format] of metrics) {
     const metric = document.createElement("div");
     metric.className = "metric-card";
-    const metricLabel = document.createElement("span");
-    metricLabel.textContent = label;
     const metricValue = document.createElement("strong");
     metricValue.textContent = formatMetric(value, format);
-    metric.append(metricLabel, metricValue);
+    metric.append(createMetricLabel(label), metricValue);
     grid.appendChild(metric);
   }
   section.append(heading, grid);
   return section;
+}
+
+function createMetricLabel(label) {
+  const labelRow = document.createElement("div");
+  labelRow.className = "metric-label-row";
+  const labelText = document.createElement("span");
+  labelText.className = "metric-label-text";
+  labelText.textContent = label;
+  labelRow.appendChild(labelText);
+
+  const description = annotationMetricDescriptions.get(label);
+  if (!description) {
+    return labelRow;
+  }
+  const tooltipId = `metric-tooltip-${nextMetricTooltipId}`;
+  nextMetricTooltipId += 1;
+  const help = document.createElement("button");
+  help.type = "button";
+  help.className = "metric-help";
+  help.textContent = "?";
+  help.setAttribute("aria-label", `Explain ${label}`);
+  help.setAttribute("aria-describedby", tooltipId);
+  help.title = description;
+  const tooltip = document.createElement("span");
+  tooltip.id = tooltipId;
+  tooltip.className = "metric-tooltip";
+  tooltip.role = "tooltip";
+  tooltip.textContent = description;
+  labelRow.append(help, tooltip);
+  return labelRow;
 }
 
 function createAudioQualitySection(audioQuality) {
