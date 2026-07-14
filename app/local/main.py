@@ -14,6 +14,7 @@ from app.local.asr.router import router as asr_router
 from app.local.config import WEB_ROOT
 from app.local.dashboard.router import router as dataset_dashboard_router
 from app.local.data.sessions import SessionEntry, SpeakerName, list_sessions, session_audio_path
+from app.local.training_samples.router import router as training_samples_router
 from app.shared.audio.wav import capped_wave_bytes
 from app.shared.base_model import FrozenBaseModel
 
@@ -29,6 +30,7 @@ app.include_router(asr_router)
 app.include_router(asr_analysis_router)
 app.include_router(end_of_turn_router)
 app.include_router(dataset_dashboard_router)
+app.include_router(training_samples_router)
 app.mount("/pages", StaticFiles(directory=WEB_ROOT / "pages"), name="pages")
 
 
@@ -69,6 +71,14 @@ def dataset_dashboard_page() -> FileResponse:
 def dataset_ingestion_page() -> FileResponse:
     return FileResponse(
         WEB_ROOT / "pages" / "datasets" / "ingest.html", headers={"Cache-Control": "no-store"}
+    )
+
+
+@app.get("/training/sample-lab")
+def training_sample_lab_page() -> FileResponse:
+    return FileResponse(
+        WEB_ROOT / "pages" / "training-samples" / "index.html",
+        headers={"Cache-Control": "no-store"},
     )
 
 
