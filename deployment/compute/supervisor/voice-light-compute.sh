@@ -2,7 +2,7 @@
 set -euo pipefail
 
 utils=/opt/supervisor-scripts/utils
-. "${utils}/logging.sh"
+. "${utils}/logging.sh" ""
 . "${utils}/environment.sh"
 
 repository_root="${WORKSPACE}/Voice-Light"
