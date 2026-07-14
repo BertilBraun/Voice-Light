@@ -7,8 +7,8 @@ const connectionStatus = document.querySelector("#connection-status");
 const sessionGuidance = document.querySelector("#session-guidance");
 const vadStatus = document.querySelector("#vad-status");
 const playbackStatus = document.querySelector("#playback-status");
-const userTranscript = document.querySelector("#user-transcript");
-const assistantTranscript = document.querySelector("#assistant-transcript");
+const conversationHistory = document.querySelector("#conversation-history");
+const conversationEmpty = document.querySelector("#conversation-empty");
 const eventLog = document.querySelector("#event-log");
 
 let socket;
@@ -17,11 +17,56 @@ let captureContext;
 let playbackContext;
 let playbackNode;
 let stopRequested = false;
-let displayedGenerationId;
 let cancelledGenerationId = -1;
 let audioGenerationId = -1;
 let expectedAudioSequence = 0;
+let activeUserTurn;
+const assistantTurns = new Map();
 const intentionallyClosedSockets = new WeakSet();
+
+class ConversationTurn {
+  constructor(role, state) {
+    const followHistory = historyIsAtEnd();
+    conversationEmpty.remove();
+    this.element = document.createElement("article");
+    this.element.className = "conversation-turn";
+    this.element.dataset.role = role;
+    this.element.dataset.state = state;
+
+    const heading = document.createElement("div");
+    heading.className = "turn-heading";
+    const speaker = document.createElement("span");
+    speaker.className = "turn-speaker";
+    speaker.textContent = role === "user" ? "You" : "Assistant";
+    this.meta = document.createElement("span");
+    this.meta.className = "turn-meta";
+    heading.append(speaker, this.meta);
+
+    this.transcript = document.createElement("p");
+    this.transcript.className = "turn-transcript";
+    this.element.append(heading, this.transcript);
+    conversationHistory.append(this.element);
+    this.setState(state);
+    followConversationHistory(followHistory);
+  }
+
+  setText(text) {
+    const followHistory = historyIsAtEnd();
+    this.transcript.textContent = text;
+    followConversationHistory(followHistory);
+  }
+
+  appendText(text) {
+    const followHistory = historyIsAtEnd();
+    this.transcript.textContent += text;
+    followConversationHistory(followHistory);
+  }
+
+  setState(state) {
+    this.element.dataset.state = state;
+    this.meta.textContent = stateLabel(state);
+  }
+}
 
 endpointInput.value = new URLSearchParams(location.search).get("compute") ?? localStorage.getItem(ENDPOINT_STORAGE_KEY) ?? "";
 startButton.addEventListener("click", startSession);
@@ -34,6 +79,7 @@ async function startSession() {
     return;
   }
   localStorage.setItem(ENDPOINT_STORAGE_KEY, endpoint);
+  clearConversationHistory();
   stopRequested = false;
   startButton.disabled = true;
   startButton.textContent = "Starting…";
@@ -173,26 +219,30 @@ function handleMessage(event) {
   if (message.type === "vad.stopped") {
     vadStatus.textContent = "thinking";
   }
-  if (message.type === "transcript.partial" || message.type === "transcript.final") setTranscript(userTranscript, message.text);
+  if (message.type === "transcript.partial" || message.type === "transcript.final") {
+    updateUserDraft(message.text);
+  }
+  if (message.type === "turn.committed") commitUserTurn(message.text);
   if (message.type === "assistant.text.delta") {
-    if (displayedGenerationId !== message.generation_id) {
-      displayedGenerationId = message.generation_id;
-      setTranscript(assistantTranscript, "");
-    }
-    appendTranscript(assistantTranscript, message.text);
+    const turn = assistantTurn(message.generation_id);
+    turn.appendText(message.text);
+    turn.setState("streaming");
     playbackStatus.textContent = "generating";
   }
   if (message.type === "assistant.audio.start") {
     if (playbackContext?.state === "suspended") void playbackContext.resume();
+    assistantTurn(message.generation_id).setState("speaking");
     playbackStatus.textContent = "speaking";
   }
   if (message.type === "assistant.audio.end") {
     playbackNode.port.postMessage({ type: "end", generationId: message.generation_id });
+    assistantTurn(message.generation_id).setState("complete");
     playbackStatus.textContent = "finishing";
   }
   if (message.type === "assistant.cancel") {
     cancelledGenerationId = Math.max(cancelledGenerationId, message.generation_id);
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
+    assistantTurns.get(message.generation_id)?.setState("cancelled");
     vadStatus.textContent = "ready";
     playbackStatus.textContent = "cancelled";
   }
@@ -224,8 +274,66 @@ async function stopMedia() {
   playbackContext = undefined;
 }
 
-function resetControls() { displayedGenerationId = undefined; cancelledGenerationId = -1; audioGenerationId = -1; expectedAudioSequence = 0; startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
+function resetControls() {
+  cancelledGenerationId = -1;
+  audioGenerationId = -1;
+  expectedAudioSequence = 0;
+  startButton.disabled = false;
+  startButton.textContent = "Start microphone";
+  stopButton.disabled = true;
+  vadStatus.textContent = "waiting";
+  playbackStatus.textContent = "waiting";
+}
 function setConnection(state, text, guidance) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; sessionGuidance.dataset.state = state; sessionGuidance.textContent = guidance; }
-function setTranscript(element, text) { element.textContent = text; element.classList.remove("placeholder"); }
-function appendTranscript(element, text) { if (element.classList.contains("placeholder")) setTranscript(element, text); else element.textContent += text; }
 function logEvent(message) { const item = document.createElement("li"); item.textContent = `${new Date().toLocaleTimeString()} ${message.type}`; eventLog.prepend(item); }
+
+function updateUserDraft(text) {
+  if (!activeUserTurn) activeUserTurn = new ConversationTurn("user", "transcribing");
+  activeUserTurn.setText(text);
+}
+
+function commitUserTurn(text) {
+  updateUserDraft(text);
+  activeUserTurn.setState("committed");
+  activeUserTurn = undefined;
+}
+
+function assistantTurn(generationId) {
+  let turn = assistantTurns.get(generationId);
+  if (!turn) {
+    turn = new ConversationTurn("assistant", "streaming");
+    assistantTurns.set(generationId, turn);
+  }
+  return turn;
+}
+
+function clearConversationHistory() {
+  activeUserTurn = undefined;
+  assistantTurns.clear();
+  conversationEmpty.hidden = false;
+  conversationHistory.replaceChildren(conversationEmpty);
+}
+
+function historyIsAtEnd() {
+  const remainingScroll = conversationHistory.scrollHeight - conversationHistory.scrollTop - conversationHistory.clientHeight;
+  return remainingScroll < 80;
+}
+
+function followConversationHistory(shouldFollow) {
+  if (!shouldFollow) return;
+  requestAnimationFrame(() => {
+    conversationHistory.scrollTop = conversationHistory.scrollHeight;
+  });
+}
+
+function stateLabel(state) {
+  switch (state) {
+    case "transcribing": return "transcribing";
+    case "committed": return "heard";
+    case "streaming": return "generating";
+    case "speaking": return "speaking";
+    case "complete": return "complete";
+    case "cancelled": return "interrupted";
+    default: throw new Error(`Unknown conversation turn state: ${state}`);
+  }
+}

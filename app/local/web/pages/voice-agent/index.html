@@ -31,15 +31,22 @@
         </p>
       </section>
 
-      <section class="conversation" aria-live="polite">
-        <article>
-          <div class="speaker">You <span id="vad-status">waiting</span></div>
-          <p id="user-transcript" class="transcript placeholder">Your transcript will appear here.</p>
-        </article>
-        <article>
-          <div class="speaker">Assistant <span id="playback-status">waiting</span></div>
-          <p id="assistant-transcript" class="transcript placeholder">The response will appear here.</p>
-        </article>
+      <section class="conversation" aria-labelledby="conversation-title">
+        <div class="conversation-heading">
+          <div>
+            <p class="eyebrow">Current session</p>
+            <h2 id="conversation-title">Conversation history</h2>
+          </div>
+          <div class="conversation-status" aria-label="Live conversation status">
+            <span>You <strong id="vad-status">waiting</strong></span>
+            <span>Assistant <strong id="playback-status">waiting</strong></span>
+          </div>
+        </div>
+        <div id="conversation-history" class="conversation-history" aria-live="polite">
+          <p id="conversation-empty" class="conversation-empty">
+            Your conversation will appear here as you speak.
+          </p>
+        </div>
       </section>
 
       <details>
