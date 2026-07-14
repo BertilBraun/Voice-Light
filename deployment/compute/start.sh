@@ -20,6 +20,14 @@ source .env.compute
 set +a
 
 uv sync --frozen --python 3.12 --extra compute
+
+if command -v supervisorctl >/dev/null 2>&1 && \
+  supervisorctl status voice-light-compute >/dev/null 2>&1; then
+  supervisorctl restart voice-light-compute
+  echo "Compute server restarted under Supervisor."
+  exit 0
+fi
+
 bash deployment/compute/stop.sh
 
 port="${VOICE_LIGHT_COMPUTE_PORT:-8000}"

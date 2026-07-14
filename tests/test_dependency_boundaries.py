@@ -34,5 +34,24 @@ def test_compute_deployment_installs_compute_extra() -> None:
         assert "uv sync --frozen --python 3.12 --extra compute" in script
 
 
+def test_vast_provisioning_installs_supervisor_service() -> None:
+    provisioning_script = (REPOSITORY_ROOT / "deployment/compute/provision-vast.sh").read_text(
+        encoding="utf-8"
+    )
+    service_script = (REPOSITORY_ROOT / "deployment/compute/install-service.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "bash deployment/compute/bootstrap.sh" in provisioning_script
+    assert "bash deployment/compute/install-service.sh" in provisioning_script
+    assert "supervisorctl update" in service_script
+
+
+def test_compute_lifecycle_commands_support_supervisor() -> None:
+    for script_name in ("start.sh", "status.sh", "stop.sh"):
+        script = (REPOSITORY_ROOT / "deployment/compute" / script_name).read_text(encoding="utf-8")
+        assert "supervisorctl" in script
+
+
 def contains_package(dependencies: tuple[str, ...], package_name: str) -> bool:
     return any(dependency.startswith(package_name) for dependency in dependencies)

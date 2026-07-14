@@ -92,13 +92,28 @@ The ephemeral research WebSocket does not use the HTTP bearer token.
 
 ## Vast.ai compute backend
 
-On a newly rented Ubuntu RTX 4090 instance:
+For a new Vast.ai PyTorch rental, deploy the committed local revision and open the private tunnel
+with one PowerShell command:
+
+```powershell
+.\deployment\compute\deploy-vast.ps1 `
+  -SshHost '<vast-ssh-host>' `
+  -SshPort <vast-ssh-port> `
+  -SshKeyPath "$HOME\.ssh\codex_vast_ed25519"
+```
+
+The command transfers the repository without requiring remote Git credentials, bootstraps the
+locked compute environment, downloads and validates the models, installs an automatically
+restarting Supervisor service, saves the new token in `.runtime/compute.env`, and verifies the
+backend through `http://127.0.0.1:8080`.
+
+To bootstrap from a shell already open on the rental instead:
 
 ```bash
-git clone <repository-url>
+git clone <repository-url> /workspace/Voice-Light
 cd Voice-Light
 bash deployment/compute/bootstrap.sh
-bash deployment/compute/start.sh
+bash deployment/compute/install-service.sh
 ```
 
 `bootstrap.sh` installs Linux audio/compiler packages, installs uv, synchronizes the locked Python
@@ -108,15 +123,15 @@ librosa, and faster-whisper are compute-only dependencies and are not installed 
 The script creates an ignored `.env.compute` containing a new bearer token. Copy the token securely
 into `VOICE_LIGHT_COMPUTE_TOKEN` on the local machine.
 
-After a later pull, restart with:
+After a later pull, synchronize dependencies and restart the Supervisor service with:
 
 ```bash
 git pull
 bash deployment/compute/start.sh
 ```
 
-The start command synchronizes only changed dependencies, stops the tracked process, and starts one
-server on the configured port. Operational commands are:
+The start command synchronizes only changed dependencies and restarts the managed service.
+Operational commands are:
 
 ```bash
 bash deployment/compute/status.sh
@@ -126,3 +141,5 @@ bash deployment/compute/stop.sh
 
 See [provider-neutral compute backend](docs/compute-backend.md) for the deployment boundary,
 endpoints, authentication, readiness behavior, and TTS decision.
+See [Vast.ai deployment](docs/vast-deployment.md) for the rental requirements, one-command local
+deployment, replacement procedure, and cleanup boundary.

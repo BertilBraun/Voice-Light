@@ -7,6 +7,7 @@
 /.cache/compute/
 /logs/compute/
 /run/compute/
+/.runtime/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

@@ -3,6 +3,14 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repository_root"
+
+if command -v supervisorctl >/dev/null 2>&1 && \
+  supervisorctl status voice-light-compute >/dev/null 2>&1; then
+  supervisorctl stop voice-light-compute
+  echo "Compute server stopped under Supervisor."
+  exit 0
+fi
+
 pid_file="run/compute/server.pid"
 
 if [[ ! -f "$pid_file" ]]; then
