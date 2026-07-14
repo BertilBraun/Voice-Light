@@ -19,7 +19,7 @@ set -a
 source .env.compute
 set +a
 
-uv sync --frozen --python 3.12
+uv sync --frozen --python 3.12 --extra compute
 bash deployment/compute/stop.sh
 
 port="${VOICE_LIGHT_COMPUTE_PORT:-8000}"

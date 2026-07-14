@@ -50,7 +50,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 uv python install 3.12
-uv sync --frozen --python 3.12
+uv sync --frozen --python 3.12 --extra compute
 
 mkdir -p .cache/compute/huggingface .cache/compute/torch logs/compute run/compute
 if [[ ! -f .env.compute ]]; then

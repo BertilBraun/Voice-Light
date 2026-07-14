@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+
+pytest.importorskip("pocket_tts", reason="Compute health tests require the compute extra.")
 
 from app.compute.config import ComputeSettings
 from app.compute.main import create_compute_app
