@@ -67,9 +67,8 @@ def smoke_test_tts() -> None:
     model = TTSModel.load_model(language="english")
     voice_state = model.get_state_for_audio_prompt("alba")
     stream = model.generate_audio_stream(voice_state, "Voice Light is ready.")
-    first_chunk = next(stream)
-    stream.close()
-    if first_chunk.numel() == 0:
+    sample_count = sum(audio_chunk.numel() for audio_chunk in stream)
+    if sample_count == 0:
         raise RuntimeError("Pocket TTS produced an empty smoke-test chunk.")
     print("Pocket TTS model and streaming decoder smoke test passed.")
 
