@@ -61,6 +61,7 @@ fi
 set -a
 source .env.compute
 set +a
-.venv/bin/python deployment/compute/validate_environment.py --download-models
+PYTHONPATH="$repository_root" \
+  .venv/bin/python deployment/compute/validate_environment.py --download-models
 
 echo "Bootstrap complete. Start the backend with: bash deployment/compute/start.sh"
