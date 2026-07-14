@@ -10,11 +10,11 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     TARGET_SPEAKER,
     TranscriptTurn,
 )
-from app.local.db.models import SampleListFilter
+from app.local.db.models import JobStatus, SampleListFilter
 from app.local.db.repository import dashboard_filter_sql
 from app.local.ingestion.conversation import conversation_annotation
 from app.local.ingestion.discovery import DiscoveredSample
-from app.local.ingestion.service import process_local_sample
+from app.local.ingestion.service import ingestion_summary, process_local_sample
 from app.shared.quality import (
     AnnotationPoint,
     AnnotationSpan,
@@ -37,6 +37,34 @@ def test_dashboard_summary_filter_reuses_sample_filters() -> None:
     assert "latest_quality.overlap_ratio <= %s" in filter_sql.where_clause
     assert "%s = ANY(samples.quality_flags)" in filter_sql.where_clause
     assert filter_sql.parameters == (0.9, "track_leakage_risk", 0.1)
+
+
+@pytest.mark.parametrize(
+    ("processed_samples", "failed_samples", "sample_errors", "expected_message"),
+    [
+        (0, 1, ("sample: RuntimeError: failed",), "Ingestion failed for 1 of 1 samples"),
+        (2, 1, ("sample: RuntimeError: failed",), "Ingestion failed for 1 of 3 samples"),
+    ],
+)
+def test_ingestion_summary_reports_sample_failures(
+    processed_samples: int,
+    failed_samples: int,
+    sample_errors: tuple[str, ...],
+    expected_message: str,
+) -> None:
+    summary = ingestion_summary(processed_samples, failed_samples, sample_errors)
+
+    assert summary.status is JobStatus.FAILED
+    assert summary.message == expected_message
+    assert summary.error == sample_errors[0]
+
+
+def test_ingestion_summary_completes_without_failures() -> None:
+    summary = ingestion_summary(processed_samples=2, failed_samples=0, sample_errors=())
+
+    assert summary.status is JobStatus.COMPLETED
+    assert summary.message == "Ingestion completed"
+    assert summary.error is None
 
 
 def test_duration_mismatch_is_invalid_without_running_asr(

@@ -86,7 +86,11 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
   }
 
   reportCompletionIfDrained() {
-    if (this.endedGenerationId !== this.generationId || this.availableSampleCount() !== 0) return;
+    if (
+      this.generationId < 1 ||
+      this.endedGenerationId !== this.generationId ||
+      this.availableSampleCount() !== 0
+    ) return;
     this.port.postMessage({ type: "playback.complete", generationId: this.generationId });
     this.endedGenerationId = -1;
   }

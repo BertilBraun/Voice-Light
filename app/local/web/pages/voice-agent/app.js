@@ -136,7 +136,11 @@ async function setupPlayback(inputSampleRate) {
     processorOptions: { inputSampleRate },
   });
   playbackNode.port.onmessage = ({ data }) => {
-    if (data.type === "playback.complete" && socket?.readyState === WebSocket.OPEN) {
+    if (
+      data.type === "playback.complete" &&
+      data.generationId > 0 &&
+      socket?.readyState === WebSocket.OPEN
+    ) {
       socket.send(JSON.stringify({ type: "playback.complete", generation_id: data.generationId }));
       vadStatus.textContent = "ready";
       playbackStatus.textContent = "waiting";

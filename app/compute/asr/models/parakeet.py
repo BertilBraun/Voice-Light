@@ -6,6 +6,11 @@ from threading import Lock
 import librosa
 from transformers import AutoModelForTDT, AutoProcessor
 
+from app.compute.asr.chunking import (
+    ParakeetAudioChunk,
+    global_chunk_words,
+    parakeet_audio_chunks,
+)
 from app.compute.asr.models.base import cuda_device, load_time_seconds
 from app.compute.asr.models.parsing import (
     words_from_parakeet_timestamps,
@@ -38,12 +43,23 @@ class ParakeetAsrModel:
     def transcribe(self, audio_path: Path) -> tuple[TimestampedWord, ...]:
         with self.inference_lock:
             audio, _sample_rate = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
-            inputs = self.processor([audio], sampling_rate=self.sample_rate)
-            inputs.to(self.model.device, dtype=self.model.dtype)
-            output = self.model.generate(**inputs, return_dict_in_generate=True)
-            _decoded_output, decoded_timestamps = self.processor.decode(
-                output.sequences,
-                durations=output.durations,
-                skip_special_tokens=True,
+            words = tuple(
+                word
+                for chunk in parakeet_audio_chunks(audio, self.sample_rate)
+                for word in self._transcribe_chunk(chunk)
             )
-        return tuple(words_from_parakeet_timestamps(decoded_timestamps))
+        return words
+
+    def _transcribe_chunk(self, chunk: ParakeetAudioChunk) -> tuple[TimestampedWord, ...]:
+        inputs = self.processor([chunk.samples], sampling_rate=self.sample_rate)
+        inputs.to(self.model.device, dtype=self.model.dtype)
+        output = self.model.generate(**inputs, return_dict_in_generate=True)
+        _decoded_output, decoded_timestamps = self.processor.decode(
+            output.sequences,
+            durations=output.durations,
+            skip_special_tokens=True,
+        )
+        return global_chunk_words(
+            chunk=chunk,
+            words=tuple(words_from_parakeet_timestamps(decoded_timestamps)),
+        )

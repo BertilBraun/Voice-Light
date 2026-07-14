@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,8 @@ from app.shared.quality_analysis.service import score_two_track_sample
 from app.shared.storage.base import StorageBackend
 from app.shared.storage.local import LocalStorageBackend
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ProcessedSample:
@@ -42,6 +45,13 @@ class ProcessedSample:
     speaker1_metadata: AudioMetadata
     speaker2_metadata: AudioMetadata
     quality_result: QualityResult
+
+
+@dataclass(frozen=True)
+class IngestionSummary:
+    status: JobStatus
+    message: str
+    error: str | None
 
 
 class IngestionService:
@@ -121,24 +131,34 @@ class IngestionService:
             )
             processed_samples = 0
             failed_samples = 0
+            sample_errors: list[str] = []
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [
+                futures = {
                     executor.submit(
                         process_local_sample,
                         storage,
                         discovered_sample,
                         self.repository.database_url,
-                    )
+                    ): discovered_sample
                     for discovered_sample in selected_samples
-                ]
+                }
                 for future in as_completed(futures):
+                    discovered_sample = futures[future]
                     try:
                         persist_processed_sample(
                             self.repository, dataset.id, storage, future.result()
                         )
                         processed_samples += 1
-                    except Exception:
+                    except Exception as error:
                         failed_samples += 1
+                        sample_error = (
+                            f"{discovered_sample.external_id}: {type(error).__name__}: {error}"
+                        )
+                        sample_errors.append(sample_error)
+                        logger.exception(
+                            "ingestion sample failed: %s",
+                            discovered_sample.external_id,
+                        )
                     self.repository.update_ingestion_job(
                         job.id,
                         JobStatus.RUNNING,
@@ -149,12 +169,18 @@ class IngestionService:
                         processed_samples=processed_samples,
                         failed_samples=failed_samples,
                     )
-            self.repository.update_ingestion_job(
-                job.id,
-                JobStatus.COMPLETED,
-                "Ingestion completed",
+            summary = ingestion_summary(
                 processed_samples=processed_samples,
                 failed_samples=failed_samples,
+                sample_errors=tuple(sample_errors),
+            )
+            self.repository.update_ingestion_job(
+                job.id,
+                summary.status,
+                summary.message,
+                processed_samples=processed_samples,
+                failed_samples=failed_samples,
+                error=summary.error,
             )
         except Exception as error:
             self.repository.update_ingestion_job(
@@ -163,6 +189,28 @@ class IngestionService:
                 "Ingestion failed",
                 error=f"{type(error).__name__}: {error}",
             )
+
+
+def ingestion_summary(
+    processed_samples: int,
+    failed_samples: int,
+    sample_errors: tuple[str, ...],
+) -> IngestionSummary:
+    assert processed_samples >= 0
+    assert failed_samples >= 0
+    assert len(sample_errors) == failed_samples
+    if failed_samples:
+        total_samples = processed_samples + failed_samples
+        return IngestionSummary(
+            status=JobStatus.FAILED,
+            message=f"Ingestion failed for {failed_samples} of {total_samples} samples",
+            error="\n".join(sample_errors),
+        )
+    return IngestionSummary(
+        status=JobStatus.COMPLETED,
+        message="Ingestion completed",
+        error=None,
+    )
 
 
 def pending_discovered_samples(

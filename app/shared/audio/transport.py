@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
 from app.shared.quality import QUALITY_SAMPLE_RATE
 
 
@@ -16,6 +17,8 @@ def prepare_analysis_audio(source_path: Path, output_path: Path) -> None:
         "-y",
         "-i",
         str(source_path),
+        "-t",
+        str(ANALYSIS_AUDIO_MAX_DURATION_SECONDS),
         "-map",
         "0:a:0",
         "-ac",
