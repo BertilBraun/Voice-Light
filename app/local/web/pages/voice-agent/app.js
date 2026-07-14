@@ -209,9 +209,11 @@ async function setupCapture(stream) {
   if (captureContext.sampleRate !== INPUT_SAMPLE_RATE) {
     throw new Error(`Browser created a ${captureContext.sampleRate} Hz capture context instead of ${INPUT_SAMPLE_RATE} Hz.`);
   }
-  await captureContext.audioWorklet.addModule("/pages/voice-agent/capture-worklet.js");
+  await captureContext.audioWorklet.addModule("/pages/voice-agent/capture-worklet.js?v=2");
   const source = captureContext.createMediaStreamSource(stream);
-  const captureNode = new AudioWorkletNode(captureContext, "pcm-capture");
+  const captureNode = new AudioWorkletNode(captureContext, "pcm-capture", {
+    processorOptions: { targetSampleRate: INPUT_SAMPLE_RATE },
+  });
   const silentGain = captureContext.createGain();
   silentGain.gain.value = 0;
   console.info("Voice input capture", {

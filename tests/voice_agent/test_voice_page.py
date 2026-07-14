@@ -26,6 +26,8 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "recordedInputChunks.push(data.slice(0))" in script_response.text
     assert "createPcmWav(recordedInputChunks, INPUT_SAMPLE_RATE)" in script_response.text
     assert "new AudioContext({ sampleRate: INPUT_SAMPLE_RATE })" in script_response.text
+    assert "capture-worklet.js?v=2" in script_response.text
+    assert "processorOptions: { targetSampleRate: INPUT_SAMPLE_RATE }" in script_response.text
     assert 'console.info("Voice input capture"' in script_response.text
     assert 'message.type === "assistant.text.delta"' in script_response.text
     assert 'message.type === "assistant.cancel"' in script_response.text
