@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass
 
@@ -193,14 +192,14 @@ def _connection_hypothesis(
     other_turns: list[TranscriptTurn],
 ) -> ConnectionHypothesis:
     gap_seconds = max(0.0, later_turn.start_seconds - earlier_turn.end_seconds)
-    time_merge_confidence = 1.0 / (1.0 + math.exp((gap_seconds - 0.9) / 0.28))
-    other_speaker_coverage = _interval_coverage(
+    time_merge_confidence = 1.0 - _smoothstep(1.5, 2.5, gap_seconds)
+    partner_turn_confidence = _intervening_partner_turn_confidence(
         start_seconds=earlier_turn.end_seconds,
         end_seconds=later_turn.start_seconds,
         turns=other_turns,
     )
-    merge_confidence = _bounded(time_merge_confidence * (1.0 - 0.85 * other_speaker_coverage))
-    pause_presence = _smoothstep(0.12, 0.55, gap_seconds)
+    merge_confidence = _bounded(time_merge_confidence * (1.0 - partner_turn_confidence))
+    pause_presence = _smoothstep(0.08, 0.75, gap_seconds)
     pause_confidence = _bounded(pause_presence * merge_confidence)
     return ConnectionHypothesis(
         earlier_end_seconds=_rounded(earlier_turn.end_seconds),
@@ -372,24 +371,29 @@ def _subtract_interval(
     return remainders
 
 
-def _interval_coverage(
+def _intervening_partner_turn_confidence(
     start_seconds: float,
     end_seconds: float,
     turns: list[TranscriptTurn],
 ) -> float:
-    duration_seconds = end_seconds - start_seconds
-    if duration_seconds <= 0.0:
-        return 0.0
-    covered_seconds = sum(
-        _overlap_seconds(
+    confidence_scores: list[float] = []
+    for turn in turns:
+        overlap_seconds = _overlap_seconds(
             first_start_seconds=start_seconds,
             first_end_seconds=end_seconds,
             second_start_seconds=turn.start_seconds,
             second_end_seconds=turn.end_seconds,
         )
-        for turn in turns
-    )
-    return _bounded(covered_seconds / duration_seconds)
+        if overlap_seconds <= 0.0:
+            continue
+        duration_shortness = 1.0 - _smoothstep(0.5, 1.5, overlap_seconds)
+        word_shortness = _word_shortness(word_count=len(turn.words))
+        lexical_confidence = _lexical_backchannel_confidence(turn=turn)
+        non_turn_confidence = _bounded(
+            0.55 * duration_shortness + 0.3 * word_shortness + 0.15 * lexical_confidence
+        )
+        confidence_scores.append(1.0 - non_turn_confidence)
+    return max(confidence_scores, default=0.0)
 
 
 def _lexical_backchannel_confidence(turn: TranscriptTurn) -> float:

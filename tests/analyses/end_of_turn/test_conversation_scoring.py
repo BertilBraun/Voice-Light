@@ -97,12 +97,13 @@ def test_short_reply_during_other_speaker_gap_scores_as_turn() -> None:
     assert hypothesis.interruption_confidence == 0.0
 
 
-def test_pause_confidence_peaks_before_merge_confidence_falls_away() -> None:
+def test_pause_confidence_rises_until_one_point_five_seconds_then_falls() -> None:
     turns = [
         _turn(speaker="Speaker1", words=(("one", 0.0, 0.4),)),
-        _turn(speaker="Speaker1", words=(("two", 0.5, 0.9),)),
-        _turn(speaker="Speaker1", words=(("three", 1.5, 1.9),)),
-        _turn(speaker="Speaker1", words=(("four", 3.5, 3.9),)),
+        _turn(speaker="Speaker1", words=(("two", 0.55, 0.9),)),
+        _turn(speaker="Speaker1", words=(("three", 2.1, 2.4),)),
+        _turn(speaker="Speaker1", words=(("four", 4.4, 4.7),)),
+        _turn(speaker="Speaker1", words=(("five", 7.3, 7.6),)),
     ]
 
     scored = score_conversation(
@@ -110,15 +111,72 @@ def test_pause_confidence_peaks_before_merge_confidence_falls_away() -> None:
         audio_activity_segments=[],
         target_speaker="Speaker1",
         other_speaker="Speaker2",
-        analysis_end_seconds=5.0,
+        analysis_end_seconds=8.0,
         config=ConversationScoringConfig(),
     )
 
-    short_gap, likely_pause, separate_turn = scored.connection_hypotheses
-    assert short_gap.merge_confidence > likely_pause.merge_confidence
-    assert likely_pause.merge_confidence > separate_turn.merge_confidence
+    short_gap, likely_pause, long_pause, separate_turn = scored.connection_hypotheses
+    assert short_gap.merge_confidence == 1.0
+    assert likely_pause.merge_confidence == 1.0
+    assert long_pause.merge_confidence == 0.5
+    assert separate_turn.merge_confidence == 0.0
     assert short_gap.pause_confidence < likely_pause.pause_confidence
-    assert likely_pause.pause_confidence > separate_turn.pause_confidence
+    assert likely_pause.pause_confidence > long_pause.pause_confidence
+    assert long_pause.pause_confidence > separate_turn.pause_confidence
+
+
+def test_partner_backchannel_does_not_prevent_pause_merge() -> None:
+    turns = [
+        _turn(speaker="Speaker1", words=(("before", 0.0, 0.5),)),
+        _turn(speaker="Speaker2", words=(("yeah", 0.8, 1.1),)),
+        _turn(speaker="Speaker1", words=(("after", 1.5, 2.0),)),
+    ]
+
+    scored = score_conversation(
+        turns=turns,
+        audio_activity_segments=[],
+        target_speaker="Speaker1",
+        other_speaker="Speaker2",
+        analysis_end_seconds=4.0,
+        config=ConversationScoringConfig(),
+    )
+
+    connection = scored.connection_hypotheses[0]
+    assert connection.pause_confidence == 1.0
+    assert connection.merge_confidence == 1.0
+    assert len(scored.end_of_turn_events) == 1
+    assert scored.end_of_turn_events[0].speech_start_seconds == 0.0
+    assert scored.end_of_turn_events[0].speech_end_seconds == 2.0
+
+
+def test_substantive_partner_turn_prevents_pause_merge() -> None:
+    turns = [
+        _turn(speaker="Speaker1", words=(("before", 0.0, 0.5),)),
+        _turn(
+            speaker="Speaker2",
+            words=(
+                ("that", 0.6, 0.75),
+                ("is", 0.75, 0.9),
+                ("my", 0.9, 1.05),
+                ("actual", 1.05, 1.2),
+                ("answer", 1.2, 1.4),
+            ),
+        ),
+        _turn(speaker="Speaker1", words=(("after", 1.5, 2.0),)),
+    ]
+
+    scored = score_conversation(
+        turns=turns,
+        audio_activity_segments=[],
+        target_speaker="Speaker1",
+        other_speaker="Speaker2",
+        analysis_end_seconds=3.0,
+        config=ConversationScoringConfig(),
+    )
+
+    connection = scored.connection_hypotheses[0]
+    assert connection.pause_confidence < 0.5
+    assert connection.merge_confidence < 0.5
 
 
 def test_short_overlap_does_not_score_as_interruption() -> None:
