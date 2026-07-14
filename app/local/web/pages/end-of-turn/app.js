@@ -1,3 +1,5 @@
+import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js";
+
 const sessionSelect = document.querySelector("#session-select");
 const loadingIndicator = document.querySelector("#loading-indicator");
 const playToggleButton = document.querySelector("#play-toggle-button");
@@ -486,66 +488,18 @@ function drawWaveform(row, leftPad, top, trackWidth, height) {
 
 function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   const segmentHypotheses = baselineResult.segment_hypotheses ?? [];
-  const connectionHypotheses = baselineResult.connection_hypotheses ?? [];
   const hasConfidenceScores = segmentHypotheses.length > 0;
   context.fillStyle = "#1e2528";
   context.font = "13px sans-serif";
   context.fillText(baselineLabel(baselineResult.name), 0, top + 26);
-  context.fillStyle = "#f3f5f6";
-  context.fillRect(leftPad, top, trackWidth, 42);
-
-  if (hasConfidenceScores) {
-    drawConnectionHypotheses(connectionHypotheses, leftPad, top, trackWidth);
-  }
-  drawBaselineSpans(
-    baselineResult.speech_segments,
-    leftPad,
-    top + 8,
-    trackWidth,
-    26,
-    "rgba(20, 107, 99, 0.18)",
-    "rgba(20, 107, 99, 0.35)",
-  );
-  if (hasConfidenceScores) {
-    drawSegmentHypotheses(segmentHypotheses, leftPad, top, trackWidth);
-  } else {
-    drawBaselineSpans(
-      baselineResult.pause_spans,
-      leftPad,
-      top + 11,
-      trackWidth,
-      20,
-      "rgba(224, 173, 42, 0.5)",
-      "rgba(156, 110, 0, 0.7)",
-    );
-    drawBaselineSpans(
-      baselineResult.backchannel_spans,
-      leftPad,
-      top + 6,
-      trackWidth,
-      30,
-      "rgba(126, 87, 194, 0.5)",
-      "rgba(90, 54, 153, 0.75)",
-    );
-    drawInterruptionMarkers(
-      baselineResult.interruption_events ?? [],
-      leftPad,
-      top,
-      trackWidth,
-    );
-  }
-
-  context.strokeStyle = "#c2322d";
-  context.fillStyle = "#c2322d";
-  baselineResult.end_of_turn_events.forEach((event) => {
-    if (event.time_seconds < viewportStartSeconds || event.time_seconds > viewportEndSeconds) {
-      return;
-    }
-    const x = leftPad + secondsToRatio(event.time_seconds) * trackWidth;
-    context.beginPath();
-    context.moveTo(x, top - 2);
-    context.lineTo(x, top + 48);
-    context.stroke();
+  drawAnnotationTimelineRow({
+    context,
+    annotation: baselineResult,
+    left: leftPad,
+    top,
+    width: trackWidth,
+    viewportStartSeconds,
+    viewportEndSeconds,
   });
   context.font = "12px sans-serif";
   context.fillText(
@@ -563,139 +517,6 @@ function baselineLabel(name) {
     return "ASR / Speaker 2";
   }
   return name;
-}
-
-function drawSegmentHypotheses(hypotheses, leftPad, top, trackWidth) {
-  hypotheses.forEach((hypothesis) => {
-    if (!timeRangesOverlap(hypothesis.start_seconds, hypothesis.end_seconds)) {
-      return;
-    }
-    const startSeconds = Math.max(hypothesis.start_seconds, viewportStartSeconds);
-    const endSeconds = Math.min(hypothesis.end_seconds, viewportEndSeconds);
-    const x = leftPad + secondsToRatio(startSeconds) * trackWidth;
-    const width = Math.max(
-      1,
-      ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth,
-    );
-    const keepPlayingDominates =
-      hypothesis.keep_playing_confidence >= hypothesis.turn_confidence;
-    context.fillStyle = keepPlayingDominates ? "#d8c9f0" : "#b9dcd8";
-    context.strokeStyle = keepPlayingDominates ? "#6c3eb4" : "#146b63";
-    context.lineWidth = hypothesis.evidence_source === "audio_activity" ? 2 : 1;
-    context.fillRect(x, top + 3, width, 36);
-    context.strokeRect(x, top + 3, width, 36);
-    context.lineWidth = 1;
-    if (hypothesis.evidence_source === "audio_activity") {
-      context.strokeStyle = "#27343a";
-      context.beginPath();
-      context.moveTo(x, top + 3);
-      context.lineTo(Math.min(x + 10, x + width), top + 13);
-      context.moveTo(Math.max(x, x + width - 10), top + 29);
-      context.lineTo(x + width, top + 39);
-      context.stroke();
-    }
-    if (hypothesis.interruption_confidence > 0.02) {
-      context.strokeStyle = "#ca5010";
-      context.lineWidth = 1 + 3 * hypothesis.interruption_confidence;
-      context.beginPath();
-      context.moveTo(x, top + 1);
-      context.lineTo(x, top + 41);
-      context.stroke();
-      context.lineWidth = 1;
-    }
-    if (width >= 62) {
-      context.fillStyle = "#1e2528";
-      context.font = "10px sans-serif";
-      context.fillText(
-        `${keepPlayingDominates ? "KEEP" : "TURN"} ${Math.max(hypothesis.keep_playing_confidence, hypothesis.turn_confidence).toFixed(2)}${hypothesis.evidence_source === "audio_activity" ? " · AUDIO" : ""}`,
-        x + 4,
-        top + 17,
-      );
-    }
-    if (width >= 120) {
-      context.fillText(
-        `K ${hypothesis.keep_playing_confidence.toFixed(2)}  T ${hypothesis.turn_confidence.toFixed(2)}  I ${hypothesis.interruption_confidence.toFixed(2)}`,
-        x + 4,
-        top + 31,
-      );
-    }
-  });
-}
-
-function drawConnectionHypotheses(connections, leftPad, top, trackWidth) {
-  connections.forEach((connection) => {
-    if (!timeRangesOverlap(connection.earlier_end_seconds, connection.later_start_seconds)) {
-      return;
-    }
-    const startSeconds = Math.max(connection.earlier_end_seconds, viewportStartSeconds);
-    const endSeconds = Math.min(connection.later_start_seconds, viewportEndSeconds);
-    const x = leftPad + secondsToRatio(startSeconds) * trackWidth;
-    const width = Math.max(
-      1,
-      ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth,
-    );
-    context.fillStyle = `rgba(224, 173, 42, ${0.55 * connection.pause_confidence})`;
-    context.fillRect(x, top + 11, width, 20);
-    context.strokeStyle = `rgba(20, 107, 99, ${0.15 + 0.8 * connection.merge_confidence})`;
-    context.lineWidth = 1 + 3 * connection.merge_confidence;
-    context.beginPath();
-    context.moveTo(x, top + 35);
-    context.lineTo(x + width, top + 35);
-    context.stroke();
-    context.lineWidth = 1;
-    if (width >= 85) {
-      context.fillStyle = "#5f4b0b";
-      context.font = "10px sans-serif";
-      context.fillText(
-        `P ${connection.pause_confidence.toFixed(2)}  M ${connection.merge_confidence.toFixed(2)}`,
-        x + 4,
-        top + 23,
-      );
-    }
-  });
-}
-
-function drawInterruptionMarkers(interruptions, leftPad, top, trackWidth) {
-  context.strokeStyle = "rgba(146, 50, 8, 0.95)";
-  context.fillStyle = "rgba(202, 80, 16, 0.9)";
-  context.lineWidth = 2;
-  interruptions.forEach((interruption) => {
-    if (
-      interruption.time_seconds < viewportStartSeconds ||
-      interruption.time_seconds > viewportEndSeconds
-    ) {
-      return;
-    }
-    const x = leftPad + secondsToRatio(interruption.time_seconds) * trackWidth;
-    context.beginPath();
-    context.moveTo(x, top + 2);
-    context.lineTo(x, top + 40);
-    context.stroke();
-    context.beginPath();
-    context.moveTo(x, top + 2);
-    context.lineTo(x - 4, top + 9);
-    context.lineTo(x + 4, top + 9);
-    context.closePath();
-    context.fill();
-  });
-  context.lineWidth = 1;
-}
-
-function drawBaselineSpans(spans, leftPad, top, trackWidth, height, fillStyle, strokeStyle) {
-  context.fillStyle = fillStyle;
-  context.strokeStyle = strokeStyle;
-  spans.forEach((segment) => {
-    if (!timeRangesOverlap(segment.start_seconds, segment.end_seconds)) {
-      return;
-    }
-    const startSeconds = Math.max(segment.start_seconds, viewportStartSeconds);
-    const endSeconds = Math.min(segment.end_seconds, viewportEndSeconds);
-    const x = leftPad + secondsToRatio(startSeconds) * trackWidth;
-    const width = ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth;
-    const visibleWidth = Math.max(1, width);
-    context.fillRect(x, top, visibleWidth, height);
-    context.strokeRect(x, top, visibleWidth, height);
-  });
 }
 
 function drawPlayhead(leftPad, trackWidth, layoutHeight, durationSeconds) {
