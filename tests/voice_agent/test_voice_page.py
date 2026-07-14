@@ -9,6 +9,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     with TestClient(app) as client:
         page_response = client.get("/voice-agent")
         script_response = client.get("/pages/voice-agent/app.js")
+        worklet_response = client.get("/pages/voice-agent/playback-worklet.js")
 
     assert page_response.status_code == 200
     assert 'id="conversation-history"' in page_response.text
@@ -21,3 +22,6 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "assistant.audio.sentence"' in script_response.text
     assert 'type: "playback.progress"' in script_response.text
     assert "turn-unspoken" in script_response.text
+    assert "characterCount: message.text_end - message.text_start" in script_response.text
+    assert "playback.characterCount * playedSamples" in worklet_response.text
+    assert "characterOffset === playback.reportedCharacterOffset" in worklet_response.text

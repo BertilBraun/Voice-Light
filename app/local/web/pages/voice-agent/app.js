@@ -302,6 +302,7 @@ function handleMessage(event) {
       generationId: message.generation_id,
       sentenceId: message.sentence_id,
       totalSamples: message.sample_count,
+      characterCount: message.text_end - message.text_start,
     });
   }
   if (message.type === "assistant.cancel") {

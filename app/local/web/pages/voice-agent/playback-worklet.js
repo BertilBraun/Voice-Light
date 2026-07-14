@@ -7,6 +7,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.queuedSampleCount = 0;
     this.sourcePosition = 0;
     this.sentencePlayback = new Map();
+    this.progressSentenceIds = new Set();
     this.generationId = -1;
     this.cancelledGenerationId = -1;
     this.endedGenerationId = -1;
@@ -16,6 +17,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
         this.queuedSampleCount = 0;
         this.sourcePosition = 0;
         this.sentencePlayback.clear();
+        this.progressSentenceIds.clear();
         this.cancelledGenerationId = Math.max(this.cancelledGenerationId, data.generationId);
         this.endedGenerationId = -1;
       } else if (data.type === "audio" && data.generationId > this.cancelledGenerationId) {
@@ -24,6 +26,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
           this.queuedSampleCount = 0;
           this.sourcePosition = 0;
           this.sentencePlayback.clear();
+          this.progressSentenceIds.clear();
           this.generationId = data.generationId;
           this.endedGenerationId = -1;
         }
@@ -35,6 +38,8 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       } else if (data.type === "sentence" && data.generationId === this.generationId) {
         const playback = this.sentencePlayback.get(data.sentenceId) ?? { playedSamples: 0 };
         playback.totalSamples = data.totalSamples;
+        playback.characterCount = data.characterCount;
+        playback.reportedCharacterOffset ??= 0;
         this.sentencePlayback.set(data.sentenceId, playback);
         this.reportSentenceProgress(data.sentenceId);
       } else if (data.type === "end" && data.generationId === this.generationId) {
@@ -61,6 +66,8 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
         this.sourcePosition -= consumedSamples;
       }
     }
+    for (const sentenceId of this.progressSentenceIds) this.reportSentenceProgress(sentenceId);
+    this.progressSentenceIds.clear();
     this.reportCompletionIfDrained();
     return true;
   }
@@ -102,18 +109,23 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     const playback = this.sentencePlayback.get(sentenceId) ?? { playedSamples: 0 };
     playback.playedSamples += sampleCount;
     this.sentencePlayback.set(sentenceId, playback);
-    this.reportSentenceProgress(sentenceId);
+    this.progressSentenceIds.add(sentenceId);
   }
 
   reportSentenceProgress(sentenceId) {
     const playback = this.sentencePlayback.get(sentenceId);
-    if (!playback?.totalSamples || playback.playedSamples === playback.reportedSamples) return;
-    playback.reportedSamples = playback.playedSamples;
+    if (!playback?.totalSamples || !playback.characterCount) return;
+    const playedSamples = Math.min(playback.playedSamples, playback.totalSamples);
+    const characterOffset = Math.floor(
+      playback.characterCount * playedSamples / playback.totalSamples,
+    );
+    if (characterOffset === playback.reportedCharacterOffset) return;
+    playback.reportedCharacterOffset = characterOffset;
     this.port.postMessage({
       type: "sentence.progress",
       generationId: this.generationId,
       sentenceId,
-      playedSamples: Math.min(playback.playedSamples, playback.totalSamples),
+      playedSamples,
       totalSamples: playback.totalSamples,
     });
   }
