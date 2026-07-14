@@ -337,6 +337,12 @@ h2 {
   padding-top: 10px;
 }
 
+.legend-help {
+  color: #425057;
+  font-size: 13px;
+  margin: 8px 0 10px;
+}
+
 .legend span {
   align-items: center;
   display: inline-flex;
@@ -365,8 +371,18 @@ h2 {
 }
 
 .legend-backchannel {
-  background: rgba(126, 87, 194, 0.5);
-  border: 1px solid rgba(90, 54, 153, 0.75);
+  background: #d8c9f0;
+  border: 1px solid #6c3eb4;
+}
+
+.legend-turn {
+  background: #b9dcd8;
+  border: 1px solid #146b63;
+}
+
+.legend-audio-activity {
+  background: #d8c9f0;
+  border: 2px solid #27343a;
 }
 
 .legend-interruption {

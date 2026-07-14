@@ -6,6 +6,7 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     TranscriptTurn,
     TranscriptWord,
 )
+from app.local.analyses.end_of_turn.service import SegmentEvidenceSource, SpeechSegment
 
 
 def test_short_nonlexical_segment_inside_continuous_speech_scores_as_backchannel() -> None:
@@ -23,6 +24,7 @@ def test_short_nonlexical_segment_inside_continuous_speech_scores_as_backchannel
 
     scored = score_conversation(
         turns=[other_turn, target_turn],
+        audio_activity_segments=[],
         target_speaker="Speaker1",
         other_speaker="Speaker2",
         analysis_end_seconds=4.0,
@@ -30,7 +32,7 @@ def test_short_nonlexical_segment_inside_continuous_speech_scores_as_backchannel
     )
 
     hypothesis = scored.segment_hypotheses[0]
-    assert hypothesis.backchannel_confidence > 0.8
+    assert hypothesis.keep_playing_confidence > 0.8
     assert hypothesis.turn_confidence < 0.2
     assert hypothesis.interruption_confidence < 0.2
     assert len(scored.backchannel_spans) == 1
@@ -55,6 +57,7 @@ def test_long_contentful_segment_starting_during_other_speech_scores_as_interrup
 
     scored = score_conversation(
         turns=[other_turn, target_turn],
+        audio_activity_segments=[],
         target_speaker="Speaker1",
         other_speaker="Speaker2",
         analysis_end_seconds=4.0,
@@ -62,14 +65,14 @@ def test_long_contentful_segment_starting_during_other_speech_scores_as_interrup
     )
 
     hypothesis = scored.segment_hypotheses[0]
-    assert hypothesis.backchannel_confidence < 0.2
+    assert hypothesis.keep_playing_confidence < 0.2
     assert hypothesis.turn_confidence > 0.8
     assert hypothesis.interruption_confidence > 0.8
     assert scored.backchannel_spans == []
     assert len(scored.interruption_events) == 1
 
 
-def test_short_segment_between_nearby_other_speaker_segments_scores_as_backchannel() -> None:
+def test_short_reply_during_other_speaker_gap_scores_as_turn() -> None:
     target_turn = _turn(
         speaker="Speaker1",
         words=(("unexpected", 1.0, 1.25),),
@@ -81,6 +84,7 @@ def test_short_segment_between_nearby_other_speaker_segments_scores_as_backchann
 
     scored = score_conversation(
         turns=[*other_turns, target_turn],
+        audio_activity_segments=[],
         target_speaker="Speaker1",
         other_speaker="Speaker2",
         analysis_end_seconds=3.0,
@@ -88,7 +92,8 @@ def test_short_segment_between_nearby_other_speaker_segments_scores_as_backchann
     )
 
     hypothesis = scored.segment_hypotheses[0]
-    assert hypothesis.backchannel_confidence > 0.8
+    assert hypothesis.keep_playing_confidence == 0.0
+    assert hypothesis.turn_confidence == 1.0
     assert hypothesis.interruption_confidence == 0.0
 
 
@@ -102,6 +107,7 @@ def test_pause_confidence_peaks_before_merge_confidence_falls_away() -> None:
 
     scored = score_conversation(
         turns=turns,
+        audio_activity_segments=[],
         target_speaker="Speaker1",
         other_speaker="Speaker2",
         analysis_end_seconds=5.0,
@@ -113,6 +119,48 @@ def test_pause_confidence_peaks_before_merge_confidence_falls_away() -> None:
     assert likely_pause.merge_confidence > separate_turn.merge_confidence
     assert short_gap.pause_confidence < likely_pause.pause_confidence
     assert likely_pause.pause_confidence > separate_turn.pause_confidence
+
+
+def test_short_overlap_does_not_score_as_interruption() -> None:
+    target_turn = _turn(
+        speaker="Speaker1",
+        words=(("reply", 1.0, 1.5),),
+    )
+    other_turn = _turn(
+        speaker="Speaker2",
+        words=(("question", 0.0, 1.1),),
+    )
+
+    scored = score_conversation(
+        turns=[other_turn, target_turn],
+        audio_activity_segments=[],
+        target_speaker="Speaker1",
+        other_speaker="Speaker2",
+        analysis_end_seconds=3.0,
+        config=ConversationScoringConfig(),
+    )
+
+    hypothesis = scored.segment_hypotheses[0]
+    assert hypothesis.turn_confidence > 0.8
+    assert hypothesis.interruption_confidence == 0.0
+
+
+def test_untranscribed_audio_activity_is_exposed_as_keep_playing_candidate() -> None:
+    scored = score_conversation(
+        turns=[],
+        audio_activity_segments=[SpeechSegment(start_seconds=1.0, end_seconds=1.4)],
+        target_speaker="Speaker1",
+        other_speaker="Speaker2",
+        analysis_end_seconds=3.0,
+        config=ConversationScoringConfig(),
+    )
+
+    hypothesis = scored.segment_hypotheses[0]
+    assert hypothesis.evidence_source == SegmentEvidenceSource.AUDIO_ACTIVITY
+    assert hypothesis.keep_playing_confidence == 0.85
+    assert hypothesis.turn_confidence == 0.15
+    assert hypothesis.interruption_confidence == 0.0
+    assert scored.backchannel_spans[0].text == "[untranscribed audio activity]"
 
 
 def _turn(

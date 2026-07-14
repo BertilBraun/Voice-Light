@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
@@ -60,12 +61,18 @@ class InterruptionEvent:
     text: str
 
 
+class SegmentEvidenceSource(StrEnum):
+    TRANSCRIPT = "transcript"
+    AUDIO_ACTIVITY = "audio_activity"
+
+
 @dataclass(frozen=True)
 class SegmentHypothesis:
     start_seconds: float
     end_seconds: float
     text: str
-    backchannel_confidence: float
+    evidence_source: SegmentEvidenceSource
+    keep_playing_confidence: float
     turn_confidence: float
     interruption_confidence: float
 

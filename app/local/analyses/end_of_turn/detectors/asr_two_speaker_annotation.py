@@ -12,6 +12,7 @@ from app.local.analyses.end_of_turn.conversation_scoring import (
     ConversationScoringConfig,
     score_conversation,
 )
+from app.local.analyses.end_of_turn.detectors.naive_vad import run_naive_vad_floor
 from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     INTERNAL_PAUSE_SECONDS,
     OTHER_SPEAKER,
@@ -20,7 +21,7 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     TranscriptTurn,
     TranscriptWord,
 )
-from app.local.analyses.end_of_turn.service import BaselineResult
+from app.local.analyses.end_of_turn.service import BaselineResult, SpeechSegment
 from app.local.asr.client import HttpRemoteAsrClient
 from app.local.asr.repository import AsrTranscriptRepository
 from app.local.asr.service import AsrTranscriptCache, RemoteAsrClientFactory
@@ -139,6 +140,13 @@ class AsrTwoSpeakerAnnotationDetector:
                 other_speaker = TARGET_SPEAKER
         scored_conversation = score_conversation(
             turns=list(transcript_pair.turns),
+            audio_activity_segments=_audio_activity_segments(
+                wave_path=(
+                    speaker1_path
+                    if self.target_track == SpeakerTrack.SPEAKER1
+                    else _speaker2_path(speaker1_path=speaker1_path)
+                )
+            ),
             analysis_end_seconds=transcript_pair.analysis_end_seconds,
             target_speaker=target_speaker,
             other_speaker=other_speaker,
@@ -149,7 +157,7 @@ class AsrTwoSpeakerAnnotationDetector:
             description=self.info.description,
             frame_seconds=self.internal_pause_seconds,
             min_silence_seconds=self.turn_gap_seconds,
-            threshold=SCORING_CONFIG.backchannel_threshold,
+            threshold=SCORING_CONFIG.keep_playing_threshold,
             speech_segments=scored_conversation.speech_segments,
             pause_spans=scored_conversation.pause_spans,
             backchannel_spans=scored_conversation.backchannel_spans,
@@ -203,8 +211,9 @@ def _asr_two_speaker_annotation_detector(
             mode=mode,
             label=label,
             description=(
-                f"{label} with heuristic backchannel, turn, interruption, pause, and merge "
-                "confidence scores over cached crosstalk-filtered Parakeet + Canary transcripts."
+                f"{label} with keep-playing, turn, interruption, pause, and merge confidence "
+                "scores over cached crosstalk-filtered Parakeet + Canary transcripts and "
+                "energy activity."
             ),
         ),
         target_track=target_track,
@@ -219,6 +228,17 @@ def remote_asr_client() -> HttpRemoteAsrClient:
         endpoint_url=REMOTE_ASR_ENDPOINT_URL,
         api_key=COMPUTE_TOKEN,
     )
+
+
+def _audio_activity_segments(wave_path: Path) -> list[SpeechSegment]:
+    return run_naive_vad_floor(
+        wave_path=wave_path,
+        result_name="asr_audio_activity",
+        description="Energy activity used to expose audio omitted by ASR.",
+        frame_seconds=0.03,
+        min_speech_seconds=0.12,
+        min_silence_seconds=0.4,
+    ).speech_segments
 
 
 def merged_asr_turns(

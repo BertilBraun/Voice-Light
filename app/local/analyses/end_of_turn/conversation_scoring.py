@@ -15,6 +15,7 @@ from app.local.analyses.end_of_turn.service import (
     EndOfTurnEvent,
     InterruptionEvent,
     PauseSpan,
+    SegmentEvidenceSource,
     SegmentHypothesis,
     SpeechSegment,
 )
@@ -24,7 +25,7 @@ ROUND_SECONDS_DIGITS = 6
 
 @dataclass(frozen=True)
 class ConversationScoringConfig:
-    backchannel_threshold: float = 0.55
+    keep_playing_threshold: float = 0.55
     turn_threshold: float = 0.5
     interruption_threshold: float = 0.55
     merge_threshold: float = 0.5
@@ -45,6 +46,7 @@ class ScoredConversation:
 
 def score_conversation(
     turns: list[TranscriptTurn],
+    audio_activity_segments: list[SpeechSegment],
     target_speaker: str,
     other_speaker: str,
     analysis_end_seconds: float,
@@ -58,9 +60,20 @@ def score_conversation(
         (turn for turn in turns if turn.speaker == other_speaker),
         key=lambda turn: (turn.start_seconds, turn.end_seconds),
     )
-    segment_hypotheses = [
+    transcript_hypotheses = [
         _segment_hypothesis(target_turn=turn, other_turns=other_turns) for turn in target_turns
     ]
+    activity_hypotheses = [
+        _audio_activity_hypothesis(activity_segment=activity_segment)
+        for activity_segment in _untranscribed_activity_segments(
+            audio_activity_segments=audio_activity_segments,
+            target_turns=target_turns,
+        )
+    ]
+    segment_hypotheses = sorted(
+        [*transcript_hypotheses, *activity_hypotheses],
+        key=lambda hypothesis: (hypothesis.start_seconds, hypothesis.end_seconds),
+    )
     connection_hypotheses = [
         _connection_hypothesis(
             earlier_turn=earlier_turn,
@@ -78,13 +91,13 @@ def score_conversation(
     ]
     backchannel_spans = [
         BackchannelSpan(
-            start_seconds=_rounded(turn.start_seconds),
-            end_seconds=_rounded(turn.end_seconds),
-            duration_seconds=_rounded(turn.end_seconds - turn.start_seconds),
-            text=turn.text,
+            start_seconds=hypothesis.start_seconds,
+            end_seconds=hypothesis.end_seconds,
+            duration_seconds=_rounded(hypothesis.end_seconds - hypothesis.start_seconds),
+            text=hypothesis.text,
         )
-        for turn, hypothesis in zip(target_turns, segment_hypotheses, strict=True)
-        if hypothesis.backchannel_confidence >= config.backchannel_threshold
+        for hypothesis in segment_hypotheses
+        if hypothesis.keep_playing_confidence >= config.keep_playing_threshold
     ]
     interruption_events = [
         InterruptionEvent(
@@ -94,7 +107,7 @@ def score_conversation(
             interrupting_speaker=target_speaker,
             text=turn.text,
         )
-        for turn, hypothesis in zip(target_turns, segment_hypotheses, strict=True)
+        for turn, hypothesis in zip(target_turns, transcript_hypotheses, strict=True)
         if hypothesis.interruption_confidence >= config.interruption_threshold
     ]
     pause_spans = [
@@ -108,7 +121,7 @@ def score_conversation(
     ]
     logical_turns = _logical_turns(
         target_turns=target_turns,
-        segment_hypotheses=segment_hypotheses,
+        segment_hypotheses=transcript_hypotheses,
         connection_hypotheses=connection_hypotheses,
         config=config,
     )
@@ -139,13 +152,13 @@ def _segment_hypothesis(
         target_turn=target_turn,
         other_turns=other_turns,
     )
-    backchannel_confidence = _bounded(
+    keep_playing_confidence = _bounded(
         other_speaker_continuity
         * (0.55 * duration_shortness + 0.3 * word_shortness + 0.15 * lexical_confidence)
     )
-    turn_confidence = 1.0 - backchannel_confidence
+    turn_confidence = 1.0 - keep_playing_confidence
     interruption_confidence = _bounded(
-        _other_speaker_active_at_onset(
+        _sustained_interruption_overlap(
             target_turn=target_turn,
             other_turns=other_turns,
         )
@@ -155,9 +168,22 @@ def _segment_hypothesis(
         start_seconds=_rounded(target_turn.start_seconds),
         end_seconds=_rounded(target_turn.end_seconds),
         text=target_turn.text,
-        backchannel_confidence=_rounded(backchannel_confidence),
+        evidence_source=SegmentEvidenceSource.TRANSCRIPT,
+        keep_playing_confidence=_rounded(keep_playing_confidence),
         turn_confidence=_rounded(turn_confidence),
         interruption_confidence=_rounded(interruption_confidence),
+    )
+
+
+def _audio_activity_hypothesis(activity_segment: SpeechSegment) -> SegmentHypothesis:
+    return SegmentHypothesis(
+        start_seconds=_rounded(activity_segment.start_seconds),
+        end_seconds=_rounded(activity_segment.end_seconds),
+        text="[untranscribed audio activity]",
+        evidence_source=SegmentEvidenceSource.AUDIO_ACTIVITY,
+        keep_playing_confidence=0.85,
+        turn_confidence=0.15,
+        interruption_confidence=0.0,
     )
 
 
@@ -278,42 +304,72 @@ def _other_speaker_continuity(
         continuity_scores.append(
             overlap_fraction * (0.5 + 0.25 * lead_confidence + 0.25 * trail_confidence)
         )
-    bridged_continuity = _bridged_other_speaker_continuity(
-        target_turn=target_turn,
-        other_turns=other_turns,
-    )
-    return max([*continuity_scores, bridged_continuity])
+    return max(continuity_scores, default=0.0)
 
 
-def _bridged_other_speaker_continuity(
-    target_turn: TranscriptTurn,
-    other_turns: list[TranscriptTurn],
-) -> float:
-    earlier_turns = [turn for turn in other_turns if turn.end_seconds <= target_turn.start_seconds]
-    later_turns = [turn for turn in other_turns if turn.start_seconds >= target_turn.end_seconds]
-    if not earlier_turns or not later_turns:
-        return 0.0
-    earlier_turn = max(earlier_turns, key=lambda turn: turn.end_seconds)
-    later_turn = min(later_turns, key=lambda turn: turn.start_seconds)
-    gap_seconds = later_turn.start_seconds - earlier_turn.end_seconds
-    if gap_seconds <= 0.0:
-        return 0.0
-    return 1.0 / (1.0 + math.exp((gap_seconds - 1.8) / 0.3))
-
-
-def _other_speaker_active_at_onset(
+def _sustained_interruption_overlap(
     target_turn: TranscriptTurn,
     other_turns: list[TranscriptTurn],
 ) -> float:
     onset_scores = [
         min(
-            _smoothstep(0.05, 0.5, target_turn.start_seconds - other_turn.start_seconds),
-            _smoothstep(0.05, 0.5, other_turn.end_seconds - target_turn.start_seconds),
+            _smoothstep(0.1, 0.4, target_turn.start_seconds - other_turn.start_seconds),
+            _smoothstep(0.2, 0.6, other_turn.end_seconds - target_turn.start_seconds),
         )
         for other_turn in other_turns
         if other_turn.start_seconds < target_turn.start_seconds < other_turn.end_seconds
     ]
     return max(onset_scores, default=0.0)
+
+
+def _untranscribed_activity_segments(
+    audio_activity_segments: list[SpeechSegment],
+    target_turns: list[TranscriptTurn],
+) -> list[SpeechSegment]:
+    remaining_segments = list(audio_activity_segments)
+    for target_turn in target_turns:
+        remaining_segments = [
+            remainder
+            for activity_segment in remaining_segments
+            for remainder in _subtract_interval(
+                source=activity_segment,
+                exclusion_start_seconds=target_turn.start_seconds - 0.08,
+                exclusion_end_seconds=target_turn.end_seconds + 0.08,
+            )
+        ]
+    return [
+        segment
+        for segment in remaining_segments
+        if segment.end_seconds - segment.start_seconds >= 0.12
+    ]
+
+
+def _subtract_interval(
+    source: SpeechSegment,
+    exclusion_start_seconds: float,
+    exclusion_end_seconds: float,
+) -> list[SpeechSegment]:
+    if (
+        exclusion_end_seconds <= source.start_seconds
+        or exclusion_start_seconds >= source.end_seconds
+    ):
+        return [source]
+    remainders: list[SpeechSegment] = []
+    if exclusion_start_seconds > source.start_seconds:
+        remainders.append(
+            SpeechSegment(
+                start_seconds=source.start_seconds,
+                end_seconds=min(exclusion_start_seconds, source.end_seconds),
+            )
+        )
+    if exclusion_end_seconds < source.end_seconds:
+        remainders.append(
+            SpeechSegment(
+                start_seconds=max(exclusion_end_seconds, source.start_seconds),
+                end_seconds=source.end_seconds,
+            )
+        )
+    return remainders
 
 
 def _interval_coverage(

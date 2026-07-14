@@ -549,7 +549,7 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   });
   context.font = "12px sans-serif";
   context.fillText(
-    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length} | interruptions ${(baselineResult.interruption_events ?? []).length}${hasConfidenceScores ? ` | scored segments ${segmentHypotheses.length}` : ""}`,
+    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | keep-playing ${baselineResult.backchannel_spans.length} | interruptions ${(baselineResult.interruption_events ?? []).length}${hasConfidenceScores ? ` | activity candidates ${segmentHypotheses.length}` : ""}`,
     leftPad,
     top + 62,
   );
@@ -577,26 +577,46 @@ function drawSegmentHypotheses(hypotheses, leftPad, top, trackWidth) {
       1,
       ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth,
     );
-    context.fillStyle = `rgba(126, 87, 194, ${0.08 + 0.72 * hypothesis.backchannel_confidence})`;
-    context.fillRect(x, top + 3, width, 9);
-    context.fillStyle = `rgba(20, 107, 99, ${0.08 + 0.62 * hypothesis.turn_confidence})`;
-    context.fillRect(x, top + 33, width, 6);
+    const keepPlayingDominates =
+      hypothesis.keep_playing_confidence >= hypothesis.turn_confidence;
+    context.fillStyle = keepPlayingDominates ? "#d8c9f0" : "#b9dcd8";
+    context.strokeStyle = keepPlayingDominates ? "#6c3eb4" : "#146b63";
+    context.lineWidth = hypothesis.evidence_source === "audio_activity" ? 2 : 1;
+    context.fillRect(x, top + 3, width, 36);
+    context.strokeRect(x, top + 3, width, 36);
+    context.lineWidth = 1;
+    if (hypothesis.evidence_source === "audio_activity") {
+      context.strokeStyle = "#27343a";
+      context.beginPath();
+      context.moveTo(x, top + 3);
+      context.lineTo(Math.min(x + 10, x + width), top + 13);
+      context.moveTo(Math.max(x, x + width - 10), top + 29);
+      context.lineTo(x + width, top + 39);
+      context.stroke();
+    }
     if (hypothesis.interruption_confidence > 0.02) {
-      context.strokeStyle = `rgba(202, 80, 16, ${0.12 + 0.83 * hypothesis.interruption_confidence})`;
-      context.lineWidth = 1 + 2 * hypothesis.interruption_confidence;
+      context.strokeStyle = "#ca5010";
+      context.lineWidth = 1 + 3 * hypothesis.interruption_confidence;
       context.beginPath();
       context.moveTo(x, top + 1);
       context.lineTo(x, top + 41);
       context.stroke();
       context.lineWidth = 1;
     }
-    if (width >= 115) {
+    if (width >= 62) {
       context.fillStyle = "#1e2528";
       context.font = "10px sans-serif";
       context.fillText(
-        `B ${hypothesis.backchannel_confidence.toFixed(2)}  T ${hypothesis.turn_confidence.toFixed(2)}  I ${hypothesis.interruption_confidence.toFixed(2)}`,
+        `${keepPlayingDominates ? "KEEP" : "TURN"} ${Math.max(hypothesis.keep_playing_confidence, hypothesis.turn_confidence).toFixed(2)}${hypothesis.evidence_source === "audio_activity" ? " · AUDIO" : ""}`,
         x + 4,
-        top + 29,
+        top + 17,
+      );
+    }
+    if (width >= 120) {
+      context.fillText(
+        `K ${hypothesis.keep_playing_confidence.toFixed(2)}  T ${hypothesis.turn_confidence.toFixed(2)}  I ${hypothesis.interruption_confidence.toFixed(2)}`,
+        x + 4,
+        top + 31,
       );
     }
   });

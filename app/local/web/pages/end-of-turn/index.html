@@ -64,12 +64,19 @@
 
       <section class="timeline" aria-label="Timeline">
         <canvas id="timeline-canvas" width="1400" height="520"></canvas>
+        <p class="legend-help">
+          Block color is the decision, not opacity: purple means keep playing and green means
+          take the turn. Zoom in to see K/T/I scores; outlined AUDIO blocks have energy but no
+          ASR words.
+        </p>
         <div class="legend" aria-label="Marker legend">
           <span><i class="legend-speech"></i>Perspective speech segment</span>
           <span><i class="legend-pause"></i>Pause confidence</span>
           <span><i class="legend-merge"></i>Merge confidence</span>
-          <span><i class="legend-backchannel"></i>Backchannel confidence</span>
-          <span><i class="legend-interruption"></i>Interruption confidence</span>
+          <span><i class="legend-backchannel"></i>Keep playing / non-turn</span>
+          <span><i class="legend-turn"></i>Take turn</span>
+          <span><i class="legend-audio-activity"></i>Audio activity without ASR words</span>
+          <span><i class="legend-interruption"></i>Interruption onset</span>
           <span><i class="legend-eot"></i>Predicted end of turn</span>
           <span><i class="legend-playhead"></i>Playback position</span>
         </div>
@@ -87,6 +94,6 @@
       <audio id="speaker2-audio" preload="auto"></audio>
     </main>
 
-    <script src="/pages/end-of-turn/app.js?v=20260713-confidence-scores" type="module"></script>
+    <script src="/pages/end-of-turn/app.js?v=20260714-turn-decisions" type="module"></script>
   </body>
 </html>
