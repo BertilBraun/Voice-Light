@@ -1,46 +1,40 @@
-# Provider-neutral compute backend
+# Focused compute backend
 
 Voice Light is split into two deployable applications:
 
-- The local application (`app.local.main`) owns PostgreSQL, persistent metadata, the website,
-  browser-facing APIs, voice sessions, ordered conversation history, and orchestration.
+- The local application (`app.local.main`) owns PostgreSQL, persistent metadata, the website, and
+  non-voice browser-facing APIs.
 - The compute application (`app.compute.main`) owns disposable model processes and caches. It has
-  no database dependency and exposes authenticated, typed compute APIs.
+  no database dependency. Its voice WebSocket owns the complete ephemeral live session.
 
 The Python package mirrors that deployment boundary:
 
 - `app/local/` contains analyses, batch-ASR orchestration, database access, ingestion, the dataset
-  dashboard, browser voice sessions, and web assets.
+  dashboard, and web assets.
 - `app/compute/` contains batch-ASR model execution, quality scoring, and streaming ASR/LLM/TTS
   execution.
 - `app/shared/` contains only typed compute API models and reusable audio, quality, and storage
   primitives needed on both sides.
 - `app/training/` remains an offline application and does not participate in either runtime.
 
-Compute and shared modules must never import local modules. Local modules may call compute only
-through the schemas in `app.shared` and the authenticated HTTP/WebSocket clients.
+Compute and shared modules must never import local modules. Local modules call compute HTTP APIs
+through the schemas in `app.shared` and their authenticated clients.
 
-The browser WebSocket terminates at the local application. For each browser voice session, the
-local application opens one authenticated WebSocket to the compute backend. That connection
-multiplexes stateful Nemotron ASR audio, LLM token deltas, and Pocket TTS audio chunks. Keeping one
-connection avoids reconnecting for each sentence while keeping turn-taking, history, cancellation,
-and user-visible protocol state local.
-
-Silero VAD runs in the local session because speech start is an orchestration decision: it must
-cancel playback immediately without waiting for a remote round trip. Nemotron retains its genuine
-streaming RNNT state on the compute server for the duration of each utterance. LLM requests contain
-the complete ordered conversation on every turn; the compute server does not persist conversations.
+The browser connects directly to `/v1/voice`. One compute-side `VoiceSession` owns server Silero
+VAD, genuine streaming Nemotron state, turn decisions, conversation history, Qwen/Pocket work, and
+cancellation for the life of that WebSocket. The protocol is optimized for this specific cascade,
+not for provider-neutral ASR/LLM/TTS operations. No voice state survives disconnection.
 
 ## Compute API
 
-All compute endpoints except liveness require `Authorization: Bearer <token>`. The token comes from
-`VOICE_LIGHT_COMPUTE_TOKEN` on both applications.
+Compute HTTP endpoints except liveness require `Authorization: Bearer <token>`. The research voice
+WebSocket is deliberately public for direct use by the browser.
 
 - `GET /health/live`: process liveness; does not imply that models are ready.
 - `GET /health/ready`: ready only after the streaming ASR, LLM, and TTS startup stages complete.
 - `POST /v1/asr:batch`: batch ASR with request-contained base64 audio.
 - `POST /v1/quality:analyze`: two multipart audio uploads plus a sample identifier.
-- `WS /v1/voice`: typed multiplexed streaming ASR, LLM, TTS, and cancellation commands.
+- `WS /v1/voice`: focused, ephemeral cascaded voice session with binary PCM in both directions.
 
 The compute server never accepts filesystem paths or shell commands from HTTP clients. Quality
 uploads are decoded in request-scoped temporary storage and deleted after the response.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -11,17 +11,9 @@ from starlette.background import BackgroundTask
 from app.local.analyses.asr.router import router as asr_analysis_router
 from app.local.analyses.end_of_turn.router import router as end_of_turn_router
 from app.local.asr.router import router as asr_router
-from app.local.config import COMPUTE_BASE_URL, COMPUTE_TOKEN, WEB_ROOT
+from app.local.config import WEB_ROOT
 from app.local.dashboard.router import router as dataset_dashboard_router
 from app.local.data.sessions import SessionEntry, SpeakerName, list_sessions, session_audio_path
-from app.local.voice.compute_client import (
-    RemoteComputeVoiceChannel,
-    RemoteLanguageModel,
-    RemoteSpeechSynthesizer,
-    RemoteStreamingTranscriber,
-)
-from app.local.voice.session import SessionPolicy, VoiceAgentSession, send_session_error
-from app.local.voice.speech_detection import SileroSpeechDetector
 from app.shared.audio.wav import capped_wave_bytes
 from app.shared.base_model import FrozenBaseModel
 
@@ -64,33 +56,6 @@ def voice_agent_page() -> FileResponse:
     return FileResponse(
         WEB_ROOT / "pages" / "voice-agent" / "index.html", headers={"Cache-Control": "no-store"}
     )
-
-
-@app.websocket("/api/voice/session")
-async def voice_agent_session(websocket: WebSocket) -> None:
-    channel = RemoteComputeVoiceChannel(base_url=COMPUTE_BASE_URL, token=COMPUTE_TOKEN)
-    try:
-        await channel.connect()
-    except Exception as error:
-        await websocket.accept()
-        await send_session_error(websocket=websocket, error=error)
-        await websocket.close(code=1013)
-        return
-    try:
-        session = VoiceAgentSession(
-            websocket=websocket,
-            speech_detector=SileroSpeechDetector(),
-            transcriber=RemoteStreamingTranscriber(channel),
-            language_model=RemoteLanguageModel(channel),
-            speech_synthesizer=RemoteSpeechSynthesizer(channel),
-            policy=SessionPolicy(),
-        )
-        await session.run()
-    except Exception as error:
-        await send_session_error(websocket=websocket, error=error)
-        await websocket.close(code=1011)
-    finally:
-        await channel.close()
 
 
 @app.get("/datasets")

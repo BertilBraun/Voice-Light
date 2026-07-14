@@ -18,7 +18,7 @@ from app.compute.config import ComputeSettings
 from app.compute.quality.router import analyze_uploaded_quality
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope, configure_logging, gpu_memory
-from app.compute.voice.router import run_voice_compute_session
+from app.compute.voice.router import run_voice_session
 from app.shared.asr import RemoteAsrRequest, RemoteAsrResponse
 from app.shared.compute_api import HealthStatus, LivenessResponse, ReadinessResponse
 
@@ -93,13 +93,11 @@ def create_compute_app(settings: ComputeSettings) -> FastAPI:
 
     @application.websocket("/v1/voice")
     async def voice(websocket: WebSocket) -> None:
-        if not await authorizer.authorize_websocket(websocket):
-            return
         if not runtime.ready:
             await websocket.close(code=1013, reason="Compute models are not ready.")
             return
         request_id = websocket.headers.get("x-request-id") or str(uuid4())
-        await run_voice_compute_session(
+        await run_voice_session(
             websocket=websocket,
             runtime=runtime,
             request_id=request_id,

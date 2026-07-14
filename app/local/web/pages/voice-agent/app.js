@@ -1,5 +1,5 @@
 const INPUT_SAMPLE_RATE = 16000;
-const OUTPUT_SAMPLE_RATE = 24000;
+const ENDPOINT_STORAGE_KEY = "voice-light-compute-voice-endpoint";
 const endpointInput = document.querySelector("#endpoint-url");
 const startButton = document.querySelector("#start-button");
 const stopButton = document.querySelector("#stop-button");
@@ -18,9 +18,12 @@ let playbackContext;
 let playbackNode;
 let stopRequested = false;
 let displayedGenerationId;
+let cancelledGenerationId = -1;
+let audioGenerationId = -1;
+let expectedAudioSequence = 0;
 const intentionallyClosedSockets = new WeakSet();
 
-endpointInput.value = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/voice/session`;
+endpointInput.value = new URLSearchParams(location.search).get("compute") ?? localStorage.getItem(ENDPOINT_STORAGE_KEY) ?? "";
 startButton.addEventListener("click", startSession);
 stopButton.addEventListener("click", stopSession);
 
@@ -30,18 +33,19 @@ async function startSession() {
     setConnection("error", "Invalid endpoint", "Enter a WebSocket URL beginning with ws:// or wss://.");
     return;
   }
+  localStorage.setItem(ENDPOINT_STORAGE_KEY, endpoint);
   stopRequested = false;
   startButton.disabled = true;
   startButton.textContent = "Starting…";
   stopButton.disabled = false;
   setConnection("starting", "Server starting…", "Waking the server. This can take about a minute after it has scaled down.");
   try {
-    await setupPlayback();
     socket = await openSocket(endpoint);
     setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
     const sessionReady = waitForSessionReady(socket);
     socket.send(JSON.stringify({ type: "session.start", input_sample_rate: INPUT_SAMPLE_RATE }));
-    await sessionReady;
+    const ready = await sessionReady;
+    await setupPlayback(ready.output_sample_rate);
     if (stopRequested) return;
     setConnection("connected", "Connecting microphone…", "Allow microphone access if your browser asks for it.");
     microphoneStream = await navigator.mediaDevices.getUserMedia({
@@ -124,10 +128,20 @@ async function setupCapture(stream) {
   source.connect(captureNode).connect(silentGain).connect(captureContext.destination);
 }
 
-async function setupPlayback() {
-  playbackContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
+async function setupPlayback(inputSampleRate) {
+  playbackContext = new AudioContext();
   await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js");
-  playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", { outputChannelCount: [1] });
+  playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", {
+    outputChannelCount: [1],
+    processorOptions: { inputSampleRate },
+  });
+  playbackNode.port.onmessage = ({ data }) => {
+    if (data.type === "playback.complete" && socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "playback.complete", generation_id: data.generationId }));
+      vadStatus.textContent = "ready";
+      playbackStatus.textContent = "waiting";
+    }
+  };
   playbackNode.connect(playbackContext.destination);
   await playbackContext.resume();
 }
@@ -137,6 +151,14 @@ function handleMessage(event) {
     if (playbackContext?.state === "suspended") void playbackContext.resume();
     const view = new DataView(event.data);
     const generationId = view.getUint32(0, true);
+    const sequenceNumber = view.getUint32(4, true);
+    if (generationId <= cancelledGenerationId) return;
+    if (generationId !== audioGenerationId) {
+      audioGenerationId = generationId;
+      expectedAudioSequence = 0;
+    }
+    if (sequenceNumber !== expectedAudioSequence) return;
+    expectedAudioSequence += 1;
     const pcm = event.data.slice(8);
     playbackNode.port.postMessage({ type: "audio", generationId, pcm }, [pcm]);
     return;
@@ -161,10 +183,11 @@ function handleMessage(event) {
     playbackStatus.textContent = "speaking";
   }
   if (message.type === "assistant.audio.end") {
-    vadStatus.textContent = "ready";
-    playbackStatus.textContent = "waiting";
+    playbackNode.port.postMessage({ type: "end", generationId: message.generation_id });
+    playbackStatus.textContent = "finishing";
   }
   if (message.type === "assistant.cancel") {
+    cancelledGenerationId = Math.max(cancelledGenerationId, message.generation_id);
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
     vadStatus.textContent = "ready";
     playbackStatus.textContent = "cancelled";
@@ -197,7 +220,7 @@ async function stopMedia() {
   playbackContext = undefined;
 }
 
-function resetControls() { displayedGenerationId = undefined; startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
+function resetControls() { displayedGenerationId = undefined; cancelledGenerationId = -1; audioGenerationId = -1; expectedAudioSequence = 0; startButton.disabled = false; startButton.textContent = "Start microphone"; stopButton.disabled = true; vadStatus.textContent = "waiting"; }
 function setConnection(state, text, guidance) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; sessionGuidance.dataset.state = state; sessionGuidance.textContent = guidance; }
 function setTranscript(element, text) { element.textContent = text; element.classList.remove("placeholder"); }
 function appendTranscript(element, text) { if (element.classList.contains("placeholder")) setTranscript(element, text); else element.textContent += text; }

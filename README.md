@@ -76,7 +76,7 @@ this repository's Compose configuration at
 uv run python -m app.local.db.migrate
 ```
 
-Batch ASR, dataset quality analysis, and the voice prototype require the compute backend:
+Batch ASR and dataset quality analysis require the local application to know the compute backend:
 
 ```text
 VOICE_LIGHT_COMPUTE_URL=http://<vast-ip>:8000
@@ -85,6 +85,10 @@ VOICE_LIGHT_COMPUTE_TOKEN=<token from the compute .env.compute file>
 
 The compute URL has no implicit deployment default. The local application fails clearly when a
 compute-backed operation is requested without these values.
+
+The voice prototype instead connects the browser directly to the compute service. Open
+`http://127.0.0.1:8000/voice-agent` and enter `ws://<vast-ip>:8000/v1/voice` in the endpoint field.
+The ephemeral research WebSocket does not use the HTTP bearer token.
 
 ## Vast.ai compute backend
 
