@@ -54,9 +54,29 @@ class BackchannelSpan:
 @dataclass(frozen=True)
 class InterruptionEvent:
     time_seconds: float
+    confidence: float
     interrupted_speaker: str
     interrupting_speaker: str
     text: str
+
+
+@dataclass(frozen=True)
+class SegmentHypothesis:
+    start_seconds: float
+    end_seconds: float
+    text: str
+    backchannel_confidence: float
+    turn_confidence: float
+    interruption_confidence: float
+
+
+@dataclass(frozen=True)
+class ConnectionHypothesis:
+    earlier_end_seconds: float
+    later_start_seconds: float
+    gap_seconds: float
+    pause_confidence: float
+    merge_confidence: float
 
 
 @dataclass(frozen=True)
@@ -71,6 +91,8 @@ class BaselineResult:
     backchannel_spans: list[BackchannelSpan]
     end_of_turn_events: list[EndOfTurnEvent]
     interruption_events: list[InterruptionEvent] = field(default_factory=list)
+    segment_hypotheses: list[SegmentHypothesis] = field(default_factory=list)
+    connection_hypotheses: list[ConnectionHypothesis] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

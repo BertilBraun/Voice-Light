@@ -62,4 +62,6 @@ def test_baseline_to_json_includes_pause_and_backchannel_spans() -> None:
             }
         ],
         "interruption_events": [],
+        "segment_hypotheses": [],
+        "connection_hypotheses": [],
     }

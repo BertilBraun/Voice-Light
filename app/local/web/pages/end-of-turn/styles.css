@@ -360,6 +360,10 @@ h2 {
   border: 1px solid rgba(156, 110, 0, 0.7);
 }
 
+.legend-merge {
+  border-bottom: 4px solid rgba(20, 107, 99, 0.8);
+}
+
 .legend-backchannel {
   background: rgba(126, 87, 194, 0.5);
   border: 1px solid rgba(90, 54, 153, 0.75);

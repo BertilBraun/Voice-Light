@@ -485,12 +485,18 @@ function drawWaveform(row, leftPad, top, trackWidth, height) {
 }
 
 function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
+  const segmentHypotheses = baselineResult.segment_hypotheses ?? [];
+  const connectionHypotheses = baselineResult.connection_hypotheses ?? [];
+  const hasConfidenceScores = segmentHypotheses.length > 0;
   context.fillStyle = "#1e2528";
   context.font = "13px sans-serif";
   context.fillText(baselineLabel(baselineResult.name), 0, top + 26);
   context.fillStyle = "#f3f5f6";
   context.fillRect(leftPad, top, trackWidth, 42);
 
+  if (hasConfidenceScores) {
+    drawConnectionHypotheses(connectionHypotheses, leftPad, top, trackWidth);
+  }
   drawBaselineSpans(
     baselineResult.speech_segments,
     leftPad,
@@ -500,30 +506,34 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
     "rgba(20, 107, 99, 0.18)",
     "rgba(20, 107, 99, 0.35)",
   );
-  drawBaselineSpans(
-    baselineResult.pause_spans,
-    leftPad,
-    top + 11,
-    trackWidth,
-    20,
-    "rgba(224, 173, 42, 0.5)",
-    "rgba(156, 110, 0, 0.7)",
-  );
-  drawBaselineSpans(
-    baselineResult.backchannel_spans,
-    leftPad,
-    top + 6,
-    trackWidth,
-    30,
-    "rgba(126, 87, 194, 0.5)",
-    "rgba(90, 54, 153, 0.75)",
-  );
-  drawInterruptionMarkers(
-    baselineResult.interruption_events ?? [],
-    leftPad,
-    top,
-    trackWidth,
-  );
+  if (hasConfidenceScores) {
+    drawSegmentHypotheses(segmentHypotheses, leftPad, top, trackWidth);
+  } else {
+    drawBaselineSpans(
+      baselineResult.pause_spans,
+      leftPad,
+      top + 11,
+      trackWidth,
+      20,
+      "rgba(224, 173, 42, 0.5)",
+      "rgba(156, 110, 0, 0.7)",
+    );
+    drawBaselineSpans(
+      baselineResult.backchannel_spans,
+      leftPad,
+      top + 6,
+      trackWidth,
+      30,
+      "rgba(126, 87, 194, 0.5)",
+      "rgba(90, 54, 153, 0.75)",
+    );
+    drawInterruptionMarkers(
+      baselineResult.interruption_events ?? [],
+      leftPad,
+      top,
+      trackWidth,
+    );
+  }
 
   context.strokeStyle = "#c2322d";
   context.fillStyle = "#c2322d";
@@ -539,7 +549,7 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
   });
   context.font = "12px sans-serif";
   context.fillText(
-    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length} | interruptions ${(baselineResult.interruption_events ?? []).length}`,
+    `EOT ${countVisibleEndMarkers(baselineResult)}/${baselineResult.end_of_turn_events.length} | pauses ${baselineResult.pause_spans.length} | backchannels ${baselineResult.backchannel_spans.length} | interruptions ${(baselineResult.interruption_events ?? []).length}${hasConfidenceScores ? ` | scored segments ${segmentHypotheses.length}` : ""}`,
     leftPad,
     top + 62,
   );
@@ -547,12 +557,82 @@ function drawBaselineRow(baselineResult, leftPad, top, trackWidth) {
 
 function baselineLabel(name) {
   if (name === "asr_two_speaker_annotation") {
-    return "ASR · Speaker 1";
+    return "ASR / Speaker 1";
   }
   if (name === "asr_two_speaker_annotation_speaker2") {
-    return "ASR · Speaker 2";
+    return "ASR / Speaker 2";
   }
   return name;
+}
+
+function drawSegmentHypotheses(hypotheses, leftPad, top, trackWidth) {
+  hypotheses.forEach((hypothesis) => {
+    if (!timeRangesOverlap(hypothesis.start_seconds, hypothesis.end_seconds)) {
+      return;
+    }
+    const startSeconds = Math.max(hypothesis.start_seconds, viewportStartSeconds);
+    const endSeconds = Math.min(hypothesis.end_seconds, viewportEndSeconds);
+    const x = leftPad + secondsToRatio(startSeconds) * trackWidth;
+    const width = Math.max(
+      1,
+      ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth,
+    );
+    context.fillStyle = `rgba(126, 87, 194, ${0.08 + 0.72 * hypothesis.backchannel_confidence})`;
+    context.fillRect(x, top + 3, width, 9);
+    context.fillStyle = `rgba(20, 107, 99, ${0.08 + 0.62 * hypothesis.turn_confidence})`;
+    context.fillRect(x, top + 33, width, 6);
+    if (hypothesis.interruption_confidence > 0.02) {
+      context.strokeStyle = `rgba(202, 80, 16, ${0.12 + 0.83 * hypothesis.interruption_confidence})`;
+      context.lineWidth = 1 + 2 * hypothesis.interruption_confidence;
+      context.beginPath();
+      context.moveTo(x, top + 1);
+      context.lineTo(x, top + 41);
+      context.stroke();
+      context.lineWidth = 1;
+    }
+    if (width >= 115) {
+      context.fillStyle = "#1e2528";
+      context.font = "10px sans-serif";
+      context.fillText(
+        `B ${hypothesis.backchannel_confidence.toFixed(2)}  T ${hypothesis.turn_confidence.toFixed(2)}  I ${hypothesis.interruption_confidence.toFixed(2)}`,
+        x + 4,
+        top + 29,
+      );
+    }
+  });
+}
+
+function drawConnectionHypotheses(connections, leftPad, top, trackWidth) {
+  connections.forEach((connection) => {
+    if (!timeRangesOverlap(connection.earlier_end_seconds, connection.later_start_seconds)) {
+      return;
+    }
+    const startSeconds = Math.max(connection.earlier_end_seconds, viewportStartSeconds);
+    const endSeconds = Math.min(connection.later_start_seconds, viewportEndSeconds);
+    const x = leftPad + secondsToRatio(startSeconds) * trackWidth;
+    const width = Math.max(
+      1,
+      ((endSeconds - startSeconds) / visibleDurationSeconds()) * trackWidth,
+    );
+    context.fillStyle = `rgba(224, 173, 42, ${0.55 * connection.pause_confidence})`;
+    context.fillRect(x, top + 11, width, 20);
+    context.strokeStyle = `rgba(20, 107, 99, ${0.15 + 0.8 * connection.merge_confidence})`;
+    context.lineWidth = 1 + 3 * connection.merge_confidence;
+    context.beginPath();
+    context.moveTo(x, top + 35);
+    context.lineTo(x + width, top + 35);
+    context.stroke();
+    context.lineWidth = 1;
+    if (width >= 85) {
+      context.fillStyle = "#5f4b0b";
+      context.font = "10px sans-serif";
+      context.fillText(
+        `P ${connection.pause_confidence.toFixed(2)}  M ${connection.merge_confidence.toFixed(2)}`,
+        x + 4,
+        top + 23,
+      );
+    }
+  });
 }
 
 function drawInterruptionMarkers(interruptions, leftPad, top, trackWidth) {

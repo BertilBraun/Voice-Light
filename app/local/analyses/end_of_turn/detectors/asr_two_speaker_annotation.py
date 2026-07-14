@@ -8,6 +8,10 @@ from app.local.analyses.asr.models import AsrModelMode
 from app.local.analyses.asr.service import analyze_asr
 from app.local.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.local.analyses.end_of_turn.cache import LeastRecentlyUsedCache
+from app.local.analyses.end_of_turn.conversation_scoring import (
+    ConversationScoringConfig,
+    score_conversation,
+)
 from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     INTERNAL_PAUSE_SECONDS,
     OTHER_SPEAKER,
@@ -15,7 +19,6 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     TURN_GAP_SECONDS,
     TranscriptTurn,
     TranscriptWord,
-    analyze_two_speaker_turns,
 )
 from app.local.analyses.end_of_turn.service import BaselineResult
 from app.local.asr.client import HttpRemoteAsrClient
@@ -27,6 +30,8 @@ from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
 
 ASR_MODEL_MODE = AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED
 TRANSCRIPT_PAIR_CACHE_SIZE = 20
+SPEECH_SEGMENT_GAP_SECONDS = 0.5
+SCORING_CONFIG = ConversationScoringConfig()
 
 
 @dataclass(frozen=True)
@@ -43,7 +48,6 @@ class AsrTranscriptPairCacheKey:
 class AsrTranscriptPair:
     turns: tuple[TranscriptTurn, ...]
     analysis_end_seconds: float
-    speaker2_path: Path
 
 
 class AsrTwoSpeakerTranscriptSource:
@@ -71,7 +75,6 @@ class AsrTwoSpeakerTranscriptSource:
                 return cached_pair
             transcript_pair = self._load_uncached(
                 speaker1_path=speaker1_path,
-                speaker2_path=speaker2_path,
             )
             self._transcript_pair_cache.put(
                 cache_key=cache_key,
@@ -82,7 +85,6 @@ class AsrTwoSpeakerTranscriptSource:
     def _load_uncached(
         self,
         speaker1_path: Path,
-        speaker2_path: Path,
     ) -> AsrTranscriptPair:
         session_identifier = _session_identifier(speaker1_path=speaker1_path)
         speaker1_response = analyze_asr(
@@ -106,7 +108,7 @@ class AsrTwoSpeakerTranscriptSource:
         turns = merged_asr_turns(
             speaker1_words=speaker1_response.runs[0].transcription.words,
             speaker2_words=speaker2_response.runs[0].transcription.words,
-            turn_gap_seconds=TURN_GAP_SECONDS,
+            turn_gap_seconds=SPEECH_SEGMENT_GAP_SECONDS,
         )
         return AsrTranscriptPair(
             turns=tuple(turns),
@@ -115,7 +117,6 @@ class AsrTwoSpeakerTranscriptSource:
                 speaker2_response.analyzed_duration_seconds,
                 ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
             ),
-            speaker2_path=speaker2_path,
         )
 
 
@@ -131,24 +132,31 @@ class AsrTwoSpeakerAnnotationDetector:
         transcript_pair = self.transcript_source.load(speaker1_path=speaker1_path)
         match self.target_track:
             case SpeakerTrack.SPEAKER1:
-                target_path = speaker1_path
                 target_speaker = TARGET_SPEAKER
                 other_speaker = OTHER_SPEAKER
             case SpeakerTrack.SPEAKER2:
-                target_path = transcript_pair.speaker2_path
                 target_speaker = OTHER_SPEAKER
                 other_speaker = TARGET_SPEAKER
-        return analyze_two_speaker_turns(
-            speaker1_path=target_path,
+        scored_conversation = score_conversation(
             turns=list(transcript_pair.turns),
             analysis_end_seconds=transcript_pair.analysis_end_seconds,
-            result_name=self.info.mode.value,
-            description=self.info.description,
-            turn_gap_seconds=self.turn_gap_seconds,
-            internal_pause_seconds=self.internal_pause_seconds,
             target_speaker=target_speaker,
             other_speaker=other_speaker,
-            include_vad_backchannels=False,
+            config=SCORING_CONFIG,
+        )
+        return BaselineResult(
+            name=self.info.mode.value,
+            description=self.info.description,
+            frame_seconds=self.internal_pause_seconds,
+            min_silence_seconds=self.turn_gap_seconds,
+            threshold=SCORING_CONFIG.backchannel_threshold,
+            speech_segments=scored_conversation.speech_segments,
+            pause_spans=scored_conversation.pause_spans,
+            backchannel_spans=scored_conversation.backchannel_spans,
+            end_of_turn_events=scored_conversation.end_of_turn_events,
+            interruption_events=scored_conversation.interruption_events,
+            segment_hypotheses=scored_conversation.segment_hypotheses,
+            connection_hypotheses=scored_conversation.connection_hypotheses,
         )
 
 
@@ -195,8 +203,8 @@ def _asr_two_speaker_annotation_detector(
             mode=mode,
             label=label,
             description=(
-                f"{label} from cached Parakeet + Canary timing-union transcripts for "
-                "both channels, independently crosstalk-filtered before merging."
+                f"{label} with heuristic backchannel, turn, interruption, pause, and merge "
+                "confidence scores over cached crosstalk-filtered Parakeet + Canary transcripts."
             ),
         ),
         target_track=target_track,

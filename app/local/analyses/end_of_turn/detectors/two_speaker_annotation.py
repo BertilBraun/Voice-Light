@@ -615,6 +615,7 @@ def _interruption_event(
 
     return InterruptionEvent(
         time_seconds=_rounded_seconds(turn.start_seconds),
+        confidence=1.0,
         interrupted_speaker=previous_turn.speaker,
         interrupting_speaker=turn.speaker,
         text=turn.text,
