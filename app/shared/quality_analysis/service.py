@@ -187,6 +187,11 @@ def conversation_count_estimate(
         represented_duration_seconds / annotation.analyzed_duration_seconds,
     )
     observed = conversation_event_counts(annotation)
+    estimated_turn_count = round(observed.turn_count * scale_factor)
+    estimated_turn_taking_count = round(observed.turn_taking_count * scale_factor)
+    estimated_pause_count = round(observed.pause_count * scale_factor)
+    estimated_backchannel_count = round(observed.backchannel_count * scale_factor)
+    estimated_interruption_count = round(observed.interruption_count * scale_factor)
     return ConversationCountEstimate(
         annotation_duration_seconds=annotation.analyzed_duration_seconds,
         represented_duration_seconds=represented_duration_seconds,
@@ -194,13 +199,22 @@ def conversation_count_estimate(
         observed=observed,
         estimated=ConversationEventCounts(
             speech_segment_count=round(observed.speech_segment_count * scale_factor),
-            interaction_count=round(observed.interaction_count * scale_factor),
-            turn_count=round(observed.turn_count * scale_factor),
-            turn_taking_count=round(observed.turn_taking_count * scale_factor),
-            pause_count=round(observed.pause_count * scale_factor),
-            backchannel_count=round(observed.backchannel_count * scale_factor),
-            interruption_count=round(observed.interruption_count * scale_factor),
-            usable_event_count=round(observed.usable_event_count * scale_factor),
+            interaction_count=(
+                estimated_turn_taking_count
+                + estimated_backchannel_count
+                + estimated_interruption_count
+            ),
+            turn_count=estimated_turn_count,
+            turn_taking_count=estimated_turn_taking_count,
+            pause_count=estimated_pause_count,
+            backchannel_count=estimated_backchannel_count,
+            interruption_count=estimated_interruption_count,
+            usable_event_count=(
+                estimated_turn_count
+                + estimated_pause_count
+                + estimated_backchannel_count
+                + estimated_interruption_count
+            ),
         ),
     )
 
