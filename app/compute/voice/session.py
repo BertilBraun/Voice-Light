@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.compute.voice.conversation import ConversationMessage, ConversationRole
 from app.compute.voice.interfaces import (
     LanguageModel,
     SpeechDetector,
@@ -32,7 +33,6 @@ from app.compute.voice.schemas import (
     voice_client_event_adapter,
 )
 from app.compute.voice.sentence_chunking import SentenceTextChunker
-from app.shared.compute_api import ConversationMessage, ConversationRole
 
 INPUT_SAMPLE_RATE = 16_000
 PCM_BYTES_PER_SAMPLE = 2

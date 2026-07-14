@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncIterator, Iterator
-from typing import Final
+from typing import Final, Literal, TypedDict
 
 import numpy as np
 import torch
@@ -16,7 +16,7 @@ from transformers import (
     TextIteratorStreamer,
 )
 
-from app.shared.compute_api import ConversationMessage
+from app.compute.voice.conversation import ConversationMessage
 
 LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-1.7B"
 LANGUAGE_MODEL_REVISION: Final = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
@@ -27,6 +27,11 @@ LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
 )
 POCKET_TTS_LANGUAGE: Final = "english"
 POCKET_TTS_VOICE: Final = "alba"
+
+
+class ChatMessage(TypedDict):
+    role: Literal["system", "user", "assistant"]
+    content: str
 
 
 class CancellationStoppingCriteria(StoppingCriteria):
@@ -65,9 +70,9 @@ class TransformersLanguageModel:
         self,
         conversation: tuple[ConversationMessage, ...],
     ) -> AsyncIterator[str]:
-        messages = [
+        messages: list[ChatMessage] = [
             {"role": "system", "content": LANGUAGE_MODEL_SYSTEM_PROMPT},
-            *(message.model_dump(mode="json") for message in conversation),
+            *({"role": message.role.value, "content": message.content} for message in conversation),
         ]
         prompt = self.tokenizer.apply_chat_template(
             messages,

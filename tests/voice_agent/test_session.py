@@ -9,9 +9,9 @@ from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
+from app.compute.voice.conversation import ConversationMessage, ConversationRole
 from app.compute.voice.interfaces import TranscriptionSession
 from app.compute.voice.session import SessionPolicy, VoiceSession
-from app.shared.compute_api import ConversationMessage, ConversationRole
 
 SPEECH_CHUNK = b"\x01\x00" * 320
 SILENCE_CHUNK = b"\x00\x00" * 320

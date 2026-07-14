@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from app.shared.compute_api import ConversationMessage
+from app.compute.voice.conversation import ConversationMessage
 
 
 class SpeechDetector(Protocol):

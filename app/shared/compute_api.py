@@ -3,8 +3,6 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
-
 from app.shared.base_model import FrozenBaseModel
 from app.shared.quality import AudioMetadata, QualityResult
 
@@ -54,13 +52,3 @@ class QualityAnalysisResponse(FrozenBaseModel):
     speaker1_metadata: AudioMetadata
     speaker2_metadata: AudioMetadata
     quality_result: QualityResult
-
-
-class ConversationRole(StrEnum):
-    USER = "user"
-    ASSISTANT = "assistant"
-
-
-class ConversationMessage(FrozenBaseModel):
-    role: ConversationRole
-    content: str = Field(min_length=1)
