@@ -3,6 +3,9 @@ const ENDPOINT_STORAGE_KEY = "voice-light-compute-voice-endpoint";
 const endpointInput = document.querySelector("#endpoint-url");
 const startButton = document.querySelector("#start-button");
 const stopButton = document.querySelector("#stop-button");
+const recordingReview = document.querySelector("#recording-review");
+const recordingPlayer = document.querySelector("#recording-player");
+const recordingDownload = document.querySelector("#recording-download");
 const connectionStatus = document.querySelector("#connection-status");
 const sessionGuidance = document.querySelector("#session-guidance");
 const vadStatus = document.querySelector("#vad-status");
@@ -21,6 +24,8 @@ let cancelledGenerationId = -1;
 let audioGenerationId = -1;
 let expectedAudioSequence = 0;
 let activeUserTurn;
+let recordedInputChunks = [];
+let recordingUrl;
 const assistantTurns = new Map();
 const assistantSentences = new Map();
 const intentionallyClosedSockets = new WeakSet();
@@ -116,6 +121,7 @@ async function startSession() {
     return;
   }
   localStorage.setItem(ENDPOINT_STORAGE_KEY, endpoint);
+  clearInputRecording();
   clearConversationHistory();
   stopRequested = false;
   startButton.disabled = true;
@@ -166,7 +172,7 @@ function openSocket(endpoint) {
     candidate.addEventListener("message", handleMessage);
     candidate.addEventListener("close", () => {
       if (!opened) reject(new Error("The server connection closed before it was ready."));
-      void stopMedia();
+      void stopMedia().then(finalizeInputRecording);
       resetControls();
       if (intentionallyClosedSockets.has(candidate)) return;
       if (stopRequested) setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
@@ -206,7 +212,9 @@ async function setupCapture(stream) {
   const silentGain = captureContext.createGain();
   silentGain.gain.value = 0;
   captureNode.port.onmessage = ({ data }) => {
-    if (socket?.readyState === WebSocket.OPEN) socket.send(data);
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    recordedInputChunks.push(data.slice(0));
+    socket.send(data);
   };
   source.connect(captureNode).connect(silentGain).connect(captureContext.destination);
 }
@@ -335,6 +343,7 @@ async function stopSession() {
     socket.close();
   }
   await stopMedia();
+  finalizeInputRecording();
   resetControls();
   setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
 }
@@ -357,6 +366,52 @@ function resetControls() {
   stopButton.disabled = true;
   vadStatus.textContent = "waiting";
   playbackStatus.textContent = "waiting";
+}
+
+function clearInputRecording() {
+  recordedInputChunks = [];
+  if (recordingUrl) URL.revokeObjectURL(recordingUrl);
+  recordingUrl = undefined;
+  recordingPlayer.removeAttribute("src");
+  recordingPlayer.load();
+  recordingDownload.removeAttribute("href");
+  recordingReview.hidden = true;
+}
+
+function finalizeInputRecording() {
+  if (recordingUrl || recordedInputChunks.length === 0) return;
+  const recording = createPcmWav(recordedInputChunks, INPUT_SAMPLE_RATE);
+  recordingUrl = URL.createObjectURL(recording);
+  recordingPlayer.src = recordingUrl;
+  recordingDownload.href = recordingUrl;
+  recordingDownload.download = `voice-light-input-${new Date().toISOString().replaceAll(":", "-")}.wav`;
+  recordingReview.hidden = false;
+}
+
+function createPcmWav(pcmChunks, sampleRate) {
+  const dataByteCount = pcmChunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  writeAscii(view, 0, "RIFF");
+  view.setUint32(4, 36 + dataByteCount, true);
+  writeAscii(view, 8, "WAVE");
+  writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, "data");
+  view.setUint32(40, dataByteCount, true);
+  return new Blob([header, ...pcmChunks], { type: "audio/wav" });
+}
+
+function writeAscii(view, offset, text) {
+  for (let index = 0; index < text.length; index += 1) {
+    view.setUint8(offset + index, text.charCodeAt(index));
+  }
 }
 function setConnection(state, text, guidance) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; sessionGuidance.dataset.state = state; sessionGuidance.textContent = guidance; }
 function logEvent(message) { const item = document.createElement("li"); item.textContent = `${new Date().toLocaleTimeString()} ${message.type}`; eventLog.prepend(item); }

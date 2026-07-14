@@ -33,6 +33,10 @@ input { background: #0f1311; border: 1px solid #39443d; border-radius: 9px; colo
 button { background: #75dfa9; border: 0; border-radius: 999px; color: #102117; cursor: pointer; font: inherit; font-weight: 700; padding: 11px 18px; }
 button:last-child { background: #2c3530; color: #e6eae6; }
 button:disabled { cursor: default; opacity: .4; }
+.recording-review { background: #111613; border: 1px solid #303a33; border-radius: 10px; margin-top: 14px; padding: 12px 14px; }
+.recording-review p { color: #aab4ad; font-size: 13px; margin: 0 0 10px; }
+.recording-review audio { display: block; width: 100%; }
+.recording-review a { color: #78d8ae; display: inline-block; font-size: 13px; margin-top: 10px; }
 .conversation { margin: 22px 0; overflow: hidden; }
 .conversation-heading { align-items: flex-end; border-bottom: 1px solid #29322c; display: flex; gap: 24px; justify-content: space-between; padding: 20px 22px; }
 .conversation-heading .eyebrow { margin: 0 0 6px; }

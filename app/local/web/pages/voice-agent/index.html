@@ -26,6 +26,11 @@
           <button id="start-button" type="button">Start microphone</button>
           <button id="stop-button" type="button" disabled>Stop</button>
         </div>
+        <div id="recording-review" class="recording-review" hidden>
+          <p>Exact 16 kHz microphone PCM sent over the WebSocket</p>
+          <audio id="recording-player" controls></audio>
+          <a id="recording-download" download>Download WAV</a>
+        </div>
         <p id="session-guidance" data-state="idle" role="status" aria-live="polite">
           Press Start microphone to wake the server.
         </p>

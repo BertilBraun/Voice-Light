@@ -27,7 +27,8 @@ validated playback offsets enter model history.
 - NVIDIA Nemotron Speech Streaming English 0.6B uses its 560 ms lookahead configuration until the
   session finalizes the utterance. One worker serializes active ASR streams across WebSocket
   sessions. The browser preserves resampling phase and boundary samples when converting microphone
-  audio to 16 kHz PCM.
+  audio to 16 kHz PCM. Set `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` to `0`, `1`, `6`, or `13` to compare
+  the model's 80, 160, 560, and 1120 ms streaming configurations without changing code.
 - Qwen3-1.7B receives the complete ordered conversation and streams non-thinking text deltas.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
   that generation. The browser logs both a table and the complete formatted JSON snapshot to its
@@ -68,6 +69,10 @@ unsigned 32-bit integers: generation ID, sequence number, and sentence ID. Remai
 PCM16 at the `output_sample_rate` announced by `session.ready`. The browser rejects stale/cancelled
 generations and out-of-sequence frames. Its playback worklet resamples from the announced server
 rate to the browser AudioContext rate while retaining per-sentence sample progress.
+
+For microphone-path diagnostics, the page retains the exact 16 kHz PCM buffers that it successfully
+sends over the WebSocket. When a session stops or disconnects, it exposes the buffers as a playable
+and downloadable mono PCM16 WAV file. Starting another session releases the previous recording.
 
 The voice research WebSocket is intentionally unauthenticated so the browser can connect directly.
 Other compute HTTP APIs retain bearer-token authentication. The compute service rejects voice
