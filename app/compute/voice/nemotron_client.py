@@ -118,9 +118,13 @@ class RestartingNemotronWorkerManager:
 
     async def acquire(self) -> NemotronWorker:
         await self.lock.acquire()
-        if self.worker is None:
-            self.worker = await asyncio.to_thread(NemotronWorkerProcess, self.python_path)
-        return self.worker
+        try:
+            if self.worker is None:
+                self.worker = await asyncio.to_thread(NemotronWorkerProcess, self.python_path)
+            return self.worker
+        except BaseException:
+            self.lock.release()
+            raise
 
     def release(self) -> None:
         if not self.lock.locked():
@@ -181,7 +185,11 @@ class NemotronStreamingSession:
         while len(self.pending_audio) >= STREAMING_CHUNK_BYTE_COUNT:
             chunk = bytes(self.pending_audio[:STREAMING_CHUNK_BYTE_COUNT])
             del self.pending_audio[:STREAMING_CHUNK_BYTE_COUNT]
-            self._require_worker().send(AsrAudioCommand.from_pcm_bytes(chunk))
+            try:
+                self._require_worker().send(AsrAudioCommand.from_pcm_bytes(chunk))
+            except Exception as error:
+                await self._fail_worker(error)
+                raise RuntimeError("Failed to send audio to the Nemotron worker.") from error
         latest_partial_text: str | None = None
         while not self.partial_text_queue.empty():
             latest_partial_text = self.partial_text_queue.get_nowait()
@@ -194,9 +202,19 @@ class NemotronStreamingSession:
         if self.output_task is None:
             return ""
         if self.pending_audio:
-            self._require_worker().send(AsrAudioCommand.from_pcm_bytes(bytes(self.pending_audio)))
+            try:
+                self._require_worker().send(
+                    AsrAudioCommand.from_pcm_bytes(bytes(self.pending_audio))
+                )
+            except Exception as error:
+                await self._fail_worker(error)
+                raise RuntimeError("Failed to send final audio to the Nemotron worker.") from error
             self.pending_audio.clear()
-        self._require_worker().send(FinishAsrCommand())
+        try:
+            self._require_worker().send(FinishAsrCommand())
+        except Exception as error:
+            await self._fail_worker(error)
+            raise RuntimeError("Failed to finish the Nemotron worker session.") from error
         return await self._await_final_output()
 
     async def close(self) -> None:
@@ -204,16 +222,23 @@ class NemotronStreamingSession:
         if self.output_task is None or self.finished:
             return
         self.finished = True
-        self._require_worker().send(FinishAsrCommand())
-        with contextlib.suppress(RuntimeError):
-            await self._await_final_output()
+        try:
+            self._require_worker().send(FinishAsrCommand())
+        except Exception as error:
+            await self._fail_worker(error)
+            raise RuntimeError("Failed to close the Nemotron worker session.") from error
+        await self._await_final_output()
 
     async def _ensure_started(self) -> None:
         if self.output_task is not None:
             return
         self.worker = await self.worker_manager.acquire()
         self.owns_worker = True
-        self.worker.send(StartAsrCommand())
+        try:
+            self.worker.send(StartAsrCommand())
+        except Exception as error:
+            await self._fail_worker(error)
+            raise RuntimeError("Failed to start the Nemotron worker session.") from error
         self.output_task = asyncio.create_task(self._read_output())
 
     async def _read_output(self) -> str:
@@ -251,6 +276,23 @@ class NemotronStreamingSession:
             raise
         finally:
             self._release_worker()
+
+    async def _fail_worker(self, error: Exception) -> None:
+        worker = self._require_worker()
+        logger.error("Nemotron worker operation failed: %s", error)
+        try:
+            await self.worker_manager.replace(worker)
+        finally:
+            self._release_worker()
+            output_task = self.output_task
+            if (
+                output_task is not None
+                and output_task is not asyncio.current_task()
+                and not output_task.done()
+            ):
+                output_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await output_task
 
     def _require_worker(self) -> NemotronWorker:
         if self.worker is None:
