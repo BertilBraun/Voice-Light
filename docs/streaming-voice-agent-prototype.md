@@ -41,6 +41,9 @@ validated playback offsets enter model history.
 Generated assistant text appears immediately as muted text. Kyutai's delayed-stream state exposes
 the model step at which each input word starts. The server converts that step at Mimi's 12.5 Hz frame
 rate into a generation-relative PCM sample offset and sends the boundary to the playback worklet.
+Kyutai's delayed zero-code frames are decoded to prime Mimi but omitted from the transmitted PCM,
+so playback sample zero begins after the model's built-in text/audio delay instead of adding 1.28
+seconds of client-side silence.
 When playback consumes the first sample at or after a word start, the page highlights and
 acknowledges the entire original word, including attached punctuation. The server validates the
 generation ID, text offset, boundary sample, played sample count, and monotonicity. Interrupted

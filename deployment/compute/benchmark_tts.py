@@ -48,6 +48,7 @@ async def run_benchmark(text: str, runs: int) -> None:
         first_chunk_seconds: float | None = None
         sample_count = 0
         boundary_count = 0
+        first_boundary_sample: int | None = None
         for word in words:
             await session.add_word(word)
         await session.finish_input()
@@ -58,6 +59,8 @@ async def run_benchmark(text: str, runs: int) -> None:
                         first_chunk_seconds = time.perf_counter() - started
                     sample_count += len(event.pcm_bytes) // 2
                 case SynthesizedWordBoundary():
+                    if first_boundary_sample is None:
+                        first_boundary_sample = event.start_sample
                     boundary_count += 1
         await session.cancel()
         if first_chunk_seconds is None or sample_count == 0:
@@ -65,11 +68,20 @@ async def run_benchmark(text: str, runs: int) -> None:
         total_seconds = time.perf_counter() - started
         audio_duration_seconds = sample_count / synthesizer.sample_rate
         real_time_factor = total_seconds / audio_duration_seconds
+        first_boundary_seconds = (
+            first_boundary_sample / synthesizer.sample_rate
+            if first_boundary_sample is not None
+            else None
+        )
+        if first_boundary_seconds is None:
+            raise RuntimeError("Kyutai TTS produced no word boundaries.")
         print(
             f"run={run_index + 1} first_chunk_seconds={first_chunk_seconds:.3f} "
             f"total_seconds={total_seconds:.3f} "
             f"audio_duration_seconds={audio_duration_seconds:.3f} "
-            f"real_time_factor={real_time_factor:.3f} boundaries={boundary_count}"
+            f"real_time_factor={real_time_factor:.3f} "
+            f"first_boundary_seconds={first_boundary_seconds:.3f} "
+            f"boundaries={boundary_count}"
         )
 
 

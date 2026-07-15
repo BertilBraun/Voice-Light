@@ -46,7 +46,8 @@ Mimi codec, and fixed precomputed voice are loaded once. Each assistant turn cre
 stream LM and codec state, accepts complete words incrementally, and emits PCM frames and model-
 predicted word-start timestamps incrementally. Batch size is always one. Cancellation signals the
 generation worker immediately; a lock prevents a canceled worker and its successor from using the
-shared model concurrently.
+shared model concurrently. Startup performs one discarded streaming utterance so the first user
+turn does not pay CUDA kernel warm-up costs.
 
 The Moshi package's conservative dependency ceilings lag this repository's Torch, Hugging Face Hub,
 and Safetensors versions. `tool.uv.override-dependencies` explicitly selects the repository's newer

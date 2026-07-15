@@ -39,7 +39,7 @@ KYUTAI_TTS_VOICE: Final = "expresso/ex03-ex01_happy_001_channel1_334s.wav"
 KYUTAI_TTS_CODEBOOK_COUNT: Final = 32
 KYUTAI_TTS_TEMPERATURE: Final = 0.6
 KYUTAI_TTS_CFG_COEFFICIENT: Final = 2.0
-KYUTAI_TTS_WARMUP_ITERATIONS: Final = 3
+KYUTAI_TTS_WARMUP_TEXT: Final = "Warmup."
 KYUTAI_TTS_INPUT_QUEUE_SIZE: Final = 64
 KYUTAI_TTS_OUTPUT_QUEUE_SIZE: Final = 32
 KYUTAI_TTS_QUEUE_POLL_SECONDS: Final = 0.1
@@ -76,11 +76,7 @@ class KyutaiSpeechSynthesizer:
             [Path(voice_path)],
             cfg_coef=KYUTAI_TTS_CFG_COEFFICIENT,
         )
-        self.model.warmup(
-            (self.attributes,),
-            iters=KYUTAI_TTS_WARMUP_ITERATIONS,
-            batch_size=1,
-        )
+        _warmup_streaming_generation(self.model, self.attributes)
         self.generation_lock = threading.Lock()
 
     @property
@@ -242,6 +238,7 @@ class _KyutaiStreamingGenerator:
         self.cancellation_event = cancellation_event
         self.emit = emit
         self.offset = 0
+        self.decoded_frame_count = 0
         self.emitted_sample_count = 0
         self.transcript_index = 0
         self.boundary_tracker = TranscriptBoundaryTracker()
@@ -325,6 +322,10 @@ class _KyutaiStreamingGenerator:
         if frame is None or not bool((frame != -1).all()):
             return
         pcm = self.model.mimi.decode(frame[:, 1:, :]).cpu().float().numpy()
+        self.decoded_frame_count += 1
+        # Prime Mimi with delayed zero frames without adding them to the playback timeline.
+        if self.decoded_frame_count <= self.model.delay_steps:
+            return
         samples = np.clip(pcm[0, 0], -1.0, 1.0)
         pcm_bytes = (samples * 32_767.0).astype("<i2").tobytes()
         if not pcm_bytes:
@@ -349,3 +350,32 @@ class _KyutaiStreamingGenerator:
             if boundary is not None:
                 self.emit(boundary)
         self.transcript_index += len(new_transcript)
+
+
+def _warmup_streaming_generation(
+    model: TTSModel,
+    attributes: ConditionAttributes,
+) -> None:
+    cancellation_event = threading.Event()
+    with torch.inference_mode(), model.mimi.streaming(1):
+        generator = _KyutaiStreamingGenerator(
+            model=model,
+            attributes=(attributes,),
+            cancellation_event=cancellation_event,
+            emit=_discard_output,
+        )
+        entries = script_to_entries(
+            model.tokenizer,
+            model.machine.token_ids,
+            model.mimi.frame_rate,
+            [KYUTAI_TTS_WARMUP_TEXT],
+            multi_speaker=model.multi_speaker,
+            padding_between=1,
+        )
+        generator.append_word(entries, len(KYUTAI_TTS_WARMUP_TEXT))
+        with generator.lm_generation.streaming(1):
+            generator.process_last()
+
+
+def _discard_output(item: _OutputItem) -> None:
+    del item
