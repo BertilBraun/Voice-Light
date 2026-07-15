@@ -137,21 +137,35 @@ function renderScores(candidate) {
   const connection = candidate.floor_holder_connection;
   const response = candidate.possible_backchannel;
   const values = [
-    ["A connection merge", connection.merge_confidence],
-    ["A connection pause", connection.pause_confidence],
-    ["B keep playing", response.keep_playing_confidence],
-    ["B valid turn", response.turn_confidence],
-    ["B interruption", response.interruption_confidence],
+    ["A same-turn merge", connection.merge_confidence, "merge"],
+    ["A pause", connection.pause_confidence, "pause"],
+    ["B backchannel", response.keep_playing_confidence, "backchannel"],
+    ["B valid turn", response.turn_confidence, "turn"],
+    ["B interruption", response.interruption_confidence, "interruption"],
   ];
   elements.scores.replaceChildren(
-    ...values.map(([label, value]) => {
+    ...values.map(([label, value, tone]) => {
       const card = document.createElement("div");
       card.className = "score";
       const labelElement = document.createElement("span");
       labelElement.textContent = label;
       const score = document.createElement("strong");
-      score.textContent = value.toFixed(3);
-      card.append(labelElement, score);
+      score.textContent = `${Math.round(value * 100)}%`;
+      score.title = `Raw confidence: ${value.toFixed(3)}`;
+      const track = document.createElement("div");
+      track.className = "confidence-track";
+      track.setAttribute("role", "meter");
+      track.setAttribute("aria-label", label);
+      track.setAttribute("aria-valuemin", "0");
+      track.setAttribute("aria-valuemax", "100");
+      track.setAttribute("aria-valuenow", String(Math.round(value * 100)));
+      const fill = document.createElement("div");
+      fill.className = `confidence-fill ${tone}`;
+      fill.style.width = `${Math.max(0, Math.min(100, value * 100))}%`;
+      track.appendChild(fill);
+      const rawValue = document.createElement("small");
+      rawValue.textContent = value.toFixed(3);
+      card.append(labelElement, score, track, rawValue);
       return card;
     }),
   );

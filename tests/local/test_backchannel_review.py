@@ -34,7 +34,15 @@ def backchannel_review_script() -> Iterator[str]:
 
 @pytest.mark.parametrize(
     "visible_control",
-    ("previous", "next", "Play both", "floor_holder_connection", "possible_backchannel"),
+    (
+        "previous",
+        "next",
+        "Play both",
+        "floor_holder_connection",
+        "possible_backchannel",
+        "confidence-track",
+        "B backchannel",
+    ),
 )
 def test_backchannel_review_exposes_required_context(
     visible_control: str,

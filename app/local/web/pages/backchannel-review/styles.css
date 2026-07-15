@@ -48,6 +48,14 @@ button.primary { background: #146b63; border-color: #146b63; color: #fff; }
 .score { background: #f7f8f6; border-radius: 7px; padding: 12px; }
 .score strong { display: block; font-size: 21px; margin-top: 3px; }
 .score span { color: #5a666b; font-size: 12px; }
+.score small { color: #718086; display: block; font-variant-numeric: tabular-nums; margin-top: 5px; }
+.confidence-track { background: #e2e7e5; border-radius: 999px; height: 8px; margin-top: 9px; overflow: hidden; }
+.confidence-fill { border-radius: inherit; height: 100%; }
+.confidence-fill.merge { background: #267d74; }
+.confidence-fill.pause { background: #d6a442; }
+.confidence-fill.backchannel { background: #7c5ab4; }
+.confidence-fill.turn { background: #3775a5; }
+.confidence-fill.interruption { background: #ca5010; }
 .note { font-size: 13px; margin: 15px 0 0; }
 .empty-state { color: #5a666b; }
 
