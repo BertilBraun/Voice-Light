@@ -17,7 +17,7 @@ const frameDetails = document.querySelector("#frame-details");
 
 const rowDefinitions = [
   ["User waveform", "waveform"],
-  ["INPUT Â· Assistant speaking", "assistant_speaking_input"],
+  ["INPUT · Assistant speaking", "assistant_speaking_input"],
   ["Candidate decision mask", "candidate"],
   ["Primary p(YIELD)", "yield_probability"],
   ["Primary p(HOLD)", "hold_probability"],
@@ -295,7 +295,7 @@ function renderSelectedFrame(frame) {
   frameDetails.replaceChildren(
     ...definitionRows([
       ["Contributes loss", booleanLabel(frame.supervised)],
-      ["INPUT Â· Assistant speaking", booleanLabel(frame.assistant_speaking_input)],
+      ["INPUT · Assistant speaking", booleanLabel(frame.assistant_speaking_input)],
       ["Candidate", booleanLabel(frame.candidate)],
       ["Candidate source", frame.candidate_source ?? "—"],
       ["Since user speech offset", optionalSeconds(frame.seconds_since_speech_offset)],
