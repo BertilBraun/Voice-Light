@@ -7,11 +7,18 @@ or orchestrate voice sessions.
 
 ## Session ownership
 
-Each compute WebSocket creates one ephemeral `VoiceSession`. That object owns the Silero VAD,
+The compute runtime admits exactly one live voice WebSocket. A second connection is closed with
+retryable WebSocket code `1013` until the active session releases its lease. Admission is released
+in the route's `finally` block on normal stop, disconnect, or failure.
+
+The admitted WebSocket creates one ephemeral `VoiceSession`. That object owns the per-session
+Silero iterator,
 pre-roll buffer, Nemotron decoder session, turn policy, ordered conversation, Qwen generation,
 Kyutai TTS generation, generation identifiers, and cancellation. Closing the WebSocket destroys all of
-that state. Only loaded model runtimes outlive a connection; there is no persistence, session
-re-entry, or reconnection protocol.
+that state. The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron,
+Qwen, and Kyutai subprocesses own their respective CUDA models and outlive a connection. The
+loaded Silero model also outlives a connection, while a fresh iterator carries each session's VAD
+state. There is no persistence, session re-entry, or reconnection protocol.
 
 The browser captures microphone PCM, renders server events, plays server PCM, and reports playback
 progress. The server remains authoritative for VAD, turn boundaries, cancellation, and which
@@ -25,18 +32,49 @@ validated playback offsets enter model history.
   Thus the configured acoustic silence before commitment is approximately 750 ms, plus frame
   scheduling, rather than 500 ms total.
 - NVIDIA Nemotron Speech Streaming English 0.6B uses its 160 ms lookahead configuration until the
-  session finalizes the utterance. One worker serializes active ASR streams across WebSocket
-  sessions. The browser uses a native 16 kHz audio context so its resampler converts microphone
+  session finalizes the utterance. Its persistent child process has one strictly owned active ASR
+  stream. Single-session admission makes cross-WebSocket serialization unnecessary. The browser
+  uses a native 16 kHz audio context so its resampler converts microphone
   audio before PCM16 quantization. Set `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` to `0`, `1`, `6`, or `13` to compare
   the model's 80, 160, 560, and 1120 ms streaming configurations without changing code.
-- Qwen3-1.7B receives the complete ordered conversation and streams non-thinking text deltas.
+- Qwen3-1.7B runs in a persistent child process. A typed generation-ID protocol streams
+  non-thinking text deltas for the complete ordered conversation.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
   that generation. The browser logs both a table and the complete formatted JSON snapshot to its
   developer console for prompt inspection.
 - Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
   final trailing word is flushed when Qwen finishes.
-- A new authoritative server speech-start cancels the active Qwen/TTS task and tells the browser
-  to discard that generation's queued audio.
+- A new authoritative server speech-start immediately requests Qwen/TTS cancellation and tells the
+  browser to discard that generation's queued audio. VAD and ASR continue processing the new
+  utterance while teardown runs. Before starting the successor Qwen generation, the session awaits
+  a teardown barrier, so old and new Qwen/TTS work never overlap accidentally.
+
+## Process and lifecycle boundaries
+
+Runtime readiness has four stages: speech detection, streaming ASR, language model, and speech
+synthesis. Each model worker must emit its typed ready event within 180 seconds or the parent
+terminates it and marks the stage failed. Qwen must continue producing an event within 10 seconds
+during generation and acknowledge cancellation within 2 seconds. Nemotron finalization is bounded
+at 15 seconds. Kyutai generation progress is bounded at 5 seconds and cancellation at 2 seconds.
+
+Nemotron, Qwen, and Kyutai managers grant an exclusive worker lease to one operation. A normal
+terminal event releases the reusable worker. A broken pipe, malformed event, worker exception,
+progress timeout, or cancellation timeout terminates the failed child, clears ownership, and
+releases the lease. Replacement is lazy: the next operation constructs and validates a fresh child,
+so cold model loading cannot delay delivery of the original error. Kyutai validates that a lazily
+restarted worker reports the original output sample rate.
+
+The session lifecycle is explicit: `created`, `connected`, `ready`, `failed`, `stopping`, and
+`closed`. A generation moves through `created`, `streaming`, cancellation or stream completion, and
+a terminal cancelled, failed, or playback-complete state. Receive and recognition tasks are owned
+for the connection lifetime; each generation owns one text task and one synthesis-output task.
+Qwen text and Kyutai audio run as a pipeline: complete words are sent to TTS while Qwen continues
+generating later text.
+
+Worker exceptions and orchestration failures are logged with session/generation context and sent to
+the development browser as structured `error` events containing `component`, `operation`, optional
+`generation_id`, `retryable`, and `message`. The browser prints the complete error object and shows
+the fields in its connection status. Failures are not converted into successful empty output.
 
 Generated assistant text appears immediately as muted text. Kyutai's delayed-stream state exposes
 the model step at which each input word starts. The server converts that step at Mimi's 12.5 Hz frame
@@ -82,4 +120,5 @@ and downloadable mono PCM16 WAV file. Starting another session releases the prev
 
 The voice research WebSocket is intentionally unauthenticated so the browser can connect directly.
 Other compute HTTP APIs retain bearer-token authentication. The compute service rejects voice
-connections while its models are not ready.
+connections while its models are not ready and rejects concurrent live voice connections with code
+`1013`.

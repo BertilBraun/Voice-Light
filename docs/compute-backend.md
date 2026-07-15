@@ -21,8 +21,10 @@ Compute and shared modules must never import local modules. Local modules call c
 through the schemas in `app.shared` and their authenticated clients.
 
 The browser connects directly to `/v1/voice`. One compute-side `VoiceSession` owns server Silero
-VAD, genuine streaming Nemotron state, turn decisions, conversation history, Qwen/Kyutai work, and
-cancellation for the life of that WebSocket. The protocol is optimized for this specific cascade,
+per-session VAD state, genuine streaming Nemotron state, turn decisions, conversation history,
+Qwen/Kyutai work, and cancellation for the life of that WebSocket. The runtime admits one live
+voice WebSocket at a time. Silero is loaded during readiness; persistent Nemotron, Qwen, and Kyutai
+child processes own their CUDA models. The protocol is optimized for this specific cascade,
 not for provider-neutral ASR/LLM/TTS operations. No voice state survives disconnection.
 
 ## Compute API
