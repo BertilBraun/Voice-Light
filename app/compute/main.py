@@ -97,11 +97,23 @@ def create_compute_app(settings: ComputeSettings) -> FastAPI:
             await websocket.close(code=1013, reason="Compute models are not ready.")
             return
         request_id = websocket.headers.get("x-request-id") or str(uuid4())
-        await run_voice_session(
-            websocket=websocket,
-            runtime=runtime,
-            request_id=request_id,
-        )
+        lease = runtime.try_admit_voice_session(request_id)
+        if lease is None:
+            logger.warning(
+                "voice session rejected because another session is active: request=%s active=%s",
+                request_id,
+                runtime.voice_session_admission.active_request_id,
+            )
+            await websocket.close(code=1013, reason="Another voice session is active. Retry later.")
+            return
+        try:
+            await run_voice_session(
+                websocket=websocket,
+                runtime=runtime,
+                request_id=request_id,
+            )
+        finally:
+            runtime.release_voice_session(lease)
 
     return application
 

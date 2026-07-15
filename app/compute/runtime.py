@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from app.compute.asr.models.registry import AsrModelCache
+from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessionLease
 from app.compute.voice.kyutai_tts import KyutaiSpeechSynthesizer
 from app.compute.voice.models import TransformersLanguageModel
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
@@ -38,6 +39,7 @@ class ComputeRuntime:
         self.language_model_stage = MutableModelStage("language_model")
         self.speech_synthesis_stage = MutableModelStage("speech_synthesis")
         self.batch_asr_models = AsrModelCache()
+        self.voice_session_admission = SingleVoiceSessionAdmission()
         self.streaming_asr: NemotronStreamingTranscriber | None = None
         self.language_model: TransformersLanguageModel | None = None
         self.speech_synthesizer: KyutaiSpeechSynthesizer | None = None
@@ -49,6 +51,12 @@ class ComputeRuntime:
 
     def stages(self) -> tuple[ModelStage, ...]:
         return tuple(stage.snapshot() for stage in self._stages())
+
+    def try_admit_voice_session(self, request_id: str) -> VoiceSessionLease | None:
+        return self.voice_session_admission.try_acquire(request_id)
+
+    def release_voice_session(self, lease: VoiceSessionLease) -> None:
+        self.voice_session_admission.release(lease)
 
     def start_loading(self) -> None:
         assert self.loading_task is None
