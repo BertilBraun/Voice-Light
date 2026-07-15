@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import Field, TypeAdapter
 
 from app.compute.voice.conversation import ConversationRole
+from app.compute.voice.errors import VoiceComponent, VoiceOperation
 from app.shared.base_model import FrozenBaseModel
 
 
@@ -133,6 +134,10 @@ class AssistantAudioTextBoundaryEvent(FrozenBaseModel):
 
 class ErrorEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.ERROR] = VoiceServerEventType.ERROR
+    component: VoiceComponent
+    operation: VoiceOperation
+    generation_id: int | None = Field(default=None, gt=0)
+    retryable: bool
     message: str
 
 

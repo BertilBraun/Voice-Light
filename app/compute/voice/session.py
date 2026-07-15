@@ -8,17 +8,20 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from enum import StrEnum
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.compute.voice.conversation import ConversationMessage, ConversationRole
+from app.compute.voice.errors import VoiceComponent, VoiceComponentError, VoiceOperation
 from app.compute.voice.interfaces import (
     LanguageModel,
     SpeechDetector,
     SpeechSynthesisSession,
     SpeechSynthesizer,
     SynthesisEvent,
+    SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
     Transcriber,
@@ -59,6 +62,25 @@ class SessionPolicy:
     pre_roll_duration_ms: int = 300
 
 
+class SessionLifecycle(StrEnum):
+    CREATED = "created"
+    CONNECTED = "connected"
+    READY = "ready"
+    FAILED = "failed"
+    STOPPING = "stopping"
+    CLOSED = "closed"
+
+
+class GenerationLifecycle(StrEnum):
+    CREATED = "created"
+    STREAMING = "streaming"
+    CANCELLATION_REQUESTED = "cancellation_requested"
+    CANCELLED = "cancelled"
+    STREAM_ENDED = "stream_ended"
+    PLAYBACK_COMPLETE = "playback_complete"
+    FAILED = "failed"
+
+
 @dataclass
 class ActiveGeneration:
     generation_id: int
@@ -73,6 +95,7 @@ class ActiveGeneration:
     cancelled: bool = False
     accepts_playback: bool = True
     playback_stopped: asyncio.Event = field(default_factory=asyncio.Event)
+    lifecycle: GenerationLifecycle = GenerationLifecycle.CREATED
 
 
 class VoiceSession:
@@ -102,9 +125,12 @@ class VoiceSession:
         self.next_generation_id = 1
         self.audio_sample_count = 0
         self.started = False
+        self.lifecycle = SessionLifecycle.CREATED
+        self.pending_generation_teardown: ActiveGeneration | None = None
 
     async def run(self) -> None:
         await self.websocket.accept()
+        self._transition_session(SessionLifecycle.CONNECTED)
         logger.info("voice session opened: session=%s", self.session_id)
         receive_task = asyncio.create_task(self._receive_loop())
         recognition_task = asyncio.create_task(self._recognition_loop())
@@ -113,18 +139,27 @@ class VoiceSession:
         except WebSocketDisconnect:
             pass
         except Exception as error:
+            self.lifecycle = SessionLifecycle.FAILED
             logger.exception("voice session failed: %s", self.session_id)
-            await self._send_error(f"Voice session failed: {error}")
+            failure = _component_error(
+                error,
+                component=VoiceComponent.SESSION,
+                operation=VoiceOperation.SESSION_RUN,
+            )
+            await self._send_error(failure, generation_id=None, retryable=False)
         finally:
+            self.lifecycle = SessionLifecycle.STOPPING
             receive_task.cancel()
             recognition_task.cancel()
-            await self._cancel_generation(send_event=False)
+            await self._request_generation_cancellation(send_event=False)
+            await self._await_generation_teardown()
             await self._close_generation_tasks()
             for task in (receive_task, recognition_task):
                 with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
                     await task
             self.conversation.clear()
             self.generations.clear()
+            self.lifecycle = SessionLifecycle.CLOSED
             logger.info("voice session closed: session=%s", self.session_id)
 
     async def _receive_loop(self) -> None:
@@ -163,6 +198,7 @@ class VoiceSession:
         if event.input_sample_rate != INPUT_SAMPLE_RATE:
             raise ValueError(f"Input sample rate must be {INPUT_SAMPLE_RATE} Hz.")
         self.started = True
+        self._transition_session(SessionLifecycle.READY)
         await self._send_event(
             SessionReadyEvent(
                 session_id=self.session_id,
@@ -193,7 +229,7 @@ class VoiceSession:
                         continue
                     speech_active = True
                     silent_samples = 0
-                    await self._cancel_generation(send_event=True)
+                    await self._request_generation_cancellation(send_event=True)
                     logger.info("speech started: session=%s", self.session_id)
                     await self._send_speech_state(VoiceServerEventType.VAD_STARTED)
                     for pre_roll_chunk in pre_roll_chunks:
@@ -214,7 +250,14 @@ class VoiceSession:
                 await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
                 finalization_started_at = time.perf_counter()
                 logger.info("transcription finalization started: session=%s", self.session_id)
-                final_text = (await transcription.finish()).strip()
+                try:
+                    final_text = (await transcription.finish()).strip()
+                except Exception as error:
+                    raise _component_error(
+                        error,
+                        component=VoiceComponent.ASR,
+                        operation=VoiceOperation.TRANSCRIBE,
+                    ) from error
                 logger.info(
                     "transcription finalization completed: session=%s duration_seconds=%.3f "
                     "character_count=%d",
@@ -234,7 +277,14 @@ class VoiceSession:
         transcription: TranscriptionSession,
         pcm_bytes: bytes,
     ) -> None:
-        partial_text = await transcription.add_audio(pcm_bytes)
+        try:
+            partial_text = await transcription.add_audio(pcm_bytes)
+        except Exception as error:
+            raise _component_error(
+                error,
+                component=VoiceComponent.ASR,
+                operation=VoiceOperation.TRANSCRIBE,
+            ) from error
         if partial_text:
             await self._send_transcript(VoiceServerEventType.TRANSCRIPT_PARTIAL, partial_text)
 
@@ -242,8 +292,9 @@ class VoiceSession:
         await self._send_transcript(VoiceServerEventType.TRANSCRIPT_FINAL, text)
         await self._send_transcript(VoiceServerEventType.TURN_COMMITTED, text)
         await self._finalize_cancelled_playback()
+        await self._await_generation_teardown()
         self.conversation.append(ConversationMessage(role=ConversationRole.USER, content=text))
-        await self._cancel_generation(send_event=True)
+        assert self.active_generation is None
         generation = ActiveGeneration(
             generation_id=self.next_generation_id,
             prompt_messages=tuple(self.conversation),
@@ -284,16 +335,22 @@ class VoiceSession:
             self.session_id,
             generation.generation_id,
         )
+        self._transition_generation(generation, GenerationLifecycle.STREAMING)
         try:
             await self._generate_response(generation)
+            self._transition_generation(generation, GenerationLifecycle.STREAM_ENDED)
+            if generation.playback_complete:
+                self._transition_generation(generation, GenerationLifecycle.PLAYBACK_COMPLETE)
             logger.info(
                 "voice response generation completed: session=%s generation=%d",
                 self.session_id,
                 generation.generation_id,
             )
         except asyncio.CancelledError:
+            self._transition_generation(generation, GenerationLifecycle.CANCELLED)
             raise
         except Exception as error:
+            self._transition_generation(generation, GenerationLifecycle.FAILED)
             logger.exception(
                 "voice response generation failed: session=%s generation=%d",
                 self.session_id,
@@ -307,7 +364,21 @@ class VoiceSession:
                     VoiceServerEventType.ASSISTANT_CANCEL,
                     generation.generation_id,
                 )
-            await self._send_error(f"Response generation failed: {error}")
+            failure = _component_error(
+                error,
+                component=VoiceComponent.SESSION,
+                operation=VoiceOperation.SESSION_RUN,
+            )
+            client_failure = VoiceComponentError(
+                failure.component,
+                failure.operation,
+                f"Response generation failed: {failure}",
+            )
+            await self._send_error(
+                client_failure,
+                generation_id=generation.generation_id,
+                retryable=True,
+            )
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
         synthesis = self.speech_synthesizer.start_session()
@@ -320,7 +391,8 @@ class VoiceSession:
         finally:
             pending_tasks = tuple(task for task in (text_task, audio_task) if not task.done())
             for task in pending_tasks:
-                task.cancel()
+                if task.cancelling() == 0:
+                    task.cancel()
             await synthesis.cancel()
             for task in pending_tasks:
                 with contextlib.suppress(asyncio.CancelledError):
@@ -332,7 +404,18 @@ class VoiceSession:
         synthesis: SpeechSynthesisSession,
     ) -> None:
         word_stream = CompleteWordStream()
-        async for text_delta in self.language_model.stream_response(generation.prompt_messages):
+        language_stream = self.language_model.stream_response(generation.prompt_messages)
+        while True:
+            try:
+                text_delta = await anext(language_stream)
+            except StopAsyncIteration:
+                break
+            except Exception as error:
+                raise VoiceComponentError(
+                    VoiceComponent.LANGUAGE_MODEL,
+                    VoiceOperation.GENERATE_TEXT,
+                    str(error),
+                ) from error
             if text_delta and not generation.response_text:
                 logger.info(
                     "language model first delta: session=%s generation=%d",
@@ -347,12 +430,37 @@ class VoiceSession:
                 )
             )
             for word in word_stream.add_text(text_delta):
-                await synthesis.add_word(word)
+                await self._add_synthesis_word(synthesis, word)
         if not generation.response_text.strip():
-            raise RuntimeError("The language model returned an empty response.")
+            raise VoiceComponentError(
+                VoiceComponent.LANGUAGE_MODEL,
+                VoiceOperation.GENERATE_TEXT,
+                "The language model returned an empty response.",
+            )
         for word in word_stream.finish():
+            await self._add_synthesis_word(synthesis, word)
+        try:
+            await synthesis.finish_input()
+        except Exception as error:
+            raise VoiceComponentError(
+                VoiceComponent.SPEECH_SYNTHESIS,
+                VoiceOperation.STREAM_SYNTHESIS,
+                str(error),
+            ) from error
+
+    @staticmethod
+    async def _add_synthesis_word(
+        synthesis: SpeechSynthesisSession,
+        word: SynthesisWord,
+    ) -> None:
+        try:
             await synthesis.add_word(word)
-        await synthesis.finish_input()
+        except Exception as error:
+            raise VoiceComponentError(
+                VoiceComponent.SPEECH_SYNTHESIS,
+                VoiceOperation.STREAM_SYNTHESIS,
+                str(error),
+            ) from error
 
     async def _stream_speech(
         self,
@@ -362,7 +470,7 @@ class VoiceSession:
         sequence_number = 0
         expected_start_sample = 0
         started = False
-        async for event in events:
+        async for event in _synthesis_events_with_component_error(events):
             if generation.cancelled:
                 return
             match event:
@@ -403,19 +511,30 @@ class VoiceSession:
                     sequence_number += 1
                     expected_start_sample += _pcm_sample_count(event.pcm_bytes)
         if not started:
-            raise RuntimeError("The speech synthesizer returned no audio.")
+            raise VoiceComponentError(
+                VoiceComponent.SPEECH_SYNTHESIS,
+                VoiceOperation.STREAM_SYNTHESIS,
+                "The speech synthesizer returned no audio.",
+            )
         await self._send_audio_boundary(
             VoiceServerEventType.ASSISTANT_AUDIO_END,
             generation.generation_id,
         )
 
-    async def _cancel_generation(self, send_event: bool) -> None:
+    async def _request_generation_cancellation(self, send_event: bool) -> None:
         generation = self.active_generation
         if generation is None:
             return
+        if generation.lifecycle in (
+            GenerationLifecycle.CANCELLATION_REQUESTED,
+            GenerationLifecycle.CANCELLED,
+        ):
+            return
         generation.cancelled = True
+        self._transition_generation(generation, GenerationLifecycle.CANCELLATION_REQUESTED)
         self._mark_generation_interrupted(generation)
         self.active_generation = None
+        self.pending_generation_teardown = generation
         if send_event:
             await self._send_audio_boundary(
                 VoiceServerEventType.ASSISTANT_CANCEL,
@@ -423,7 +542,17 @@ class VoiceSession:
             )
         if generation.task is not None and not generation.task.done():
             generation.task.cancel()
-            await asyncio.sleep(0)
+
+    async def _await_generation_teardown(self) -> None:
+        generation = self.pending_generation_teardown
+        if generation is None:
+            return
+        task = generation.task
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if self.pending_generation_teardown is generation:
+            self.pending_generation_teardown = None
 
     async def _close_generation_tasks(self) -> None:
         tasks = tuple(
@@ -443,6 +572,8 @@ class VoiceSession:
             return
         generation.playback_complete = True
         generation.accepts_playback = False
+        if generation.lifecycle is GenerationLifecycle.STREAM_ENDED:
+            self._transition_generation(generation, GenerationLifecycle.PLAYBACK_COMPLETE)
         self._commit_assistant_if_complete(generation)
 
     def _acknowledge_playback(self, event: PlaybackProgressEvent) -> None:
@@ -533,9 +664,22 @@ class VoiceSession:
             AssistantAudioBoundaryEvent(type=event_type, generation_id=generation_id)
         )
 
-    async def _send_error(self, message: str) -> None:
+    async def _send_error(
+        self,
+        error: VoiceComponentError,
+        generation_id: int | None,
+        retryable: bool,
+    ) -> None:
         with contextlib.suppress(RuntimeError, WebSocketDisconnect):
-            await self._send_event(ErrorEvent(message=message))
+            await self._send_event(
+                ErrorEvent(
+                    component=error.component,
+                    operation=error.operation,
+                    generation_id=generation_id,
+                    retryable=retryable,
+                    message=str(error),
+                )
+            )
 
     async def _send_event(self, event: VoiceServerEvent) -> None:
         async with self.send_lock:
@@ -545,6 +689,48 @@ class VoiceSession:
         async with self.send_lock:
             await self.websocket.send_bytes(frame)
 
+    def _transition_session(self, target: SessionLifecycle) -> None:
+        allowed_transitions = {
+            SessionLifecycle.CREATED: (SessionLifecycle.CONNECTED,),
+            SessionLifecycle.CONNECTED: (SessionLifecycle.READY,),
+        }
+        if target not in allowed_transitions.get(self.lifecycle, ()):
+            raise AssertionError(
+                f"Invalid voice session lifecycle transition: {self.lifecycle} -> {target}."
+            )
+        self.lifecycle = target
+
+    @staticmethod
+    def _transition_generation(
+        generation: ActiveGeneration,
+        target: GenerationLifecycle,
+    ) -> None:
+        allowed_transitions = {
+            GenerationLifecycle.CREATED: (
+                GenerationLifecycle.STREAMING,
+                GenerationLifecycle.CANCELLATION_REQUESTED,
+            ),
+            GenerationLifecycle.STREAMING: (
+                GenerationLifecycle.CANCELLATION_REQUESTED,
+                GenerationLifecycle.STREAM_ENDED,
+                GenerationLifecycle.FAILED,
+            ),
+            GenerationLifecycle.CANCELLATION_REQUESTED: (
+                GenerationLifecycle.CANCELLED,
+                GenerationLifecycle.FAILED,
+            ),
+            GenerationLifecycle.STREAM_ENDED: (
+                GenerationLifecycle.CANCELLATION_REQUESTED,
+                GenerationLifecycle.PLAYBACK_COMPLETE,
+            ),
+        }
+        if target not in allowed_transitions.get(generation.lifecycle, ()):
+            raise AssertionError(
+                "Invalid voice generation lifecycle transition: "
+                f"{generation.lifecycle} -> {target}."
+            )
+        generation.lifecycle = target
+
 
 def _pcm_sample_count(pcm_bytes: bytes) -> int:
     return len(pcm_bytes) // PCM_BYTES_PER_SAMPLE
@@ -552,3 +738,29 @@ def _pcm_sample_count(pcm_bytes: bytes) -> int:
 
 def _milliseconds_to_samples(duration_ms: int) -> int:
     return duration_ms * INPUT_SAMPLE_RATE // 1_000
+
+
+def _component_error(
+    error: Exception,
+    component: VoiceComponent,
+    operation: VoiceOperation,
+) -> VoiceComponentError:
+    if isinstance(error, VoiceComponentError):
+        return error
+    return VoiceComponentError(component, operation, str(error))
+
+
+async def _synthesis_events_with_component_error(
+    events: AsyncIterator[SynthesisEvent],
+) -> AsyncIterator[SynthesisEvent]:
+    try:
+        async for event in events:
+            yield event
+    except VoiceComponentError:
+        raise
+    except Exception as error:
+        raise VoiceComponentError(
+            VoiceComponent.SPEECH_SYNTHESIS,
+            VoiceOperation.STREAM_SYNTHESIS,
+            str(error),
+        ) from error

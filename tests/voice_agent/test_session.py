@@ -93,6 +93,27 @@ class SlowLanguageModel:
         await asyncio.sleep(10)
 
 
+class CancellationTrackingLanguageModel:
+    def __init__(self) -> None:
+        self.active_generation_count = 0
+        self.overlapped = False
+
+    async def stream_response(
+        self,
+        conversation: tuple[ConversationMessage, ...],
+    ) -> AsyncIterator[str]:
+        del conversation
+        self.active_generation_count += 1
+        if self.active_generation_count > 1:
+            self.overlapped = True
+        try:
+            yield "One two three "
+            await asyncio.sleep(10)
+        finally:
+            await asyncio.sleep(0.05)
+            self.active_generation_count -= 1
+
+
 class FakeSpeechSynthesisSession:
     def __init__(self, words: list[SynthesisWord]) -> None:
         self.words = words
@@ -270,6 +291,42 @@ def test_synthesis_failure_cancels_generation_and_reaches_client() -> None:
 
     assert [event["type"] for event in events[-2:]] == ["assistant.cancel", "error"]
     assert events[-1]["message"] == ("Response generation failed: synthetic speech failure")
+    assert events[-1]["component"] == "speech_synthesis"
+    assert events[-1]["operation"] == "stream_synthesis"
+    assert events[-1]["generation_id"] == 1
+    assert events[-1]["retryable"] is True
+
+
+def test_successor_generation_waits_for_cancelled_generation_teardown() -> None:
+    language_model = CancellationTrackingLanguageModel()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        websocket.send_bytes(SPEECH_CHUNK)
+        receive_until(websocket, "assistant.cancel")
+        websocket.send_json(
+            {
+                "type": "playback.stopped",
+                "generation_id": 1,
+                "text_offset": 0,
+                "played_sample_count": 0,
+            }
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "assistant.text.delta")
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1]["generation_id"] == 2
+    assert language_model.overlapped is False
 
 
 def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
@@ -375,7 +432,12 @@ def test_pre_roll_is_bounded_before_speech_start() -> None:
 
 def create_test_app(
     transcriber: RecordingTranscriber,
-    language_model: FakeLanguageModel | SplitWordLanguageModel | SlowLanguageModel,
+    language_model: (
+        FakeLanguageModel
+        | SplitWordLanguageModel
+        | SlowLanguageModel
+        | CancellationTrackingLanguageModel
+    ),
     speech_synthesizer: RecordingSpeechSynthesizer | FailingSpeechSynthesizer,
     policy: SessionPolicy = DEFAULT_TEST_POLICY,
 ) -> FastAPI:
