@@ -28,6 +28,11 @@ def test_kyutai_streams_pcm_and_original_text_boundaries() -> None:
 
 async def _stream_short_utterance() -> None:
     synthesizer = await asyncio.to_thread(KyutaiSpeechSynthesizer)
+    await _assert_streamed_utterance(synthesizer)
+    await _assert_streamed_utterance(synthesizer)
+
+
+async def _assert_streamed_utterance(synthesizer: KyutaiSpeechSynthesizer) -> None:
     session = synthesizer.start_session()
     await session.add_word(SynthesisWord(text="Hello,", text_start=0, text_end=6))
     await session.add_word(SynthesisWord(text="world!", text_start=7, text_end=13))

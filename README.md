@@ -136,7 +136,7 @@ Operational commands are:
 ```bash
 bash deployment/compute/status.sh
 bash deployment/compute/stop.sh
-.venv/bin/python deployment/compute/benchmark_tts.py
+.venv/bin/python -m deployment.compute.benchmark_tts
 ```
 
 See [provider-neutral compute backend](docs/compute-backend.md) for the deployment boundary,

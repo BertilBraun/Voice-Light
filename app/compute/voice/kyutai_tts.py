@@ -190,31 +190,32 @@ class KyutaiSpeechSynthesisSession:
                 cancellation_event=self.cancellation_event,
                 emit=self._put_output,
             )
-            first_word = True
-            while not self.cancellation_event.is_set():
-                item = get_until_cancelled(
-                    self.input_queue,
-                    self.cancellation_event,
-                    KYUTAI_TTS_QUEUE_POLL_SECONDS,
-                )
-                match item:
-                    case None:
-                        break
-                    case _StreamMarker.FINISH:
-                        generator.process_last()
-                        break
-                    case SynthesisWord():
-                        entries = script_to_entries(
-                            self.model.tokenizer,
-                            self.model.machine.token_ids,
-                            self.model.mimi.frame_rate,
-                            [item.text],
-                            multi_speaker=first_word and self.model.multi_speaker,
-                            padding_between=1,
-                        )
-                        first_word = False
-                        generator.append_word(entries, item.text_end)
-                        generator.process()
+            with generator.lm_generation.streaming(1):
+                first_word = True
+                while not self.cancellation_event.is_set():
+                    item = get_until_cancelled(
+                        self.input_queue,
+                        self.cancellation_event,
+                        KYUTAI_TTS_QUEUE_POLL_SECONDS,
+                    )
+                    match item:
+                        case None:
+                            break
+                        case _StreamMarker.FINISH:
+                            generator.process_last()
+                            break
+                        case SynthesisWord():
+                            entries = script_to_entries(
+                                self.model.tokenizer,
+                                self.model.machine.token_ids,
+                                self.model.mimi.frame_rate,
+                                [item.text],
+                                multi_speaker=first_word and self.model.multi_speaker,
+                                padding_between=1,
+                            )
+                            first_word = False
+                            generator.append_word(entries, item.text_end)
+                            generator.process()
 
 
 class _KyutaiStreamingGenerator:
@@ -276,7 +277,6 @@ class _KyutaiStreamingGenerator:
             cfg_is_masked_until=None,
             cfg_is_no_text=True,
         )
-        self.lm_generation.streaming_forever(1)
 
     def append_word(self, entries: Sequence[Entry], text_offset: int) -> None:
         for entry in entries:
