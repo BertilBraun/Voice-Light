@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator
-from typing import Final, Literal, TypedDict
+from collections.abc import AsyncIterator, Callable
+from typing import Final, Literal, Protocol, TypedDict
 
 import torch
 from transformers import (
@@ -29,6 +29,10 @@ LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
 class ChatMessage(TypedDict):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+class GenerationStreamer(Protocol):
+    def on_finalized_text(self, text: str, stream_end: bool = False) -> None: ...
 
 
 class CancellationStoppingCriteria(StoppingCriteria):
@@ -84,19 +88,28 @@ class TransformersLanguageModel:
             skip_special_tokens=True,
         )
         cancellation_event = threading.Event()
-        generation_thread = threading.Thread(
-            target=self.model.generate,
-            kwargs={
+        generation_errors: list[Exception] = []
+
+        def generate() -> None:
+            self.model.generate(
                 **model_inputs,
-                "streamer": streamer,
-                "stopping_criteria": StoppingCriteriaList(
+                streamer=streamer,
+                stopping_criteria=StoppingCriteriaList(
                     [CancellationStoppingCriteria(cancellation_event)]
                 ),
-                "max_new_tokens": 256,
-                "do_sample": True,
-                "temperature": 0.6,
-                "top_p": 0.9,
-            },
+                max_new_tokens=256,
+                do_sample=True,
+                temperature=0.6,
+                top_p=0.9,
+            )
+
+        generation_thread = threading.Thread(
+            target=_run_generation,
+            args=(
+                generate,
+                streamer,
+                generation_errors,
+            ),
             daemon=True,
         )
         generation_thread.start()
@@ -106,6 +119,8 @@ class TransformersLanguageModel:
                 if text_delta is None:
                     break
                 yield text_delta
+            if generation_errors:
+                raise RuntimeError("Language model generation failed.") from generation_errors[0]
         finally:
             cancellation_event.set()
             await asyncio.to_thread(generation_thread.join)
@@ -116,3 +131,15 @@ def _next_text(streamer: TextIteratorStreamer) -> str | None:
         return next(streamer)
     except StopIteration:
         return None
+
+
+def _run_generation(
+    generate: Callable[[], None],
+    streamer: GenerationStreamer,
+    generation_errors: list[Exception],
+) -> None:
+    try:
+        generate()
+    except Exception as error:
+        generation_errors.append(error)
+        streamer.on_finalized_text("", stream_end=True)
