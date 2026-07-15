@@ -33,6 +33,7 @@ def training_sample_script() -> Iterator[str]:
     "label_field",
     (
         "candidate",
+        "assistant_speaking_input",
         "candidate_source",
         "yield_probability",
         "hold_probability",
@@ -86,6 +87,27 @@ def test_connection_confidence_remains_a_soft_target() -> None:
     assert candidate_frame.primary_reliability_source is ReliabilitySource.UNMEASURED
     assert candidate_frame.event_distribution is not None
     assert sum(candidate_frame.event_distribution.model_dump().values()) == pytest.approx(1.0)
+
+
+def test_assistant_speaking_is_an_input_and_respects_playback_pauses() -> None:
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=3.0,
+        annotation_end_seconds=3.0,
+        user=_speaker_annotation(side=SpeakerSide.SPEAKER2),
+        assistant=_speaker_annotation(
+            side=SpeakerSide.SPEAKER1,
+            speech_segments=(
+                AnnotationSpan(start_seconds=0.5, end_seconds=2.5, text="assistant turn"),
+            ),
+            pauses=(AnnotationSpan(start_seconds=1.0, end_seconds=1.5, text=None),),
+            backchannels=(AnnotationSpan(start_seconds=2.7, end_seconds=2.9, text="mhm"),),
+        ),
+    )
+
+    assert frames[7].assistant_speaking_input
+    assert not frames[15].assistant_speaking_input
+    assert frames[34].assistant_speaking_input
 
 
 def test_backchannel_probability_reduces_yield_and_populates_event_target() -> None:
@@ -201,14 +223,16 @@ def _segment_target(
 def _speaker_annotation(
     side: SpeakerSide,
     speech_segments: tuple[AnnotationSpan, ...] = (),
+    pauses: tuple[AnnotationSpan, ...] = (),
+    backchannels: tuple[AnnotationSpan, ...] = (),
     segment_targets: tuple[SegmentAnnotationTarget, ...] = (),
     connection_targets: tuple[ConnectionAnnotationTarget, ...] = (),
 ) -> SpeakerConversationAnnotation:
     return SpeakerConversationAnnotation(
         side=side,
         speech_segments=speech_segments,
-        pauses=(),
-        backchannels=(),
+        pauses=pauses,
+        backchannels=backchannels,
         turns=(),
         interruptions=(),
         segment_targets=segment_targets,
@@ -216,6 +240,8 @@ def _speaker_annotation(
         speech_duration_seconds=sum(
             span.end_seconds - span.start_seconds for span in speech_segments
         ),
-        pause_duration_seconds=0.0,
-        backchannel_duration_seconds=0.0,
+        pause_duration_seconds=sum(span.end_seconds - span.start_seconds for span in pauses),
+        backchannel_duration_seconds=sum(
+            span.end_seconds - span.start_seconds for span in backchannels
+        ),
     )

@@ -208,6 +208,10 @@ button.primary {
   background: #edf0f1;
 }
 
+.legend .condition {
+  background: #d6a442;
+}
+
 .legend .positive {
   background: #7ebdb4;
 }

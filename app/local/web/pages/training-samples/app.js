@@ -17,6 +17,7 @@ const frameDetails = document.querySelector("#frame-details");
 
 const rowDefinitions = [
   ["User waveform", "waveform"],
+  ["INPUT Â· Assistant speaking", "assistant_speaking_input"],
   ["Candidate decision mask", "candidate"],
   ["Primary p(YIELD)", "yield_probability"],
   ["Primary p(HOLD)", "hold_probability"],
@@ -112,7 +113,7 @@ function configureControls() {
   positionSlider.max = String(maximumStart);
   positionSlider.value = String(preview.start_seconds);
   positionLabel.textContent = `${formatDuration(preview.start_seconds)}–${formatDuration(preview.end_seconds)} of ${formatDuration(preview.eligible_duration_seconds)} annotated`;
-  roleLabel.textContent = `${prettySide(preview.user_side)} = user input · ${prettySide(preview.assistant_side)} = reference assistant`;
+  roleLabel.textContent = `${prettySide(preview.user_side)} = user audio · ${prettySide(preview.assistant_side)} = assistant-state input`;
   playButton.disabled = false;
   updateTimeReadout();
 }
@@ -124,6 +125,9 @@ function configureAudio() {
 
 function renderSummary() {
   const supervisedFrames = preview.frames.filter((frame) => frame.supervised);
+  const assistantSpeakingFrames = preview.frames.filter(
+    (frame) => frame.assistant_speaking_input,
+  );
   const candidateFrames = supervisedFrames.filter((frame) => frame.candidate);
   const validPrimaryFrames = candidateFrames.filter((frame) => frame.primary_valid);
   const ambiguousFrames = validPrimaryFrames.filter(
@@ -145,6 +149,7 @@ function renderSummary() {
       ["Annotation coverage", percentage(preview.annotated_duration_seconds, preview.represented_duration_seconds)],
       ["Frame interval", `${Math.round(preview.frame_seconds * 1000)} ms`],
       ["Supervised frames", String(supervisedFrames.length)],
+      ["Assistant-speaking input", percentage(assistantSpeakingFrames.length, preview.frames.length)],
       ["Candidate frames", String(candidateFrames.length)],
       ["Valid primary targets", String(validPrimaryFrames.length)],
       ["Mean p(YIELD)", meanYield === null ? "—" : meanYield.toFixed(3)],
@@ -157,7 +162,7 @@ function renderSummary() {
 function drawTimeline() {
   const devicePixelRatio = window.devicePixelRatio || 1;
   const displayWidth = Math.max(980, timeline.clientWidth);
-  const displayHeight = 610;
+  const displayHeight = 660;
   timeline.width = Math.round(displayWidth * devicePixelRatio);
   timeline.height = Math.round(displayHeight * devicePixelRatio);
   const context = timeline.getContext("2d");
@@ -185,7 +190,10 @@ function drawTimeline() {
     context.fillStyle = rowIndex % 2 === 0 ? "#f7f9f8" : "#f1f4f3";
     context.fillRect(left, rowTop, plotWidth, rowHeight);
     context.fillStyle = "#48575c";
-    context.font = field === "yield_probability" ? "bold 12px sans-serif" : "12px sans-serif";
+    context.font =
+      field === "yield_probability" || field === "assistant_speaking_input"
+        ? "bold 12px sans-serif"
+        : "12px sans-serif";
     context.fillText(label, 8, rowTop + 23);
     if (field === "waveform") {
       drawWaveform(context, left, rowTop, plotWidth, rowHeight);
@@ -220,7 +228,8 @@ function drawTargetFrames(context, field, left, top, width, height) {
       return;
     }
     if (typeof value === "boolean") {
-      context.fillStyle = value ? "#7ebdb4" : "rgba(0, 0, 0, 0)";
+      context.fillStyle =
+        field === "assistant_speaking_input" ? "#d6a442" : "#7ebdb4";
       if (!value) {
         return;
       }
@@ -286,6 +295,7 @@ function renderSelectedFrame(frame) {
   frameDetails.replaceChildren(
     ...definitionRows([
       ["Contributes loss", booleanLabel(frame.supervised)],
+      ["INPUT Â· Assistant speaking", booleanLabel(frame.assistant_speaking_input)],
       ["Candidate", booleanLabel(frame.candidate)],
       ["Candidate source", frame.candidate_source ?? "—"],
       ["Since user speech offset", optionalSeconds(frame.seconds_since_speech_offset)],

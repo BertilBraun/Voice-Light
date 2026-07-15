@@ -48,7 +48,7 @@
       <section class="panel transport">
         <button id="play-button" type="button" disabled>Play user input</button>
         <span id="time-readout">00:00.00 / 00:20.00</span>
-        <span class="input-note">Only the selected user track is model audio input.</span>
+        <span class="input-note">User audio plus the known assistant-speaking state are model inputs.</span>
         <audio id="user-audio" preload="metadata"></audio>
       </section>
 
@@ -60,13 +60,14 @@
           </div>
           <div class="legend">
             <span><i class="burn"></i>Burn-in</span>
+            <span><i class="condition"></i>Known assistant-state input</span>
             <span><i class="positive"></i>Hard positive</span>
             <span><i class="probability"></i>Higher probability</span>
             <span><i class="masked"></i>Masked / unavailable</span>
           </div>
         </div>
         <div class="canvas-shell">
-          <canvas id="timeline" height="610"></canvas>
+          <canvas id="timeline" height="660"></canvas>
         </div>
       </section>
 
@@ -89,7 +90,8 @@
           connection and event hypotheses. <code>primary_reliability</code> is an independent weight.
           Existing annotations do not store that second quantity, so it is displayed as
           <strong>unmeasured</strong>, never copied from the target probability. Assistant playback is
-          no longer a target or preview input.
+          a separate, known binary conditioning input. It is not a prediction target and is not sent
+          through the frozen audio encoder.
         </p>
       </section>
     </main>

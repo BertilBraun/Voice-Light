@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.training.turn_taking.schema import (
+    ActivitySpan,
     DecisionTarget,
     EventTargetDistribution,
     TurnTakingSample,
@@ -50,6 +51,7 @@ def _sample(
         context_start_seconds=0.0,
         decision_start_seconds=decision_start_seconds,
         decision_end_seconds=decision_end_seconds,
+        assistant_speech_spans=(ActivitySpan(start_seconds=1.2, end_seconds=1.8),),
         decisions=(
             DecisionTarget(
                 time_seconds=2.0,

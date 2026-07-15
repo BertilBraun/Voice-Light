@@ -70,6 +70,7 @@ class TrainingFramePreview(FrozenBaseModel):
     time_seconds: float
     relative_time_seconds: float
     supervised: bool
+    assistant_speaking_input: bool
     candidate: bool
     candidate_source: CandidateSource | None
     seconds_since_speech_offset: float | None

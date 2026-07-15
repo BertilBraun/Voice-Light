@@ -3,8 +3,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from app.training.turn_taking.data import build_frame_targets
+from app.training.turn_taking.data import build_assistant_speaking_input, build_frame_targets
 from app.training.turn_taking.schema import (
+    ActivitySpan,
     DecisionTarget,
     EventTargetDistribution,
     TurnTakingSample,
@@ -22,6 +23,10 @@ def test_frame_targets_are_sparse_soft_and_separately_weighted() -> None:
         context_start_seconds=0.0,
         decision_start_seconds=0.0,
         decision_end_seconds=3.0,
+        assistant_speech_spans=(
+            ActivitySpan(start_seconds=0.4, end_seconds=0.8),
+            ActivitySpan(start_seconds=1.5, end_seconds=2.0),
+        ),
         decisions=(
             _decision(time_seconds=0.5, yield_probability=0.2, reliability=0.9),
             _decision(time_seconds=1.5, yield_probability=0.7, reliability=0.4),
@@ -46,6 +51,12 @@ def test_frame_targets_are_sparse_soft_and_separately_weighted() -> None:
     assert torch.equal(targets.future_activity_mask[15], torch.tensor([True, True, False, True]))
     assert targets.event_distribution.shape == (30, 5)
     assert targets.future_activity.shape == (30, 4)
+
+    assistant_speaking = build_assistant_speaking_input(sample, frame_seconds=0.1)
+    assert assistant_speaking[4]
+    assert not assistant_speaking[8]
+    assert assistant_speaking[15]
+    assert not assistant_speaking[20]
 
 
 def _decision(

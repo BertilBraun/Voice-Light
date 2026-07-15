@@ -205,6 +205,10 @@ def build_frame_previews(
                 time_seconds=time_seconds,
                 relative_time_seconds=time_seconds - start_seconds,
                 supervised=time_seconds >= start_seconds + BURN_IN_SECONDS,
+                assistant_speaking_input=_assistant_speaking_at(
+                    time_seconds=time_seconds,
+                    assistant=assistant,
+                ),
                 candidate=candidate,
                 candidate_source=boundary.source if boundary is not None else None,
                 seconds_since_speech_offset=(
@@ -235,6 +239,20 @@ def build_frame_previews(
             )
         )
     return tuple(frames)
+
+
+def _assistant_speaking_at(
+    time_seconds: float,
+    assistant: SpeakerConversationAnnotation,
+) -> bool:
+    inside_turn = _inside_span(time_seconds, assistant.speech_segments)
+    inside_pause = _inside_span(time_seconds, assistant.pauses)
+    inside_backchannel = _inside_span(time_seconds, assistant.backchannels)
+    return (inside_turn and not inside_pause) or inside_backchannel
+
+
+def _inside_span(time_seconds: float, spans: Sequence[AnnotationSpan]) -> bool:
+    return any(span.start_seconds <= time_seconds < span.end_seconds for span in spans)
 
 
 def _decision_boundaries(

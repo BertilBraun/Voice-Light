@@ -59,6 +59,9 @@ different splits. Every line validates as `TurnTakingSample` in
   "context_start_seconds": 120.0,
   "decision_start_seconds": 124.0,
   "decision_end_seconds": 140.0,
+  "assistant_speech_spans": [
+    {"start_seconds": 126.2, "end_seconds": 131.8}
+  ],
   "decisions": [
     {
       "time_seconds": 132.4,
@@ -86,11 +89,13 @@ mono float32 at 16 kHz. Window endpoints and all annotations use seconds from th
 Training targets are aligned to emitted encoder frames; the current prototype initially rasterizes
 at 80 ms and nearest-aligns to the returned encoder length.
 
-`annotation_reference_audio_path` is label-generation evidence only. It must never enter the ASR or adapter.
-Otherwise the model can hear the other speaker begin and mistake detection for prediction. Mixed
-recordings require source separation or samples whose cutoff precedes partner onset. Keep source,
-license, annotation origin, and confidence on every sample/event. Mask unreliable labels instead of
-inventing them.
+`annotation_reference_audio_path` is label-generation evidence only. Its waveform must never enter
+the ASR or adapter. The binary `assistant_speech_spans` state is different: it is a known runtime
+condition produced by assistant playback control, so it is rasterized across the full window and
+fed directly to the adapter. This lets identical short user utterances be interpreted differently
+while the assistant is speaking without letting the model hear future partner audio. Mixed
+recordings still require source separation. Keep source, license, annotation origin, and confidence
+on every sample. Mask unreliable labels instead of inventing them.
 
 ## Labels
 
@@ -112,8 +117,9 @@ The only initial auxiliary heads are:
 - Hard future user-activity targets for `[0, 200)`, `[200, 500)`, `[500, 1000)`, and
   `[1000, 1500)` milliseconds. A null bin is masked.
 
-Do not add current VAD, silence duration, assistant playback, nested endpoint horizons, or
-time-to-shift heads initially. They are redundant or create shortcut risk. A known future
+Do not add current user VAD, silence duration, assistant playback as a target, nested endpoint
+horizons, or time-to-shift heads initially. They are redundant or create shortcut risk. Known
+assistant playback remains an input condition. A known future
 continuation is valid HOLD supervision even when the pause is long; lower reliability only when the
 underlying timing/identity annotation is unreliable, not merely because the example is difficult.
 
@@ -168,11 +174,12 @@ reverb, codec, and echo robustness suites.
 ## Adapter Architecture
 
 Tap encoder layers 6, 12, 18, and 24. Each 1,024-dimensional stream receives its own LayerNorm and
-64-dimensional projection. Concatenate the four taps, fuse to 128 with SiLU and dropout 0.1, then
-apply two residual causal depthwise-separable convolution blocks (kernel 5, dilations 1 and 2) and a
-single-layer unidirectional GRU with 128 hidden units. Three linear heads produce one YIELD logit,
-five event logits, and four future-activity logits. This smaller first adapter is roughly 0.5 million
-trainable parameters and retains bounded convolutional cost plus constant recurrent memory.
+32-dimensional projection. Concatenate the four taps, fuse to 64 with SiLU and dropout 0.1, then
+apply two residual causal depthwise-separable convolution blocks (kernel 5, dilations 1 and 2).
+Append the known binary assistant-speaking state and feed the resulting 65 dimensions to a
+single-layer unidirectional GRU with 64 hidden units. Three linear heads produce one YIELD logit,
+five event logits, and four future-activity logits. The default adapter has about 183,000 trainable
+parameters while retaining all four encoder taps and both causal convolution blocks.
 
 Run the frozen encoder in evaluation mode, detach taps, and optimize only the adapter. The current
 Transformers wrapper exposes hidden states without forward hooks. Production streaming extraction

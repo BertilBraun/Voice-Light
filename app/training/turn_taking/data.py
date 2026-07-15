@@ -57,6 +57,7 @@ class FrameTargets:
 class TrainingItem:
     sample_id: str
     waveform: Tensor
+    assistant_speaking: Tensor
     targets: FrameTargets
 
 
@@ -65,6 +66,7 @@ class TrainingBatch:
     sample_ids: tuple[str, ...]
     waveforms: Tensor
     waveform_lengths: Tensor
+    assistant_speaking: Tensor
     targets: FrameTargets
 
 
@@ -108,7 +110,16 @@ class TurnTakingDataset(Dataset[TrainingItem]):
             burn_in_seconds=self.burn_in_seconds,
             unmeasured_reliability_weight=self.unmeasured_reliability_weight,
         )
-        return TrainingItem(sample_id=sample.sample_id, waveform=waveform, targets=targets)
+        assistant_speaking = build_assistant_speaking_input(
+            sample=sample,
+            frame_seconds=self.frame_seconds,
+        )
+        return TrainingItem(
+            sample_id=sample.sample_id,
+            waveform=waveform,
+            assistant_speaking=assistant_speaking,
+            targets=targets,
+        )
 
 
 def load_audio_window(
@@ -189,11 +200,34 @@ def build_frame_targets(
     )
 
 
+def build_assistant_speaking_input(
+    sample: TurnTakingSample,
+    frame_seconds: float,
+) -> Tensor:
+    if frame_seconds <= 0.0:
+        raise ValueError("frame_seconds must be positive.")
+    duration = sample.decision_end_seconds - sample.context_start_seconds
+    frame_count = max(1, int(np.ceil(duration / frame_seconds)))
+    times = (
+        sample.context_start_seconds
+        + torch.arange(frame_count, dtype=torch.float32) * frame_seconds
+    )
+    assistant_speaking = torch.zeros(frame_count, dtype=torch.bool)
+    for span in sample.assistant_speech_spans:
+        assistant_speaking |= (times >= span.start_seconds) & (times < span.end_seconds)
+    return assistant_speaking
+
+
 def collate_training_items(items: Sequence[TrainingItem]) -> TrainingBatch:
     return TrainingBatch(
         sample_ids=tuple(item.sample_id for item in items),
         waveforms=pad_sequence([item.waveform for item in items], batch_first=True),
         waveform_lengths=torch.tensor([item.waveform.numel() for item in items], dtype=torch.long),
+        assistant_speaking=pad_sequence(
+            [item.assistant_speaking for item in items],
+            batch_first=True,
+            padding_value=False,
+        ),
         targets=FrameTargets(
             yield_probability=pad_sequence(
                 [item.targets.yield_probability for item in items], batch_first=True

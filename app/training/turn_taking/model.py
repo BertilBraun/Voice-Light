@@ -64,7 +64,7 @@ class TurnTakingAdapter(nn.Module):
             for dilation in (1, 2)
         )
         self.recurrent = nn.GRU(
-            input_size=config.fused_dimension,
+            input_size=config.fused_dimension + 1,
             hidden_size=config.recurrent_dimension,
             num_layers=config.recurrent_layers,
             dropout=config.dropout if config.recurrent_layers > 1 else 0.0,
@@ -75,11 +75,19 @@ class TurnTakingAdapter(nn.Module):
         self.event_head = nn.Linear(config.recurrent_dimension, 5)
 
     def forward(
-        self, feature_taps: tuple[Tensor, ...], recurrent_state: Tensor | None = None
+        self,
+        feature_taps: tuple[Tensor, ...],
+        assistant_speaking: Tensor,
+        recurrent_state: Tensor | None = None,
     ) -> AdapterOutput:
         if len(feature_taps) != len(self.tap_projections):
             raise ValueError(
                 f"Expected {len(self.tap_projections)} feature taps, received {len(feature_taps)}."
+            )
+        expected_shape = feature_taps[0].shape[:2]
+        if assistant_speaking.shape != expected_shape:
+            raise ValueError(
+                "assistant_speaking must match the feature tap batch and temporal dimensions."
             )
         projected = [
             projection(normalization(features))
@@ -90,6 +98,8 @@ class TurnTakingAdapter(nn.Module):
         temporal = self.fusion(torch.cat(projected, dim=-1))
         for block in self.convolution_blocks:
             temporal = block(temporal)
+        assistant_condition = assistant_speaking.to(dtype=temporal.dtype).unsqueeze(-1)
+        temporal = torch.cat((temporal, assistant_condition), dim=-1)
         temporal, next_state = self.recurrent(temporal, recurrent_state)
         return AdapterOutput(
             yield_logits=self.yield_head(temporal).squeeze(-1),

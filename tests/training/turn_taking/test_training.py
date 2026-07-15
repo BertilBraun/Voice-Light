@@ -35,7 +35,7 @@ def test_adapter_and_multitask_loss_backpropagate() -> None:
     adapter = TurnTakingAdapter(config)
     taps = tuple(torch.randn(2, 8, 16) for _ in config.tap_layer_indices)
 
-    output = adapter(taps)
+    output = adapter(taps, torch.ones(2, 8, dtype=torch.bool))
     loss = compute_loss(
         output,
         _targets(batch_size=2, frame_count=8),
@@ -51,6 +51,19 @@ def test_adapter_and_multitask_loss_backpropagate() -> None:
     assert all(parameter.grad is not None for parameter in adapter.parameters())
 
 
+def test_default_adapter_stays_below_parameter_budget() -> None:
+    config = AdapterConfig()
+    adapter = TurnTakingAdapter(config)
+
+    trainable_parameter_count = sum(
+        parameter.numel() for parameter in adapter.parameters() if parameter.requires_grad
+    )
+
+    assert len(config.tap_layer_indices) == 4
+    assert config.recurrent_dimension == 64
+    assert trainable_parameter_count < 200_000
+
+
 def test_training_loop_saves_checkpoint(tmp_path: Path) -> None:
     adapter_config = _adapter_config()
     config = TrainingConfig(
@@ -64,6 +77,7 @@ def test_training_loop_saves_checkpoint(tmp_path: Path) -> None:
         sample_ids=("one", "two"),
         waveforms=torch.randn(2, 320),
         waveform_lengths=torch.tensor([320, 320]),
+        assistant_speaking=torch.randint(0, 2, (2, 8), dtype=torch.bool),
         targets=_targets(batch_size=2, frame_count=8),
     )
     path = tmp_path / "adapter.pt"

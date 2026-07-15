@@ -81,7 +81,11 @@ def train_micro_batch(
 ) -> LossBreakdown:
     features = backbone.extract(batch.waveforms, batch.waveform_lengths)
     taps = tuple(tap.to(device) for tap in features.taps)
-    output = adapter(taps)
+    assistant_speaking = _align_frame_input(
+        values=batch.assistant_speaking.to(device),
+        frame_count=taps[0].shape[1],
+    )
+    output = adapter(taps, assistant_speaking)
     targets = _targets_to_device(batch.targets, device)
     return compute_loss(output, targets, features.frame_mask.to(device), config.loss)
 
@@ -116,6 +120,12 @@ def _targets_to_device(targets: FrameTargets, device: torch.device) -> FrameTarg
         future_activity=targets.future_activity.to(device),
         future_activity_mask=targets.future_activity_mask.to(device),
     )
+
+
+def _align_frame_input(values: torch.Tensor, frame_count: int) -> torch.Tensor:
+    source_count = values.shape[1]
+    indices = torch.linspace(0, source_count - 1, frame_count, device=values.device).round().long()
+    return values[:, indices]
 
 
 def _learning_rate_multiplier(config: TrainingConfig) -> Callable[[int], float]:

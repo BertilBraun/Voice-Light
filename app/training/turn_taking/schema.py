@@ -47,6 +47,17 @@ class DecisionTarget(FrozenBaseModel):
     ]
 
 
+class ActivitySpan(FrozenBaseModel):
+    start_seconds: float = Field(ge=0.0)
+    end_seconds: float = Field(gt=0.0)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> ActivitySpan:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("Activity end_seconds must be greater than start_seconds.")
+        return self
+
+
 class AlignedWord(FrozenBaseModel):
     speaker_id: str
     text: str
@@ -65,6 +76,7 @@ class TurnTakingSample(FrozenBaseModel):
     context_start_seconds: float = Field(ge=0.0)
     decision_start_seconds: float = Field(ge=0.0)
     decision_end_seconds: float = Field(gt=0.0)
+    assistant_speech_spans: tuple[ActivitySpan, ...]
     decisions: tuple[DecisionTarget, ...]
     words: tuple[AlignedWord, ...] = ()
     source_dataset: str
@@ -84,6 +96,12 @@ class TurnTakingSample(FrozenBaseModel):
             for decision in self.decisions
         ):
             raise ValueError("Decision targets must fall inside the decision interval.")
+        if any(
+            span.start_seconds < self.context_start_seconds
+            or span.end_seconds > self.decision_end_seconds
+            for span in self.assistant_speech_spans
+        ):
+            raise ValueError("Assistant speech spans must fall inside the sample interval.")
         return self
 
 
