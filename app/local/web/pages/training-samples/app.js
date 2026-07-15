@@ -1,6 +1,8 @@
 const sampleSelect = document.querySelector("#sample-select");
 const userSideSelect = document.querySelector("#user-side-select");
 const startInput = document.querySelector("#start-input");
+const minimumQualityInput = document.querySelector("#minimum-quality-input");
+const samplingModeSelect = document.querySelector("#sampling-mode-select");
 const loadButton = document.querySelector("#load-button");
 const randomButton = document.querySelector("#random-button");
 const nextRandomButton = document.querySelector("#next-random-button");
@@ -29,10 +31,10 @@ const rowDefinitions = [
   ["Candidate event: backchannel", "event_distribution.backchannel"],
   ["Candidate event: interruption", "event_distribution.interruption"],
   ["Candidate event: other", "event_distribution.other"],
-  ["Future activity 0–200 ms", "future_activity.0"],
-  ["Future activity 200–500 ms", "future_activity.1"],
-  ["Future activity 500–1000 ms", "future_activity.2"],
-  ["Future activity 1000–1500 ms", "future_activity.3"],
+  ["Future user activity 0–200 ms", "future_activity.0"],
+  ["Future user activity 200–500 ms", "future_activity.1"],
+  ["Future user activity 500–1000 ms", "future_activity.2"],
+  ["Future user activity 1000–1500 ms", "future_activity.3"],
 ];
 
 let preview = null;
@@ -162,9 +164,16 @@ async function loadNextRandomSample() {
     return;
   }
   pausePlayback();
-  setStatus("Choosing a random annotated sample…", false);
+  setStatus(`Choosing the next ${samplingModeSelect.value} sample…`, false);
   try {
-    const parameters = new URLSearchParams({current_sample_id: currentSampleId});
+    const parameters = new URLSearchParams({
+      current_sample_id: currentSampleId,
+      sampling_mode: samplingModeSelect.value,
+    });
+    const minimumQuality = selectedMinimumQuality();
+    if (minimumQuality !== null) {
+      parameters.set("minimum_quality", String(minimumQuality));
+    }
     const response = await fetch(
       `/api/training-samples/random-preview?${parameters.toString()}`,
     );
@@ -185,7 +194,7 @@ function ensureSampleOption() {
   if (option === undefined) {
     option = document.createElement("option");
     option.value = preview.sample_id;
-    option.textContent = `${preview.external_id} · ${formatDuration(preview.represented_duration_seconds)}`;
+    option.textContent = `${preview.external_id} · quality ${optionalScore(preview.quality.total_score)} · ${formatDuration(preview.represented_duration_seconds)}`;
     sampleSelect.append(option);
   }
   sampleSelect.value = preview.sample_id;
@@ -211,6 +220,14 @@ function renderSummary() {
   ).length;
   summary.replaceChildren(
     ...definitionRows([
+      ["Overall quality", optionalScore(preview.quality.total_score)],
+      ["Conversation quality", optionalScore(preview.quality.conversation_quality_score)],
+      ["Audio quality", optionalScore(preview.quality.audio_quality_score)],
+      ["Timing reliability", optionalScore(preview.quality.timing_reliability_score)],
+      ["Interaction density", optionalScore(preview.quality.interaction_density_score)],
+      ["Usable events", optionalInteger(preview.quality.usable_event_count)],
+      ["Events per hour", optionalDecimal(preview.quality.events_per_hour)],
+      ["Quality flags", preview.quality.flags.length === 0 ? "None" : preview.quality.flags.join(", ")],
       ["Input / supervised", `${preview.input_duration_seconds.toFixed(1)} s / ${preview.supervised_duration_seconds.toFixed(1)} s`],
       ["Recording duration", formatDuration(preview.represented_duration_seconds)],
       ["Annotated duration", formatDuration(preview.annotated_duration_seconds)],
@@ -378,7 +395,7 @@ function renderSelectedFrame(frame) {
       ["Event: interruption", eventProbability(frame, "interruption")],
       ["Event: other", eventProbability(frame, "other")],
       ...frame.future_activity.map((target) => [
-        `Future ${target.start_milliseconds}–${target.end_milliseconds} ms`,
+        `Future user activity ${target.start_milliseconds}–${target.end_milliseconds} ms`,
         target.valid ? booleanLabel(target.active) : "MASKED",
       ]),
     ]),
@@ -505,7 +522,17 @@ function errorMessage(payload, statusCode) {
 }
 
 function sampleOptionLabel(sample) {
-  return `${sample.external_id} · ${formatDuration(sample.represented_duration_seconds)} · ${sample.usable_event_count} events`;
+  return `${sample.external_id} · quality ${optionalScore(sample.quality_score)} · ${formatDuration(sample.represented_duration_seconds)} · ${sample.usable_event_count} events`;
+}
+
+function selectedMinimumQuality() {
+  if (minimumQualityInput.value === "") {
+    return null;
+  }
+  if (!minimumQualityInput.checkValidity()) {
+    throw new Error("Minimum quality must be between 0 and 1.");
+  }
+  return minimumQualityInput.valueAsNumber;
 }
 
 function prettySide(side) {
@@ -518,6 +545,18 @@ function booleanLabel(value) {
 
 function optionalProbability(value) {
   return value === null ? "UNMEASURED" : value.toFixed(3);
+}
+
+function optionalScore(value) {
+  return value === null ? "—" : value.toFixed(3);
+}
+
+function optionalInteger(value) {
+  return value === null ? "—" : String(value);
+}
+
+function optionalDecimal(value) {
+  return value === null ? "—" : value.toFixed(1);
 }
 
 function optionalSeconds(value) {

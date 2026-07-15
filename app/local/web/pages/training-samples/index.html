@@ -33,9 +33,27 @@
           Start (seconds)
           <input id="start-input" type="number" min="0" step="0.08" value="0" />
         </label>
+        <label>
+          Minimum quality
+          <input
+            id="minimum-quality-input"
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            placeholder="Any"
+          />
+        </label>
+        <label>
+          Next-sample strategy
+          <select id="sampling-mode-select">
+            <option value="interesting" selected>Interesting</option>
+            <option value="random">Fully random</option>
+          </select>
+        </label>
         <button id="load-button" type="button">Load location</button>
         <button id="random-button" type="button">Random location</button>
-        <button id="next-random-button" class="primary" type="button">Next random sample</button>
+        <button id="next-random-button" class="primary" type="button">Next sample</button>
       </section>
 
       <section class="panel position-panel">
@@ -62,7 +80,7 @@
         <div class="timeline-header">
           <div>
             <h2>Frame preview</h2>
-            <p>Click the timeline to seek. Hover or click a frame to inspect its targets and masks.</p>
+            <p>Click the timeline to seek. Future activity means future selected-user speech.</p>
           </div>
           <div class="legend">
             <span><i class="burn"></i>Burn-in</span>
@@ -87,6 +105,15 @@
           <div id="frame-time" class="frame-time">Select a frame</div>
           <dl id="frame-details"></dl>
         </article>
+      </section>
+
+      <section class="panel info-card">
+        <h2>Future user activity</h2>
+        <p>
+          This auxiliary target is calculated on every frame, not only candidate frames. Each bin is
+          active when annotated user speech or a user backchannel covers at least half of its future
+          time window; bins beyond the annotated recording boundary are masked.
+        </p>
       </section>
 
       <section class="panel warning-card">

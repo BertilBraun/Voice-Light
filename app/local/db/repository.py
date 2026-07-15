@@ -30,6 +30,8 @@ from app.local.db.models import (
 )
 from app.shared.quality import METRIC_VERSION
 
+INTERESTING_SAMPLE_POOL_SIZE = 64
+
 
 @dataclass(frozen=True)
 class SampleTrackInput:
@@ -143,6 +145,7 @@ class AnnotatedSampleRecord:
     external_id: str
     represented_duration_seconds: float
     usable_event_count: int
+    quality_score: float | None
 
 
 class Repository:
@@ -712,57 +715,110 @@ class Repository:
             raise ValueError(f"Sample not found: {sample_id}")
         return dashboard_sample_from_row(row)
 
-    def list_annotated_samples(self, limit: int) -> list[AnnotatedSampleRecord]:
+    def list_annotated_samples(
+        self,
+        limit: int,
+        minimum_quality: float | None,
+    ) -> list[AnnotatedSampleRecord]:
+        quality_filter, quality_parameters = minimum_quality_filter(minimum_quality)
         with self.connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT
                   samples.id AS sample_id,
                   samples.external_id,
                   COALESCE(samples.duration_seconds, 0.0)::double precision
                     AS represented_duration_seconds,
                   COALESCE(latest_quality.usable_event_count, 0)::integer
-                    AS usable_event_count
+                    AS usable_event_count,
+                  latest_quality.total_quality_score AS quality_score
                 FROM samples
                 JOIN LATERAL (
-                  SELECT usable_event_count, payload
+                  SELECT usable_event_count, total_quality_score, payload
                   FROM quality_results
                   WHERE quality_results.sample_id = samples.id
                   ORDER BY created_at DESC
                   LIMIT 1
                 ) AS latest_quality ON true
                 WHERE jsonb_typeof(latest_quality.payload -> 'conversation_annotation') = 'object'
+                {quality_filter}
                 ORDER BY samples.updated_at DESC, samples.external_id
                 LIMIT %s
                 """,
-                (limit,),
+                (*quality_parameters, limit),
             ).fetchall()
         return [annotated_sample_record(row) for row in rows]
 
-    def random_annotated_sample_id(self, current_sample_id: UUID) -> UUID:
+    def random_annotated_sample_id(
+        self,
+        current_sample_id: UUID,
+        minimum_quality: float | None,
+    ) -> UUID:
+        quality_filter, quality_parameters = minimum_quality_filter(minimum_quality)
         with self.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT samples.id AS sample_id
                 FROM samples
                 JOIN LATERAL (
-                  SELECT payload
+                  SELECT total_quality_score, payload
                   FROM quality_results
                   WHERE quality_results.sample_id = samples.id
                   ORDER BY created_at DESC
                   LIMIT 1
                 ) AS latest_quality ON true
                 WHERE jsonb_typeof(latest_quality.payload -> 'conversation_annotation') = 'object'
+                {quality_filter}
                 ORDER BY (samples.id = %s), random()
                 LIMIT 1
                 """,
-                (current_sample_id,),
+                (*quality_parameters, current_sample_id),
             ).fetchone()
-        if row is None:
-            raise ValueError("No annotated dataset samples are available.")
-        sample_id = row["sample_id"]
-        assert isinstance(sample_id, UUID)
-        return sample_id
+        return annotated_sample_id(row)
+
+    def interesting_annotated_sample_id(
+        self,
+        current_sample_id: UUID,
+        minimum_quality: float | None,
+    ) -> UUID:
+        quality_filter, quality_parameters = minimum_quality_filter(minimum_quality)
+        with self.connection() as connection:
+            row = connection.execute(
+                f"""
+                WITH interesting_candidates AS (
+                  SELECT
+                    samples.id AS sample_id,
+                    latest_quality.conversation_events_per_hour,
+                    latest_quality.usable_event_count
+                  FROM samples
+                  JOIN LATERAL (
+                    SELECT
+                      conversation_events_per_hour,
+                      usable_event_count,
+                      total_quality_score,
+                      payload
+                    FROM quality_results
+                    WHERE quality_results.sample_id = samples.id
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                  ) AS latest_quality ON true
+                  WHERE jsonb_typeof(
+                    latest_quality.payload -> 'conversation_annotation'
+                  ) = 'object'
+                  {quality_filter}
+                  ORDER BY
+                    latest_quality.conversation_events_per_hour DESC NULLS LAST,
+                    latest_quality.usable_event_count DESC NULLS LAST
+                  LIMIT %s
+                )
+                SELECT sample_id
+                FROM interesting_candidates
+                ORDER BY (sample_id = %s), random()
+                LIMIT 1
+                """,
+                (*quality_parameters, INTERESTING_SAMPLE_POOL_SIZE, current_sample_id),
+            ).fetchone()
+        return annotated_sample_id(row)
 
 
 def dashboard_filter_sql(sample_filter: SampleListFilter) -> DashboardFilterSql:
@@ -827,20 +883,39 @@ def dashboard_filter_sql(sample_filter: SampleListFilter) -> DashboardFilterSql:
     return DashboardFilterSql(where_clause=where_clause, parameters=tuple(parameters))
 
 
+def minimum_quality_filter(
+    minimum_quality: float | None,
+) -> tuple[str, tuple[object, ...]]:
+    if minimum_quality is None:
+        return "", ()
+    return "AND latest_quality.total_quality_score >= %s", (minimum_quality,)
+
+
+def annotated_sample_id(row: dict[str, object] | None) -> UUID:
+    if row is None:
+        raise ValueError("No annotated samples match the selected quality filter.")
+    sample_id = row["sample_id"]
+    assert isinstance(sample_id, UUID)
+    return sample_id
+
+
 def annotated_sample_record(row: dict[str, object]) -> AnnotatedSampleRecord:
     sample_id = row["sample_id"]
     external_id = row["external_id"]
     represented_duration_seconds = row["represented_duration_seconds"]
     usable_event_count = row["usable_event_count"]
+    quality_score = row["quality_score"]
     assert isinstance(sample_id, UUID)
     assert isinstance(external_id, str)
     assert isinstance(represented_duration_seconds, float)
     assert isinstance(usable_event_count, int)
+    assert quality_score is None or isinstance(quality_score, float)
     return AnnotatedSampleRecord(
         sample_id=sample_id,
         external_id=external_id,
         represented_duration_seconds=represented_duration_seconds,
         usable_event_count=usable_event_count,
+        quality_score=quality_score,
     )
 
 

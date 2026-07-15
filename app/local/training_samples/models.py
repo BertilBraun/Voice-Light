@@ -31,6 +31,11 @@ class ReliabilitySource(StrEnum):
     UNMEASURED = "unmeasured"
 
 
+class TrainingSampleSelectionMode(StrEnum):
+    RANDOM = "random"
+    INTERESTING = "interesting"
+
+
 class EventTargetDistribution(FrozenBaseModel):
     turn_completion: float
     continuation_pause: float
@@ -86,11 +91,23 @@ class TrainingFramePreview(FrozenBaseModel):
     future_activity: tuple[FutureActivityTarget, ...]
 
 
+class TrainingSampleQuality(FrozenBaseModel):
+    total_score: float | None
+    interaction_density_score: float | None
+    timing_reliability_score: float | None
+    audio_quality_score: float | None
+    conversation_quality_score: float | None
+    usable_event_count: int | None
+    events_per_hour: float | None
+    flags: tuple[str, ...]
+
+
 class TrainingSamplePreview(FrozenBaseModel):
     sample_id: UUID
     external_id: str
     user_side: TrackSide
     assistant_side: TrackSide
+    quality: TrainingSampleQuality
     represented_duration_seconds: float
     annotated_duration_seconds: float
     eligible_duration_seconds: float
@@ -114,3 +131,4 @@ class TrainingSampleOption(FrozenBaseModel):
     external_id: str
     represented_duration_seconds: float
     usable_event_count: int
+    quality_score: float | None

@@ -21,6 +21,8 @@ from app.local.training_samples.models import (
     ReliabilitySource,
     TrainingFramePreview,
     TrainingSamplePreview,
+    TrainingSampleQuality,
+    TrainingSampleSelectionMode,
 )
 from app.shared.audio.wav import mono_samples
 from app.shared.quality import (
@@ -40,6 +42,8 @@ FRAME_SECONDS = 0.08
 WAVEFORM_POINT_COUNT = 1000
 MAXIMUM_CANDIDATE_SILENCE_SECONDS = 2.0
 FUTURE_ACTIVITY_WINDOWS_MILLISECONDS = ((0, 200), (200, 500), (500, 1000), (1000, 1500))
+INTERESTING_RANDOM_LOCATION_COUNT = 24
+INTERESTING_ANCHOR_LIMIT = 64
 
 
 @dataclass(frozen=True)
@@ -51,10 +55,18 @@ class DecisionBoundary:
     event_distribution: EventTargetDistribution | None
 
 
+@dataclass(frozen=True)
+class ProbabilitySpan:
+    start_seconds: float
+    end_seconds: float
+    yield_probability: float
+
+
 def build_training_sample_preview(
     dashboard_sample: DashboardSample,
     user_side: TrackSide,
     requested_start_seconds: float | None,
+    selection_mode: TrainingSampleSelectionMode,
     generator: random.Random,
 ) -> TrainingSamplePreview:
     annotation = _conversation_annotation(dashboard_sample)
@@ -66,15 +78,18 @@ def build_training_sample_preview(
     eligible_duration_seconds = min(
         represented_duration_seconds, annotation.analyzed_duration_seconds
     )
-    start_seconds = _sample_start_seconds(
-        duration_seconds=eligible_duration_seconds,
-        requested_start_seconds=requested_start_seconds,
-        generator=generator,
-    )
-    end_seconds = min(eligible_duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
     assistant_side = _other_side(user_side)
     user_annotation = _speaker_annotation(annotation, user_side)
     assistant_annotation = _speaker_annotation(annotation, assistant_side)
+    start_seconds = _select_start_seconds(
+        duration_seconds=eligible_duration_seconds,
+        requested_start_seconds=requested_start_seconds,
+        selection_mode=selection_mode,
+        user=user_annotation,
+        assistant=assistant_annotation,
+        generator=generator,
+    )
+    end_seconds = min(eligible_duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
     user_track_path = _track_path(dashboard_sample, user_side)
     sample_rate, waveform = _waveform_window(
         path=user_track_path,
@@ -94,6 +109,7 @@ def build_training_sample_preview(
         external_id=dashboard_sample.sample.external_id,
         user_side=user_side,
         assistant_side=assistant_side,
+        quality=_training_sample_quality(dashboard_sample),
         represented_duration_seconds=represented_duration_seconds,
         annotated_duration_seconds=annotation.analyzed_duration_seconds,
         eligible_duration_seconds=eligible_duration_seconds,
@@ -127,6 +143,52 @@ def _conversation_annotation(dashboard_sample: DashboardSample) -> ConversationA
     return result.conversation_annotation
 
 
+def _training_sample_quality(dashboard_sample: DashboardSample) -> TrainingSampleQuality:
+    quality = dashboard_sample.latest_quality
+    if quality is None:
+        raise ValueError("The selected sample has no conversation quality analysis.")
+    return TrainingSampleQuality(
+        total_score=quality.total_quality_score,
+        interaction_density_score=quality.interaction_density_score,
+        timing_reliability_score=quality.timing_reliability_score,
+        audio_quality_score=quality.audio_quality_score,
+        conversation_quality_score=quality.conversation_quality_score,
+        usable_event_count=quality.usable_event_count,
+        events_per_hour=quality.conversation_events_per_hour,
+        flags=quality.flags,
+    )
+
+
+def _select_start_seconds(
+    duration_seconds: float,
+    requested_start_seconds: float | None,
+    selection_mode: TrainingSampleSelectionMode,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    generator: random.Random,
+) -> float:
+    if requested_start_seconds is not None:
+        return _sample_start_seconds(
+            duration_seconds=duration_seconds,
+            requested_start_seconds=requested_start_seconds,
+            generator=generator,
+        )
+    match selection_mode:
+        case TrainingSampleSelectionMode.RANDOM:
+            return _sample_start_seconds(
+                duration_seconds=duration_seconds,
+                requested_start_seconds=None,
+                generator=generator,
+            )
+        case TrainingSampleSelectionMode.INTERESTING:
+            return _interesting_start_seconds(
+                duration_seconds=duration_seconds,
+                user=user,
+                assistant=assistant,
+                generator=generator,
+            )
+
+
 def _sample_start_seconds(
     duration_seconds: float,
     requested_start_seconds: float | None,
@@ -140,6 +202,111 @@ def _sample_start_seconds(
             f"start_seconds must be between 0 and {maximum_start:.3f} for this sample."
         )
     return requested_start_seconds
+
+
+def _interesting_start_seconds(
+    duration_seconds: float,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    generator: random.Random,
+) -> float:
+    maximum_start = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
+    if maximum_start == 0.0:
+        return 0.0
+    event_times = _activity_event_times((user, assistant))
+    probability_spans = _user_probability_spans(user)
+    anchors = [
+        *event_times,
+        *((span.start_seconds + span.end_seconds) / 2.0 for span in probability_spans),
+    ]
+    if len(anchors) > INTERESTING_ANCHOR_LIMIT:
+        anchors = generator.sample(anchors, INTERESTING_ANCHOR_LIMIT)
+    candidate_starts = {
+        min(maximum_start, max(0.0, anchor - INPUT_DURATION_SECONDS / 2.0)) for anchor in anchors
+    }
+    candidate_starts.update(
+        generator.uniform(0.0, maximum_start) for _ in range(INTERESTING_RANDOM_LOCATION_COUNT)
+    )
+    ranked_starts = sorted(
+        (
+            _interesting_location_score(
+                start_seconds=start_seconds,
+                duration_seconds=duration_seconds,
+                event_times=event_times,
+                probability_spans=probability_spans,
+            ),
+            start_seconds,
+        )
+        for start_seconds in candidate_starts
+    )
+    top_starts = ranked_starts[-min(5, len(ranked_starts)) :]
+    return top_starts[generator.randrange(len(top_starts))][1]
+
+
+def _activity_event_times(
+    speakers: Sequence[SpeakerConversationAnnotation],
+) -> tuple[float, ...]:
+    return tuple(
+        sorted(
+            {
+                time_seconds
+                for speaker in speakers
+                for time_seconds in (
+                    *(segment.end_seconds for segment in speaker.segment_targets),
+                    *(span.start_seconds for span in speaker.pauses),
+                    *(span.start_seconds for span in speaker.backchannels),
+                    *(point.time_seconds for point in speaker.turns),
+                    *(point.time_seconds for point in speaker.interruptions),
+                )
+            }
+        )
+    )
+
+
+def _user_probability_spans(
+    user: SpeakerConversationAnnotation,
+) -> tuple[ProbabilitySpan, ...]:
+    return (
+        *(
+            ProbabilitySpan(
+                start_seconds=segment.start_seconds,
+                end_seconds=segment.end_seconds,
+                yield_probability=segment.keep_playing_confidence,
+            )
+            for segment in user.segment_targets
+        ),
+        *(
+            ProbabilitySpan(
+                start_seconds=connection.earlier_end_seconds,
+                end_seconds=connection.later_start_seconds,
+                yield_probability=1.0 - connection.merge_confidence,
+            )
+            for connection in user.connection_targets
+        ),
+    )
+
+
+def _interesting_location_score(
+    start_seconds: float,
+    duration_seconds: float,
+    event_times: Sequence[float],
+    probability_spans: Sequence[ProbabilitySpan],
+) -> float:
+    supervision_start_seconds = start_seconds + BURN_IN_SECONDS
+    end_seconds = min(duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
+    event_score = float(
+        sum(supervision_start_seconds <= event_time < end_seconds for event_time in event_times)
+    )
+    ambiguous_duration_seconds = sum(
+        max(
+            0.0,
+            min(end_seconds, span.end_seconds) - max(supervision_start_seconds, span.start_seconds),
+        )
+        * (1.0 - 2.0 * abs(span.yield_probability - 0.5))
+        for span in probability_spans
+    )
+    ambiguity_score = 4.0 * ambiguous_duration_seconds
+    return max(event_score, ambiguity_score) + 0.25 * min(event_score, ambiguity_score)
 
 
 def _other_side(side: TrackSide) -> TrackSide:

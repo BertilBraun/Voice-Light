@@ -86,7 +86,9 @@ p {
   align-items: end;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(280px, 2fr) minmax(140px, 0.8fr) minmax(120px, 0.6fr) auto auto auto;
+  grid-template-columns:
+    minmax(240px, 2fr) minmax(125px, 0.8fr) minmax(105px, 0.6fr) minmax(105px, 0.6fr)
+    minmax(145px, 0.8fr) auto auto auto;
   padding: 16px;
 }
 
@@ -142,6 +144,7 @@ button.primary {
 .timeline-panel,
 .summary-card,
 .frame-card,
+.info-card,
 .warning-card {
   margin-top: 14px;
   padding: 16px;
@@ -292,6 +295,11 @@ dd {
   border-left: 4px solid #d29b18;
 }
 
+.info-card {
+  border-left: 4px solid #146b63;
+}
+
+.info-card p,
 .warning-card p {
   line-height: 1.55;
 }

@@ -7,7 +7,11 @@ from fastapi.testclient import TestClient
 
 from app.local.main import app
 from app.local.training_samples.models import CandidateSource, ReliabilitySource
-from app.local.training_samples.service import build_frame_previews
+from app.local.training_samples.service import (
+    ProbabilitySpan,
+    _interesting_location_score,
+    build_frame_previews,
+)
 from app.shared.quality import (
     AnnotationEvidenceSource,
     AnnotationSpan,
@@ -48,6 +52,10 @@ def training_sample_script() -> Iterator[str]:
         "playBothInput",
         "assistantAudio",
         "synchronizeAudioTracks",
+        "minimumQualityInput",
+        "samplingModeSelect",
+        "preview.quality.total_score",
+        "Future user activity",
     ),
 )
 def test_training_sample_lab_displays_target(label_field: str, training_sample_script: str) -> None:
@@ -235,6 +243,51 @@ def test_future_activity_bins_are_hard_and_masked_at_annotation_end() -> None:
 
     assert tuple(target.active for target in future_targets) == (False, True, True, None)
     assert tuple(target.valid for target in future_targets) == (True, True, True, False)
+
+
+def test_future_activity_is_populated_outside_candidate_frames() -> None:
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=1.0,
+        annotation_end_seconds=1.0,
+        user=_speaker_annotation(
+            side=SpeakerSide.SPEAKER2,
+            speech_segments=(AnnotationSpan(start_seconds=0.4, end_seconds=0.8, text="hello"),),
+            segment_targets=(_segment_target(start_seconds=0.4, end_seconds=0.8),),
+        ),
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    frame_before_speech = frames[4]
+
+    assert not frame_before_speech.candidate
+    assert frame_before_speech.future_activity[0].active
+
+
+def test_interesting_location_score_rewards_dense_events_or_ambiguous_targets() -> None:
+    quiet_score = _interesting_location_score(
+        start_seconds=0.0,
+        duration_seconds=20.0,
+        event_times=(),
+        probability_spans=(),
+    )
+    dense_score = _interesting_location_score(
+        start_seconds=0.0,
+        duration_seconds=20.0,
+        event_times=(5.0, 6.0, 7.0),
+        probability_spans=(),
+    )
+    ambiguous_score = _interesting_location_score(
+        start_seconds=0.0,
+        duration_seconds=20.0,
+        event_times=(),
+        probability_spans=(
+            ProbabilitySpan(start_seconds=5.0, end_seconds=7.0, yield_probability=0.5),
+        ),
+    )
+
+    assert dense_score > quiet_score
+    assert ambiguous_score > quiet_score
 
 
 def _segment_target(
