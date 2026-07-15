@@ -39,6 +39,7 @@ KYUTAI_TTS_VOICE: Final = "expresso/ex03-ex01_happy_001_channel1_334s.wav"
 KYUTAI_TTS_CODEBOOK_COUNT: Final = 32
 KYUTAI_TTS_TEMPERATURE: Final = 0.6
 KYUTAI_TTS_CFG_COEFFICIENT: Final = 2.0
+KYUTAI_TTS_WARMUP_ITERATIONS: Final = 3
 KYUTAI_TTS_INPUT_QUEUE_SIZE: Final = 64
 KYUTAI_TTS_OUTPUT_QUEUE_SIZE: Final = 32
 KYUTAI_TTS_QUEUE_POLL_SECONDS: Final = 0.1
@@ -74,6 +75,11 @@ class KyutaiSpeechSynthesizer:
         self.attributes = self.model.make_condition_attributes(
             [Path(voice_path)],
             cfg_coef=KYUTAI_TTS_CFG_COEFFICIENT,
+        )
+        self.model.warmup(
+            (self.attributes,),
+            iters=KYUTAI_TTS_WARMUP_ITERATIONS,
+            batch_size=1,
         )
         self.generation_lock = threading.Lock()
 
