@@ -45,6 +45,7 @@ KYUTAI_TTS_INPUT_QUEUE_SIZE: Final = 64
 KYUTAI_TTS_OUTPUT_QUEUE_SIZE: Final = 32
 KYUTAI_TTS_QUEUE_POLL_SECONDS: Final = 0.1
 KYUTAI_TTS_FINAL_FLUSH_MAX_STEPS: Final = 64
+KYUTAI_TTS_GRAPH_CAPTURE_STEPS: Final = 2
 
 
 class _StreamMarker(Enum):
@@ -109,8 +110,13 @@ class KyutaiSpeechSynthesisSession:
         )
         self.cancellation_event = threading.Event()
         self.input_finished = False
+        self.ready_event = threading.Event()
+        self.startup_error: Exception | None = None
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+        self.ready_event.wait()
+        if self.startup_error is not None:
+            raise RuntimeError("Kyutai synthesis session failed to start.") from self.startup_error
 
     async def add_word(self, word: SynthesisWord) -> None:
         if self.input_finished:
@@ -176,8 +182,11 @@ class KyutaiSpeechSynthesisSession:
             finally:
                 self.generation_lock.release()
         except Exception as error:
+            if not self.ready_event.is_set():
+                self.startup_error = error
             self._put_output(error)
         finally:
+            self.ready_event.set()
             if self.cancellation_event.is_set():
                 try:
                     self.output_queue.put_nowait(_StreamMarker.END)
@@ -187,15 +196,16 @@ class KyutaiSpeechSynthesisSession:
                 self.output_queue.put(_StreamMarker.END)
 
     def _generate(self) -> None:
-        # Moshi CUDA-graph capture is incompatible with concurrent Qwen CUDA work.
-        with torch.inference_mode(), no_cuda_graph(), self.model.mimi.streaming(1):
+        with torch.inference_mode(), self.model.mimi.streaming(1):
             generator = _KyutaiStreamingGenerator(
                 model=self.model,
                 attributes=(self.attributes,),
-                cancellation_event=self.cancellation_event,
-                emit=self._put_output,
             )
             with generator.lm_generation.streaming(1):
+                # Capture before Qwen starts; capture during concurrent CUDA work is invalid.
+                generator.prepare_streaming_graphs()
+                generator.start_turn(self.cancellation_event, self._put_output)
+                self.ready_event.set()
                 first_word = True
                 while not self.cancellation_event.is_set():
                     item = get_until_cancelled(
@@ -228,8 +238,6 @@ class _KyutaiStreamingGenerator:
         self,
         model: TTSModel,
         attributes: Sequence[ConditionAttributes],
-        cancellation_event: threading.Event,
-        emit: Callable[[_OutputItem], None],
     ) -> None:
         if model.cfg_coef != 1.0:
             raise ValueError(
@@ -238,14 +246,10 @@ class _KyutaiStreamingGenerator:
         if model.lm.condition_provider is None:
             raise ValueError("The Kyutai TTS checkpoint has no condition provider.")
         self.model = model
-        self.cancellation_event = cancellation_event
-        self.emit = emit
-        self.offset = 0
-        self.decoded_frame_count = 0
-        self.emitted_sample_count = 0
-        self.transcript_index = 0
-        self.boundary_tracker = TranscriptBoundaryTracker()
-        self.state = model.machine.new_state([])
+        self.cancellation_event = threading.Event()
+        self.emit: Callable[[_OutputItem], None] = _discard_output
+        self._reset_turn_state()
+
         condition_tensors = model.lm.condition_provider.prepare_and_provide(attributes)
 
         def on_text_logits(text_logits: torch.Tensor) -> torch.Tensor:
@@ -283,6 +287,40 @@ class _KyutaiStreamingGenerator:
             cfg_is_masked_until=None,
             cfg_is_no_text=True,
         )
+
+    def prepare_streaming_graphs(self) -> None:
+        self.start_turn(threading.Event(), _discard_output)
+        entries = script_to_entries(
+            self.model.tokenizer,
+            self.model.machine.token_ids,
+            self.model.mimi.frame_rate,
+            [KYUTAI_TTS_WARMUP_TEXT],
+            multi_speaker=self.model.multi_speaker,
+            padding_between=1,
+        )
+        self.append_word(entries, len(KYUTAI_TTS_WARMUP_TEXT))
+        for _ in range(KYUTAI_TTS_GRAPH_CAPTURE_STEPS):
+            self._step()
+        torch.cuda.synchronize()
+        self.lm_generation.reset_streaming()
+        self.model.mimi.reset_streaming()
+
+    def start_turn(
+        self,
+        cancellation_event: threading.Event,
+        emit: Callable[[_OutputItem], None],
+    ) -> None:
+        self.cancellation_event = cancellation_event
+        self.emit = emit
+        self._reset_turn_state()
+
+    def _reset_turn_state(self) -> None:
+        self.offset = 0
+        self.decoded_frame_count = 0
+        self.emitted_sample_count = 0
+        self.transcript_index = 0
+        self.boundary_tracker = TranscriptBoundaryTracker()
+        self.state = self.model.machine.new_state([])
 
     def append_word(self, entries: Sequence[Entry], text_offset: int) -> None:
         for entry in entries:
@@ -376,9 +414,8 @@ def _warmup_streaming_generation(
         generator = _KyutaiStreamingGenerator(
             model=model,
             attributes=(attributes,),
-            cancellation_event=cancellation_event,
-            emit=_discard_output,
         )
+        generator.start_turn(cancellation_event, _discard_output)
         entries = script_to_entries(
             model.tokenizer,
             model.machine.token_ids,

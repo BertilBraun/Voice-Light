@@ -279,7 +279,7 @@ class VoiceSession:
             await self._send_error(f"Response generation failed: {error}")
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
-        synthesis = self.speech_synthesizer.start_session()
+        synthesis = await asyncio.to_thread(self.speech_synthesizer.start_session)
         text_task = asyncio.create_task(self._stream_response_text(generation, synthesis))
         audio_task = asyncio.create_task(self._stream_speech(generation, synthesis.stream_events()))
         try:
