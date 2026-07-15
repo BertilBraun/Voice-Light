@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import struct
+import time
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -104,6 +105,7 @@ class VoiceSession:
 
     async def run(self) -> None:
         await self.websocket.accept()
+        logger.info("voice session opened: session=%s", self.session_id)
         receive_task = asyncio.create_task(self._receive_loop())
         recognition_task = asyncio.create_task(self._recognition_loop())
         try:
@@ -123,6 +125,7 @@ class VoiceSession:
                     await task
             self.conversation.clear()
             self.generations.clear()
+            logger.info("voice session closed: session=%s", self.session_id)
 
     async def _receive_loop(self) -> None:
         while True:
@@ -191,6 +194,7 @@ class VoiceSession:
                     speech_active = True
                     silent_samples = 0
                     await self._cancel_generation(send_event=True)
+                    logger.info("speech started: session=%s", self.session_id)
                     await self._send_speech_state(VoiceServerEventType.VAD_STARTED)
                     for pre_roll_chunk in pre_roll_chunks:
                         await self._add_transcription_audio(transcription, pre_roll_chunk)
@@ -208,7 +212,16 @@ class VoiceSession:
                 speech_active = False
                 silent_samples = 0
                 await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
+                finalization_started_at = time.perf_counter()
+                logger.info("transcription finalization started: session=%s", self.session_id)
                 final_text = (await transcription.finish()).strip()
+                logger.info(
+                    "transcription finalization completed: session=%s duration_seconds=%.3f "
+                    "character_count=%d",
+                    self.session_id,
+                    time.perf_counter() - finalization_started_at,
+                    len(final_text),
+                )
                 await transcription.close()
                 transcription = self.transcriber.start_session()
                 if final_text:
@@ -266,8 +279,18 @@ class VoiceSession:
                 self._mark_generation_interrupted(generation)
 
     async def _run_generation(self, generation: ActiveGeneration) -> None:
+        logger.info(
+            "voice response generation started: session=%s generation=%d",
+            self.session_id,
+            generation.generation_id,
+        )
         try:
             await self._generate_response(generation)
+            logger.info(
+                "voice response generation completed: session=%s generation=%d",
+                self.session_id,
+                generation.generation_id,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -310,6 +333,12 @@ class VoiceSession:
     ) -> None:
         word_stream = CompleteWordStream()
         async for text_delta in self.language_model.stream_response(generation.prompt_messages):
+            if text_delta and not generation.response_text:
+                logger.info(
+                    "language model first delta: session=%s generation=%d",
+                    self.session_id,
+                    generation.generation_id,
+                )
             generation.response_text += text_delta
             await self._send_event(
                 AssistantTextDeltaEvent(
@@ -355,6 +384,11 @@ class VoiceSession:
                         raise ValueError("TTS audio chunks must have contiguous sample offsets.")
                     if not started:
                         started = True
+                        logger.info(
+                            "speech synthesis first audio: session=%s generation=%d",
+                            self.session_id,
+                            generation.generation_id,
+                        )
                         await self._send_audio_boundary(
                             VoiceServerEventType.ASSISTANT_AUDIO_START,
                             generation.generation_id,

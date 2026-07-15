@@ -1,25 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import queue
-import threading
-from collections.abc import AsyncIterator, Callable, Sequence
+import contextlib
+import logging
+import subprocess
+import sys
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Final
-
-import numpy as np
-import torch
-from huggingface_hub import hf_hub_download
-from moshi.conditioners import ConditionAttributes
-from moshi.models.lm import LMGen
-from moshi.models.loaders import CheckpointInfo
-from moshi.models.tts import (
-    DEFAULT_DSM_TTS_REPO,
-    Entry,
-    TTSModel,
-    script_to_entries,
-)
+from typing import Final, Protocol, TextIO
 
 from app.compute.voice.interfaces import (
     SpeechSynthesisSession,
@@ -28,370 +18,403 @@ from app.compute.voice.interfaces import (
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
 )
-from app.compute.voice.thread_queue import get_until_cancelled
-from app.compute.voice.tts_alignment import TranscriptBoundaryTracker
+from app.compute.voice.tts_worker_protocol import (
+    CancelTtsCommand,
+    FinishTtsCommand,
+    ShutdownTtsCommand,
+    StartTtsCommand,
+    TtsAudioEvent,
+    TtsEndEvent,
+    TtsWordBoundaryEvent,
+    TtsWordCommand,
+    TtsWordProcessedEvent,
+    TtsWorkerCommand,
+    TtsWorkerErrorEvent,
+    TtsWorkerEvent,
+    TtsWorkerReadyEvent,
+    tts_worker_event_adapter,
+)
 
-KYUTAI_TTS_MODEL_NAME: Final = DEFAULT_DSM_TTS_REPO
-KYUTAI_TTS_MODEL_REVISION: Final = "f65439609986c392cb12df63938abcc550c3fb15"
-KYUTAI_TTS_VOICE_REPOSITORY: Final = "kyutai/tts-voices"
-KYUTAI_TTS_VOICE_REVISION: Final = "323332d33f997de8394f24a193e1a76df720e01a"
-KYUTAI_TTS_VOICE: Final = "expresso/ex03-ex01_happy_001_channel1_334s.wav"
-KYUTAI_TTS_CODEBOOK_COUNT: Final = 32
-KYUTAI_TTS_TEMPERATURE: Final = 0.6
-KYUTAI_TTS_CFG_COEFFICIENT: Final = 2.0
-KYUTAI_TTS_WARMUP_TEXT: Final = "Warmup."
-KYUTAI_TTS_INPUT_QUEUE_SIZE: Final = 64
-KYUTAI_TTS_OUTPUT_QUEUE_SIZE: Final = 32
-KYUTAI_TTS_QUEUE_POLL_SECONDS: Final = 0.1
-KYUTAI_TTS_FINAL_FLUSH_MAX_STEPS: Final = 64
-
-
-class _StreamMarker(Enum):
-    FINISH = auto()
-    END = auto()
-
-
-_InputItem = SynthesisWord | _StreamMarker
-_OutputItem = SynthesisEvent | Exception | _StreamMarker
+logger = logging.getLogger(__name__)
+KYUTAI_TTS_PYTHON_PATH: Final = Path(sys.executable)
+KYUTAI_TTS_GENERATION_PROGRESS_TIMEOUT_SECONDS: Final = 5.0
+KYUTAI_TTS_CANCEL_TIMEOUT_SECONDS: Final = 2.0
+KYUTAI_TTS_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
+KYUTAI_TTS_WATCHDOG_POLL_SECONDS: Final = 0.1
 
 
-class KyutaiSpeechSynthesizer:
-    def __init__(self) -> None:
-        checkpoint = CheckpointInfo.from_hf_repo(
-            KYUTAI_TTS_MODEL_NAME,
-            revision=KYUTAI_TTS_MODEL_REVISION,
+class KyutaiTtsWorker(Protocol):
+    @property
+    def sample_rate(self) -> int: ...
+
+    def send(self, command: TtsWorkerCommand) -> None: ...
+
+    def read_event(self) -> TtsWorkerEvent: ...
+
+    def terminate(self) -> None: ...
+
+
+class KyutaiTtsWorkerManager(Protocol):
+    @property
+    def sample_rate(self) -> int: ...
+
+    async def acquire(self) -> KyutaiTtsWorker: ...
+
+    def release(self) -> None: ...
+
+    async def replace(self, failed_worker: KyutaiTtsWorker) -> None: ...
+
+
+class KyutaiTtsWorkerProcess:
+    def __init__(self, python_path: Path) -> None:
+        self.process = subprocess.Popen(
+            [python_path.as_posix(), "-m", "app.compute.voice.kyutai_tts_worker"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
         )
-        self.model = TTSModel.from_checkpoint_info(
-            checkpoint,
-            n_q=KYUTAI_TTS_CODEBOOK_COUNT,
-            temp=KYUTAI_TTS_TEMPERATURE,
-            device="cuda",
-        )
-        voice_filename = KYUTAI_TTS_VOICE + self.model.voice_suffix
-        voice_path = hf_hub_download(
-            KYUTAI_TTS_VOICE_REPOSITORY,
-            voice_filename,
-            revision=KYUTAI_TTS_VOICE_REVISION,
-        )
-        self.attributes = self.model.make_condition_attributes(
-            [Path(voice_path)],
-            cfg_coef=KYUTAI_TTS_CFG_COEFFICIENT,
-        )
-        self.generator = _KyutaiStreamingGenerator(
-            model=self.model,
-            attributes=(self.attributes,),
-        )
-        self.model.mimi.streaming_forever(1)
-        self.generator.lm_generation.streaming_forever(1)
-        _warmup_streaming_generation(self.generator)
-        self.generation_lock = threading.Lock()
+        assert self.process.stdin is not None
+        assert self.process.stdout is not None
+        self.input_stream: TextIO = self.process.stdin
+        self.output_stream: TextIO = self.process.stdout
+        ready_event = self.read_event()
+        if not isinstance(ready_event, TtsWorkerReadyEvent):
+            self.terminate()
+            raise RuntimeError("The Kyutai TTS worker failed to initialize.")
+        self._sample_rate = ready_event.sample_rate
 
     @property
     def sample_rate(self) -> int:
-        return self.model.mimi.sample_rate
+        return self._sample_rate
+
+    def send(self, command: TtsWorkerCommand) -> None:
+        self.input_stream.write(command.model_dump_json() + "\n")
+        self.input_stream.flush()
+
+    def read_event(self) -> TtsWorkerEvent:
+        event_json = self.output_stream.readline()
+        if not event_json:
+            raise RuntimeError("The Kyutai TTS worker stopped unexpectedly.")
+        return tts_worker_event_adapter.validate_json(event_json)
+
+    def close(self) -> None:
+        if self.process.poll() is not None:
+            self._close_streams()
+            return
+        try:
+            self.send(ShutdownTtsCommand())
+            self.process.wait(timeout=KYUTAI_TTS_WORKER_STOP_TIMEOUT_SECONDS)
+        except (BrokenPipeError, subprocess.TimeoutExpired):
+            self.terminate()
+            return
+        self._close_streams()
+
+    def terminate(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=KYUTAI_TTS_WORKER_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=KYUTAI_TTS_WORKER_STOP_TIMEOUT_SECONDS)
+        self._close_streams()
+
+    def _close_streams(self) -> None:
+        self.input_stream.close()
+        self.output_stream.close()
+
+
+class RestartingKyutaiTtsWorkerManager:
+    def __init__(self, python_path: Path) -> None:
+        self.python_path = python_path
+        self.worker: KyutaiTtsWorkerProcess | None = KyutaiTtsWorkerProcess(python_path)
+        self._sample_rate = self.worker.sample_rate
+        self.lock = asyncio.Lock()
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
+
+    async def acquire(self) -> KyutaiTtsWorker:
+        await self.lock.acquire()
+        try:
+            if self.worker is None:
+                self.worker = await asyncio.to_thread(KyutaiTtsWorkerProcess, self.python_path)
+                if self.worker.sample_rate != self._sample_rate:
+                    self.worker.terminate()
+                    self.worker = None
+                    raise RuntimeError("The replacement Kyutai TTS worker changed sample rate.")
+            return self.worker
+        except BaseException:
+            self.lock.release()
+            raise
+
+    def release(self) -> None:
+        if not self.lock.locked():
+            raise AssertionError("Cannot release an unowned Kyutai TTS worker.")
+        self.lock.release()
+
+    async def replace(self, failed_worker: KyutaiTtsWorker) -> None:
+        if not self.lock.locked():
+            raise AssertionError("Cannot replace an unowned Kyutai TTS worker.")
+        if failed_worker is not self.worker:
+            raise AssertionError("Cannot replace a Kyutai TTS worker owned by another session.")
+        logger.error("replacing unresponsive Kyutai TTS worker process")
+        self.worker = None
+        await asyncio.to_thread(failed_worker.terminate)
+        replacement_worker = await asyncio.to_thread(KyutaiTtsWorkerProcess, self.python_path)
+        if replacement_worker.sample_rate != self._sample_rate:
+            replacement_worker.terminate()
+            raise RuntimeError("The replacement Kyutai TTS worker changed sample rate.")
+        self.worker = replacement_worker
+
+    def close(self) -> None:
+        worker = self.worker
+        self.worker = None
+        if worker is not None:
+            worker.close()
+
+
+class KyutaiSpeechSynthesizer:
+    def __init__(self, python_path: Path = KYUTAI_TTS_PYTHON_PATH) -> None:
+        self.worker_manager = RestartingKyutaiTtsWorkerManager(python_path)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.worker_manager.sample_rate
 
     def start_session(self) -> SpeechSynthesisSession:
         return KyutaiSpeechSynthesisSession(
-            model=self.model,
-            generator=self.generator,
-            generation_lock=self.generation_lock,
+            worker_manager=self.worker_manager,
+            generation_progress_timeout_seconds=KYUTAI_TTS_GENERATION_PROGRESS_TIMEOUT_SECONDS,
+            cancel_timeout_seconds=KYUTAI_TTS_CANCEL_TIMEOUT_SECONDS,
         )
+
+    def close(self) -> None:
+        self.worker_manager.close()
+
+
+class _SessionMarker(Enum):
+    END = auto()
+
+
+@dataclass(frozen=True)
+class _SessionFailure:
+    error: Exception
+
+
+_SessionOutput = SynthesisEvent | _SessionFailure | _SessionMarker
 
 
 class KyutaiSpeechSynthesisSession:
     def __init__(
         self,
-        model: TTSModel,
-        generator: _KyutaiStreamingGenerator,
-        generation_lock: threading.Lock,
+        worker_manager: KyutaiTtsWorkerManager,
+        generation_progress_timeout_seconds: float,
+        cancel_timeout_seconds: float,
     ) -> None:
-        self.model = model
-        self.generator = generator
-        self.generation_lock = generation_lock
-        self.input_queue: queue.Queue[_InputItem] = queue.Queue(maxsize=KYUTAI_TTS_INPUT_QUEUE_SIZE)
-        self.output_queue: queue.Queue[_OutputItem] = queue.Queue(
-            maxsize=KYUTAI_TTS_OUTPUT_QUEUE_SIZE
-        )
-        self.cancellation_event = threading.Event()
+        self.worker_manager = worker_manager
+        self.generation_progress_timeout_seconds = generation_progress_timeout_seconds
+        self.cancel_timeout_seconds = cancel_timeout_seconds
+        self.worker: KyutaiTtsWorker | None = None
+        self.output_queue: asyncio.Queue[_SessionOutput] = asyncio.Queue()
+        self.start_lock = asyncio.Lock()
+        self.finalization_lock = asyncio.Lock()
+        self.output_task: asyncio.Task[None] | None = None
+        self.watchdog_task: asyncio.Task[None] | None = None
+        self.reader_error: Exception | None = None
+        self.pending_word_sequences: set[int] = set()
+        self.next_word_sequence = 0
+        self.last_progress_time = 0.0
+        self.finish_pending = False
         self.input_finished = False
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
+        self.worker_finalized = False
 
     async def add_word(self, word: SynthesisWord) -> None:
         if self.input_finished:
             raise ValueError("Cannot add a word after synthesis input has finished.")
         if not word.text or any(character.isspace() for character in word.text):
             raise ValueError("Synthesis words must be non-empty and contain no whitespace.")
-        await asyncio.to_thread(self._put_input, word)
+        await self._ensure_started()
+        sequence_number = self.next_word_sequence
+        self.next_word_sequence += 1
+        self.pending_word_sequences.add(sequence_number)
+        self._record_progress()
+        try:
+            self._require_worker().send(
+                TtsWordCommand(
+                    sequence_number=sequence_number,
+                    text=word.text,
+                    text_start=word.text_start,
+                    text_end=word.text_end,
+                )
+            )
+        except Exception as error:
+            await self._fail_worker(error)
+            raise RuntimeError("Failed to send text to the Kyutai TTS worker.") from error
 
     async def finish_input(self) -> None:
         if self.input_finished:
             raise ValueError("Synthesis input may only be finished once.")
         self.input_finished = True
-        await asyncio.to_thread(self._put_input, _StreamMarker.FINISH)
+        await self._ensure_started()
+        self.finish_pending = True
+        self._record_progress()
+        try:
+            self._require_worker().send(FinishTtsCommand())
+        except Exception as error:
+            await self._fail_worker(error)
+            raise RuntimeError("Failed to finish Kyutai TTS input.") from error
 
     async def stream_events(self) -> AsyncIterator[SynthesisEvent]:
+        await self._ensure_started()
         while True:
-            item = await asyncio.to_thread(self.output_queue.get)
+            item = await self.output_queue.get()
             match item:
-                case _StreamMarker.END:
+                case _SessionMarker.END:
+                    await self._finalize_worker(replace=self.reader_error is not None)
+                    await self._stop_background_tasks()
                     return
-                case Exception():
-                    raise item
+                case _SessionFailure(error=error):
+                    await self._fail_worker(error)
+                    await self._stop_background_tasks()
+                    raise error
                 case SynthesizedAudioChunk() | SynthesizedWordBoundary():
                     yield item
                 case _:
                     raise AssertionError(f"Unexpected synthesis output item: {item!r}")
 
     async def cancel(self) -> None:
-        self.cancellation_event.set()
-        if not self.input_finished:
-            self.input_finished = True
-            try:
-                self.input_queue.put_nowait(_StreamMarker.FINISH)
-            except queue.Full:
-                pass
-        await asyncio.to_thread(self.thread.join)
-
-    def _put_input(self, item: _InputItem) -> None:
-        while not self.cancellation_event.is_set():
-            try:
-                self.input_queue.put(item, timeout=0.1)
-                return
-            except queue.Full:
-                continue
-
-    def _put_output(self, item: _OutputItem) -> None:
-        while not self.cancellation_event.is_set():
-            try:
-                self.output_queue.put(item, timeout=0.1)
-                return
-            except queue.Full:
-                continue
-
-    def _run(self) -> None:
+        if self.worker is None or self.worker_finalized:
+            return
+        self.finish_pending = True
+        self._record_progress()
         try:
-            while not self.cancellation_event.is_set():
-                if self.generation_lock.acquire(timeout=KYUTAI_TTS_QUEUE_POLL_SECONDS):
-                    break
-            else:
-                return
-            try:
-                self._generate()
-            finally:
-                self.generation_lock.release()
+            self._require_worker().send(CancelTtsCommand())
         except Exception as error:
-            self._put_output(error)
-        finally:
-            if self.cancellation_event.is_set():
-                try:
-                    self.output_queue.put_nowait(_StreamMarker.END)
-                except queue.Full:
-                    pass
-            else:
-                self.output_queue.put(_StreamMarker.END)
+            await self._fail_worker(error)
+            await self._stop_background_tasks()
+            return
+        assert self.output_task is not None
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(self.output_task),
+                timeout=self.cancel_timeout_seconds,
+            )
+        except TimeoutError:
+            await self._fail_worker(RuntimeError("Kyutai TTS cancellation timed out."))
+        else:
+            await self._finalize_worker(replace=self.reader_error is not None)
+        await self._stop_background_tasks()
 
-    def _generate(self) -> None:
-        with torch.inference_mode():
-            self.generator.start_turn(self.cancellation_event, self._put_output)
-            first_word = True
-            while not self.cancellation_event.is_set():
-                item = get_until_cancelled(
-                    self.input_queue,
-                    self.cancellation_event,
-                    KYUTAI_TTS_QUEUE_POLL_SECONDS,
-                )
-                match item:
-                    case None:
-                        break
-                    case _StreamMarker.FINISH:
-                        self.generator.process_last()
-                        break
-                    case SynthesisWord():
-                        entries = script_to_entries(
-                            self.model.tokenizer,
-                            self.model.machine.token_ids,
-                            self.model.mimi.frame_rate,
-                            [item.text],
-                            multi_speaker=first_word and self.model.multi_speaker,
-                            padding_between=1,
+    async def _ensure_started(self) -> None:
+        async with self.start_lock:
+            if self.worker is not None:
+                return
+            if self.worker_finalized:
+                raise RuntimeError("The Kyutai TTS session has already ended.")
+            self.worker = await self.worker_manager.acquire()
+            self._record_progress()
+            try:
+                self.worker.send(StartTtsCommand())
+            except Exception as error:
+                await self._fail_worker(error)
+                raise RuntimeError("Failed to start the Kyutai TTS worker session.") from error
+            self.output_task = asyncio.create_task(self._read_output())
+            self.watchdog_task = asyncio.create_task(self._watch_progress())
+
+    async def _read_output(self) -> None:
+        try:
+            while True:
+                event = await asyncio.to_thread(self._require_worker().read_event)
+                self._record_progress()
+                match event:
+                    case TtsWorkerReadyEvent():
+                        raise RuntimeError("The Kyutai TTS worker sent an unexpected ready event.")
+                    case TtsAudioEvent():
+                        await self.output_queue.put(
+                            SynthesizedAudioChunk(
+                                pcm_bytes=event.pcm_bytes(),
+                                start_sample=event.start_sample,
+                            )
                         )
-                        first_word = False
-                        self.generator.append_word(entries, item.text_end)
-                        self.generator.process()
+                    case TtsWordBoundaryEvent():
+                        await self.output_queue.put(
+                            SynthesizedWordBoundary(
+                                text_offset=event.text_offset,
+                                start_sample=event.start_sample,
+                            )
+                        )
+                    case TtsWordProcessedEvent():
+                        if event.sequence_number not in self.pending_word_sequences:
+                            raise RuntimeError(
+                                "The Kyutai TTS worker acknowledged an unknown word."
+                            )
+                        self.pending_word_sequences.remove(event.sequence_number)
+                    case TtsEndEvent():
+                        self.finish_pending = False
+                        await self.output_queue.put(_SessionMarker.END)
+                        return
+                    case TtsWorkerErrorEvent():
+                        raise RuntimeError(f"Kyutai TTS worker failed: {event.message}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.reader_error = error
+            await self.output_queue.put(_SessionFailure(error))
+            await self.output_queue.put(_SessionMarker.END)
 
+    async def _watch_progress(self) -> None:
+        while True:
+            await asyncio.sleep(KYUTAI_TTS_WATCHDOG_POLL_SECONDS)
+            if not self.pending_word_sequences and not self.finish_pending:
+                continue
+            elapsed_seconds = asyncio.get_running_loop().time() - self.last_progress_time
+            if elapsed_seconds < self.generation_progress_timeout_seconds:
+                continue
+            error = RuntimeError("Kyutai TTS generation stopped making progress.")
+            self.reader_error = error
+            await self.output_queue.put(_SessionFailure(error))
+            await self.output_queue.put(_SessionMarker.END)
+            await self._finalize_worker(replace=True)
+            return
 
-class _KyutaiStreamingGenerator:
-    def __init__(
-        self,
-        model: TTSModel,
-        attributes: Sequence[ConditionAttributes],
-    ) -> None:
-        if model.cfg_coef != 1.0:
-            raise ValueError(
-                "The distilled Kyutai TTS checkpoint must use cfg_coef=1.0 at inference."
-            )
-        if model.lm.condition_provider is None:
-            raise ValueError("The Kyutai TTS checkpoint has no condition provider.")
-        self.model = model
-        self.cancellation_event = threading.Event()
-        self.emit: Callable[[_OutputItem], None] = _discard_output
-        self._reset_turn_state()
+    async def _fail_worker(self, error: Exception) -> None:
+        self.reader_error = error
+        await self._finalize_worker(replace=True)
 
-        condition_tensors = model.lm.condition_provider.prepare_and_provide(attributes)
-
-        def on_text_logits(text_logits: torch.Tensor) -> torch.Tensor:
-            if model.padding_bonus:
-                text_logits[..., model.machine.token_ids.pad] += model.padding_bonus
-            return text_logits
-
-        def on_audio(audio_tokens: torch.Tensor) -> None:
-            for codebook_index in range(audio_tokens.shape[1]):
-                delay = model.lm.delays[codebook_index + model.lm.audio_offset]
-                if self.offset < delay + model.delay_steps:
-                    audio_tokens[:, codebook_index] = model.machine.token_ids.zero
-
-        def on_text(text_tokens: torch.Tensor) -> None:
-            output_tokens: list[int] = []
-            for token in text_tokens.tolist():
-                output_token, _ = model.machine.process(self.offset, self.state, token)
-                output_tokens.append(output_token)
-            text_tokens[:] = torch.tensor(
-                output_tokens,
-                dtype=torch.long,
-                device=text_tokens.device,
-            )
-
-        model.lm.dep_q = model.n_q
-        self.lm_generation = LMGen(
-            model.lm,
-            temp=model.temp,
-            temp_text=model.temp,
-            cfg_coef=model.cfg_coef,
-            condition_tensors=condition_tensors,
-            on_text_logits_hook=on_text_logits,
-            on_text_hook=on_text,
-            on_audio_hook=on_audio,
-            cfg_is_masked_until=None,
-            cfg_is_no_text=True,
-        )
-
-    def start_turn(
-        self,
-        cancellation_event: threading.Event,
-        emit: Callable[[_OutputItem], None],
-    ) -> None:
-        self.lm_generation.reset_streaming()
-        self.model.mimi.reset_streaming()
-        self.cancellation_event = cancellation_event
-        self.emit = emit
-        self._reset_turn_state()
-
-    def _reset_turn_state(self) -> None:
-        self.offset = 0
-        self.emitted_sample_count = 0
-        self.transcript_index = 0
-        self.boundary_tracker = TranscriptBoundaryTracker()
-        self.state = self.model.machine.new_state([])
-
-    def append_word(self, entries: Sequence[Entry], text_offset: int) -> None:
-        for entry in entries:
-            self.state.entries.append(entry)
-        immediate_boundaries = self.boundary_tracker.add_source_word(
-            tuple(bool(entry.tokens) for entry in entries),
-            text_offset,
-        )
-        for boundary in immediate_boundaries:
-            self.emit(boundary)
-
-    def process(self) -> None:
-        while len(self.state.entries) > self.model.machine.second_stream_ahead:
-            self._step()
-
-    def process_last(self) -> None:
-        while (len(self.state.entries) > 0 or self.state.end_step is None) and not (
-            self.cancellation_event.is_set()
-        ):
-            self._step()
-        additional_steps = self.model.delay_steps + max(self.model.lm.delays) + 8
-        for _ in range(additional_steps):
-            if self.cancellation_event.is_set():
+    async def _finalize_worker(self, replace: bool) -> None:
+        async with self.finalization_lock:
+            if self.worker_finalized:
                 return
-            self._step()
-        self._flush_to_end_step()
+            worker = self._require_worker()
+            try:
+                if replace:
+                    await self.worker_manager.replace(worker)
+            finally:
+                self.worker_manager.release()
+                self.worker = None
+                self.worker_finalized = True
 
-    def _flush_to_end_step(self) -> None:
-        if self.state.end_step is None:
-            raise AssertionError("Kyutai generation ended without a model end step.")
-        samples_per_frame = round(self.model.mimi.sample_rate / self.model.mimi.frame_rate)
-        target_sample_count = self.state.end_step * samples_per_frame
-        for _ in range(KYUTAI_TTS_FINAL_FLUSH_MAX_STEPS):
-            if self.cancellation_event.is_set() or self.emitted_sample_count >= target_sample_count:
-                return
-            self._step()
-        raise RuntimeError("Kyutai delayed audio did not reach the model end step.")
-
-    def _step(self) -> None:
-        if self.cancellation_event.is_set():
-            return
-        missing_codebooks = self.model.lm.n_q - self.model.lm.dep_q
-        input_tokens = torch.full(
-            (1, missing_codebooks, 1),
-            self.model.machine.token_ids.zero,
-            dtype=torch.long,
-            device=self.model.lm.device,
+    async def _stop_background_tasks(self) -> None:
+        current_task = asyncio.current_task()
+        tasks = tuple(
+            task
+            for task in (self.output_task, self.watchdog_task)
+            if task is not None and task is not current_task and not task.done()
         )
-        frame = self.lm_generation.step(input_tokens)
-        self.offset += 1
-        self._emit_new_boundaries()
-        if frame is None or not bool((frame != -1).all()):
-            return
-        pcm = self.model.mimi.decode(frame[:, 1:, :]).cpu().float().numpy()
-        samples = np.clip(pcm[0, 0], -1.0, 1.0)
-        pcm_bytes = (samples * 32_767.0).astype("<i2").tobytes()
-        if not pcm_bytes:
-            return
-        self.emit(
-            SynthesizedAudioChunk(
-                pcm_bytes=pcm_bytes,
-                start_sample=self.emitted_sample_count,
-            )
-        )
-        self.emitted_sample_count += len(pcm_bytes) // 2
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
-    def _emit_new_boundaries(self) -> None:
-        new_transcript = self.state.transcript[self.transcript_index :]
-        for _, model_step in new_transcript:
-            # Kyutai defines transcript steps at Mimi's frame rate. The conversion is the protocol
-            # anchor; confirm codec priming behavior on the target GPU deployment.
-            start_sample = round(
-                model_step * self.model.mimi.sample_rate / self.model.mimi.frame_rate
-            )
-            boundary = self.boundary_tracker.consume_transcript_word(start_sample)
-            if boundary is not None:
-                self.emit(boundary)
-        self.transcript_index += len(new_transcript)
+    def _record_progress(self) -> None:
+        self.last_progress_time = asyncio.get_running_loop().time()
 
-
-def _warmup_streaming_generation(
-    generator: _KyutaiStreamingGenerator,
-) -> None:
-    cancellation_event = threading.Event()
-    model = generator.model
-    with torch.inference_mode():
-        generator.start_turn(cancellation_event, _discard_output)
-        entries = script_to_entries(
-            model.tokenizer,
-            model.machine.token_ids,
-            model.mimi.frame_rate,
-            [KYUTAI_TTS_WARMUP_TEXT],
-            multi_speaker=model.multi_speaker,
-            padding_between=1,
-        )
-        generator.append_word(entries, len(KYUTAI_TTS_WARMUP_TEXT))
-        generator.process_last()
-        torch.cuda.synchronize()
-
-
-def _discard_output(item: _OutputItem) -> None:
-    del item
+    def _require_worker(self) -> KyutaiTtsWorker:
+        if self.worker is None:
+            raise AssertionError("The Kyutai TTS session does not own a worker.")
+        return self.worker

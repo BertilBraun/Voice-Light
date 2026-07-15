@@ -63,6 +63,8 @@ class ComputeRuntime:
                 pass
         if self.streaming_asr is not None:
             await asyncio.to_thread(self.streaming_asr.close)
+        if self.speech_synthesizer is not None:
+            await asyncio.to_thread(self.speech_synthesizer.close)
         logger.info("compute runtime shutdown complete")
 
     def require_streaming_asr(self) -> NemotronStreamingTranscriber:
