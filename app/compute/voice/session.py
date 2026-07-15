@@ -155,8 +155,13 @@ class VoiceSession:
             await self._await_generation_teardown()
             await self._close_generation_tasks()
             for task in (receive_task, recognition_task):
-                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
+                try:
                     await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    # The session-level exception path already logged and reported this failure.
+                    pass
             self.conversation.clear()
             self.generations.clear()
             self.lifecycle = SessionLifecycle.CLOSED
@@ -219,7 +224,14 @@ class VoiceSession:
             while (pcm_bytes := await self.audio_queue.get()) is not None:
                 sample_count = _pcm_sample_count(pcm_bytes)
                 self.audio_sample_count += sample_count
-                is_speech = self.speech_detector.process_audio(pcm_bytes)
+                try:
+                    is_speech = self.speech_detector.process_audio(pcm_bytes)
+                except Exception as error:
+                    raise VoiceComponentError(
+                        VoiceComponent.SPEECH_DETECTION,
+                        VoiceOperation.DETECT_SPEECH,
+                        str(error),
+                    ) from error
                 if not speech_active:
                     pre_roll_chunks.append(pcm_bytes)
                     pre_roll_samples += sample_count
@@ -393,6 +405,7 @@ class VoiceSession:
             generation_error = error
             raise
         finally:
+            deferred_cleanup_error: Exception | None = None
             pending_tasks = tuple(task for task in (text_task, audio_task) if not task.done())
             for task in pending_tasks:
                 if task.cancelling() == 0:
@@ -400,36 +413,40 @@ class VoiceSession:
             try:
                 await synthesis.cancel()
             except Exception as error:
-                if isinstance(generation_error, asyncio.CancelledError):
-                    raise VoiceComponentError(
-                        VoiceComponent.SPEECH_SYNTHESIS,
-                        VoiceOperation.STREAM_SYNTHESIS,
-                        f"Speech synthesis cleanup failed: {error}",
-                    ) from error
-                if generation_error is None:
-                    raise
-                logger.exception(
-                    "speech synthesis cleanup failed after generation failure: "
-                    "session=%s generation=%d",
-                    self.session_id,
-                    generation.generation_id,
+                cleanup_error = VoiceComponentError(
+                    VoiceComponent.SPEECH_SYNTHESIS,
+                    VoiceOperation.STREAM_SYNTHESIS,
+                    f"Speech synthesis cleanup failed: {error}",
                 )
+                if generation_error is None or isinstance(generation_error, asyncio.CancelledError):
+                    deferred_cleanup_error = cleanup_error
+                else:
+                    logger.exception(
+                        "speech synthesis cleanup failed after generation failure: "
+                        "session=%s generation=%d",
+                        self.session_id,
+                        generation.generation_id,
+                    )
             for task in pending_tasks:
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-                except Exception:
-                    if isinstance(generation_error, asyncio.CancelledError):
-                        raise
-                    if generation_error is None:
-                        raise
+                except Exception as error:
+                    if generation_error is None or isinstance(
+                        generation_error, asyncio.CancelledError
+                    ):
+                        if deferred_cleanup_error is None:
+                            deferred_cleanup_error = error
+                            continue
                     logger.exception(
-                        "generation child cleanup failed after generation failure: "
+                        "generation child cleanup failed after another generation failure: "
                         "session=%s generation=%d",
                         self.session_id,
                         generation.generation_id,
                     )
+            if deferred_cleanup_error is not None:
+                raise deferred_cleanup_error
 
     async def _stream_response_text(
         self,
@@ -437,8 +454,17 @@ class VoiceSession:
         synthesis: SpeechSynthesisSession,
     ) -> None:
         language_stream = self.language_model.stream_response(generation.prompt_messages)
-        async with contextlib.aclosing(language_stream):
-            await self._consume_response_text(generation, synthesis, language_stream)
+        try:
+            async with contextlib.aclosing(language_stream):
+                await self._consume_response_text(generation, synthesis, language_stream)
+        except VoiceComponentError:
+            raise
+        except Exception as error:
+            raise VoiceComponentError(
+                VoiceComponent.LANGUAGE_MODEL,
+                VoiceOperation.GENERATE_TEXT,
+                str(error),
+            ) from error
 
     async def _consume_response_text(
         self,

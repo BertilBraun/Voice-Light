@@ -30,6 +30,15 @@ class FakeSpeechDetector:
         return any(pcm_bytes)
 
 
+class FailingSpeechDetector:
+    def process_audio(self, pcm_bytes: bytes) -> bool:
+        del pcm_bytes
+        raise RuntimeError("synthetic VAD failure")
+
+
+DEFAULT_TEST_SPEECH_DETECTOR = FakeSpeechDetector()
+
+
 class RecordingTranscriber:
     def __init__(self) -> None:
         self.sessions: list[FakeTranscriptionSession] = []
@@ -122,6 +131,19 @@ class FailingLanguageModel:
         del conversation
         raise RuntimeError("synthetic language failure")
         yield
+
+
+class CancellationFailingLanguageModel:
+    async def stream_response(
+        self,
+        conversation: tuple[ConversationMessage, ...],
+    ) -> AsyncIterator[str]:
+        del conversation
+        try:
+            yield "One two three "
+            await asyncio.sleep(10)
+        finally:
+            raise RuntimeError("synthetic language cancellation failure")
 
 
 class FakeSpeechSynthesisSession:
@@ -407,10 +429,39 @@ def test_synthesis_cleanup_failure_does_not_mask_language_model_failure() -> Non
 
 
 def test_synthesis_cancellation_failure_reaches_client() -> None:
+    language_model = CancellationTrackingLanguageModel()
     web_app = create_test_app(
         RecordingTranscriber(),
-        SlowLanguageModel(),
+        language_model,
         CleanupFailingSpeechSynthesizer(),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.text.delta")
+        websocket.send_bytes(SPEECH_CHUNK)
+        events, _ = receive_until(websocket, "error")
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "assistant.text.delta")
+        websocket.send_json({"type": "session.stop"})
+
+    assert "assistant.cancel" in [event["type"] for event in events[:-1]]
+    assert events[-1]["type"] == "error"
+    assert events[-1]["component"] == "speech_synthesis"
+    assert events[-1]["message"] == (
+        "Response generation failed: Speech synthesis cleanup failed: synthetic cleanup failure"
+    )
+    assert language_model.overlapped is False
+
+
+def test_language_model_cancellation_failure_keeps_component_context() -> None:
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        CancellationFailingLanguageModel(),
+        RecordingSpeechSynthesizer(),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -422,12 +473,30 @@ def test_synthesis_cancellation_failure_reaches_client() -> None:
         events, _ = receive_until(websocket, "error")
         websocket.send_json({"type": "session.stop"})
 
-    assert "assistant.cancel" in [event["type"] for event in events[:-1]]
-    assert events[-1]["type"] == "error"
-    assert events[-1]["component"] == "speech_synthesis"
+    assert events[-1]["component"] == "language_model"
+    assert events[-1]["operation"] == "generate_text"
     assert events[-1]["message"] == (
-        "Response generation failed: Speech synthesis cleanup failed: synthetic cleanup failure"
+        "Response generation failed: synthetic language cancellation failure"
     )
+
+
+def test_speech_detection_failure_reaches_client_with_component_context() -> None:
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        speech_detector=FailingSpeechDetector(),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        events, _ = receive_until(websocket, "error")
+
+    assert events[-1]["component"] == "speech_detection"
+    assert events[-1]["operation"] == "detect_speech"
+    assert events[-1]["message"] == "synthetic VAD failure"
 
 
 def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
@@ -539,11 +608,13 @@ def create_test_app(
         | SlowLanguageModel
         | CancellationTrackingLanguageModel
         | FailingLanguageModel
+        | CancellationFailingLanguageModel
     ),
     speech_synthesizer: (
         RecordingSpeechSynthesizer | FailingSpeechSynthesizer | CleanupFailingSpeechSynthesizer
     ),
     policy: SessionPolicy = DEFAULT_TEST_POLICY,
+    speech_detector: FakeSpeechDetector | FailingSpeechDetector = DEFAULT_TEST_SPEECH_DETECTOR,
 ) -> FastAPI:
     web_app = FastAPI()
 
@@ -551,7 +622,7 @@ def create_test_app(
     async def endpoint(websocket: WebSocket) -> None:
         session = VoiceSession(
             websocket=websocket,
-            speech_detector=FakeSpeechDetector(),
+            speech_detector=speech_detector,
             transcriber=transcriber,
             language_model=language_model,
             speech_synthesizer=speech_synthesizer,
