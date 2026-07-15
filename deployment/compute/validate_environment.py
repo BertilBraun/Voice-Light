@@ -10,12 +10,13 @@ import torch
 from huggingface_hub import snapshot_download
 
 from app.compute.voice.interfaces import SynthesisWord, SynthesizedAudioChunk
-from app.compute.voice.kyutai_tts import (
+from app.compute.voice.kyutai_tts import KyutaiSpeechSynthesizer
+from app.compute.voice.model_constants import (
     KYUTAI_TTS_MODEL_NAME,
     KYUTAI_TTS_MODEL_REVISION,
-    KyutaiSpeechSynthesizer,
+    LANGUAGE_MODEL_NAME,
+    LANGUAGE_MODEL_REVISION,
 )
-from app.compute.voice.models import LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION
 from app.compute.voice.nemotron_worker import MODEL_NAME, MODEL_REVISION
 
 

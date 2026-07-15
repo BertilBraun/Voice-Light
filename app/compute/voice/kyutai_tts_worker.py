@@ -14,9 +14,13 @@ from huggingface_hub import hf_hub_download
 from moshi.conditioners import ConditionAttributes
 from moshi.models.lm import LMGen
 from moshi.models.loaders import CheckpointInfo
-from moshi.models.tts import DEFAULT_DSM_TTS_REPO, Entry, TTSModel, script_to_entries
+from moshi.models.tts import Entry, TTSModel, script_to_entries
 
 from app.compute.voice.interfaces import SynthesizedAudioChunk, SynthesizedWordBoundary
+from app.compute.voice.model_constants import (
+    KYUTAI_TTS_MODEL_NAME,
+    KYUTAI_TTS_MODEL_REVISION,
+)
 from app.compute.voice.tts_alignment import TranscriptBoundaryTracker
 from app.compute.voice.tts_worker_protocol import (
     TtsAudioEvent,
@@ -31,8 +35,6 @@ from app.compute.voice.tts_worker_protocol import (
     tts_worker_command_adapter,
 )
 
-KYUTAI_TTS_MODEL_NAME: Final = DEFAULT_DSM_TTS_REPO
-KYUTAI_TTS_MODEL_REVISION: Final = "f65439609986c392cb12df63938abcc550c3fb15"
 KYUTAI_TTS_VOICE_REPOSITORY: Final = "kyutai/tts-voices"
 KYUTAI_TTS_VOICE_REVISION: Final = "323332d33f997de8394f24a193e1a76df720e01a"
 KYUTAI_TTS_VOICE: Final = "expresso/ex03-ex01_happy_001_channel1_334s.wav"

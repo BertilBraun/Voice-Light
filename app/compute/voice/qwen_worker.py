@@ -29,9 +29,8 @@ from app.compute.voice.llm_worker_protocol import (
     StartLlmCommand,
     llm_worker_command_adapter,
 )
+from app.compute.voice.model_constants import LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION
 
-LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-1.7B"
-LANGUAGE_MODEL_REVISION: Final = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "You are a conversational voice agent. Respond naturally and directly to the user's latest "
     "message. Use the complete conversation history as context and do not repeat earlier answers. "
