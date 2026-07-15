@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from app.compute.asr.models.registry import AsrModelCache
-from app.compute.voice.models import PocketSpeechSynthesizer, TransformersLanguageModel
+from app.compute.voice.kyutai_tts import KyutaiSpeechSynthesizer
+from app.compute.voice.models import TransformersLanguageModel
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
 from app.shared.compute_api import ModelStage, ModelStageStatus
 
@@ -39,7 +40,7 @@ class ComputeRuntime:
         self.batch_asr_models = AsrModelCache()
         self.streaming_asr: NemotronStreamingTranscriber | None = None
         self.language_model: TransformersLanguageModel | None = None
-        self.speech_synthesizer: PocketSpeechSynthesizer | None = None
+        self.speech_synthesizer: KyutaiSpeechSynthesizer | None = None
         self.loading_task: asyncio.Task[None] | None = None
 
     @property
@@ -74,7 +75,7 @@ class ComputeRuntime:
             raise RuntimeError("Language model is not ready.")
         return self.language_model
 
-    def require_speech_synthesizer(self) -> PocketSpeechSynthesizer:
+    def require_speech_synthesizer(self) -> KyutaiSpeechSynthesizer:
         if self.speech_synthesizer is None:
             raise RuntimeError("Speech synthesizer is not ready.")
         return self.speech_synthesizer
@@ -104,7 +105,7 @@ class ComputeRuntime:
     async def _load_speech_synthesizer(self) -> None:
         model = await self._timed_load(
             self.speech_synthesis_stage,
-            PocketSpeechSynthesizer,
+            KyutaiSpeechSynthesizer,
         )
         if model is not None:
             self.speech_synthesizer = model

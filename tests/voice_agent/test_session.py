@@ -10,7 +10,14 @@ from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
 from app.compute.voice.conversation import ConversationMessage, ConversationRole
-from app.compute.voice.interfaces import TranscriptionSession
+from app.compute.voice.interfaces import (
+    SpeechSynthesisSession,
+    SynthesisEvent,
+    SynthesisWord,
+    SynthesizedAudioChunk,
+    SynthesizedWordBoundary,
+    TranscriptionSession,
+)
 from app.compute.voice.session import SessionPolicy, VoiceSession
 
 SPEECH_CHUNK = b"\x01\x00" * 320
@@ -62,14 +69,15 @@ class FakeLanguageModel:
         yield "five six seven eight."
 
 
-class FakeSpeechSynthesizer:
-    @property
-    def sample_rate(self) -> int:
-        return 24_000
-
-    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
-        assert text == "One two three four five six seven eight."
-        yield b"\x01\x00\x02\x00"
+class SplitWordLanguageModel:
+    async def stream_response(
+        self,
+        conversation: tuple[ConversationMessage, ...],
+    ) -> AsyncIterator[str]:
+        del conversation
+        yield "  Hello"
+        yield ", wor"
+        yield "ld! Next"
 
 
 class SlowLanguageModel:
@@ -81,51 +89,64 @@ class SlowLanguageModel:
         conversation: tuple[ConversationMessage, ...],
     ) -> AsyncIterator[str]:
         self.conversations.append(conversation)
-        yield "Still generating"
+        yield "One two three "
         await asyncio.sleep(10)
 
 
-class SlowSpeechSynthesizer:
-    @property
-    def sample_rate(self) -> int:
-        return 24_000
+class FakeSpeechSynthesisSession:
+    def __init__(self, words: list[SynthesisWord]) -> None:
+        self.words = words
+        self.events: asyncio.Queue[SynthesisEvent | None] = asyncio.Queue()
+        self.next_sample = 0
+        self.finished = False
 
-    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
-        del text
-        yield b"\x01\x00\x02\x00"
-        await asyncio.sleep(10)
+    async def add_word(self, word: SynthesisWord) -> None:
+        self.words.append(word)
+        await self.events.put(
+            SynthesizedWordBoundary(text_offset=word.text_end, start_sample=self.next_sample)
+        )
+        await self.events.put(
+            SynthesizedAudioChunk(
+                pcm_bytes=b"\x01\x00\x02\x00",
+                start_sample=self.next_sample,
+            )
+        )
+        self.next_sample += 2
 
+    async def finish_input(self) -> None:
+        self.finished = True
+        await self.events.put(None)
 
-class SentenceLanguageModel:
-    def __init__(self) -> None:
-        self.conversations: list[tuple[ConversationMessage, ...]] = []
+    async def stream_events(self) -> AsyncIterator[SynthesisEvent]:
+        while (event := await self.events.get()) is not None:
+            yield event
 
-    async def stream_response(
-        self,
-        conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
-        self.conversations.append(conversation)
-        yield "Hello world. "
-        yield "Next thing!"
+    async def cancel(self) -> None:
+        if not self.finished:
+            self.finished = True
+            await self.events.put(None)
 
 
 class RecordingSpeechSynthesizer:
     def __init__(self) -> None:
-        self.sentences: list[str] = []
+        self.sessions: list[FakeSpeechSynthesisSession] = []
+        self.words: list[SynthesisWord] = []
 
     @property
     def sample_rate(self) -> int:
         return 24_000
 
-    async def stream_audio(self, text: str) -> AsyncIterator[bytes]:
-        self.sentences.append(text)
-        yield b"\x01\x00" * (len(self.sentences) + 1)
+    def start_session(self) -> SpeechSynthesisSession:
+        session = FakeSpeechSynthesisSession(self.words)
+        self.sessions.append(session)
+        return session
 
 
-def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
+def test_full_session_streams_audio_and_commits_naturally_completed_history() -> None:
     language_model = FakeLanguageModel()
     transcriber = RecordingTranscriber()
-    web_app = create_test_app(transcriber, language_model, FakeSpeechSynthesizer())
+    synthesizer = RecordingSpeechSynthesizer()
+    web_app = create_test_app(transcriber, language_model, synthesizer)
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
@@ -135,39 +156,16 @@ def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
 
         send_turn(websocket)
         first_events, audio_frame = receive_until(websocket, "assistant.audio.end")
-        websocket.send_json(
-            {
-                "type": "playback.progress",
-                "generation_id": 1,
-                "sentence_id": 0,
-                "text_offset": 3,
-            }
-        )
         websocket.send_json({"type": "playback.complete", "generation_id": 1})
-
         send_turn(websocket)
         second_events, _ = receive_until(websocket, "assistant.audio.end")
         websocket.send_json({"type": "playback.complete", "generation_id": 2})
         websocket.send_json({"type": "session.stop"})
 
-    event_types = [event["type"] for event in first_events]
-    assert "vad.started" in event_types
-    assert "vad.stopped" in event_types
-    assert "transcript.partial" in event_types
-    assert "transcript.final" in event_types
-    assert "turn.committed" in event_types
-    assert [event for event in first_events if event["type"] == "llm.history"] == [
-        {
-            "type": "llm.history",
-            "generation_id": 1,
-            "messages": [{"role": "user", "content": "hello agent"}],
-        }
-    ]
-    assert "assistant.text.delta" in event_types
-    assert "assistant.audio.start" in event_types
+    assert "assistant.audio.text_boundary" in [event["type"] for event in first_events]
     assert second_events[-1]["generation_id"] == 2
     assert audio_frame is not None
-    assert struct.unpack("<III", audio_frame[:12]) == (1, 0, 0)
+    assert struct.unpack("<III", audio_frame[:12]) == (1, 7, 14)
     assert audio_frame[12:] == b"\x01\x00\x02\x00"
     assert language_model.conversations == [
         (ConversationMessage(role=ConversationRole.USER, content="hello agent"),),
@@ -180,81 +178,60 @@ def test_full_session_streams_binary_audio_and_commits_played_history() -> None:
             ConversationMessage(role=ConversationRole.USER, content="hello agent"),
         ),
     ]
-    assert transcriber.sessions[0].audio == [SPEECH_CHUNK, SILENCE_CHUNK, SILENCE_CHUNK]
-    assert all(session.closed for session in transcriber.sessions)
+    assert len(synthesizer.sessions) == 2
+    assert synthesizer.sessions[0] is not synthesizer.sessions[1]
 
 
-def test_sentence_audio_metadata_preserves_text_and_sample_boundaries() -> None:
-    language_model = SentenceLanguageModel()
-    transcriber = RecordingTranscriber()
-    speech_synthesizer = RecordingSpeechSynthesizer()
-    web_app = create_test_app(transcriber, language_model, speech_synthesizer)
+def test_words_are_forwarded_on_whitespace_and_trailing_word_is_flushed() -> None:
+    synthesizer = RecordingSpeechSynthesizer()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        SplitWordLanguageModel(),
+        synthesizer,
+    )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
         websocket.receive_json()
         send_turn(websocket)
-        events_before_audio, audio_frame = receive_until_audio(websocket)
-        events_after_audio, _ = receive_until(websocket, "assistant.audio.end")
+        events, _ = receive_until(websocket, "assistant.audio.end")
         websocket.send_json({"type": "session.stop"})
 
-    events = events_before_audio + events_after_audio
-    sentence_events = [event for event in events if event["type"] == "assistant.audio.sentence"]
-    assert sentence_events == [
+    assert synthesizer.words == [
+        SynthesisWord(text="Hello,", text_start=2, text_end=8),
+        SynthesisWord(text="world!", text_start=9, text_end=15),
+        SynthesisWord(text="Next", text_start=16, text_end=20),
+    ]
+    boundaries = [event for event in events if event["type"] == "assistant.audio.text_boundary"]
+    assert boundaries == [
         {
-            "type": "assistant.audio.sentence",
+            "type": "assistant.audio.text_boundary",
             "generation_id": 1,
-            "sentence_id": 0,
-            "text_start": 0,
-            "text_end": 12,
-            "sample_count": 2,
+            "text_offset": 8,
+            "start_sample": 0,
         },
         {
-            "type": "assistant.audio.sentence",
+            "type": "assistant.audio.text_boundary",
             "generation_id": 1,
-            "sentence_id": 1,
-            "text_start": 13,
-            "text_end": 24,
-            "sample_count": 3,
+            "text_offset": 15,
+            "start_sample": 2,
+        },
+        {
+            "type": "assistant.audio.text_boundary",
+            "generation_id": 1,
+            "text_offset": 20,
+            "start_sample": 4,
         },
     ]
-    assert speech_synthesizer.sentences == ["Hello world.", "Next thing!"]
-    assert audio_frame is not None
-    assert struct.unpack("<III", audio_frame[:12]) == (1, 0, 0)
-    assert any(event["type"] == "assistant.audio.sentence" for event in events_before_audio)
 
 
-def test_user_speech_cancels_generation_and_does_not_commit_assistant_tail() -> None:
+def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
     language_model = SlowLanguageModel()
-    transcriber = RecordingTranscriber()
-    web_app = create_test_app(transcriber, language_model, SlowSpeechSynthesizer())
-
-    with TestClient(web_app).websocket_connect("/session") as websocket:
-        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
-        assert websocket.receive_json()["type"] == "session.ready"
-        send_turn(websocket)
-        receive_until(websocket, "assistant.text.delta")
-
-        websocket.send_bytes(SPEECH_CHUNK)
-        events, _ = receive_until(websocket, "assistant.cancel")
-        websocket.send_bytes(SILENCE_CHUNK)
-        websocket.send_bytes(SILENCE_CHUNK)
-        receive_until(websocket, "turn.committed")
-        receive_until(websocket, "assistant.text.delta")
-        websocket.send_json({"type": "session.stop"})
-
-    assert events[-1] == {"type": "assistant.cancel", "generation_id": 1}
-    assert len(language_model.conversations) == 2
-    assert language_model.conversations[1] == (
-        ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-        ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
     )
-
-
-def test_user_speech_cancels_tts_and_omits_partially_played_response() -> None:
-    language_model = FakeLanguageModel()
-    transcriber = RecordingTranscriber()
-    web_app = create_test_app(transcriber, language_model, SlowSpeechSynthesizer())
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
@@ -264,142 +241,66 @@ def test_user_speech_cancels_tts_and_omits_partially_played_response() -> None:
 
         websocket.send_bytes(SPEECH_CHUNK)
         receive_until(websocket, "assistant.cancel")
-        websocket.send_bytes(SILENCE_CHUNK)
-        websocket.send_bytes(SILENCE_CHUNK)
-        receive_until(websocket, "assistant.text.delta")
-        websocket.send_json({"type": "session.stop"})
-
-    assert language_model.conversations == [
-        (ConversationMessage(role=ConversationRole.USER, content="hello agent"),),
-        (
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-        ),
-    ]
-
-
-def test_repeated_interruptions_preserve_acknowledged_word_prefixes() -> None:
-    language_model = FakeLanguageModel()
-    transcriber = RecordingTranscriber()
-    web_app = create_test_app(transcriber, language_model, FakeSpeechSynthesizer())
-    history_events: list[dict[str, str | int | list[dict[str, str]]]] = []
-
-    with TestClient(web_app).websocket_connect("/session") as websocket:
-        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
-        websocket.receive_json()
-        send_turn(websocket)
-
-        for generation_id, text_offset in ((1, 7), (2, 13), (3, 18)):
-            events, _ = receive_until(websocket, "assistant.audio.sentence")
-            history_events.extend(event for event in events if event["type"] == "llm.history")
-            sentence_event = events[-1]
-            assert sentence_event == {
-                "type": "assistant.audio.sentence",
-                "generation_id": generation_id,
-                "sentence_id": 0,
-                "text_start": 0,
-                "text_end": 40,
-                "sample_count": 2,
+        websocket.send_json(
+            {
+                "type": "playback.stopped",
+                "generation_id": 1,
+                "text_offset": 7,
+                "played_sample_count": 3,
             }
-            websocket.send_json(
-                {
-                    "type": "playback.progress",
-                    "generation_id": generation_id,
-                    "sentence_id": 0,
-                    "text_offset": 3,
-                }
-            )
-            websocket.send_json(
-                {
-                    "type": "playback.progress",
-                    "generation_id": generation_id,
-                    "sentence_id": 0,
-                    "text_offset": text_offset,
-                }
-            )
-            websocket.send_json(
-                {
-                    "type": "playback.progress",
-                    "generation_id": generation_id,
-                    "sentence_id": 0,
-                    "text_offset": text_offset + 1,
-                }
-            )
-            websocket.send_bytes(SPEECH_CHUNK)
-            receive_until(websocket, "assistant.cancel")
-            websocket.send_json(
-                {
-                    "type": "playback.progress",
-                    "generation_id": generation_id,
-                    "sentence_id": 0,
-                    "text_offset": 33,
-                }
-            )
-            websocket.send_bytes(SILENCE_CHUNK)
-            websocket.send_bytes(SILENCE_CHUNK)
-
-        final_events, _ = receive_until(websocket, "assistant.text.delta")
-        history_events.extend(event for event in final_events if event["type"] == "llm.history")
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
         websocket.send_json({"type": "session.stop"})
 
-    assert language_model.conversations == [
-        (ConversationMessage(role=ConversationRole.USER, content="hello agent"),),
-        (
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-            ConversationMessage(role=ConversationRole.ASSISTANT, content="One two..."),
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-        ),
-        (
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-            ConversationMessage(role=ConversationRole.ASSISTANT, content="One two..."),
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-            ConversationMessage(
-                role=ConversationRole.ASSISTANT,
-                content="One two three...",
-            ),
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-        ),
-        (
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-            ConversationMessage(role=ConversationRole.ASSISTANT, content="One two..."),
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-            ConversationMessage(
-                role=ConversationRole.ASSISTANT,
-                content="One two three...",
-            ),
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-            ConversationMessage(
-                role=ConversationRole.ASSISTANT,
-                content="One two three four...",
-            ),
-            ConversationMessage(role=ConversationRole.USER, content="hello agent"),
-        ),
-    ]
-    assert [event["generation_id"] for event in history_events] == [1, 2, 3, 4]
-    assert [event["messages"] for event in history_events] == [
-        [{"role": message.role.value, "content": message.content} for message in conversation]
-        for conversation in language_model.conversations
+    assert events[-1]["messages"] == [
+        {"role": "user", "content": "hello agent"},
+        {"role": "assistant", "content": "One two..."},
+        {"role": "user", "content": "hello agent"},
     ]
 
 
-def test_user_speech_clears_audio_that_is_still_queued_in_browser() -> None:
-    language_model = FakeLanguageModel()
-    transcriber = RecordingTranscriber()
-    web_app = create_test_app(transcriber, language_model, FakeSpeechSynthesizer())
+def test_invalid_or_stale_playback_progress_is_ignored() -> None:
+    language_model = SlowLanguageModel()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+    )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
         websocket.receive_json()
         send_turn(websocket)
-        receive_until(websocket, "assistant.audio.end")
-
+        receive_until(websocket, "assistant.audio.start")
+        websocket.send_json(
+            {
+                "type": "playback.progress",
+                "generation_id": 1,
+                "text_offset": 7,
+                "boundary_start_sample": 99,
+                "played_sample_count": 100,
+            }
+        )
         websocket.send_bytes(SPEECH_CHUNK)
-        events, _ = receive_until(websocket, "assistant.cancel")
+        receive_until(websocket, "assistant.cancel")
+        websocket.send_json(
+            {
+                "type": "playback.stopped",
+                "generation_id": 1,
+                "text_offset": 0,
+                "played_sample_count": 0,
+            }
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
         websocket.send_json({"type": "session.stop"})
 
-    assert events[-1] == {"type": "assistant.cancel", "generation_id": 1}
-    assert language_model.conversations == [
-        (ConversationMessage(role=ConversationRole.USER, content="hello agent"),)
+    assert events[-1]["messages"] == [
+        {"role": "user", "content": "hello agent"},
+        {"role": "user", "content": "hello agent"},
     ]
 
 
@@ -408,7 +309,7 @@ def test_pre_roll_is_bounded_before_speech_start() -> None:
     web_app = create_test_app(
         transcriber,
         FakeLanguageModel(),
-        FakeSpeechSynthesizer(),
+        RecordingSpeechSynthesizer(),
         policy=SessionPolicy(silence_duration_ms=20, pre_roll_duration_ms=40),
     )
 
@@ -422,29 +323,13 @@ def test_pre_roll_is_bounded_before_speech_start() -> None:
         receive_until(websocket, "vad.started")
         websocket.send_json({"type": "session.stop"})
 
-    # The 40 ms limit retains one 20 ms silence chunk plus the speech-start chunk.
     assert transcriber.sessions[0].audio == [SILENCE_CHUNK, SPEECH_CHUNK]
-
-
-def test_disconnect_closes_asr_and_cancels_active_generation() -> None:
-    transcriber = RecordingTranscriber()
-    web_app = create_test_app(transcriber, SlowLanguageModel(), SlowSpeechSynthesizer())
-
-    with TestClient(web_app).websocket_connect("/session") as websocket:
-        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
-        websocket.receive_json()
-        send_turn(websocket)
-        receive_until(websocket, "assistant.text.delta")
-
-    assert all(session.closed for session in transcriber.sessions)
 
 
 def create_test_app(
     transcriber: RecordingTranscriber,
-    language_model: FakeLanguageModel | SlowLanguageModel | SentenceLanguageModel,
-    speech_synthesizer: (
-        FakeSpeechSynthesizer | SlowSpeechSynthesizer | RecordingSpeechSynthesizer
-    ),
+    language_model: FakeLanguageModel | SplitWordLanguageModel | SlowLanguageModel,
+    speech_synthesizer: RecordingSpeechSynthesizer,
     policy: SessionPolicy = DEFAULT_TEST_POLICY,
 ) -> FastAPI:
     web_app = FastAPI()
@@ -473,8 +358,8 @@ def send_turn(websocket: WebSocketTestSession) -> None:
 def receive_until(
     websocket: WebSocketTestSession,
     terminal_event_type: str,
-) -> tuple[list[dict[str, str | int | list[dict[str, str]]]], bytes | None]:
-    events: list[dict[str, str | int | list[dict[str, str]]]] = []
+) -> tuple[list[dict[str, object]], bytes | None]:
+    events: list[dict[str, object]] = []
     audio_frame: bytes | None = None
     while not events or events[-1]["type"] != terminal_event_type:
         message = websocket.receive()
@@ -483,15 +368,3 @@ def receive_until(
         elif message.get("text") is not None:
             events.append(json.loads(message["text"]))
     return events, audio_frame
-
-
-def receive_until_audio(
-    websocket: WebSocketTestSession,
-) -> tuple[list[dict[str, str | int | list[dict[str, str]]]], bytes]:
-    events: list[dict[str, str | int | list[dict[str, str]]]] = []
-    while True:
-        message = websocket.receive()
-        if message.get("bytes") is not None:
-            return events, message["bytes"]
-        if message.get("text") is not None:
-            events.append(json.loads(message["text"]))

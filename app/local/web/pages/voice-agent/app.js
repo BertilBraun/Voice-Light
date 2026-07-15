@@ -27,7 +27,6 @@ let activeUserTurn;
 let recordedInputChunks = [];
 let recordingUrl;
 const assistantTurns = new Map();
-const assistantSentences = new Map();
 const intentionallyClosedSockets = new WeakSet();
 
 class ConversationTurn {
@@ -236,8 +235,24 @@ async function setupPlayback(inputSampleRate) {
     processorOptions: { inputSampleRate },
   });
   playbackNode.port.onmessage = ({ data }) => {
-    if (data.type === "sentence.progress") {
-      updateSentenceProgress(data);
+    if (data.type === "boundary.progress") {
+      updateBoundaryProgress(data);
+      return;
+    }
+    if (data.type === "playback.stopped") {
+      const turn = assistantTurns.get(data.generationId);
+      turn?.setSpokenOffset(data.textOffset);
+      turn?.acknowledgeOffset(data.textOffset);
+      turn?.settleInterruptedText();
+      turn?.setState("cancelled");
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: "playback.stopped",
+          generation_id: data.generationId,
+          text_offset: data.textOffset,
+          played_sample_count: data.playedSampleCount,
+        }));
+      }
       return;
     }
     if (
@@ -265,7 +280,7 @@ function handleMessage(event) {
     const view = new DataView(event.data);
     const generationId = view.getUint32(0, true);
     const sequenceNumber = view.getUint32(4, true);
-    const sentenceId = view.getUint32(8, true);
+    const startSample = view.getUint32(8, true);
     if (generationId <= cancelledGenerationId) return;
     if (generationId !== audioGenerationId) {
       audioGenerationId = generationId;
@@ -274,7 +289,7 @@ function handleMessage(event) {
     if (sequenceNumber !== expectedAudioSequence) return;
     expectedAudioSequence += 1;
     const pcm = event.data.slice(12);
-    playbackNode.port.postMessage({ type: "audio", generationId, sentenceId, pcm }, [pcm]);
+    playbackNode.port.postMessage({ type: "audio", generationId, startSample, pcm }, [pcm]);
     return;
   }
   const message = JSON.parse(event.data);
@@ -309,31 +324,18 @@ function handleMessage(event) {
     assistantTurn(message.generation_id).setState("speaking");
     playbackStatus.textContent = "finishing";
   }
-  if (message.type === "assistant.audio.sentence") {
+  if (message.type === "assistant.audio.text_boundary") {
     if (message.generation_id <= cancelledGenerationId) return;
-    const key = sentenceKey(message.generation_id, message.sentence_id);
-    assistantSentences.set(key, {
-      generationId: message.generation_id,
-      sentenceId: message.sentence_id,
-      textStart: message.text_start,
-      textEnd: message.text_end,
-      sampleCount: message.sample_count,
-      acknowledgedOffset: 0,
-    });
     playbackNode.port.postMessage({
-      type: "sentence",
+      type: "boundary",
       generationId: message.generation_id,
-      sentenceId: message.sentence_id,
-      totalSamples: message.sample_count,
-      characterCount: message.text_end - message.text_start,
+      textOffset: message.text_offset,
+      startSample: message.start_sample,
     });
   }
   if (message.type === "assistant.cancel") {
     cancelledGenerationId = Math.max(cancelledGenerationId, message.generation_id);
     playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
-    const turn = assistantTurns.get(message.generation_id);
-    turn?.settleInterruptedText();
-    turn?.setState("cancelled");
     vadStatus.textContent = "ready";
     playbackStatus.textContent = "cancelled";
   }
@@ -448,39 +450,24 @@ function assistantTurn(generationId) {
 function clearConversationHistory() {
   activeUserTurn = undefined;
   assistantTurns.clear();
-  assistantSentences.clear();
   conversationEmpty.hidden = false;
   conversationHistory.replaceChildren(conversationEmpty);
 }
 
-function updateSentenceProgress(progress) {
-  if (progress.generationId <= cancelledGenerationId) return;
-  const sentence = assistantSentences.get(sentenceKey(progress.generationId, progress.sentenceId));
-  if (!sentence || sentence.sampleCount !== progress.totalSamples) return;
-  const ratio = Math.min(progress.playedSamples / progress.totalSamples, 1);
-  const characterOffset = sentence.textStart + Math.floor((sentence.textEnd - sentence.textStart) * ratio);
+function updateBoundaryProgress(progress) {
   const turn = assistantTurns.get(progress.generationId);
   if (!turn) return;
-  turn.setSpokenOffset(characterOffset);
-  const sentenceText = sliceTextByCharacterOffset(turn.text, sentence.textStart, sentence.textEnd);
-  for (const match of sentenceText.matchAll(/\S+/g)) {
-    const wordEnd = sentence.textStart + characterLength(sentenceText.slice(0, match.index + match[0].length));
-    if (wordEnd > characterOffset || wordEnd <= sentence.acknowledgedOffset) continue;
-    sentence.acknowledgedOffset = wordEnd;
-    turn.acknowledgeOffset(wordEnd);
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "playback.progress",
-        generation_id: progress.generationId,
-        sentence_id: progress.sentenceId,
-        text_offset: wordEnd,
-      }));
-    }
+  turn.setSpokenOffset(progress.textOffset);
+  turn.acknowledgeOffset(progress.textOffset);
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      type: "playback.progress",
+      generation_id: progress.generationId,
+      text_offset: progress.textOffset,
+      boundary_start_sample: progress.startSample,
+      played_sample_count: progress.playedSampleCount,
+    }));
   }
-}
-
-function sentenceKey(generationId, sentenceId) {
-  return `${generationId}:${sentenceId}`;
 }
 
 function characterLength(text) {

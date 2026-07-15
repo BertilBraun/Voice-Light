@@ -31,13 +31,13 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'console.info("Voice input capture"' in script_response.text
     assert 'message.type === "assistant.text.delta"' in script_response.text
     assert 'message.type === "assistant.cancel"' in script_response.text
-    assert 'message.type === "assistant.audio.sentence"' in script_response.text
+    assert 'message.type === "assistant.audio.text_boundary"' in script_response.text
     assert 'type: "playback.progress"' in script_response.text
+    assert 'type: "playback.stopped"' in script_response.text
     assert "turn-unspoken" in script_response.text
-    assert "characterCount: message.text_end - message.text_start" in script_response.text
-    assert "playback.characterCount * playedSamples" in worklet_response.text
-    assert "characterOffset === playback.reportedCharacterOffset" in worklet_response.text
-    assert 'data.type === "sentence" && data.generationId > this.cancelledGenerationId' in (
+    assert "textOffset: message.text_offset" in script_response.text
+    assert "this.playedSampleCount > this.boundaries[0].startSample" in worklet_response.text
+    assert 'data.type === "boundary" && data.generationId > this.cancelledGenerationId' in (
         worklet_response.text
     )
     assert "new Int16Array(input.length)" in capture_worklet_response.text

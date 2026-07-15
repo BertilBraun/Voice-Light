@@ -24,8 +24,8 @@ dependencies = [
 compute = [
     "faster-whisper>=1.1.0",
     "librosa>=0.11.0",
+    "moshi==0.2.13",
     "nemo-toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@8e683a05216762f89390b08702b5dc4eaf3e1676",
-    "pocket-tts @ https://files.pythonhosted.org/packages/cf/63/d16958d388efee3f0fc7287e1418ed652ddbc2b61ff4f581f0ad0abce625/pocket_tts-2.1.0-py3-none-any.whl",
 ]
 
 [dependency-groups]
@@ -43,6 +43,12 @@ select = ["E", "F", "I", "UP", "B", "ANN"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = ["integration: requires explicitly configured external model infrastructure"]
 
 [tool.uv]
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+override-dependencies = [
+    "huggingface-hub>=1.23.0",
+    "safetensors>=0.8.0",
+    "torch>=2.13.0",
+]

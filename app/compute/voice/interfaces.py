@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Protocol
 
 from app.compute.voice.conversation import ConversationMessage
@@ -29,8 +30,40 @@ class LanguageModel(Protocol):
     ) -> AsyncIterator[str]: ...
 
 
+@dataclass(frozen=True)
+class SynthesisWord:
+    text: str
+    text_start: int
+    text_end: int
+
+
+@dataclass(frozen=True)
+class SynthesizedAudioChunk:
+    pcm_bytes: bytes
+    start_sample: int
+
+
+@dataclass(frozen=True)
+class SynthesizedWordBoundary:
+    text_offset: int
+    start_sample: int
+
+
+SynthesisEvent = SynthesizedAudioChunk | SynthesizedWordBoundary
+
+
+class SpeechSynthesisSession(Protocol):
+    async def add_word(self, word: SynthesisWord) -> None: ...
+
+    async def finish_input(self) -> None: ...
+
+    def stream_events(self) -> AsyncIterator[SynthesisEvent]: ...
+
+    async def cancel(self) -> None: ...
+
+
 class SpeechSynthesizer(Protocol):
     @property
     def sample_rate(self) -> int: ...
 
-    def stream_audio(self, text: str) -> AsyncIterator[bytes]: ...
+    def start_session(self) -> SpeechSynthesisSession: ...

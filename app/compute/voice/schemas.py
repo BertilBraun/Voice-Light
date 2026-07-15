@@ -14,6 +14,7 @@ class VoiceClientEventType(StrEnum):
     SESSION_STOP = "session.stop"
     PLAYBACK_COMPLETE = "playback.complete"
     PLAYBACK_PROGRESS = "playback.progress"
+    PLAYBACK_STOPPED = "playback.stopped"
 
 
 class SessionStartEvent(FrozenBaseModel):
@@ -33,12 +34,24 @@ class PlaybackCompleteEvent(FrozenBaseModel):
 class PlaybackProgressEvent(FrozenBaseModel):
     type: Literal[VoiceClientEventType.PLAYBACK_PROGRESS] = VoiceClientEventType.PLAYBACK_PROGRESS
     generation_id: int = Field(gt=0)
-    sentence_id: int = Field(ge=0)
     text_offset: int = Field(gt=0)
+    boundary_start_sample: int = Field(ge=0)
+    played_sample_count: int = Field(gt=0)
+
+
+class PlaybackStoppedEvent(FrozenBaseModel):
+    type: Literal[VoiceClientEventType.PLAYBACK_STOPPED] = VoiceClientEventType.PLAYBACK_STOPPED
+    generation_id: int = Field(gt=0)
+    text_offset: int = Field(ge=0)
+    played_sample_count: int = Field(ge=0)
 
 
 VoiceClientEvent = Annotated[
-    SessionStartEvent | SessionStopEvent | PlaybackCompleteEvent | PlaybackProgressEvent,
+    SessionStartEvent
+    | SessionStopEvent
+    | PlaybackCompleteEvent
+    | PlaybackProgressEvent
+    | PlaybackStoppedEvent,
     Field(discriminator="type"),
 ]
 voice_client_event_adapter: TypeAdapter[VoiceClientEvent] = TypeAdapter(VoiceClientEvent)
@@ -55,7 +68,7 @@ class VoiceServerEventType(StrEnum):
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
-    ASSISTANT_AUDIO_SENTENCE = "assistant.audio.sentence"
+    ASSISTANT_AUDIO_TEXT_BOUNDARY = "assistant.audio.text_boundary"
     ASSISTANT_CANCEL = "assistant.cancel"
     ERROR = "error"
 
@@ -109,15 +122,13 @@ class AssistantAudioBoundaryEvent(FrozenBaseModel):
     generation_id: int = Field(gt=0)
 
 
-class AssistantAudioSentenceEvent(FrozenBaseModel):
-    type: Literal[VoiceServerEventType.ASSISTANT_AUDIO_SENTENCE] = (
-        VoiceServerEventType.ASSISTANT_AUDIO_SENTENCE
+class AssistantAudioTextBoundaryEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.ASSISTANT_AUDIO_TEXT_BOUNDARY] = (
+        VoiceServerEventType.ASSISTANT_AUDIO_TEXT_BOUNDARY
     )
     generation_id: int = Field(gt=0)
-    sentence_id: int = Field(ge=0)
-    text_start: int = Field(ge=0)
-    text_end: int = Field(gt=0)
-    sample_count: int = Field(gt=0)
+    text_offset: int = Field(gt=0)
+    start_sample: int = Field(ge=0)
 
 
 class ErrorEvent(FrozenBaseModel):
@@ -132,7 +143,7 @@ VoiceServerEvent = Annotated[
     | LlmHistoryEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
-    | AssistantAudioSentenceEvent
+    | AssistantAudioTextBoundaryEvent
     | ErrorEvent,
     Field(discriminator="type"),
 ]

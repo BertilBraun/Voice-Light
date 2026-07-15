@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import struct
 from collections import deque
 from collections.abc import AsyncIterator
@@ -16,18 +15,22 @@ from app.compute.voice.interfaces import (
     LanguageModel,
     SpeechDetector,
     SpeechSynthesizer,
+    SynthesisEvent,
+    SynthesizedAudioChunk,
+    SynthesizedWordBoundary,
     Transcriber,
     TranscriptionSession,
 )
 from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
-    AssistantAudioSentenceEvent,
+    AssistantAudioTextBoundaryEvent,
     AssistantTextDeltaEvent,
     ErrorEvent,
     LlmHistoryEvent,
     LlmHistoryMessage,
     PlaybackCompleteEvent,
     PlaybackProgressEvent,
+    PlaybackStoppedEvent,
     SessionReadyEvent,
     SessionStartEvent,
     SessionStopEvent,
@@ -37,11 +40,12 @@ from app.compute.voice.schemas import (
     VoiceServerEventType,
     voice_client_event_adapter,
 )
-from app.compute.voice.sentence_chunking import SentenceTextChunker
+from app.compute.voice.word_stream import CompleteWordStream
 
 INPUT_SAMPLE_RATE = 16_000
 PCM_BYTES_PER_SAMPLE = 2
 AUDIO_QUEUE_MAX_CHUNKS = 100
+PLAYBACK_STOP_TIMEOUT_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -59,16 +63,12 @@ class ActiveGeneration:
     response_text: str = ""
     acknowledged_offset: int = 0
     history_index: int | None = None
-    acknowledgeable_offsets: dict[int, frozenset[int]] = field(default_factory=dict)
+    boundary_samples: dict[int, int] = field(default_factory=dict)
     generation_finished: bool = False
     playback_complete: bool = False
-
-
-@dataclass(frozen=True)
-class SpeechSentence:
-    text: str
-    text_start: int
-    text_end: int
+    cancelled: bool = False
+    accepts_playback: bool = True
+    playback_stopped: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class VoiceSession:
@@ -93,6 +93,7 @@ class VoiceSession:
         )
         self.send_lock = asyncio.Lock()
         self.conversation: list[ConversationMessage] = []
+        self.generations: dict[int, ActiveGeneration] = {}
         self.active_generation: ActiveGeneration | None = None
         self.next_generation_id = 1
         self.audio_sample_count = 0
@@ -115,7 +116,9 @@ class VoiceSession:
                 with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
                     await task
             await self._cancel_generation(send_event=False)
+            await self._close_generation_tasks()
             self.conversation.clear()
+            self.generations.clear()
 
     async def _receive_loop(self) -> None:
         while True:
@@ -141,6 +144,8 @@ class VoiceSession:
                     self._complete_playback(event.generation_id)
                 case PlaybackProgressEvent():
                     self._acknowledge_playback(event)
+                case PlaybackStoppedEvent():
+                    self._stop_playback(event)
                 case SessionStopEvent():
                     await self.audio_queue.put(None)
                     return
@@ -219,12 +224,14 @@ class VoiceSession:
     async def _commit_turn(self, text: str) -> None:
         await self._send_transcript(VoiceServerEventType.TRANSCRIPT_FINAL, text)
         await self._send_transcript(VoiceServerEventType.TURN_COMMITTED, text)
+        await self._finalize_cancelled_playback()
         self.conversation.append(ConversationMessage(role=ConversationRole.USER, content=text))
         await self._cancel_generation(send_event=True)
         generation = ActiveGeneration(
             generation_id=self.next_generation_id,
             prompt_messages=tuple(self.conversation),
         )
+        self.generations[generation.generation_id] = generation
         self.next_generation_id += 1
         await self._send_event(
             LlmHistoryEvent(
@@ -238,6 +245,22 @@ class VoiceSession:
         generation.task = asyncio.create_task(self._run_generation(generation))
         self.active_generation = generation
 
+    async def _finalize_cancelled_playback(self) -> None:
+        pending = tuple(
+            generation
+            for generation in self.generations.values()
+            if generation.cancelled and generation.accepts_playback
+        )
+        for generation in pending:
+            try:
+                await asyncio.wait_for(
+                    generation.playback_stopped.wait(),
+                    timeout=PLAYBACK_STOP_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                generation.accepts_playback = False
+                self._mark_generation_interrupted(generation)
+
     async def _run_generation(self, generation: ActiveGeneration) -> None:
         try:
             await self._generate_response(generation)
@@ -245,6 +268,7 @@ class VoiceSession:
             raise
         except Exception as error:
             if self.active_generation is generation:
+                generation.cancelled = True
                 self._mark_generation_interrupted(generation)
                 self.active_generation = None
                 await self._send_audio_boundary(
@@ -254,20 +278,9 @@ class VoiceSession:
             await self._send_error(f"Response generation failed: {error}")
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
-        sentence_queue: asyncio.Queue[SpeechSentence | None] = asyncio.Queue()
-
-        async def sentences() -> AsyncIterator[SpeechSentence]:
-            while (sentence := await sentence_queue.get()) is not None:
-                yield sentence
-
-        audio_task = asyncio.create_task(
-            self._stream_speech(
-                generation_id=generation.generation_id,
-                sentences=sentences(),
-            )
-        )
-        sentence_chunker = SentenceTextChunker()
-        next_sentence_offset = 0
+        synthesis = self.speech_synthesizer.start_session()
+        audio_task = asyncio.create_task(self._stream_speech(generation, synthesis.stream_events()))
+        word_stream = CompleteWordStream()
         try:
             async for text_delta in self.language_model.stream_response(generation.prompt_messages):
                 generation.response_text += text_delta
@@ -277,37 +290,18 @@ class VoiceSession:
                         text=text_delta,
                     )
                 )
-                for sentence in sentence_chunker.add_text(text_delta):
-                    sentence_start = generation.response_text.find(sentence, next_sentence_offset)
-                    assert sentence_start >= next_sentence_offset
-                    sentence_end = sentence_start + len(sentence)
-                    await sentence_queue.put(
-                        SpeechSentence(
-                            text=sentence,
-                            text_start=sentence_start,
-                            text_end=sentence_end,
-                        )
-                    )
-                    next_sentence_offset = sentence_end
+                for word in word_stream.add_text(text_delta):
+                    await synthesis.add_word(word)
             if not generation.response_text.strip():
                 raise RuntimeError("The language model returned an empty response.")
-            for sentence in sentence_chunker.finish():
-                sentence_start = generation.response_text.find(sentence, next_sentence_offset)
-                assert sentence_start >= next_sentence_offset
-                sentence_end = sentence_start + len(sentence)
-                await sentence_queue.put(
-                    SpeechSentence(
-                        text=sentence,
-                        text_start=sentence_start,
-                        text_end=sentence_end,
-                    )
-                )
-                next_sentence_offset = sentence_end
-            await sentence_queue.put(None)
+            for word in word_stream.finish():
+                await synthesis.add_word(word)
+            await synthesis.finish_input()
             await audio_task
             generation.generation_finished = True
             self._commit_assistant_if_complete(generation)
         finally:
+            await synthesis.cancel()
             if not audio_task.done():
                 audio_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -315,89 +309,116 @@ class VoiceSession:
 
     async def _stream_speech(
         self,
-        generation_id: int,
-        sentences: AsyncIterator[SpeechSentence],
+        generation: ActiveGeneration,
+        events: AsyncIterator[SynthesisEvent],
     ) -> None:
         sequence_number = 0
+        expected_start_sample = 0
         started = False
-        sentence_id = 0
-        async for sentence in sentences:
-            sentence_audio: list[bytes] = []
-            sentence_sample_count = 0
-            async for pcm_bytes in self.speech_synthesizer.stream_audio(sentence.text):
-                if len(pcm_bytes) % PCM_BYTES_PER_SAMPLE != 0:
-                    raise ValueError("TTS PCM16 frames must contain complete samples.")
-                sentence_audio.append(pcm_bytes)
-                sentence_sample_count += _pcm_sample_count(pcm_bytes)
-            if sentence_sample_count == 0:
-                raise RuntimeError("The speech synthesizer returned no sentence audio.")
-            generation = self.active_generation
-            if generation is None or generation.generation_id != generation_id:
+        async for event in events:
+            if generation.cancelled:
                 return
-            generation.acknowledgeable_offsets[sentence_id] = frozenset(
-                match.end() + sentence.text_start for match in re.finditer(r"\S+", sentence.text)
-            )
-            await self._send_event(
-                AssistantAudioSentenceEvent(
-                    generation_id=generation_id,
-                    sentence_id=sentence_id,
-                    text_start=sentence.text_start,
-                    text_end=sentence.text_end,
-                    sample_count=sentence_sample_count,
-                )
-            )
-            if not started:
-                started = True
-                await self._send_audio_boundary(
-                    VoiceServerEventType.ASSISTANT_AUDIO_START,
-                    generation_id,
-                )
-            for pcm_bytes in sentence_audio:
-                header = struct.pack("<III", generation_id, sequence_number, sentence_id)
-                await self._send_audio(header + pcm_bytes)
-                sequence_number += 1
-            sentence_id += 1
-        if started:
-            await self._send_audio_boundary(
-                VoiceServerEventType.ASSISTANT_AUDIO_END,
-                generation_id,
-            )
-            return
-        raise RuntimeError("The speech synthesizer returned no audio.")
+            match event:
+                case SynthesizedWordBoundary():
+                    if event.text_offset > len(generation.response_text):
+                        raise ValueError("TTS returned a text boundary beyond generated text.")
+                    generation.boundary_samples[event.text_offset] = event.start_sample
+                    await self._send_event(
+                        AssistantAudioTextBoundaryEvent(
+                            generation_id=generation.generation_id,
+                            text_offset=event.text_offset,
+                            start_sample=event.start_sample,
+                        )
+                    )
+                case SynthesizedAudioChunk():
+                    if len(event.pcm_bytes) % PCM_BYTES_PER_SAMPLE != 0:
+                        raise ValueError("TTS PCM16 frames must contain complete samples.")
+                    if event.start_sample != expected_start_sample:
+                        raise ValueError("TTS audio chunks must have contiguous sample offsets.")
+                    if not started:
+                        started = True
+                        await self._send_audio_boundary(
+                            VoiceServerEventType.ASSISTANT_AUDIO_START,
+                            generation.generation_id,
+                        )
+                    header = struct.pack(
+                        "<III",
+                        generation.generation_id,
+                        sequence_number,
+                        event.start_sample,
+                    )
+                    await self._send_audio(header + event.pcm_bytes)
+                    sequence_number += 1
+                    expected_start_sample += _pcm_sample_count(event.pcm_bytes)
+        if not started:
+            raise RuntimeError("The speech synthesizer returned no audio.")
+        await self._send_audio_boundary(
+            VoiceServerEventType.ASSISTANT_AUDIO_END,
+            generation.generation_id,
+        )
 
     async def _cancel_generation(self, send_event: bool) -> None:
         generation = self.active_generation
         if generation is None:
             return
+        generation.cancelled = True
         self._mark_generation_interrupted(generation)
         self.active_generation = None
-        if generation.task is not None and not generation.task.done():
-            generation.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await generation.task
         if send_event:
             await self._send_audio_boundary(
                 VoiceServerEventType.ASSISTANT_CANCEL,
                 generation.generation_id,
             )
+        if generation.task is not None and not generation.task.done():
+            generation.task.cancel()
+            await asyncio.sleep(0)
+
+    async def _close_generation_tasks(self) -> None:
+        tasks = tuple(
+            generation.task
+            for generation in self.generations.values()
+            if generation.task is not None and not generation.task.done()
+        )
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     def _complete_playback(self, generation_id: int) -> None:
         generation = self.active_generation
         if generation is None or generation.generation_id != generation_id:
             return
         generation.playback_complete = True
+        generation.accepts_playback = False
         self._commit_assistant_if_complete(generation)
 
     def _acknowledge_playback(self, event: PlaybackProgressEvent) -> None:
-        generation = self.active_generation
-        if generation is None or generation.generation_id != event.generation_id:
+        generation = self.generations.get(event.generation_id)
+        if generation is None or not generation.accepts_playback:
             return
-        valid_offsets = generation.acknowledgeable_offsets.get(event.sentence_id)
-        if valid_offsets is None or event.text_offset not in valid_offsets:
+        boundary_sample = generation.boundary_samples.get(event.text_offset)
+        if boundary_sample != event.boundary_start_sample:
+            return
+        if event.played_sample_count <= boundary_sample:
             return
         if event.text_offset <= generation.acknowledged_offset:
             return
         self._update_assistant_history(generation, event.text_offset)
+
+    def _stop_playback(self, event: PlaybackStoppedEvent) -> None:
+        generation = self.generations.get(event.generation_id)
+        if generation is None or not generation.cancelled or not generation.accepts_playback:
+            return
+        if event.text_offset > 0:
+            boundary_sample = generation.boundary_samples.get(event.text_offset)
+            if boundary_sample is None or event.played_sample_count <= boundary_sample:
+                return
+            if event.text_offset > generation.acknowledged_offset:
+                self._update_assistant_history(generation, event.text_offset)
+        generation.accepts_playback = False
+        generation.playback_stopped.set()
+        self._mark_generation_interrupted(generation)
 
     def _update_assistant_history(
         self,
@@ -407,10 +428,9 @@ class VoiceSession:
         assert 0 < text_offset <= len(generation.response_text)
         content = generation.response_text[:text_offset].rstrip()
         assert content
-        message = ConversationMessage(
-            role=ConversationRole.ASSISTANT,
-            content=content,
-        )
+        if generation.cancelled:
+            content = f"{content}..."
+        message = ConversationMessage(role=ConversationRole.ASSISTANT, content=content)
         if generation.history_index is None:
             generation.history_index = len(self.conversation)
             self.conversation.append(message)
@@ -421,11 +441,9 @@ class VoiceSession:
     def _mark_generation_interrupted(self, generation: ActiveGeneration) -> None:
         if generation.history_index is None:
             return
-        if generation.generation_finished and generation.acknowledged_offset >= len(
-            generation.response_text.rstrip()
-        ):
-            return
         message = self.conversation[generation.history_index]
+        if message.content.endswith("..."):
+            return
         self.conversation[generation.history_index] = ConversationMessage(
             role=ConversationRole.ASSISTANT,
             content=f"{message.content}...",
@@ -444,6 +462,7 @@ class VoiceSession:
             self.conversation.append(complete_message)
         else:
             self.conversation[generation.history_index] = complete_message
+        generation.accepts_playback = False
         self.active_generation = None
 
     async def _send_speech_state(self, event_type: VoiceServerEventType) -> None:

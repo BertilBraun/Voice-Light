@@ -6,140 +6,144 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.chunks = [];
     this.queuedSampleCount = 0;
     this.sourcePosition = 0;
-    this.sentencePlayback = new Map();
-    this.progressSentenceIds = new Set();
+    this.playedSampleCount = 0;
+    this.acknowledgedTextOffset = 0;
+    this.boundaries = [];
     this.generationId = -1;
     this.cancelledGenerationId = -1;
     this.endedGenerationId = -1;
-    this.port.onmessage = ({ data }) => {
-      if (data.type === "clear") {
-        this.chunks = [];
-        this.queuedSampleCount = 0;
-        this.sourcePosition = 0;
-        this.sentencePlayback.clear();
-        this.progressSentenceIds.clear();
-        this.cancelledGenerationId = Math.max(this.cancelledGenerationId, data.generationId);
-        this.endedGenerationId = -1;
-      } else if (data.type === "audio" && data.generationId > this.cancelledGenerationId) {
-        if (data.generationId > this.generationId) this.startGeneration(data.generationId);
-        if (data.generationId === this.generationId) {
-          const samples = new Int16Array(data.pcm);
-          this.chunks.push({ samples, sentenceId: data.sentenceId });
-          this.queuedSampleCount += samples.length;
-        }
-      } else if (data.type === "sentence" && data.generationId > this.cancelledGenerationId) {
-        if (data.generationId > this.generationId) this.startGeneration(data.generationId);
-        if (data.generationId === this.generationId) {
-          const playback = this.sentencePlayback.get(data.sentenceId) ?? { playedSamples: 0 };
-          playback.totalSamples = data.totalSamples;
-          playback.characterCount = data.characterCount;
-          playback.reportedCharacterOffset ??= 0;
-          this.sentencePlayback.set(data.sentenceId, playback);
-          this.reportSentenceProgress(data.sentenceId);
-        }
-      } else if (data.type === "end" && data.generationId === this.generationId) {
-        this.endedGenerationId = data.generationId;
-        this.reportCompletionIfDrained();
+    this.port.onmessage = ({ data }) => this.handleMessage(data);
+  }
+
+  handleMessage(data) {
+    if (data.type === "clear") {
+      this.stopGeneration(data.generationId);
+    } else if (data.type === "audio" && data.generationId > this.cancelledGenerationId) {
+      if (data.generationId > this.generationId) this.startGeneration(data.generationId);
+      if (data.generationId === this.generationId) {
+        const samples = new Int16Array(data.pcm);
+        const expectedStartSample = this.playedSampleCount + this.queuedSampleCount;
+        if (data.startSample !== expectedStartSample) return;
+        this.chunks.push(samples);
+        this.queuedSampleCount += samples.length;
       }
-    };
+    } else if (data.type === "boundary" && data.generationId > this.cancelledGenerationId) {
+      if (data.generationId > this.generationId) this.startGeneration(data.generationId);
+      if (data.generationId === this.generationId) {
+        this.boundaries.push({ textOffset: data.textOffset, startSample: data.startSample });
+        this.boundaries.sort((left, right) => left.startSample - right.startSample);
+        this.reportCrossedBoundaries();
+      }
+    } else if (data.type === "end" && data.generationId === this.generationId) {
+      this.endedGenerationId = data.generationId;
+      this.reportCompletionIfDrained();
+    }
   }
 
   startGeneration(generationId) {
     this.chunks = [];
     this.queuedSampleCount = 0;
     this.sourcePosition = 0;
-    this.sentencePlayback.clear();
-    this.progressSentenceIds.clear();
+    this.playedSampleCount = 0;
+    this.acknowledgedTextOffset = 0;
+    this.boundaries = [];
     this.generationId = generationId;
     this.endedGenerationId = -1;
+  }
+
+  stopGeneration(generationId) {
+    let playedSampleCount = 0;
+    let textOffset = 0;
+    if (generationId === this.generationId) {
+      this.reportCrossedBoundaries();
+      playedSampleCount = this.playedSampleCount;
+      textOffset = this.acknowledgedTextOffset;
+      this.chunks = [];
+      this.queuedSampleCount = 0;
+      this.sourcePosition = 0;
+      this.boundaries = [];
+      this.endedGenerationId = -1;
+    }
+    this.cancelledGenerationId = Math.max(this.cancelledGenerationId, generationId);
+    this.port.postMessage({
+      type: "playback.stopped",
+      generationId,
+      playedSampleCount,
+      textOffset,
+    });
   }
 
   process(_inputs, outputs) {
     const output = outputs[0][0];
     output.fill(0);
     for (let outputIndex = 0; outputIndex < output.length; outputIndex += 1) {
-      if (this.availableSampleCount() === 0) break;
+      if (this.queuedSampleCount === 0) break;
       const lowerIndex = Math.floor(this.sourcePosition);
       const fraction = this.sourcePosition - lowerIndex;
       const lowerSample = this.sampleAt(lowerIndex);
       const upperSample = this.sampleAt(lowerIndex + 1) ?? lowerSample;
       output[outputIndex] = (lowerSample * (1 - fraction) + upperSample * fraction) / 0x8000;
       this.sourcePosition += this.inputSamplesPerOutputSample;
-      const consumedSamples = Math.floor(this.sourcePosition);
-      if (consumedSamples > 0) {
-        this.consumeSamples(consumedSamples);
-        this.sourcePosition -= consumedSamples;
+      const consumedSampleCount = Math.floor(this.sourcePosition);
+      if (consumedSampleCount > 0) {
+        this.consumeSamples(consumedSampleCount);
+        this.sourcePosition -= consumedSampleCount;
       }
     }
-    for (const sentenceId of this.progressSentenceIds) this.reportSentenceProgress(sentenceId);
-    this.progressSentenceIds.clear();
+    this.reportCrossedBoundaries();
     this.reportCompletionIfDrained();
     return true;
-  }
-
-  availableSampleCount() {
-    return this.queuedSampleCount;
   }
 
   sampleAt(index) {
     let remainingIndex = index;
     for (const chunk of this.chunks) {
-      if (remainingIndex < chunk.samples.length) return chunk.samples[remainingIndex];
-      remainingIndex -= chunk.samples.length;
+      if (remainingIndex < chunk.length) return chunk[remainingIndex];
+      remainingIndex -= chunk.length;
     }
     return undefined;
   }
 
   consumeSamples(count) {
-    let remainingCount = count;
+    let remainingCount = Math.min(count, this.queuedSampleCount);
+    this.playedSampleCount += remainingCount;
+    this.queuedSampleCount -= remainingCount;
     while (remainingCount > 0 && this.chunks.length > 0) {
       const chunk = this.chunks[0];
-      const consumedCount = Math.min(remainingCount, chunk.samples.length);
-      this.recordPlayedSamples(chunk.sentenceId, consumedCount);
-      if (remainingCount < chunk.samples.length) {
-        this.chunks[0] = {
-          samples: chunk.samples.subarray(remainingCount),
-          sentenceId: chunk.sentenceId,
-        };
-        this.queuedSampleCount -= remainingCount;
+      if (remainingCount < chunk.length) {
+        this.chunks[0] = chunk.subarray(remainingCount);
         return;
       }
-      remainingCount -= chunk.samples.length;
-      this.queuedSampleCount -= chunk.samples.length;
+      remainingCount -= chunk.length;
       this.chunks.shift();
     }
   }
 
-  recordPlayedSamples(sentenceId, sampleCount) {
-    const playback = this.sentencePlayback.get(sentenceId) ?? { playedSamples: 0 };
-    playback.playedSamples += sampleCount;
-    this.sentencePlayback.set(sentenceId, playback);
-    this.progressSentenceIds.add(sentenceId);
-  }
-
-  reportSentenceProgress(sentenceId) {
-    const playback = this.sentencePlayback.get(sentenceId);
-    if (!playback?.totalSamples || !playback.characterCount) return;
-    const playedSamples = Math.min(playback.playedSamples, playback.totalSamples);
-    const characterOffset = Math.floor(
-      playback.characterCount * playedSamples / playback.totalSamples,
-    );
-    if (characterOffset === playback.reportedCharacterOffset) return;
-    playback.reportedCharacterOffset = characterOffset;
-    this.port.postMessage({
-      type: "sentence.progress",
-      generationId: this.generationId,
-      sentenceId,
-      playedSamples,
-      totalSamples: playback.totalSamples,
-    });
+  reportCrossedBoundaries() {
+    while (
+      this.boundaries.length > 0 &&
+      this.playedSampleCount > this.boundaries[0].startSample
+    ) {
+      const boundary = this.boundaries.shift();
+      this.acknowledgedTextOffset = Math.max(
+        this.acknowledgedTextOffset,
+        boundary.textOffset,
+      );
+      this.port.postMessage({
+        type: "boundary.progress",
+        generationId: this.generationId,
+        textOffset: boundary.textOffset,
+        startSample: boundary.startSample,
+        playedSampleCount: this.playedSampleCount,
+      });
+    }
   }
 
   reportCompletionIfDrained() {
     if (
       this.generationId < 1 ||
       this.endedGenerationId !== this.generationId ||
-      this.availableSampleCount() !== 0
+      this.queuedSampleCount !== 0
     ) return;
     this.port.postMessage({ type: "playback.complete", generationId: this.generationId });
     this.endedGenerationId = -1;

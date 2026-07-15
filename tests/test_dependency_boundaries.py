@@ -10,7 +10,7 @@ COMPUTE_ONLY_PACKAGES = (
     "faster-whisper",
     "librosa",
     "nemo-toolkit",
-    "pocket-tts",
+    "moshi",
 )
 
 
