@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
+from app.training.turn_taking.config import LossConfig
 from app.training.turn_taking.data import FrameTargets
 from app.training.turn_taking.model import AdapterOutput
 
@@ -12,87 +13,62 @@ from app.training.turn_taking.model import AdapterOutput
 @dataclass(frozen=True)
 class LossBreakdown:
     total: Tensor
-    policy: Tensor
-    future_activity: Tensor
-    end_horizons: Tensor
-    time_to_shift: Tensor
+    primary: Tensor
     events: Tensor
-    monotonic: Tensor
+    future_activity: Tensor
 
 
-def compute_loss(output: AdapterOutput, targets: FrameTargets, frame_mask: Tensor) -> LossBreakdown:
-    targets = align_targets(targets, output.policy_logits.shape[1])
-    mask = targets.loss_mask & frame_mask
-    weights = targets.confidence * mask.float()
-    policy_values = nn.functional.cross_entropy(
-        output.policy_logits.transpose(1, 2), targets.policy, reduction="none"
+def compute_loss(
+    output: AdapterOutput,
+    targets: FrameTargets,
+    frame_mask: Tensor,
+    config: LossConfig,
+) -> LossBreakdown:
+    targets = align_targets(targets, output.yield_logits.shape[1])
+    primary_weights = targets.primary_weight * targets.primary_mask.float() * frame_mask.float()
+    primary = _weighted_mean(
+        nn.functional.binary_cross_entropy_with_logits(
+            output.yield_logits, targets.yield_probability, reduction="none"
+        ),
+        primary_weights,
     )
-    policy = _weighted_mean(policy_values, weights)
+    event_values = -(
+        targets.event_distribution * nn.functional.log_softmax(output.event_logits, dim=-1)
+    ).sum(dim=-1)
+    event_weights = targets.event_weight * targets.event_mask.float() * frame_mask.float()
+    events = _weighted_mean(event_values, event_weights)
+    future_mask = targets.future_activity_mask & frame_mask.unsqueeze(-1)
     future_activity = _weighted_mean(
         nn.functional.binary_cross_entropy_with_logits(
             output.future_activity_logits, targets.future_activity, reduction="none"
-        ).mean(dim=-1),
-        weights,
-    )
-    end_horizons = _weighted_mean(
-        nn.functional.binary_cross_entropy_with_logits(
-            output.end_horizon_logits, targets.end_horizons, reduction="none"
-        ).mean(dim=-1),
-        weights,
-    )
-    time_to_shift = _weighted_mean(
-        nn.functional.cross_entropy(
-            output.time_to_shift_logits.transpose(1, 2),
-            targets.time_to_shift_bucket,
-            reduction="none",
         ),
-        weights,
+        future_mask.float(),
     )
-    events = _weighted_mean(
-        nn.functional.binary_cross_entropy_with_logits(
-            output.event_logits, targets.events, reduction="none"
-        ).mean(dim=-1),
-        weights,
-    )
-    probabilities = output.end_horizon_logits.sigmoid()
-    monotonic_values = nn.functional.relu(
-        probabilities[..., 0] - probabilities[..., 1]
-    ) + nn.functional.relu(probabilities[..., 1] - probabilities[..., 2])
-    monotonic = _weighted_mean(monotonic_values, weights)
-    total = (
-        policy
-        + 0.5 * future_activity
-        + 0.5 * end_horizons
-        + 0.25 * time_to_shift
-        + 0.2 * events
-        + 0.05 * monotonic
-    )
+    total = primary + config.event_weight * events + config.future_activity_weight * future_activity
     return LossBreakdown(
         total=total,
-        policy=policy,
-        future_activity=future_activity,
-        end_horizons=end_horizons,
-        time_to_shift=time_to_shift,
+        primary=primary,
         events=events,
-        monotonic=monotonic,
+        future_activity=future_activity,
     )
 
 
 def align_targets(targets: FrameTargets, frame_count: int) -> FrameTargets:
-    source_count = targets.policy.shape[1]
+    source_count = targets.yield_probability.shape[1]
     indices = (
-        torch.linspace(0, source_count - 1, frame_count, device=targets.policy.device)
+        torch.linspace(0, source_count - 1, frame_count, device=targets.yield_probability.device)
         .round()
         .long()
     )
     return FrameTargets(
-        policy=targets.policy[:, indices],
+        yield_probability=targets.yield_probability[:, indices],
+        primary_weight=targets.primary_weight[:, indices],
+        primary_mask=targets.primary_mask[:, indices],
+        event_distribution=targets.event_distribution[:, indices],
+        event_weight=targets.event_weight[:, indices],
+        event_mask=targets.event_mask[:, indices],
         future_activity=targets.future_activity[:, indices],
-        end_horizons=targets.end_horizons[:, indices],
-        time_to_shift_bucket=targets.time_to_shift_bucket[:, indices],
-        events=targets.events[:, indices],
-        confidence=targets.confidence[:, indices],
-        loss_mask=targets.loss_mask[:, indices],
+        future_activity_mask=targets.future_activity_mask[:, indices],
     )
 
 

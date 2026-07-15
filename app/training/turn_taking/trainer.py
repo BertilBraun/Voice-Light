@@ -49,7 +49,7 @@ def train(
         observed_batch = False
         for batch in batches:
             observed_batch = True
-            loss = train_micro_batch(backbone, adapter, batch, device)
+            loss = train_micro_batch(backbone, adapter, batch, config, device)
             (loss.total / config.gradient_accumulation_steps).backward()
             final_loss = float(loss.total.detach().cpu())
             micro_step += 1
@@ -76,13 +76,14 @@ def train_micro_batch(
     backbone: FeatureBackbone,
     adapter: TurnTakingAdapter,
     batch: TrainingBatch,
+    config: TrainingConfig,
     device: torch.device,
 ) -> LossBreakdown:
     features = backbone.extract(batch.waveforms, batch.waveform_lengths)
     taps = tuple(tap.to(device) for tap in features.taps)
     output = adapter(taps)
     targets = _targets_to_device(batch.targets, device)
-    return compute_loss(output, targets, features.frame_mask.to(device))
+    return compute_loss(output, targets, features.frame_mask.to(device), config.loss)
 
 
 def save_checkpoint(
@@ -106,13 +107,14 @@ def save_checkpoint(
 
 def _targets_to_device(targets: FrameTargets, device: torch.device) -> FrameTargets:
     return FrameTargets(
-        policy=targets.policy.to(device),
+        yield_probability=targets.yield_probability.to(device),
+        primary_weight=targets.primary_weight.to(device),
+        primary_mask=targets.primary_mask.to(device),
+        event_distribution=targets.event_distribution.to(device),
+        event_weight=targets.event_weight.to(device),
+        event_mask=targets.event_mask.to(device),
         future_activity=targets.future_activity.to(device),
-        end_horizons=targets.end_horizons.to(device),
-        time_to_shift_bucket=targets.time_to_shift_bucket.to(device),
-        events=targets.events.to(device),
-        confidence=targets.confidence.to(device),
-        loss_mask=targets.loss_mask.to(device),
+        future_activity_mask=targets.future_activity_mask.to(device),
     )
 
 

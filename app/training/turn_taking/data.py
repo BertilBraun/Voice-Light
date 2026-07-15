@@ -12,19 +12,10 @@ from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
-from app.training.turn_taking.schema import EventType, PolicyClass, TurnEvent, TurnTakingSample
+from app.training.turn_taking.schema import TurnTakingSample
 
-POLICY_INDEX = {policy: index for index, policy in enumerate(PolicyClass)}
-EVENT_TARGETS = (
-    EventType.BACKCHANNEL,
-    EventType.INTERRUPTION,
-    EventType.COOPERATIVE_OVERLAP,
-    EventType.COMPETITIVE_OVERLAP,
-    EventType.LAUGHTER,
-    EventType.NONSPEECH_VOCALIZATION,
-)
-FUTURE_WINDOWS_SECONDS = ((0.0, 0.5), (0.5, 1.0), (1.0, 2.0))
-END_HORIZONS_SECONDS = (0.5, 1.0, 2.0)
+EVENT_CLASS_COUNT = 5
+FUTURE_ACTIVITY_BIN_COUNT = 4
 
 
 @dataclass(frozen=True)
@@ -52,13 +43,14 @@ class WaveformAugmenter:
 
 @dataclass(frozen=True)
 class FrameTargets:
-    policy: Tensor
+    yield_probability: Tensor
+    primary_weight: Tensor
+    primary_mask: Tensor
+    event_distribution: Tensor
+    event_weight: Tensor
+    event_mask: Tensor
     future_activity: Tensor
-    end_horizons: Tensor
-    time_to_shift_bucket: Tensor
-    events: Tensor
-    confidence: Tensor
-    loss_mask: Tensor
+    future_activity_mask: Tensor
 
 
 @dataclass(frozen=True)
@@ -82,14 +74,18 @@ class TurnTakingDataset(Dataset[TrainingItem]):
         samples: Sequence[TurnTakingSample],
         frame_seconds: float,
         burn_in_seconds: float,
+        unmeasured_reliability_weight: float,
         augmenter: Callable[[Tensor, random.Random], Tensor] | None,
         random_seed: int,
     ) -> None:
         if frame_seconds <= 0.0:
             raise ValueError("frame_seconds must be positive.")
+        if not 0.0 <= unmeasured_reliability_weight <= 1.0:
+            raise ValueError("unmeasured_reliability_weight must be between zero and one.")
         self.samples = tuple(samples)
         self.frame_seconds = frame_seconds
         self.burn_in_seconds = burn_in_seconds
+        self.unmeasured_reliability_weight = unmeasured_reliability_weight
         self.augmenter = augmenter
         self.generator = random.Random(random_seed)
 
@@ -110,6 +106,7 @@ class TurnTakingDataset(Dataset[TrainingItem]):
             sample=sample,
             frame_seconds=self.frame_seconds,
             burn_in_seconds=self.burn_in_seconds,
+            unmeasured_reliability_weight=self.unmeasured_reliability_weight,
         )
         return TrainingItem(sample_id=sample.sample_id, waveform=waveform, targets=targets)
 
@@ -137,138 +134,100 @@ def load_audio_window(
 
 
 def build_frame_targets(
-    sample: TurnTakingSample, frame_seconds: float, burn_in_seconds: float
+    sample: TurnTakingSample,
+    frame_seconds: float,
+    burn_in_seconds: float,
+    unmeasured_reliability_weight: float,
 ) -> FrameTargets:
+    if not 0.0 <= unmeasured_reliability_weight <= 1.0:
+        raise ValueError("unmeasured_reliability_weight must be between zero and one.")
     duration = sample.decision_end_seconds - sample.context_start_seconds
     frame_count = max(1, int(np.ceil(duration / frame_seconds)))
-    times = (
-        sample.context_start_seconds
-        + torch.arange(frame_count, dtype=torch.float32) * frame_seconds
-    )
-    policy = torch.full((frame_count,), POLICY_INDEX[PolicyClass.WAIT], dtype=torch.long)
-    confidence = torch.ones(frame_count, dtype=torch.float32)
-    for event in sample.events:
-        event_mask = (times >= event.start_seconds) & (times < event.end_seconds)
-        policy_class = _policy_for_event(event.event_type)
-        if policy_class is not None:
-            policy[event_mask] = POLICY_INDEX[policy_class]
-            confidence[event_mask] = event.confidence
-    future_activity = torch.stack(
-        [
-            _future_activity(times, sample.events, event_type, window_start, window_end)
-            for event_type in (EventType.TARGET_SPEECH, EventType.PARTNER_SPEECH)
-            for window_start, window_end in FUTURE_WINDOWS_SECONDS
-        ],
-        dim=-1,
-    )
-    shifts = tuple(event for event in sample.events if event.event_type is EventType.TURN_SHIFT)
-    time_to_shift = _time_to_next_shift(times, shifts)
-    end_horizons = torch.stack(
-        [(time_to_shift >= 0.0) & (time_to_shift <= horizon) for horizon in END_HORIZONS_SECONDS],
-        dim=-1,
-    ).float()
-    time_bucket = torch.bucketize(time_to_shift.clamp_min(0.0), torch.tensor([0.25, 0.5, 1.0, 2.0]))
-    event_targets = torch.stack(
-        [_active_at(times, sample.events, event_type) for event_type in EVENT_TARGETS], dim=-1
-    )
-    burn_in_end = sample.context_start_seconds + burn_in_seconds
-    loss_mask = (times >= max(burn_in_end, sample.decision_start_seconds)) & (
-        times < sample.decision_end_seconds
-    )
+    yield_probability = torch.zeros(frame_count, dtype=torch.float32)
+    primary_weight = torch.zeros(frame_count, dtype=torch.float32)
+    primary_mask = torch.zeros(frame_count, dtype=torch.bool)
+    event_distribution = torch.zeros((frame_count, EVENT_CLASS_COUNT), dtype=torch.float32)
+    event_weight = torch.zeros(frame_count, dtype=torch.float32)
+    event_mask = torch.zeros(frame_count, dtype=torch.bool)
+    future_activity = torch.zeros((frame_count, FUTURE_ACTIVITY_BIN_COUNT), dtype=torch.float32)
+    future_activity_mask = torch.zeros((frame_count, FUTURE_ACTIVITY_BIN_COUNT), dtype=torch.bool)
+    burn_in_end_seconds = sample.context_start_seconds + burn_in_seconds
+    for decision in sample.decisions:
+        frame_index = min(
+            frame_count - 1,
+            round((decision.time_seconds - sample.context_start_seconds) / frame_seconds),
+        )
+        after_burn_in = decision.time_seconds >= burn_in_end_seconds
+        if decision.yield_probability is not None and after_burn_in:
+            yield_probability[frame_index] = decision.yield_probability
+            primary_weight[frame_index] = _reliability_weight(
+                decision.primary_reliability, unmeasured_reliability_weight
+            )
+            primary_mask[frame_index] = True
+        if decision.event_distribution is not None and after_burn_in:
+            event_distribution[frame_index] = torch.tensor(
+                decision.event_distribution.as_tuple(), dtype=torch.float32
+            )
+            event_weight[frame_index] = _reliability_weight(
+                decision.event_reliability, unmeasured_reliability_weight
+            )
+            event_mask[frame_index] = True
+        if after_burn_in:
+            for bin_index, active in enumerate(decision.future_user_activity):
+                if active is not None:
+                    future_activity[frame_index, bin_index] = float(active)
+                    future_activity_mask[frame_index, bin_index] = True
     return FrameTargets(
-        policy=policy,
+        yield_probability=yield_probability,
+        primary_weight=primary_weight,
+        primary_mask=primary_mask,
+        event_distribution=event_distribution,
+        event_weight=event_weight,
+        event_mask=event_mask,
         future_activity=future_activity,
-        end_horizons=end_horizons,
-        time_to_shift_bucket=time_bucket,
-        events=event_targets,
-        confidence=confidence,
-        loss_mask=loss_mask,
+        future_activity_mask=future_activity_mask,
     )
 
 
 def collate_training_items(items: Sequence[TrainingItem]) -> TrainingBatch:
-    waveforms = pad_sequence([item.waveform for item in items], batch_first=True)
-    waveform_lengths = torch.tensor([item.waveform.numel() for item in items], dtype=torch.long)
     return TrainingBatch(
         sample_ids=tuple(item.sample_id for item in items),
-        waveforms=waveforms,
-        waveform_lengths=waveform_lengths,
+        waveforms=pad_sequence([item.waveform for item in items], batch_first=True),
+        waveform_lengths=torch.tensor([item.waveform.numel() for item in items], dtype=torch.long),
         targets=FrameTargets(
-            policy=_pad_targets(items, "policy", POLICY_INDEX[PolicyClass.WAIT]),
-            future_activity=_pad_targets(items, "future_activity", 0.0),
-            end_horizons=_pad_targets(items, "end_horizons", 0.0),
-            time_to_shift_bucket=_pad_targets(items, "time_to_shift_bucket", 4),
-            events=_pad_targets(items, "events", 0.0),
-            confidence=_pad_targets(items, "confidence", 0.0),
-            loss_mask=_pad_targets(items, "loss_mask", False),
+            yield_probability=pad_sequence(
+                [item.targets.yield_probability for item in items], batch_first=True
+            ),
+            primary_weight=pad_sequence(
+                [item.targets.primary_weight for item in items], batch_first=True
+            ),
+            primary_mask=pad_sequence(
+                [item.targets.primary_mask for item in items],
+                batch_first=True,
+                padding_value=False,
+            ),
+            event_distribution=pad_sequence(
+                [item.targets.event_distribution for item in items], batch_first=True
+            ),
+            event_weight=pad_sequence(
+                [item.targets.event_weight for item in items], batch_first=True
+            ),
+            event_mask=pad_sequence(
+                [item.targets.event_mask for item in items],
+                batch_first=True,
+                padding_value=False,
+            ),
+            future_activity=pad_sequence(
+                [item.targets.future_activity for item in items], batch_first=True
+            ),
+            future_activity_mask=pad_sequence(
+                [item.targets.future_activity_mask for item in items],
+                batch_first=True,
+                padding_value=False,
+            ),
         ),
     )
 
 
-def _pad_targets(
-    items: Sequence[TrainingItem], field_name: str, padding_value: float | int | bool
-) -> Tensor:
-    tensors: list[Tensor] = []
-    for item in items:
-        match field_name:
-            case "policy":
-                tensor = item.targets.policy
-            case "future_activity":
-                tensor = item.targets.future_activity
-            case "end_horizons":
-                tensor = item.targets.end_horizons
-            case "time_to_shift_bucket":
-                tensor = item.targets.time_to_shift_bucket
-            case "events":
-                tensor = item.targets.events
-            case "confidence":
-                tensor = item.targets.confidence
-            case "loss_mask":
-                tensor = item.targets.loss_mask
-            case _:
-                raise ValueError(f"Unknown target field: {field_name}")
-        tensors.append(tensor)
-    return pad_sequence(tensors, batch_first=True, padding_value=padding_value)
-
-
-def _policy_for_event(event_type: EventType) -> PolicyClass | None:
-    match event_type:
-        case EventType.TURN_SHIFT:
-            return PolicyClass.TAKE_TURN
-        case EventType.HOLD:
-            return PolicyClass.WAIT
-        case EventType.BACKCHANNEL:
-            return PolicyClass.MAY_BACKCHANNEL
-        case EventType.INTERRUPTION:
-            return PolicyClass.YIELD
-        case _:
-            return None
-
-
-def _active_at(times: Tensor, events: Sequence[TurnEvent], event_type: EventType) -> Tensor:
-    active = torch.zeros_like(times)
-    for event in events:
-        if event.event_type is event_type:
-            active = torch.maximum(
-                active, ((times >= event.start_seconds) & (times < event.end_seconds)).float()
-            )
-    return active
-
-
-def _future_activity(
-    times: Tensor,
-    events: Sequence[TurnEvent],
-    event_type: EventType,
-    window_start: float,
-    window_end: float,
-) -> Tensor:
-    midpoint = times + (window_start + window_end) / 2.0
-    return _active_at(midpoint, events, event_type)
-
-
-def _time_to_next_shift(times: Tensor, shifts: Sequence[TurnEvent]) -> Tensor:
-    result = torch.full_like(times, 3.0)
-    for shift in shifts:
-        delta = shift.start_seconds - times
-        result = torch.where((delta >= 0.0) & (delta < result), delta, result)
-    return result
+def _reliability_weight(reliability: float | None, unmeasured_weight: float) -> float:
+    return reliability if reliability is not None else unmeasured_weight

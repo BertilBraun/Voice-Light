@@ -12,7 +12,7 @@
         <div>
           <a class="back-link" href="/">← Voice Light</a>
           <h1>Training sample lab</h1>
-          <p>Inspect the exact 20-second crop and hard frame labels before dataset generation.</p>
+          <p>Inspect the exact 20-second crop and soft candidate targets before dataset generation.</p>
         </div>
         <div id="status" class="status">Loading annotated samples…</div>
       </header>
@@ -56,13 +56,13 @@
         <div class="timeline-header">
           <div>
             <h2>Frame preview</h2>
-            <p>Click the timeline to seek. Hover or click a frame to inspect its hard labels.</p>
+            <p>Click the timeline to seek. Hover or click a frame to inspect its targets and masks.</p>
           </div>
           <div class="legend">
             <span><i class="burn"></i>Burn-in</span>
-            <span><i class="positive"></i>Positive</span>
-            <span><i class="speak"></i>SPEAK</span>
-            <span><i class="listen"></i>LISTEN</span>
+            <span><i class="positive"></i>Hard positive</span>
+            <span><i class="probability"></i>Higher probability</span>
+            <span><i class="masked"></i>Masked / unavailable</span>
           </div>
         </div>
         <div class="canvas-shell">
@@ -83,12 +83,13 @@
       </section>
 
       <section class="panel warning-card">
-        <h2>Input/target distinction</h2>
+        <h2>Target probability and reliability are separate</h2>
         <p>
-          <code>assistant_playback_active</code> is a candidate runtime input derived here from
-          audible reference assistant speech. <code>agent_action</code> is the target derived from
-          reference floor-holding spans, so it remains <strong>SPEAK</strong> through an assistant
-          pause. Feeding reference <em>turn ownership</em> itself as an input would leak the target.
+          <code>yield_probability</code> is the soft HOLD/YIELD belief derived from the underlying
+          connection and event hypotheses. <code>primary_reliability</code> is an independent weight.
+          Existing annotations do not store that second quantity, so it is displayed as
+          <strong>unmeasured</strong>, never copied from the target probability. Assistant playback is
+          no longer a target or preview input.
         </p>
       </section>
     </main>

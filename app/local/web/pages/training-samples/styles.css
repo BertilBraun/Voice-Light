@@ -212,12 +212,12 @@ button.primary {
   background: #7ebdb4;
 }
 
-.legend .speak {
-  background: #146b63;
+.legend .probability {
+  background: linear-gradient(90deg, #eef6f4, #146b63);
 }
 
-.legend .listen {
-  background: #8c989d;
+.legend .masked {
+  background: repeating-linear-gradient(135deg, #fff, #fff 3px, #cbd3d1 3px, #cbd3d1 5px);
 }
 
 .canvas-shell {

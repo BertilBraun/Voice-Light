@@ -54,19 +54,25 @@ different splits. Every line validates as `TurnTakingSample` in
   "conversation_id": "candor-0001",
   "target_speaker_id": "speaker-a",
   "target_audio_path": "audio/candor-0001-speaker-a.wav",
-  "reference_audio_path": "audio/candor-0001-speaker-b.wav",
+  "annotation_reference_audio_path": "audio/candor-0001-speaker-b.wav",
   "sample_rate_hz": 16000,
   "context_start_seconds": 120.0,
   "decision_start_seconds": 124.0,
   "decision_end_seconds": 140.0,
-  "events": [
+  "decisions": [
     {
-      "event_id": "shift-91",
-      "event_type": "turn_shift",
-      "start_seconds": 132.4,
-      "end_seconds": 132.56,
-      "confidence": 1.0,
-      "source": "human"
+      "time_seconds": 132.4,
+      "yield_probability": 0.72,
+      "primary_reliability": null,
+      "event_distribution": {
+        "turn_completion": 0.64,
+        "continuation_pause": 0.20,
+        "backchannel": 0.08,
+        "interruption": 0.03,
+        "other": 0.05
+      },
+      "event_reliability": null,
+      "future_user_activity": [false, false, true, true]
     }
   ],
   "words": [],
@@ -80,7 +86,7 @@ mono float32 at 16 kHz. Window endpoints and all annotations use seconds from th
 Training targets are aligned to emitted encoder frames; the current prototype initially rasterizes
 at 80 ms and nearest-aligns to the returned encoder length.
 
-`reference_audio_path` is label-generation evidence only. It must never enter the ASR or adapter.
+`annotation_reference_audio_path` is label-generation evidence only. It must never enter the ASR or adapter.
 Otherwise the model can hear the other speaker begin and mistake detection for prediction. Mixed
 recordings require source separation or samples whose cutoff precedes partner onset. Keep source,
 license, annotation origin, and confidence on every sample/event. Mask unreliable labels instead of
@@ -88,20 +94,28 @@ inventing them.
 
 ## Labels
 
-The main mutually exclusive frame policy is:
+Supervise only candidate decision frames after user speech offset or during the following silence.
+The primary target is one soft scalar, `yield_probability`: zero means HOLD (continuation,
+hesitation, or a backchannel without floor transfer) and one means YIELD (completed turn or genuine
+floor transfer). It is not the assistant playback state.
 
-- `wait`: target speaker has the floor, including a hesitation or intra-turn pause.
-- `take_turn`: a genuine transition-relevance point/turn shift.
-- `may_backchannel`: a short listener response that does not claim the floor.
-- `yield`: the other participant is trying to take the floor while the agent is speaking.
+Keep target probability and reliability independent. `yield_probability=0.4` describes an ambiguous
+HOLD/YIELD identity. `primary_reliability=0.4` says the annotation itself is weak. A null reliability
+means the current data has no independent measurement; the baseline uses the explicitly configured
+neutral weight `unmeasured_reliability_weight=1.0` and reports those examples separately. It never
+copies target confidence into reliability.
 
-Auxiliary heads prevent the main classifier from collapsing every silence into an endpoint:
+The only initial auxiliary heads are:
 
-- Future target and partner activity for `[0, 0.5)`, `[0.5, 1.0)`, and `[1.0, 2.0)` seconds.
-- Nested `turn_ends_within_0.5s`, `turn_ends_within_1s`, and `turn_ends_within_2s` targets.
-- Time-to-next-shift buckets: up to 250 ms, 250-500 ms, 500 ms-1 s, 1-2 s, or over 2 s.
-- Backchannel, interruption, cooperative overlap, competitive overlap, laughter, and non-speech
-  vocalization multi-label targets.
+- A five-way soft event distribution: turn completion, continuation pause, backchannel,
+  interruption, and other.
+- Hard future user-activity targets for `[0, 200)`, `[200, 500)`, `[500, 1000)`, and
+  `[1000, 1500)` milliseconds. A null bin is masked.
+
+Do not add current VAD, silence duration, assistant playback, nested endpoint horizons, or
+time-to-shift heads initially. They are redundant or create shortcut risk. A known future
+continuation is valid HOLD supervision even when the pause is long; lower reliability only when the
+underlying timing/identity annotation is unreliable, not merely because the example is difficult.
 
 Future activity borrows the central idea of [Voice Activity Projection](https://arxiv.org/abs/2205.09812):
 learn what both participants are likely to do rather than treating silence as a decision. The
@@ -154,11 +168,11 @@ reverb, codec, and echo robustness suites.
 ## Adapter Architecture
 
 Tap encoder layers 6, 12, 18, and 24. Each 1,024-dimensional stream receives its own LayerNorm and
-128-dimensional projection. Concatenate the four taps, fuse to 256 with SiLU and dropout 0.1, then
+64-dimensional projection. Concatenate the four taps, fuse to 128 with SiLU and dropout 0.1, then
 apply two residual causal depthwise-separable convolution blocks (kernel 5, dilations 1 and 2) and a
-two-layer unidirectional GRU with 256 hidden units. Independent linear heads produce the targets
-above. The adapter is only a few million parameters and has bounded convolutional cost plus constant
-recurrent memory.
+single-layer unidirectional GRU with 128 hidden units. Three linear heads produce one YIELD logit,
+five event logits, and four future-activity logits. This smaller first adapter is roughly 0.5 million
+trainable parameters and retains bounded convolutional cost plus constant recurrent memory.
 
 Run the frozen encoder in evaluation mode, detach taps, and optimize only the adapter. The current
 Transformers wrapper exposes hidden states without forward hooks. Production streaming extraction
@@ -178,9 +192,10 @@ Fifty thousand optimizer steps expose about 3,556 supervised hours: roughly 12 p
 or six over 600 hours. Define iteration counts as optimizer steps, not microbatches. Compute and log
 the actual epoch count from the filtered manifest because event balancing changes samples per epoch.
 
-The loss is `1.0 policy CE + 0.5 future BCE + 0.5 horizon BCE + 0.25 time-bucket CE + 0.2 event BCE
-+ 0.05 horizon-monotonicity`. Normalize every task by its own confidence-weighted valid frames. Derive
-clipped class weights from the training manifest after the first audit.
+The loss is `1.0 soft HOLD/YIELD BCE + 0.25 soft event cross-entropy + 0.25 future-activity BCE`.
+Normalize every task by its own reliability-weighted valid targets. Derive any sampling or class
+weights from the training manifest after the first audit; do not silently turn target ambiguity into
+sample reliability.
 
 Run with:
 

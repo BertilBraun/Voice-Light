@@ -17,18 +17,18 @@ const frameDetails = document.querySelector("#frame-details");
 
 const rowDefinitions = [
   ["User waveform", "waveform"],
-  ["Assistant playback input", "assistant_playback_active"],
-  ["Main target: agent SPEAK", "agent_action"],
-  ["User turn active", "user_turn_active"],
-  ["User audible speech", "user_speech_active"],
-  ["User pause", "user_pause"],
-  ["User EOT now", "user_end_of_turn"],
-  ["User EOT ≤ 0.5 s", "user_end_within_0_5_seconds"],
-  ["User EOT ≤ 1 s", "user_end_within_1_second"],
-  ["User EOT ≤ 2 s", "user_end_within_2_seconds"],
-  ["User backchannel", "user_backchannel"],
-  ["User interruption", "user_interruption"],
-  ["Assistant backchannel", "assistant_backchannel"],
+  ["Candidate decision mask", "candidate"],
+  ["Primary p(YIELD)", "yield_probability"],
+  ["Primary p(HOLD)", "hold_probability"],
+  ["Event: turn completion", "event_distribution.turn_completion"],
+  ["Event: continuation pause", "event_distribution.continuation_pause"],
+  ["Event: backchannel", "event_distribution.backchannel"],
+  ["Event: interruption", "event_distribution.interruption"],
+  ["Event: other", "event_distribution.other"],
+  ["Future activity 0–200 ms", "future_activity.0"],
+  ["Future activity 200–500 ms", "future_activity.1"],
+  ["Future activity 500–1000 ms", "future_activity.2"],
+  ["Future activity 1000–1500 ms", "future_activity.3"],
 ];
 
 let preview = null;
@@ -124,8 +124,19 @@ function configureAudio() {
 
 function renderSummary() {
   const supervisedFrames = preview.frames.filter((frame) => frame.supervised);
-  const speakFrames = supervisedFrames.filter((frame) => frame.agent_action === "speak");
-  const positiveCount = (field) => supervisedFrames.filter((frame) => frame[field]).length;
+  const candidateFrames = supervisedFrames.filter((frame) => frame.candidate);
+  const validPrimaryFrames = candidateFrames.filter((frame) => frame.primary_valid);
+  const ambiguousFrames = validPrimaryFrames.filter(
+    (frame) => frame.yield_probability >= 0.25 && frame.yield_probability <= 0.75,
+  );
+  const meanYield =
+    validPrimaryFrames.length === 0
+      ? null
+      : validPrimaryFrames.reduce((total, frame) => total + frame.yield_probability, 0) /
+        validPrimaryFrames.length;
+  const missingReliability = validPrimaryFrames.filter(
+    (frame) => frame.primary_reliability === null,
+  ).length;
   summary.replaceChildren(
     ...definitionRows([
       ["Input / supervised", `${preview.input_duration_seconds.toFixed(1)} s / ${preview.supervised_duration_seconds.toFixed(1)} s`],
@@ -134,13 +145,11 @@ function renderSummary() {
       ["Annotation coverage", percentage(preview.annotated_duration_seconds, preview.represented_duration_seconds)],
       ["Frame interval", `${Math.round(preview.frame_seconds * 1000)} ms`],
       ["Supervised frames", String(supervisedFrames.length)],
-      ["SPEAK target", percentage(speakFrames.length, supervisedFrames.length)],
-      ["LISTEN target", percentage(supervisedFrames.length - speakFrames.length, supervisedFrames.length)],
-      ["User pause frames", String(positiveCount("user_pause"))],
-      ["User EOT ≤ 1 s frames", String(positiveCount("user_end_within_1_second"))],
-      ["User backchannel frames", String(positiveCount("user_backchannel"))],
-      ["User interruption frames", String(positiveCount("user_interruption"))],
-      ["Assistant backchannel frames", String(positiveCount("assistant_backchannel"))],
+      ["Candidate frames", String(candidateFrames.length)],
+      ["Valid primary targets", String(validPrimaryFrames.length)],
+      ["Mean p(YIELD)", meanYield === null ? "—" : meanYield.toFixed(3)],
+      ["Ambiguous primary frames", String(ambiguousFrames.length)],
+      ["Reliability unmeasured", String(missingReliability)],
     ]),
   );
 }
@@ -176,12 +185,12 @@ function drawTimeline() {
     context.fillStyle = rowIndex % 2 === 0 ? "#f7f9f8" : "#f1f4f3";
     context.fillRect(left, rowTop, plotWidth, rowHeight);
     context.fillStyle = "#48575c";
-    context.font = field === "agent_action" ? "bold 12px sans-serif" : "12px sans-serif";
+    context.font = field === "yield_probability" ? "bold 12px sans-serif" : "12px sans-serif";
     context.fillText(label, 8, rowTop + 23);
     if (field === "waveform") {
       drawWaveform(context, left, rowTop, plotWidth, rowHeight);
     } else {
-      drawBinaryFrames(context, field, left, rowTop, plotWidth, rowHeight);
+      drawTargetFrames(context, field, left, rowTop, plotWidth, rowHeight);
     }
   });
 
@@ -203,19 +212,39 @@ function drawWaveform(context, left, top, width, height) {
   });
 }
 
-function drawBinaryFrames(context, field, left, top, width, height) {
+function drawTargetFrames(context, field, left, top, width, height) {
   const frameWidth = width / preview.frames.length;
   preview.frames.forEach((frame, index) => {
-    const positive = field === "agent_action" ? frame.agent_action === "speak" : frame[field];
-    if (field === "agent_action") {
-      context.fillStyle = positive ? "#146b63" : "#8c989d";
-    } else {
-      context.fillStyle = positive ? "#7ebdb4" : "rgba(0, 0, 0, 0)";
+    const value = targetValue(frame, field);
+    if (value === null) {
+      return;
     }
-    if (positive || field === "agent_action") {
+    if (typeof value === "boolean") {
+      context.fillStyle = value ? "#7ebdb4" : "rgba(0, 0, 0, 0)";
+      if (!value) {
+        return;
+      }
+    } else {
+      context.fillStyle = `rgba(20, 107, 99, ${0.08 + 0.92 * value})`;
+    }
+    if (value === true || typeof value === "number") {
       context.fillRect(left + index * frameWidth, top + 3, Math.max(1, frameWidth + 0.2), height - 6);
     }
   });
+}
+
+function targetValue(frame, field) {
+  if (field === "candidate") {
+    return frame.candidate;
+  }
+  if (field.startsWith("event_distribution.")) {
+    return frame.event_distribution?.[field.split(".")[1]] ?? null;
+  }
+  if (field.startsWith("future_activity.")) {
+    const target = frame.future_activity[Number(field.split(".")[1])];
+    return target?.valid === true ? target.active : null;
+  }
+  return frame[field] ?? null;
 }
 
 function drawTimeAxis(context, left, width, height) {
@@ -257,20 +286,23 @@ function renderSelectedFrame(frame) {
   frameDetails.replaceChildren(
     ...definitionRows([
       ["Contributes loss", booleanLabel(frame.supervised)],
-      ["Main agent action", frame.agent_action.toUpperCase()],
-      ["Assistant playback input", booleanLabel(frame.assistant_playback_active)],
-      ["User turn active", booleanLabel(frame.user_turn_active)],
-      ["User audible speech", booleanLabel(frame.user_speech_active)],
-      ["Assistant turn active", booleanLabel(frame.assistant_turn_active)],
-      ["Assistant audible speech", booleanLabel(frame.assistant_speech_active)],
-      ["User pause", booleanLabel(frame.user_pause)],
-      ["User EOT now", booleanLabel(frame.user_end_of_turn)],
-      ["User EOT ≤ 0.5 s", booleanLabel(frame.user_end_within_0_5_seconds)],
-      ["User EOT ≤ 1 s", booleanLabel(frame.user_end_within_1_second)],
-      ["User EOT ≤ 2 s", booleanLabel(frame.user_end_within_2_seconds)],
-      ["User backchannel", booleanLabel(frame.user_backchannel)],
-      ["User interruption", booleanLabel(frame.user_interruption)],
-      ["Assistant backchannel", booleanLabel(frame.assistant_backchannel)],
+      ["Candidate", booleanLabel(frame.candidate)],
+      ["Candidate source", frame.candidate_source ?? "—"],
+      ["Since user speech offset", optionalSeconds(frame.seconds_since_speech_offset)],
+      ["Primary target p(YIELD)", optionalProbability(frame.yield_probability)],
+      ["Primary target p(HOLD)", optionalProbability(frame.hold_probability)],
+      ["Primary target valid", booleanLabel(frame.primary_valid)],
+      ["Primary reliability", optionalProbability(frame.primary_reliability)],
+      ["Reliability source", frame.primary_reliability_source ?? "—"],
+      ["Event: completion", eventProbability(frame, "turn_completion")],
+      ["Event: continuation pause", eventProbability(frame, "continuation_pause")],
+      ["Event: backchannel", eventProbability(frame, "backchannel")],
+      ["Event: interruption", eventProbability(frame, "interruption")],
+      ["Event: other", eventProbability(frame, "other")],
+      ...frame.future_activity.map((target) => [
+        `Future ${target.start_milliseconds}–${target.end_milliseconds} ms`,
+        target.valid ? booleanLabel(target.active) : "MASKED",
+      ]),
     ]),
   );
 }
@@ -371,6 +403,18 @@ function prettySide(side) {
 
 function booleanLabel(value) {
   return value ? "YES" : "NO";
+}
+
+function optionalProbability(value) {
+  return value === null ? "UNMEASURED" : value.toFixed(3);
+}
+
+function optionalSeconds(value) {
+  return value === null ? "—" : `${value.toFixed(2)} s`;
+}
+
+function eventProbability(frame, field) {
+  return frame.event_distribution === null ? "—" : frame.event_distribution[field].toFixed(3);
 }
 
 function percentage(count, total) {

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
-from enum import StrEnum
 from pathlib import Path
 
 from pydantic import Field, model_validator
@@ -10,45 +10,41 @@ from pydantic import Field, model_validator
 from app.shared.base_model import FrozenBaseModel
 
 
-class PolicyClass(StrEnum):
-    WAIT = "wait"
-    TAKE_TURN = "take_turn"
-    MAY_BACKCHANNEL = "may_backchannel"
-    YIELD = "yield"
-
-
-class EventType(StrEnum):
-    TARGET_SPEECH = "target_speech"
-    PARTNER_SPEECH = "partner_speech"
-    TURN_SHIFT = "turn_shift"
-    HOLD = "hold"
-    BACKCHANNEL = "backchannel"
-    INTERRUPTION = "interruption"
-    COOPERATIVE_OVERLAP = "cooperative_overlap"
-    COMPETITIVE_OVERLAP = "competitive_overlap"
-    LAUGHTER = "laughter"
-    NONSPEECH_VOCALIZATION = "nonspeech_vocalization"
-
-
-class AnnotationSource(StrEnum):
-    HUMAN = "human"
-    DATASET = "dataset"
-    WEAK = "weak"
-
-
-class TurnEvent(FrozenBaseModel):
-    event_id: str
-    event_type: EventType
-    start_seconds: float = Field(ge=0.0)
-    end_seconds: float = Field(gt=0.0)
-    confidence: float = Field(ge=0.0, le=1.0)
-    source: AnnotationSource
+class EventTargetDistribution(FrozenBaseModel):
+    turn_completion: float = Field(ge=0.0, le=1.0)
+    continuation_pause: float = Field(ge=0.0, le=1.0)
+    backchannel: float = Field(ge=0.0, le=1.0)
+    interruption: float = Field(ge=0.0, le=1.0)
+    other: float = Field(ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def validate_interval(self) -> TurnEvent:
-        if self.end_seconds <= self.start_seconds:
-            raise ValueError("Event end_seconds must be greater than start_seconds.")
+    def validate_distribution(self) -> EventTargetDistribution:
+        if not math.isclose(sum(self.as_tuple()), 1.0, abs_tol=1e-5):
+            raise ValueError("Event target probabilities must sum to one.")
         return self
+
+    def as_tuple(self) -> tuple[float, float, float, float, float]:
+        return (
+            self.turn_completion,
+            self.continuation_pause,
+            self.backchannel,
+            self.interruption,
+            self.other,
+        )
+
+
+class DecisionTarget(FrozenBaseModel):
+    time_seconds: float = Field(ge=0.0)
+    yield_probability: float | None = Field(ge=0.0, le=1.0)
+    primary_reliability: float | None = Field(ge=0.0, le=1.0)
+    event_distribution: EventTargetDistribution | None
+    event_reliability: float | None = Field(ge=0.0, le=1.0)
+    future_user_activity: tuple[
+        bool | None,
+        bool | None,
+        bool | None,
+        bool | None,
+    ]
 
 
 class AlignedWord(FrozenBaseModel):
@@ -64,12 +60,12 @@ class TurnTakingSample(FrozenBaseModel):
     conversation_id: str
     target_speaker_id: str
     target_audio_path: Path
-    reference_audio_path: Path | None
+    annotation_reference_audio_path: Path | None
     sample_rate_hz: int = Field(gt=0)
     context_start_seconds: float = Field(ge=0.0)
     decision_start_seconds: float = Field(ge=0.0)
     decision_end_seconds: float = Field(gt=0.0)
-    events: tuple[TurnEvent, ...]
+    decisions: tuple[DecisionTarget, ...]
     words: tuple[AlignedWord, ...] = ()
     source_dataset: str
     source_license: str
@@ -82,6 +78,12 @@ class TurnTakingSample(FrozenBaseModel):
             raise ValueError(
                 "Sample times must satisfy context_start <= decision_start < decision_end."
             )
+        if any(
+            decision.time_seconds < self.decision_start_seconds
+            or decision.time_seconds >= self.decision_end_seconds
+            for decision in self.decisions
+        ):
+            raise ValueError("Decision targets must fall inside the decision interval.")
         return self
 
 

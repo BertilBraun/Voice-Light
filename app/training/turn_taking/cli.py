@@ -36,6 +36,7 @@ def main() -> None:
         samples=samples,
         frame_seconds=config.encoder_frame_seconds,
         burn_in_seconds=config.burn_in_seconds,
+        unmeasured_reliability_weight=config.unmeasured_reliability_weight,
         augmenter=WaveformAugmenter(),
         random_seed=config.random_seed,
     )

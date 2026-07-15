@@ -6,11 +6,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.local.main import app
-from app.local.training_samples.models import AgentActionLabel
+from app.local.training_samples.models import CandidateSource, ReliabilitySource
 from app.local.training_samples.service import build_frame_previews
 from app.shared.quality import (
-    AnnotationPoint,
+    AnnotationEvidenceSource,
     AnnotationSpan,
+    ConnectionAnnotationTarget,
+    SegmentAnnotationTarget,
     SpeakerConversationAnnotation,
     SpeakerSide,
 )
@@ -30,103 +32,190 @@ def training_sample_script() -> Iterator[str]:
 @pytest.mark.parametrize(
     "label_field",
     (
-        "agent_action",
-        "assistant_playback_active",
-        "user_turn_active",
-        "user_speech_active",
-        "user_pause",
-        "user_end_of_turn",
-        "user_end_within_0_5_seconds",
-        "user_end_within_1_second",
-        "user_end_within_2_seconds",
-        "user_backchannel",
-        "user_interruption",
-        "assistant_backchannel",
+        "candidate",
+        "candidate_source",
+        "yield_probability",
+        "hold_probability",
+        "primary_reliability",
+        "primary_valid",
+        "event_distribution",
+        "future_activity",
     ),
 )
-def test_training_sample_lab_displays_frame_label(
-    label_field: str, training_sample_script: str
-) -> None:
+def test_training_sample_lab_displays_target(label_field: str, training_sample_script: str) -> None:
     assert label_field in training_sample_script
 
 
-def test_assistant_pause_keeps_speak_target_but_clears_playback_input() -> None:
-    frames = build_frame_previews(
-        start_seconds=0.0,
-        end_seconds=20.0,
-        user=_speaker_annotation(
-            side=SpeakerSide.SPEAKER2,
-            speech_segments=(AnnotationSpan(start_seconds=0.0, end_seconds=8.0, text=None),),
-            pauses=(AnnotationSpan(start_seconds=4.5, end_seconds=5.0, text=None),),
-            turns=(AnnotationPoint(time_seconds=8.0, confidence=None, text=None),),
+def test_connection_confidence_remains_a_soft_target() -> None:
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        speech_segments=(
+            AnnotationSpan(start_seconds=0.0, end_seconds=2.0, text="first"),
+            AnnotationSpan(start_seconds=2.96, end_seconds=4.0, text="second"),
         ),
-        assistant=_speaker_annotation(
-            side=SpeakerSide.SPEAKER1,
-            speech_segments=(AnnotationSpan(start_seconds=8.5, end_seconds=15.0, text=None),),
-            pauses=(AnnotationSpan(start_seconds=12.0, end_seconds=13.0, text=None),),
+        segment_targets=(
+            _segment_target(start_seconds=0.0, end_seconds=2.0),
+            _segment_target(start_seconds=2.96, end_seconds=4.0),
         ),
-    )
-
-    assistant_pause_frame = frames[150]
-
-    assert assistant_pause_frame.time_seconds == pytest.approx(12.04)
-    assert assistant_pause_frame.agent_action is AgentActionLabel.SPEAK
-    assert assistant_pause_frame.assistant_turn_active
-    assert not assistant_pause_frame.assistant_playback_active
-    assert not assistant_pause_frame.assistant_speech_active
-
-
-def test_frame_targets_include_burn_in_horizons_and_events() -> None:
-    frames = build_frame_previews(
-        start_seconds=0.0,
-        end_seconds=20.0,
-        user=_speaker_annotation(
-            side=SpeakerSide.SPEAKER2,
-            speech_segments=(AnnotationSpan(start_seconds=0.0, end_seconds=8.0, text=None),),
-            pauses=(AnnotationSpan(start_seconds=4.5, end_seconds=5.0, text=None),),
-            backchannels=(AnnotationSpan(start_seconds=10.0, end_seconds=10.4, text="yeah"),),
-            turns=(AnnotationPoint(time_seconds=8.0, confidence=None, text=None),),
-            interruptions=(AnnotationPoint(time_seconds=12.04, confidence=0.9, text="wait"),),
-        ),
-        assistant=_speaker_annotation(
-            side=SpeakerSide.SPEAKER1,
-            backchannels=(AnnotationSpan(start_seconds=2.0, end_seconds=2.4, text="mhm"),),
+        connection_targets=(
+            ConnectionAnnotationTarget(
+                earlier_end_seconds=2.0,
+                later_start_seconds=2.96,
+                gap_seconds=0.96,
+                pause_confidence=0.30793,
+                merge_confidence=0.30793,
+            ),
         ),
     )
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=5.0,
+        annotation_end_seconds=5.0,
+        user=user,
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
 
-    assert not frames[0].supervised
-    assert frames[50].supervised
-    assert frames[87].user_end_within_1_second
-    assert not frames[87].user_end_within_0_5_seconds
-    assert frames[57].user_pause
-    assert frames[125].user_backchannel
-    assert frames[150].user_interruption
-    assert frames[25].assistant_backchannel
-    assert frames[25].agent_action is AgentActionLabel.SPEAK
+    candidate_frame = frames[25]
+
+    assert candidate_frame.time_seconds == pytest.approx(2.04)
+    assert candidate_frame.candidate
+    assert candidate_frame.candidate_source is CandidateSource.CONNECTION
+    assert candidate_frame.yield_probability == pytest.approx(0.69207)
+    assert candidate_frame.hold_probability == pytest.approx(0.30793)
+    assert candidate_frame.primary_reliability is None
+    assert candidate_frame.primary_reliability_source is ReliabilitySource.UNMEASURED
+    assert candidate_frame.event_distribution is not None
+    assert sum(candidate_frame.event_distribution.model_dump().values()) == pytest.approx(1.0)
+
+
+def test_backchannel_probability_reduces_yield_and_populates_event_target() -> None:
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        speech_segments=(AnnotationSpan(start_seconds=0.0, end_seconds=1.0, text="yeah"),),
+        segment_targets=(
+            _segment_target(
+                start_seconds=0.0,
+                end_seconds=1.0,
+                keep_playing_confidence=0.8,
+                turn_confidence=0.2,
+            ),
+        ),
+        connection_targets=(
+            ConnectionAnnotationTarget(
+                earlier_end_seconds=1.0,
+                later_start_seconds=2.0,
+                gap_seconds=1.0,
+                pause_confidence=1.0,
+                merge_confidence=1.0,
+            ),
+        ),
+    )
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=2.0,
+        annotation_end_seconds=2.0,
+        user=user,
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    candidate_frame = frames[12]
+
+    assert candidate_frame.yield_probability == pytest.approx(0.0)
+    assert candidate_frame.event_distribution is not None
+    assert candidate_frame.event_distribution.backchannel == pytest.approx(0.8)
+    assert candidate_frame.event_distribution.continuation_pause == pytest.approx(0.2)
+
+
+def test_censored_boundary_masks_primary_target() -> None:
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=2.0,
+        annotation_end_seconds=2.0,
+        user=_speaker_annotation(
+            side=SpeakerSide.SPEAKER2,
+            speech_segments=(AnnotationSpan(start_seconds=0.0, end_seconds=1.0, text="last"),),
+            segment_targets=(_segment_target(start_seconds=0.0, end_seconds=1.0),),
+        ),
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    candidate_frame = frames[12]
+
+    assert candidate_frame.candidate
+    assert candidate_frame.candidate_source is CandidateSource.CENSORED
+    assert not candidate_frame.primary_valid
+    assert candidate_frame.yield_probability is None
+    assert candidate_frame.primary_reliability_source is None
+
+
+def test_future_activity_bins_are_hard_and_masked_at_annotation_end() -> None:
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        speech_segments=(
+            AnnotationSpan(start_seconds=0.0, end_seconds=1.0, text="first"),
+            AnnotationSpan(start_seconds=1.25, end_seconds=2.0, text="second"),
+        ),
+        segment_targets=(_segment_target(start_seconds=0.0, end_seconds=1.0),),
+        connection_targets=(
+            ConnectionAnnotationTarget(
+                earlier_end_seconds=1.0,
+                later_start_seconds=1.25,
+                gap_seconds=0.25,
+                pause_confidence=1.0,
+                merge_confidence=1.0,
+            ),
+        ),
+    )
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=2.0,
+        annotation_end_seconds=2.0,
+        user=user,
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    future_targets = frames[12].future_activity
+
+    assert tuple(target.active for target in future_targets) == (False, True, True, None)
+    assert tuple(target.valid for target in future_targets) == (True, True, True, False)
+
+
+def _segment_target(
+    start_seconds: float,
+    end_seconds: float,
+    keep_playing_confidence: float = 0.0,
+    turn_confidence: float = 1.0,
+    interruption_confidence: float = 0.0,
+) -> SegmentAnnotationTarget:
+    return SegmentAnnotationTarget(
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        text="speech",
+        evidence_source=AnnotationEvidenceSource.TRANSCRIPT,
+        keep_playing_confidence=keep_playing_confidence,
+        turn_confidence=turn_confidence,
+        interruption_confidence=interruption_confidence,
+    )
 
 
 def _speaker_annotation(
     side: SpeakerSide,
     speech_segments: tuple[AnnotationSpan, ...] = (),
-    pauses: tuple[AnnotationSpan, ...] = (),
-    backchannels: tuple[AnnotationSpan, ...] = (),
-    turns: tuple[AnnotationPoint, ...] = (),
-    interruptions: tuple[AnnotationPoint, ...] = (),
+    segment_targets: tuple[SegmentAnnotationTarget, ...] = (),
+    connection_targets: tuple[ConnectionAnnotationTarget, ...] = (),
 ) -> SpeakerConversationAnnotation:
     return SpeakerConversationAnnotation(
         side=side,
         speech_segments=speech_segments,
-        pauses=pauses,
-        backchannels=backchannels,
-        turns=turns,
-        interruptions=interruptions,
-        segment_targets=(),
-        connection_targets=(),
+        pauses=(),
+        backchannels=(),
+        turns=(),
+        interruptions=(),
+        segment_targets=segment_targets,
+        connection_targets=connection_targets,
         speech_duration_seconds=sum(
             span.end_seconds - span.start_seconds for span in speech_segments
         ),
-        pause_duration_seconds=sum(span.end_seconds - span.start_seconds for span in pauses),
-        backchannel_duration_seconds=sum(
-            span.end_seconds - span.start_seconds for span in backchannels
-        ),
+        pause_duration_seconds=0.0,
+        backchannel_duration_seconds=0.0,
     )

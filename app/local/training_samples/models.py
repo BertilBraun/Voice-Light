@@ -7,11 +7,6 @@ from app.local.db.models import TrackSide
 from app.shared.base_model import FrozenBaseModel
 
 
-class AgentActionLabel(StrEnum):
-    LISTEN = "listen"
-    SPEAK = "speak"
-
-
 class PreviewEventType(StrEnum):
     USER_SPEECH = "user_speech"
     USER_PAUSE = "user_pause"
@@ -23,6 +18,32 @@ class PreviewEventType(StrEnum):
     ASSISTANT_END_OF_TURN = "assistant_end_of_turn"
     ASSISTANT_BACKCHANNEL = "assistant_backchannel"
     ASSISTANT_INTERRUPTION = "assistant_interruption"
+
+
+class CandidateSource(StrEnum):
+    CONNECTION = "connection"
+    SEGMENT_END = "segment_end"
+    CENSORED = "censored"
+
+
+class ReliabilitySource(StrEnum):
+    ANNOTATED = "annotated"
+    UNMEASURED = "unmeasured"
+
+
+class EventTargetDistribution(FrozenBaseModel):
+    turn_completion: float
+    continuation_pause: float
+    backchannel: float
+    interruption: float
+    other: float
+
+
+class FutureActivityTarget(FrozenBaseModel):
+    start_milliseconds: int
+    end_milliseconds: int
+    active: bool | None
+    valid: bool
 
 
 class PreviewWaveformPoint(FrozenBaseModel):
@@ -49,20 +70,19 @@ class TrainingFramePreview(FrozenBaseModel):
     time_seconds: float
     relative_time_seconds: float
     supervised: bool
-    agent_action: AgentActionLabel
-    assistant_playback_active: bool
-    user_turn_active: bool
-    user_speech_active: bool
-    assistant_turn_active: bool
-    assistant_speech_active: bool
-    user_pause: bool
-    user_end_of_turn: bool
-    user_end_within_0_5_seconds: bool
-    user_end_within_1_second: bool
-    user_end_within_2_seconds: bool
-    user_backchannel: bool
-    user_interruption: bool
-    assistant_backchannel: bool
+    candidate: bool
+    candidate_source: CandidateSource | None
+    seconds_since_speech_offset: float | None
+    yield_probability: float | None
+    hold_probability: float | None
+    primary_reliability: float | None
+    primary_reliability_source: ReliabilitySource | None
+    primary_valid: bool
+    event_distribution: EventTargetDistribution | None
+    event_reliability: float | None
+    event_reliability_source: ReliabilitySource | None
+    event_valid: bool
+    future_activity: tuple[FutureActivityTarget, ...]
 
 
 class TrainingSamplePreview(FrozenBaseModel):

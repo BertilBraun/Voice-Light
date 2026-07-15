@@ -4,17 +4,21 @@ import math
 import random
 import wave
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from app.local.db.models import DashboardSample, TrackSide
 from app.local.training_samples.models import (
-    AgentActionLabel,
+    CandidateSource,
+    EventTargetDistribution,
+    FutureActivityTarget,
     PreviewEventType,
     PreviewPoint,
     PreviewSpan,
     PreviewWaveformPoint,
+    ReliabilitySource,
     TrainingFramePreview,
     TrainingSamplePreview,
 )
@@ -22,8 +26,10 @@ from app.shared.audio.wav import mono_samples
 from app.shared.quality import (
     AnnotationPoint,
     AnnotationSpan,
+    ConnectionAnnotationTarget,
     ConversationAnnotation,
     QualityResult,
+    SegmentAnnotationTarget,
     SpeakerConversationAnnotation,
     SpeakerSide,
 )
@@ -32,6 +38,17 @@ INPUT_DURATION_SECONDS = 20.0
 BURN_IN_SECONDS = 4.0
 FRAME_SECONDS = 0.08
 WAVEFORM_POINT_COUNT = 1000
+MAXIMUM_CANDIDATE_SILENCE_SECONDS = 2.0
+FUTURE_ACTIVITY_WINDOWS_MILLISECONDS = ((0, 200), (200, 500), (500, 1000), (1000, 1500))
+
+
+@dataclass(frozen=True)
+class DecisionBoundary:
+    speech_offset_seconds: float
+    candidate_end_seconds: float
+    yield_probability: float | None
+    source: CandidateSource
+    event_distribution: EventTargetDistribution | None
 
 
 def build_training_sample_preview(
@@ -68,6 +85,7 @@ def build_training_sample_preview(
     frames = build_frame_previews(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
+        annotation_end_seconds=annotation.analyzed_duration_seconds,
         user=user_annotation,
         assistant=assistant_annotation,
     )
@@ -161,9 +179,15 @@ def _track_path(dashboard_sample: DashboardSample, side: TrackSide) -> Path:
 def build_frame_previews(
     start_seconds: float,
     end_seconds: float,
+    annotation_end_seconds: float,
     user: SpeakerConversationAnnotation,
     assistant: SpeakerConversationAnnotation,
 ) -> tuple[TrainingFramePreview, ...]:
+    boundaries = _decision_boundaries(
+        user=user,
+        assistant=assistant,
+        annotation_end_seconds=annotation_end_seconds,
+    )
     frame_count = max(1, math.ceil((end_seconds - start_seconds) / FRAME_SECONDS))
     frames: list[TrainingFramePreview] = []
     for frame_index in range(frame_count):
@@ -171,55 +195,227 @@ def build_frame_previews(
             end_seconds,
             start_seconds + (frame_index + 0.5) * FRAME_SECONDS,
         )
-        user_turn_active = _inside_span(time_seconds, user.speech_segments)
-        user_pause = _inside_span(time_seconds, user.pauses)
-        user_backchannel = _inside_span(time_seconds, user.backchannels)
-        assistant_turn_active = _inside_span(time_seconds, assistant.speech_segments)
-        assistant_pause = _inside_span(time_seconds, assistant.pauses)
-        assistant_backchannel = _inside_span(time_seconds, assistant.backchannels)
-        assistant_speech_active = (
-            assistant_turn_active and not assistant_pause
-        ) or assistant_backchannel
-        should_speak = assistant_turn_active or assistant_backchannel
+        boundary = _active_boundary(time_seconds=time_seconds, boundaries=boundaries)
+        candidate = boundary is not None
+        primary_valid = candidate and boundary.yield_probability is not None
+        reliability_source = ReliabilitySource.UNMEASURED if primary_valid else None
         frames.append(
             TrainingFramePreview(
                 frame_index=frame_index,
                 time_seconds=time_seconds,
                 relative_time_seconds=time_seconds - start_seconds,
                 supervised=time_seconds >= start_seconds + BURN_IN_SECONDS,
-                agent_action=(AgentActionLabel.SPEAK if should_speak else AgentActionLabel.LISTEN),
-                assistant_playback_active=assistant_speech_active,
-                user_turn_active=user_turn_active,
-                user_speech_active=(user_turn_active and not user_pause) or user_backchannel,
-                assistant_turn_active=assistant_turn_active,
-                assistant_speech_active=assistant_speech_active,
-                user_pause=user_pause,
-                user_end_of_turn=_point_at(time_seconds, user.turns, FRAME_SECONDS / 2.0),
-                user_end_within_0_5_seconds=_point_within_future(time_seconds, user.turns, 0.5),
-                user_end_within_1_second=_point_within_future(time_seconds, user.turns, 1.0),
-                user_end_within_2_seconds=_point_within_future(time_seconds, user.turns, 2.0),
-                user_backchannel=user_backchannel,
-                user_interruption=_point_at(time_seconds, user.interruptions, FRAME_SECONDS / 2.0),
-                assistant_backchannel=assistant_backchannel,
+                candidate=candidate,
+                candidate_source=boundary.source if boundary is not None else None,
+                seconds_since_speech_offset=(
+                    time_seconds - boundary.speech_offset_seconds if boundary is not None else None
+                ),
+                yield_probability=(boundary.yield_probability if boundary is not None else None),
+                hold_probability=(
+                    1.0 - boundary.yield_probability
+                    if boundary is not None and boundary.yield_probability is not None
+                    else None
+                ),
+                primary_reliability=None,
+                primary_reliability_source=reliability_source,
+                primary_valid=primary_valid,
+                event_distribution=(boundary.event_distribution if boundary is not None else None),
+                event_reliability=None,
+                event_reliability_source=reliability_source,
+                event_valid=primary_valid and boundary.event_distribution is not None,
+                future_activity=(
+                    _future_activity_targets(
+                        time_seconds=time_seconds,
+                        annotation_end_seconds=annotation_end_seconds,
+                        user=user,
+                    )
+                    if candidate
+                    else ()
+                ),
             )
         )
     return tuple(frames)
 
 
-def _inside_span(time_seconds: float, spans: Sequence[AnnotationSpan]) -> bool:
-    return any(span.start_seconds <= time_seconds < span.end_seconds for span in spans)
+def _decision_boundaries(
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    annotation_end_seconds: float,
+) -> tuple[DecisionBoundary, ...]:
+    return tuple(
+        _decision_boundary(
+            segment=segment,
+            user=user,
+            assistant=assistant,
+            annotation_end_seconds=annotation_end_seconds,
+        )
+        for segment in user.segment_targets
+    )
 
 
-def _point_at(
-    time_seconds: float, points: Sequence[AnnotationPoint], tolerance_seconds: float
-) -> bool:
-    return any(abs(point.time_seconds - time_seconds) <= tolerance_seconds for point in points)
+def _decision_boundary(
+    segment: SegmentAnnotationTarget,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    annotation_end_seconds: float,
+) -> DecisionBoundary:
+    connection = _matching_connection(segment=segment, connections=user.connection_targets)
+    next_assistant = _next_segment_after(
+        time_seconds=segment.end_seconds,
+        segments=assistant.segment_targets,
+    )
+    next_user = _next_segment_after(
+        time_seconds=segment.end_seconds,
+        segments=user.segment_targets,
+    )
+    next_activity_seconds = min(
+        (
+            candidate.start_seconds
+            for candidate in (next_user, next_assistant)
+            if candidate is not None
+        ),
+        default=annotation_end_seconds,
+    )
+    candidate_end_seconds = min(
+        annotation_end_seconds,
+        segment.end_seconds + MAXIMUM_CANDIDATE_SILENCE_SECONDS,
+        next_activity_seconds,
+    )
+    boundary_yield_probability: float | None
+    source: CandidateSource
+    pause_probability = 0.0
+    if connection is not None:
+        boundary_yield_probability = 1.0 - connection.merge_confidence
+        pause_probability = connection.pause_confidence
+        source = CandidateSource.CONNECTION
+    elif (
+        next_assistant is not None
+        or segment.end_seconds + MAXIMUM_CANDIDATE_SILENCE_SECONDS <= annotation_end_seconds
+    ):
+        boundary_yield_probability = 1.0
+        source = CandidateSource.SEGMENT_END
+    else:
+        boundary_yield_probability = None
+        source = CandidateSource.CENSORED
+    yield_probability = (
+        segment.turn_confidence * boundary_yield_probability
+        if boundary_yield_probability is not None
+        else None
+    )
+    event_distribution = (
+        _event_distribution(
+            segment=segment,
+            pause_probability=pause_probability,
+            boundary_yield_probability=boundary_yield_probability,
+        )
+        if boundary_yield_probability is not None
+        else None
+    )
+    return DecisionBoundary(
+        speech_offset_seconds=segment.end_seconds,
+        candidate_end_seconds=max(segment.end_seconds + FRAME_SECONDS, candidate_end_seconds),
+        yield_probability=yield_probability,
+        source=source,
+        event_distribution=event_distribution,
+    )
 
 
-def _point_within_future(
-    time_seconds: float, points: Sequence[AnnotationPoint], horizon_seconds: float
-) -> bool:
-    return any(0.0 <= point.time_seconds - time_seconds <= horizon_seconds for point in points)
+def _matching_connection(
+    segment: SegmentAnnotationTarget,
+    connections: Sequence[ConnectionAnnotationTarget],
+) -> ConnectionAnnotationTarget | None:
+    return next(
+        (
+            connection
+            for connection in connections
+            if abs(connection.earlier_end_seconds - segment.end_seconds) <= FRAME_SECONDS
+        ),
+        None,
+    )
+
+
+def _next_segment_after(
+    time_seconds: float,
+    segments: Sequence[SegmentAnnotationTarget],
+) -> SegmentAnnotationTarget | None:
+    return min(
+        (segment for segment in segments if segment.start_seconds >= time_seconds),
+        key=lambda segment: segment.start_seconds,
+        default=None,
+    )
+
+
+def _active_boundary(
+    time_seconds: float, boundaries: Sequence[DecisionBoundary]
+) -> DecisionBoundary | None:
+    return max(
+        (
+            boundary
+            for boundary in boundaries
+            if boundary.speech_offset_seconds <= time_seconds < boundary.candidate_end_seconds
+        ),
+        key=lambda boundary: boundary.speech_offset_seconds,
+        default=None,
+    )
+
+
+def _event_distribution(
+    segment: SegmentAnnotationTarget,
+    pause_probability: float,
+    boundary_yield_probability: float,
+) -> EventTargetDistribution:
+    backchannel = segment.keep_playing_confidence
+    remaining = 1.0 - backchannel
+    interruption = min(remaining, segment.interruption_confidence)
+    remaining -= interruption
+    continuation_pause = remaining * pause_probability
+    remaining -= continuation_pause
+    turn_completion = remaining * boundary_yield_probability
+    other = remaining - turn_completion
+    return EventTargetDistribution(
+        turn_completion=turn_completion,
+        continuation_pause=continuation_pause,
+        backchannel=backchannel,
+        interruption=interruption,
+        other=other,
+    )
+
+
+def _future_activity_targets(
+    time_seconds: float,
+    annotation_end_seconds: float,
+    user: SpeakerConversationAnnotation,
+) -> tuple[FutureActivityTarget, ...]:
+    activity_spans = (*user.speech_segments, *user.backchannels)
+    targets: list[FutureActivityTarget] = []
+    for start_milliseconds, end_milliseconds in FUTURE_ACTIVITY_WINDOWS_MILLISECONDS:
+        start = time_seconds + start_milliseconds / 1000.0
+        end = time_seconds + end_milliseconds / 1000.0
+        valid = end <= annotation_end_seconds
+        active_fraction = _active_fraction(start, end, activity_spans) if valid else 0.0
+        targets.append(
+            FutureActivityTarget(
+                start_milliseconds=start_milliseconds,
+                end_milliseconds=end_milliseconds,
+                active=active_fraction >= 0.5 if valid else None,
+                valid=valid,
+            )
+        )
+    return tuple(targets)
+
+
+def _active_fraction(
+    start_seconds: float,
+    end_seconds: float,
+    spans: Sequence[AnnotationSpan],
+) -> float:
+    duration_seconds = end_seconds - start_seconds
+    assert duration_seconds > 0.0
+    active_seconds = sum(
+        max(0.0, min(end_seconds, span.end_seconds) - max(start_seconds, span.start_seconds))
+        for span in spans
+    )
+    return min(1.0, active_seconds / duration_seconds)
 
 
 def _preview_spans(

@@ -8,12 +8,16 @@ from app.shared.base_model import FrozenBaseModel
 class AdapterConfig(FrozenBaseModel):
     feature_dimension: int = 1024
     tap_layer_indices: tuple[int, ...] = (6, 12, 18, 24)
-    tap_projection_dimension: int = 128
-    fused_dimension: int = 256
-    recurrent_dimension: int = 256
-    recurrent_layers: int = 2
+    tap_projection_dimension: int = 64
+    fused_dimension: int = 128
+    recurrent_dimension: int = 128
+    recurrent_layers: int = 1
     dropout: float = Field(default=0.1, ge=0.0, lt=1.0)
-    event_target_count: int = 6
+
+
+class LossConfig(FrozenBaseModel):
+    event_weight: float = Field(default=0.25, ge=0.0)
+    future_activity_weight: float = Field(default=0.25, ge=0.0)
 
 
 class TrainingConfig(FrozenBaseModel):
@@ -33,4 +37,6 @@ class TrainingConfig(FrozenBaseModel):
     validation_interval_steps: int = 1_000
     gradient_clip_norm: float = 1.0
     random_seed: int = 17
+    unmeasured_reliability_weight: float = Field(default=1.0, ge=0.0, le=1.0)
     adapter: AdapterConfig = AdapterConfig()
+    loss: LossConfig = LossConfig()
