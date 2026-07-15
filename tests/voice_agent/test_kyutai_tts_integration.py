@@ -33,10 +33,13 @@ async def _stream_short_utterance() -> None:
     await session.add_word(SynthesisWord(text="world!", text_start=7, text_end=13))
     await session.finish_input()
     audio_sample_count = 0
+    audio_chunk_start_samples: list[int] = []
     boundaries: list[SynthesizedWordBoundary] = []
     async for event in session.stream_events():
         match event:
             case SynthesizedAudioChunk():
+                audio_chunk_start_samples.append(event.start_sample)
+                assert event.start_sample == audio_sample_count
                 audio_sample_count += len(event.pcm_bytes) // 2
             case SynthesizedWordBoundary():
                 boundaries.append(event)
@@ -44,4 +47,8 @@ async def _stream_short_utterance() -> None:
 
     assert audio_sample_count > 0
     assert [boundary.text_offset for boundary in boundaries] == [6, 13]
-    assert all(boundary.start_sample >= 0 for boundary in boundaries)
+    assert audio_chunk_start_samples == sorted(audio_chunk_start_samples)
+    assert [boundary.start_sample for boundary in boundaries] == sorted(
+        boundary.start_sample for boundary in boundaries
+    )
+    assert all(0 <= boundary.start_sample < audio_sample_count for boundary in boundaries)

@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
-from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import Final
@@ -30,6 +28,8 @@ from app.compute.voice.interfaces import (
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
 )
+from app.compute.voice.thread_queue import get_until_cancelled
+from app.compute.voice.tts_alignment import TranscriptBoundaryTracker
 
 KYUTAI_TTS_MODEL_NAME: Final = DEFAULT_DSM_TTS_REPO
 KYUTAI_TTS_MODEL_REVISION: Final = "f65439609986c392cb12df63938abcc550c3fb15"
@@ -41,16 +41,12 @@ KYUTAI_TTS_TEMPERATURE: Final = 0.6
 KYUTAI_TTS_CFG_COEFFICIENT: Final = 2.0
 KYUTAI_TTS_INPUT_QUEUE_SIZE: Final = 64
 KYUTAI_TTS_OUTPUT_QUEUE_SIZE: Final = 32
+KYUTAI_TTS_QUEUE_POLL_SECONDS: Final = 0.1
 
 
 class _StreamMarker(Enum):
     FINISH = auto()
     END = auto()
-
-
-@dataclass(frozen=True)
-class _TranscriptMapping:
-    text_offset: int | None
 
 
 _InputItem = SynthesisWord | _StreamMarker
@@ -166,32 +162,15 @@ class KyutaiSpeechSynthesisSession:
 
     def _run(self) -> None:
         try:
-            with self.generation_lock, self.model.mimi.streaming(1):
-                generator = _KyutaiStreamingGenerator(
-                    model=self.model,
-                    attributes=(self.attributes,),
-                    cancellation_event=self.cancellation_event,
-                    emit=self._put_output,
-                )
-                first_word = True
-                while not self.cancellation_event.is_set():
-                    item = self.input_queue.get()
-                    match item:
-                        case _StreamMarker.FINISH:
-                            generator.process_last()
-                            break
-                        case SynthesisWord():
-                            entries = script_to_entries(
-                                self.model.tokenizer,
-                                self.model.machine.token_ids,
-                                self.model.mimi.frame_rate,
-                                [item.text],
-                                multi_speaker=first_word and self.model.multi_speaker,
-                                padding_between=1,
-                            )
-                            first_word = False
-                            generator.append_word(entries, item.text_end)
-                            generator.process()
+            while not self.cancellation_event.is_set():
+                if self.generation_lock.acquire(timeout=KYUTAI_TTS_QUEUE_POLL_SECONDS):
+                    break
+            else:
+                return
+            try:
+                self._generate()
+            finally:
+                self.generation_lock.release()
         except Exception as error:
             self._put_output(error)
         finally:
@@ -202,6 +181,40 @@ class KyutaiSpeechSynthesisSession:
                     pass
             else:
                 self.output_queue.put(_StreamMarker.END)
+
+    def _generate(self) -> None:
+        with torch.inference_mode(), self.model.mimi.streaming(1):
+            generator = _KyutaiStreamingGenerator(
+                model=self.model,
+                attributes=(self.attributes,),
+                cancellation_event=self.cancellation_event,
+                emit=self._put_output,
+            )
+            first_word = True
+            while not self.cancellation_event.is_set():
+                item = get_until_cancelled(
+                    self.input_queue,
+                    self.cancellation_event,
+                    KYUTAI_TTS_QUEUE_POLL_SECONDS,
+                )
+                match item:
+                    case None:
+                        break
+                    case _StreamMarker.FINISH:
+                        generator.process_last()
+                        break
+                    case SynthesisWord():
+                        entries = script_to_entries(
+                            self.model.tokenizer,
+                            self.model.machine.token_ids,
+                            self.model.mimi.frame_rate,
+                            [item.text],
+                            multi_speaker=first_word and self.model.multi_speaker,
+                            padding_between=1,
+                        )
+                        first_word = False
+                        generator.append_word(entries, item.text_end)
+                        generator.process()
 
 
 class _KyutaiStreamingGenerator:
@@ -224,7 +237,7 @@ class _KyutaiStreamingGenerator:
         self.offset = 0
         self.emitted_sample_count = 0
         self.transcript_index = 0
-        self.transcript_mappings: deque[_TranscriptMapping] = deque()
+        self.boundary_tracker = TranscriptBoundaryTracker()
         self.state = model.machine.new_state([])
         condition_tensors = model.lm.condition_provider.prepare_and_provide(attributes)
 
@@ -266,17 +279,14 @@ class _KyutaiStreamingGenerator:
         self.lm_generation.streaming_forever(1)
 
     def append_word(self, entries: Sequence[Entry], text_offset: int) -> None:
-        token_entry_count = sum(bool(entry.tokens) for entry in entries)
-        if token_entry_count == 0:
-            raise ValueError("Kyutai text normalization removed an entire synthesis word.")
-        first_token_entry = True
         for entry in entries:
             self.state.entries.append(entry)
-            if not entry.tokens:
-                continue
-            mapping_offset = text_offset if first_token_entry else None
-            self.transcript_mappings.append(_TranscriptMapping(mapping_offset))
-            first_token_entry = False
+        immediate_boundaries = self.boundary_tracker.add_source_word(
+            tuple(bool(entry.tokens) for entry in entries),
+            text_offset,
+        )
+        for boundary in immediate_boundaries:
+            self.emit(boundary)
 
     def process(self) -> None:
         while len(self.state.entries) > self.model.machine.second_stream_ahead:
@@ -324,19 +334,12 @@ class _KyutaiStreamingGenerator:
     def _emit_new_boundaries(self) -> None:
         new_transcript = self.state.transcript[self.transcript_index :]
         for _, model_step in new_transcript:
-            if not self.transcript_mappings:
-                raise AssertionError("Kyutai emitted a transcript word without an input mapping.")
-            mapping = self.transcript_mappings.popleft()
-            if mapping.text_offset is not None:
-                # Kyutai defines transcript steps at Mimi's frame rate. The conversion is the
-                # protocol anchor; confirm codec priming behavior on the target GPU deployment.
-                start_sample = round(
-                    model_step * self.model.mimi.sample_rate / self.model.mimi.frame_rate
-                )
-                self.emit(
-                    SynthesizedWordBoundary(
-                        text_offset=mapping.text_offset,
-                        start_sample=start_sample,
-                    )
-                )
+            # Kyutai defines transcript steps at Mimi's frame rate. The conversion is the protocol
+            # anchor; confirm codec priming behavior on the target GPU deployment.
+            start_sample = round(
+                model_step * self.model.mimi.sample_rate / self.model.mimi.frame_rate
+            )
+            boundary = self.boundary_tracker.consume_transcript_word(start_sample)
+            if boundary is not None:
+                self.emit(boundary)
         self.transcript_index += len(new_transcript)
