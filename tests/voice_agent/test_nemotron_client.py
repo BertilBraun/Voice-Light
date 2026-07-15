@@ -22,7 +22,8 @@ from app.compute.voice.nemotron_client import (
 
 
 class FakeNemotronWorker:
-    def __init__(self) -> None:
+    def __init__(self, finalizes_on_finish: bool = True) -> None:
+        self.finalizes_on_finish = finalizes_on_finish
         self.commands: list[AsrWorkerCommand] = []
         self.events: queue.Queue[
             AsrWorkerReadyEvent | PartialAsrEvent | FinalAsrEvent | AsrWorkerErrorEvent
@@ -34,7 +35,8 @@ class FakeNemotronWorker:
             case AsrWorkerCommandType.AUDIO:
                 self.events.put(PartialAsrEvent(text="hello"))
             case AsrWorkerCommandType.FINISH:
-                self.events.put(FinalAsrEvent(text="hello world"))
+                if self.finalizes_on_finish:
+                    self.events.put(FinalAsrEvent(text="hello world"))
 
     def read_event(
         self,
@@ -96,7 +98,7 @@ def test_nemotron_session_streams_partial_and_final_text() -> None:
 
 def test_nemotron_session_replaces_worker_after_finalization_timeout() -> None:
     async def run_session() -> None:
-        worker = FakeNemotronWorker()
+        worker = FakeNemotronWorker(finalizes_on_finish=False)
         worker_manager = FakeNemotronWorkerManager(worker)
         session = NemotronStreamingSession(
             worker_manager=worker_manager,
