@@ -29,7 +29,34 @@ def test_kyutai_streams_pcm_and_original_text_boundaries() -> None:
 async def _stream_short_utterance() -> None:
     synthesizer = await asyncio.to_thread(KyutaiSpeechSynthesizer)
     await _assert_streamed_utterance(synthesizer)
+    await _cancel_streamed_utterance(synthesizer)
     await _assert_streamed_utterance(synthesizer)
+    await _assert_streamed_utterance(synthesizer)
+
+
+async def _cancel_streamed_utterance(synthesizer: KyutaiSpeechSynthesizer) -> None:
+    session = synthesizer.start_session()
+    words = ("This", "utterance", "will", "be", "cancelled", "during", "playback.")
+    text_offset = 0
+    for word in words:
+        text_offset += len(word)
+        await session.add_word(
+            SynthesisWord(
+                text=word,
+                text_start=text_offset - len(word),
+                text_end=text_offset,
+            )
+        )
+        text_offset += 1
+    await session.finish_input()
+    async for event in session.stream_events():
+        match event:
+            case SynthesizedAudioChunk():
+                await session.cancel()
+                return
+            case SynthesizedWordBoundary():
+                continue
+    raise AssertionError("Kyutai cancellation test produced no audio.")
 
 
 async def _assert_streamed_utterance(synthesizer: KyutaiSpeechSynthesizer) -> None:
