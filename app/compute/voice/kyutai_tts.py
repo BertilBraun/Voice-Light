@@ -20,6 +20,7 @@ from moshi.models.tts import (
     TTSModel,
     script_to_entries,
 )
+from moshi.utils.compile import no_cuda_graph
 
 from app.compute.voice.interfaces import (
     SpeechSynthesisSession,
@@ -186,7 +187,8 @@ class KyutaiSpeechSynthesisSession:
                 self.output_queue.put(_StreamMarker.END)
 
     def _generate(self) -> None:
-        with torch.inference_mode(), self.model.mimi.streaming(1):
+        # Moshi CUDA-graph capture is incompatible with concurrent Qwen CUDA work.
+        with torch.inference_mode(), no_cuda_graph(), self.model.mimi.streaming(1):
             generator = _KyutaiStreamingGenerator(
                 model=self.model,
                 attributes=(self.attributes,),
@@ -370,7 +372,7 @@ def _warmup_streaming_generation(
     attributes: ConditionAttributes,
 ) -> None:
     cancellation_event = threading.Event()
-    with torch.inference_mode(), model.mimi.streaming(1):
+    with torch.inference_mode(), no_cuda_graph(), model.mimi.streaming(1):
         generator = _KyutaiStreamingGenerator(
             model=model,
             attributes=(attributes,),

@@ -142,6 +142,35 @@ class RecordingSpeechSynthesizer:
         return session
 
 
+class FailingSpeechSynthesisSession:
+    def __init__(self) -> None:
+        self.failure_ready = asyncio.Event()
+
+    async def add_word(self, word: SynthesisWord) -> None:
+        del word
+        self.failure_ready.set()
+
+    async def finish_input(self) -> None:
+        self.failure_ready.set()
+
+    async def stream_events(self) -> AsyncIterator[SynthesisEvent]:
+        await self.failure_ready.wait()
+        raise RuntimeError("synthetic speech failure")
+        yield
+
+    async def cancel(self) -> None:
+        self.failure_ready.set()
+
+
+class FailingSpeechSynthesizer:
+    @property
+    def sample_rate(self) -> int:
+        return 24_000
+
+    def start_session(self) -> SpeechSynthesisSession:
+        return FailingSpeechSynthesisSession()
+
+
 def test_full_session_streams_audio_and_commits_naturally_completed_history() -> None:
     language_model = FakeLanguageModel()
     transcriber = RecordingTranscriber()
@@ -223,6 +252,24 @@ def test_words_are_forwarded_on_whitespace_and_trailing_word_is_flushed() -> Non
             "start_sample": 4,
         },
     ]
+
+
+def test_synthesis_failure_cancels_generation_and_reaches_client() -> None:
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        SlowLanguageModel(),
+        FailingSpeechSynthesizer(),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        events, _ = receive_until(websocket, "error")
+        websocket.send_json({"type": "session.stop"})
+
+    assert [event["type"] for event in events[-2:]] == ["assistant.cancel", "error"]
+    assert events[-1]["message"] == ("Response generation failed: synthetic speech failure")
 
 
 def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
@@ -329,7 +376,7 @@ def test_pre_roll_is_bounded_before_speech_start() -> None:
 def create_test_app(
     transcriber: RecordingTranscriber,
     language_model: FakeLanguageModel | SplitWordLanguageModel | SlowLanguageModel,
-    speech_synthesizer: RecordingSpeechSynthesizer,
+    speech_synthesizer: RecordingSpeechSynthesizer | FailingSpeechSynthesizer,
     policy: SessionPolicy = DEFAULT_TEST_POLICY,
 ) -> FastAPI:
     web_app = FastAPI()

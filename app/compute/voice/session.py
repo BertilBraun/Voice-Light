@@ -14,6 +14,7 @@ from app.compute.voice.conversation import ConversationMessage, ConversationRole
 from app.compute.voice.interfaces import (
     LanguageModel,
     SpeechDetector,
+    SpeechSynthesisSession,
     SpeechSynthesizer,
     SynthesisEvent,
     SynthesizedAudioChunk,
@@ -279,33 +280,42 @@ class VoiceSession:
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
         synthesis = self.speech_synthesizer.start_session()
+        text_task = asyncio.create_task(self._stream_response_text(generation, synthesis))
         audio_task = asyncio.create_task(self._stream_speech(generation, synthesis.stream_events()))
-        word_stream = CompleteWordStream()
         try:
-            async for text_delta in self.language_model.stream_response(generation.prompt_messages):
-                generation.response_text += text_delta
-                await self._send_event(
-                    AssistantTextDeltaEvent(
-                        generation_id=generation.generation_id,
-                        text=text_delta,
-                    )
-                )
-                for word in word_stream.add_text(text_delta):
-                    await synthesis.add_word(word)
-            if not generation.response_text.strip():
-                raise RuntimeError("The language model returned an empty response.")
-            for word in word_stream.finish():
-                await synthesis.add_word(word)
-            await synthesis.finish_input()
-            await audio_task
+            await asyncio.gather(text_task, audio_task)
             generation.generation_finished = True
             self._commit_assistant_if_complete(generation)
         finally:
+            pending_tasks = tuple(task for task in (text_task, audio_task) if not task.done())
+            for task in pending_tasks:
+                task.cancel()
             await synthesis.cancel()
-            if not audio_task.done():
-                audio_task.cancel()
+            for task in pending_tasks:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await audio_task
+                    await task
+
+    async def _stream_response_text(
+        self,
+        generation: ActiveGeneration,
+        synthesis: SpeechSynthesisSession,
+    ) -> None:
+        word_stream = CompleteWordStream()
+        async for text_delta in self.language_model.stream_response(generation.prompt_messages):
+            generation.response_text += text_delta
+            await self._send_event(
+                AssistantTextDeltaEvent(
+                    generation_id=generation.generation_id,
+                    text=text_delta,
+                )
+            )
+            for word in word_stream.add_text(text_delta):
+                await synthesis.add_word(word)
+        if not generation.response_text.strip():
+            raise RuntimeError("The language model returned an empty response.")
+        for word in word_stream.finish():
+            await synthesis.add_word(word)
+        await synthesis.finish_input()
 
     async def _stream_speech(
         self,
