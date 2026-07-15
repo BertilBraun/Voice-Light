@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import struct
 from collections import deque
 from collections.abc import AsyncIterator
@@ -47,6 +48,7 @@ INPUT_SAMPLE_RATE = 16_000
 PCM_BYTES_PER_SAMPLE = 2
 AUDIO_QUEUE_MAX_CHUNKS = 100
 PLAYBACK_STOP_TIMEOUT_SECONDS = 0.25
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -109,15 +111,16 @@ class VoiceSession:
         except WebSocketDisconnect:
             pass
         except Exception as error:
+            logger.exception("voice session failed: %s", self.session_id)
             await self._send_error(f"Voice session failed: {error}")
         finally:
             receive_task.cancel()
             recognition_task.cancel()
+            await self._cancel_generation(send_event=False)
+            await self._close_generation_tasks()
             for task in (receive_task, recognition_task):
                 with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
                     await task
-            await self._cancel_generation(send_event=False)
-            await self._close_generation_tasks()
             self.conversation.clear()
             self.generations.clear()
 
@@ -268,6 +271,11 @@ class VoiceSession:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            logger.exception(
+                "voice response generation failed: session=%s generation=%d",
+                self.session_id,
+                generation.generation_id,
+            )
             if self.active_generation is generation:
                 generation.cancelled = True
                 self._mark_generation_interrupted(generation)

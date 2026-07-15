@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import queue
 
+import pytest
+
 from app.compute.voice.asr_worker_protocol import (
     AsrAudioCommand,
     AsrWorkerCommand,
@@ -15,6 +17,7 @@ from app.compute.voice.asr_worker_protocol import (
 from app.compute.voice.nemotron_client import (
     STREAMING_CHUNK_BYTE_COUNT,
     NemotronStreamingSession,
+    NemotronWorker,
 )
 
 
@@ -38,11 +41,37 @@ class FakeNemotronWorker:
     ) -> AsrWorkerReadyEvent | PartialAsrEvent | FinalAsrEvent | AsrWorkerErrorEvent:
         return self.events.get(timeout=1)
 
+    def terminate(self) -> None:
+        self.events.put(FinalAsrEvent(text=""))
+
+
+class FakeNemotronWorkerManager:
+    def __init__(self, worker: FakeNemotronWorker) -> None:
+        self.worker = worker
+        self.lock = asyncio.Lock()
+        self.replacement_count = 0
+
+    async def acquire(self) -> FakeNemotronWorker:
+        await self.lock.acquire()
+        return self.worker
+
+    def release(self) -> None:
+        self.lock.release()
+
+    async def replace(self, failed_worker: NemotronWorker) -> None:
+        assert failed_worker is self.worker
+        self.replacement_count += 1
+        self.worker.terminate()
+
 
 def test_nemotron_session_streams_partial_and_final_text() -> None:
     async def run_session() -> None:
         worker = FakeNemotronWorker()
-        session = NemotronStreamingSession(worker=worker, worker_lock=asyncio.Lock())
+        worker_manager = FakeNemotronWorkerManager(worker)
+        session = NemotronStreamingSession(
+            worker_manager=worker_manager,
+            finish_timeout_seconds=1.0,
+        )
 
         assert await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2)) is None
         partial_text: str | None = None
@@ -61,5 +90,24 @@ def test_nemotron_session_streams_partial_and_final_text() -> None:
         audio_command = worker.commands[1]
         assert isinstance(audio_command, AsrAudioCommand)
         assert len(audio_command.pcm_bytes()) == STREAMING_CHUNK_BYTE_COUNT
+
+    asyncio.run(run_session())
+
+
+def test_nemotron_session_replaces_worker_after_finalization_timeout() -> None:
+    async def run_session() -> None:
+        worker = FakeNemotronWorker()
+        worker_manager = FakeNemotronWorkerManager(worker)
+        session = NemotronStreamingSession(
+            worker_manager=worker_manager,
+            finish_timeout_seconds=0.01,
+        )
+
+        await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2))
+        with pytest.raises(RuntimeError, match="finalization timed out"):
+            await session.finish()
+
+        assert worker_manager.replacement_count == 1
+        assert not worker_manager.lock.locked()
 
     asyncio.run(run_session())

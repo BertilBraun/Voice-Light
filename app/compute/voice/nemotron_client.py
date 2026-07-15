@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +23,10 @@ from app.compute.voice.asr_worker_protocol import (
 )
 from app.compute.voice.interfaces import TranscriptionSession
 
+logger = logging.getLogger(__name__)
 NEMOTRON_PYTHON_PATH: Final = Path(sys.executable)
+NEMOTRON_SESSION_FINISH_TIMEOUT_SECONDS: Final = 15.0
+NEMOTRON_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
 STREAMING_CHUNK_DURATION_MS: Final = 80
 INPUT_SAMPLE_RATE: Final = 16_000
 PCM_BYTES_PER_SAMPLE: Final = 2
@@ -37,6 +41,16 @@ class NemotronWorker(Protocol):
     def read_event(
         self,
     ) -> AsrWorkerReadyEvent | PartialAsrEvent | FinalAsrEvent | AsrWorkerErrorEvent: ...
+
+    def terminate(self) -> None: ...
+
+
+class NemotronWorkerManager(Protocol):
+    async def acquire(self) -> NemotronWorker: ...
+
+    def release(self) -> None: ...
+
+    async def replace(self, failed_worker: NemotronWorker) -> None: ...
 
 
 class NemotronWorkerProcess:
@@ -71,31 +85,88 @@ class NemotronWorkerProcess:
 
     def close(self) -> None:
         if self.process.poll() is not None:
+            self._close_streams()
             return
-        self.send(ShutdownAsrCommand())
-        self.process.wait(timeout=10)
+        try:
+            self.send(ShutdownAsrCommand())
+            self.process.wait(timeout=NEMOTRON_WORKER_STOP_TIMEOUT_SECONDS)
+        except (BrokenPipeError, subprocess.TimeoutExpired):
+            self.terminate()
+            return
+        self._close_streams()
+
+    def terminate(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=NEMOTRON_WORKER_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=NEMOTRON_WORKER_STOP_TIMEOUT_SECONDS)
+        self._close_streams()
+
+    def _close_streams(self) -> None:
+        self.input_stream.close()
+        self.output_stream.close()
+
+
+class RestartingNemotronWorkerManager:
+    def __init__(self, python_path: Path) -> None:
+        self.python_path = python_path
+        self.worker: NemotronWorkerProcess | None = NemotronWorkerProcess(python_path)
+        self.lock = asyncio.Lock()
+
+    async def acquire(self) -> NemotronWorker:
+        await self.lock.acquire()
+        if self.worker is None:
+            self.worker = await asyncio.to_thread(NemotronWorkerProcess, self.python_path)
+        return self.worker
+
+    def release(self) -> None:
+        if not self.lock.locked():
+            raise AssertionError("Cannot release an unowned Nemotron worker.")
+        self.lock.release()
+
+    async def replace(self, failed_worker: NemotronWorker) -> None:
+        if not self.lock.locked():
+            raise AssertionError("Cannot replace an unowned Nemotron worker.")
+        if failed_worker is not self.worker:
+            raise AssertionError("Cannot replace a Nemotron worker owned by another session.")
+        logger.error("replacing unresponsive Nemotron worker process")
+        self.worker = None
+        await asyncio.to_thread(failed_worker.terminate)
+        self.worker = await asyncio.to_thread(NemotronWorkerProcess, self.python_path)
+
+    def close(self) -> None:
+        if self.worker is None:
+            return
+        self.worker.close()
+        self.worker = None
 
 
 class NemotronStreamingTranscriber:
     def __init__(self, python_path: Path = NEMOTRON_PYTHON_PATH) -> None:
-        self.worker = NemotronWorkerProcess(python_path)
-        self.worker_lock = asyncio.Lock()
+        self.worker_manager = RestartingNemotronWorkerManager(python_path)
 
     def start_session(self) -> TranscriptionSession:
-        return NemotronStreamingSession(worker=self.worker, worker_lock=self.worker_lock)
+        return NemotronStreamingSession(
+            worker_manager=self.worker_manager,
+            finish_timeout_seconds=NEMOTRON_SESSION_FINISH_TIMEOUT_SECONDS,
+        )
 
     def close(self) -> None:
-        self.worker.close()
+        self.worker_manager.close()
 
 
 class NemotronStreamingSession:
     def __init__(
         self,
-        worker: NemotronWorker,
-        worker_lock: asyncio.Lock,
+        worker_manager: NemotronWorkerManager,
+        finish_timeout_seconds: float,
     ) -> None:
-        self.worker = worker
-        self.worker_lock = worker_lock
+        self.worker_manager = worker_manager
+        self.finish_timeout_seconds = finish_timeout_seconds
+        self.worker: NemotronWorker | None = None
         self.pending_audio = bytearray()
         self.partial_text_queue: asyncio.Queue[str] = asyncio.Queue()
         self.output_task: asyncio.Task[str] | None = None
@@ -110,7 +181,7 @@ class NemotronStreamingSession:
         while len(self.pending_audio) >= STREAMING_CHUNK_BYTE_COUNT:
             chunk = bytes(self.pending_audio[:STREAMING_CHUNK_BYTE_COUNT])
             del self.pending_audio[:STREAMING_CHUNK_BYTE_COUNT]
-            self.worker.send(AsrAudioCommand.from_pcm_bytes(chunk))
+            self._require_worker().send(AsrAudioCommand.from_pcm_bytes(chunk))
         latest_partial_text: str | None = None
         while not self.partial_text_queue.empty():
             latest_partial_text = self.partial_text_queue.get_nowait()
@@ -123,35 +194,31 @@ class NemotronStreamingSession:
         if self.output_task is None:
             return ""
         if self.pending_audio:
-            self.worker.send(AsrAudioCommand.from_pcm_bytes(bytes(self.pending_audio)))
+            self._require_worker().send(AsrAudioCommand.from_pcm_bytes(bytes(self.pending_audio)))
             self.pending_audio.clear()
-        self.worker.send(FinishAsrCommand())
-        try:
-            return await self.output_task
-        finally:
-            self._release_worker()
+        self._require_worker().send(FinishAsrCommand())
+        return await self._await_final_output()
 
     async def close(self) -> None:
         self.pending_audio.clear()
         if self.output_task is None or self.finished:
             return
         self.finished = True
-        self.worker.send(FinishAsrCommand())
+        self._require_worker().send(FinishAsrCommand())
         with contextlib.suppress(RuntimeError):
-            await self.output_task
-        self._release_worker()
+            await self._await_final_output()
 
     async def _ensure_started(self) -> None:
         if self.output_task is not None:
             return
-        await self.worker_lock.acquire()
+        self.worker = await self.worker_manager.acquire()
         self.owns_worker = True
         self.worker.send(StartAsrCommand())
         self.output_task = asyncio.create_task(self._read_output())
 
     async def _read_output(self) -> str:
         while True:
-            event = await asyncio.to_thread(self.worker.read_event)
+            event = await asyncio.to_thread(self._require_worker().read_event)
             match event.type:
                 case AsrWorkerEventType.READY:
                     raise RuntimeError("The Nemotron worker sent an unexpected ready event.")
@@ -165,8 +232,34 @@ class NemotronStreamingSession:
                     assert isinstance(event, AsrWorkerErrorEvent)
                     raise RuntimeError(f"Nemotron worker failed: {event.message}")
 
+    async def _await_final_output(self) -> str:
+        assert self.output_task is not None
+        worker = self._require_worker()
+        try:
+            return await asyncio.wait_for(
+                self.output_task,
+                timeout=self.finish_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            await self.worker_manager.replace(worker)
+            raise
+        except TimeoutError as error:
+            await self.worker_manager.replace(worker)
+            raise RuntimeError("Nemotron transcription finalization timed out.") from error
+        except Exception:
+            await self.worker_manager.replace(worker)
+            raise
+        finally:
+            self._release_worker()
+
+    def _require_worker(self) -> NemotronWorker:
+        if self.worker is None:
+            raise AssertionError("The Nemotron session does not own a worker.")
+        return self.worker
+
     def _release_worker(self) -> None:
         if not self.owns_worker:
             return
         self.owns_worker = False
-        self.worker_lock.release()
+        self.worker = None
+        self.worker_manager.release()
