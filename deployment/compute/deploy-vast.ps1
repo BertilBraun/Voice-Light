@@ -79,6 +79,14 @@ Invoke-NativeCommand -Command 'scp.exe' -Arguments @(
     '-i', $resolvedKeyPath, '-P', "$SshPort",
     "${target}:${remoteRepositoryPath}/.env.compute", $localEnvironmentPath
 )
+$computeTokenLine = Get-Content -LiteralPath $localEnvironmentPath |
+    Where-Object { $_ -like 'VOICE_LIGHT_COMPUTE_TOKEN=*' } |
+    Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($computeTokenLine)) {
+    throw 'The downloaded compute environment does not contain VOICE_LIGHT_COMPUTE_TOKEN.'
+}
+$computeToken = $computeTokenLine.Substring('VOICE_LIGHT_COMPUTE_TOKEN='.Length)
+$readinessHeaders = @{ Authorization = "Bearer $computeToken" }
 
 if (Test-Path -LiteralPath $tunnelPidPath) {
     $existingProcessId = [int](Get-Content -LiteralPath $tunnelPidPath -Raw)
@@ -99,12 +107,16 @@ $sshArguments = @(
 $tunnelProcess = Start-Process -FilePath 'ssh.exe' -ArgumentList $sshArguments -WindowStyle Hidden -PassThru
 Set-Content -LiteralPath $tunnelPidPath -Value $tunnelProcess.Id
 
-for ($attempt = 1; $attempt -le 30; $attempt++) {
+for ($attempt = 1; $attempt -le 120; $attempt++) {
     if ($tunnelProcess.HasExited) {
         throw "The SSH tunnel exited with code $($tunnelProcess.ExitCode)."
     }
     try {
-        $response = Invoke-WebRequest -Uri "http://127.0.0.1:$LocalPort/health/live" -TimeoutSec 2 -UseBasicParsing
+        $response = Invoke-WebRequest `
+            -Uri "http://127.0.0.1:$LocalPort/health/ready" `
+            -Headers $readinessHeaders `
+            -TimeoutSec 2 `
+            -UseBasicParsing
         if ($response.StatusCode -eq 200) {
             Write-Host "Deployment complete. Compute is available at http://127.0.0.1:$LocalPort."
             Write-Host "Local compute settings were saved to $localEnvironmentPath."
@@ -116,4 +128,4 @@ for ($attempt = 1; $attempt -le 30; $attempt++) {
     }
 }
 
-throw "The compute health endpoint did not respond through local port $LocalPort."
+throw "The compute readiness endpoint did not become ready through local port $LocalPort."

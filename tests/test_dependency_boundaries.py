@@ -47,6 +47,16 @@ def test_vast_provisioning_installs_supervisor_service() -> None:
     assert "supervisorctl update" in service_script
 
 
+def test_vast_deployment_waits_for_authenticated_model_readiness() -> None:
+    deployment_script = (REPOSITORY_ROOT / "deployment/compute/deploy-vast.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/health/ready" in deployment_script
+    assert "Authorization" in deployment_script
+    assert "/health/live" not in deployment_script
+
+
 def test_compute_lifecycle_commands_support_supervisor() -> None:
     for script_name in ("start.sh", "status.sh", "stop.sh"):
         script = (REPOSITORY_ROOT / "deployment/compute" / script_name).read_text(encoding="utf-8")
