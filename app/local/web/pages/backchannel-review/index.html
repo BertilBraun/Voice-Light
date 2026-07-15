@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Backchannel review - Voice Light</title>
+    <link rel="stylesheet" href="/pages/backchannel-review/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <div>
+          <a class="back-link" href="/">&larr; Voice Light</a>
+          <h1>Ambiguous backchannel review</h1>
+          <p>
+            Ten-second clips where one speaker talks inside the other speaker's ASR connection
+            gap, but the scorer still merges the surrounding speech.
+          </p>
+        </div>
+        <div id="position" class="position">Loading candidates...</div>
+      </header>
+
+      <section id="empty-state" class="panel empty-state" hidden></section>
+      <section id="review" hidden>
+        <div class="panel candidate-header">
+          <div>
+            <span id="sample-name" class="eyebrow"></span>
+            <h2 id="candidate-title"></h2>
+          </div>
+          <div class="navigation">
+            <button id="previous" type="button">Previous</button>
+            <button id="next" type="button" class="primary">Next</button>
+          </div>
+        </div>
+
+        <section class="panel playback-panel">
+          <div class="playback-controls">
+            <button id="play" type="button" class="primary">Play both</button>
+            <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Clip position" />
+            <span id="clock" class="clock">0:00.0 / 0:10.0</span>
+          </div>
+          <div id="tracks" class="tracks"></div>
+          <div class="legend">
+            <span><i class="turn-swatch"></i>transcribed turn</span>
+            <span><i class="keep-swatch"></i>keep-playing segment</span>
+            <span><i class="connection-swatch"></i>connection / pause</span>
+            <span><i class="eot-swatch"></i>end of turn</span>
+          </div>
+        </section>
+
+        <section class="panel transcript-panel">
+          <h3>Transcript sequence</h3>
+          <div class="sequence">
+            <article id="before-card"></article>
+            <article id="response-card" class="focus-card"></article>
+            <article id="after-card"></article>
+          </div>
+        </section>
+
+        <section class="panel score-panel">
+          <h3>ASR scorer annotations</h3>
+          <div id="scores" class="scores"></div>
+          <p class="note">
+            These are existing read-only annotations. The page does not save a judgment or
+            change the dataset.
+          </p>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/pages/backchannel-review/app.js"></script>
+  </body>
+</html>
