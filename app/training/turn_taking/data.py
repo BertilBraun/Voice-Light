@@ -154,6 +154,15 @@ def build_frame_targets(
         raise ValueError("unmeasured_reliability_weight must be between zero and one.")
     duration = sample.decision_end_seconds - sample.context_start_seconds
     frame_count = max(1, int(np.ceil(duration / frame_seconds)))
+    times = (
+        sample.context_start_seconds
+        + torch.arange(frame_count, dtype=torch.float32) * frame_seconds
+    )
+    supervision_start_seconds = max(
+        sample.context_start_seconds + burn_in_seconds,
+        sample.decision_start_seconds,
+    )
+    supervised_frames = times >= supervision_start_seconds
     yield_probability = torch.zeros(frame_count, dtype=torch.float32)
     primary_weight = torch.zeros(frame_count, dtype=torch.float32)
     primary_mask = torch.zeros(frame_count, dtype=torch.bool)
@@ -169,7 +178,7 @@ def build_frame_targets(
             round((decision.time_seconds - sample.context_start_seconds) / frame_seconds),
         )
         after_burn_in = decision.time_seconds >= burn_in_end_seconds
-        if decision.yield_probability is not None and after_burn_in:
+        if after_burn_in:
             yield_probability[frame_index] = decision.yield_probability
             primary_weight[frame_index] = _reliability_weight(
                 decision.primary_reliability, unmeasured_reliability_weight
@@ -188,6 +197,13 @@ def build_frame_targets(
                 if active is not None:
                     future_activity[frame_index, bin_index] = float(active)
                     future_activity_mask[frame_index, bin_index] = True
+    missing_primary_frames = supervised_frames & ~primary_mask
+    if missing_primary_frames.any():
+        missing_count = int(missing_primary_frames.sum().item())
+        raise ValueError(
+            f"Sample {sample.sample_id} is missing dense HOLD/YIELD labels for "
+            f"{missing_count} supervised frames."
+        )
     return FrameTargets(
         yield_probability=yield_probability,
         primary_weight=primary_weight,

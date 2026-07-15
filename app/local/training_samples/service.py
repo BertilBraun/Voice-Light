@@ -197,8 +197,8 @@ def build_frame_previews(
         )
         boundary = _active_boundary(time_seconds=time_seconds, boundaries=boundaries)
         candidate = boundary is not None
-        primary_valid = candidate and boundary.yield_probability is not None
-        reliability_source = ReliabilitySource.UNMEASURED if primary_valid else None
+        yield_probability = _yield_probability_at(time_seconds=time_seconds, user=user)
+        event_valid = candidate and boundary.event_distribution is not None
         frames.append(
             TrainingFramePreview(
                 frame_index=frame_index,
@@ -214,31 +214,50 @@ def build_frame_previews(
                 seconds_since_speech_offset=(
                     time_seconds - boundary.speech_offset_seconds if boundary is not None else None
                 ),
-                yield_probability=(boundary.yield_probability if boundary is not None else None),
-                hold_probability=(
-                    1.0 - boundary.yield_probability
-                    if boundary is not None and boundary.yield_probability is not None
-                    else None
-                ),
+                yield_probability=yield_probability,
+                hold_probability=1.0 - yield_probability,
                 primary_reliability=None,
-                primary_reliability_source=reliability_source,
-                primary_valid=primary_valid,
+                primary_reliability_source=ReliabilitySource.UNMEASURED,
+                primary_valid=True,
                 event_distribution=(boundary.event_distribution if boundary is not None else None),
                 event_reliability=None,
-                event_reliability_source=reliability_source,
-                event_valid=primary_valid and boundary.event_distribution is not None,
-                future_activity=(
-                    _future_activity_targets(
-                        time_seconds=time_seconds,
-                        annotation_end_seconds=annotation_end_seconds,
-                        user=user,
-                    )
-                    if candidate
-                    else ()
+                event_reliability_source=(ReliabilitySource.UNMEASURED if event_valid else None),
+                event_valid=event_valid,
+                future_activity=_future_activity_targets(
+                    time_seconds=time_seconds,
+                    annotation_end_seconds=annotation_end_seconds,
+                    user=user,
                 ),
             )
         )
     return tuple(frames)
+
+
+def _yield_probability_at(
+    time_seconds: float,
+    user: SpeakerConversationAnnotation,
+) -> float:
+    active_segment = next(
+        (
+            segment
+            for segment in user.segment_targets
+            if segment.start_seconds <= time_seconds < segment.end_seconds
+        ),
+        None,
+    )
+    if active_segment is not None:
+        return active_segment.keep_playing_confidence
+    active_connection = next(
+        (
+            connection
+            for connection in user.connection_targets
+            if connection.earlier_end_seconds <= time_seconds < connection.later_start_seconds
+        ),
+        None,
+    )
+    if active_connection is not None:
+        return 1.0 - active_connection.merge_confidence
+    return 1.0
 
 
 def _assistant_speaking_at(

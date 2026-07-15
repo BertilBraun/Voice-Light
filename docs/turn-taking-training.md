@@ -87,7 +87,10 @@ different splits. Every line validates as `TurnTakingSample` in
 The normal item is 20 seconds: four seconds of burn-in followed by 16 supervised seconds. Audio is
 mono float32 at 16 kHz. Window endpoints and all annotations use seconds from the original recording.
 Training targets are aligned to emitted encoder frames; the current prototype initially rasterizes
-at 80 ms and nearest-aligns to the returned encoder length.
+at 80 ms and nearest-aligns to the returned encoder length. `decisions` contains one HOLD/YIELD
+target for every supervised frame; the single entry above is abbreviated for readability. Manifest
+loading fails if any supervised frame lacks a primary target. Event distributions remain nullable
+because that auxiliary loss applies only at event candidates.
 
 `annotation_reference_audio_path` is label-generation evidence only. Its waveform must never enter
 the ASR or adapter. The binary `assistant_speech_spans` state is different: it is a known runtime
@@ -99,10 +102,12 @@ on every sample. Mask unreliable labels instead of inventing them.
 
 ## Labels
 
-Supervise only candidate decision frames after user speech offset or during the following silence.
-The primary target is one soft scalar, `yield_probability`: zero means HOLD (continuation,
-hesitation, or a backchannel without floor transfer) and one means YIELD (completed turn or genuine
-floor transfer). It is not the assistant playback state.
+Supervise the primary target densely after burn-in. The primary target is one soft scalar,
+`yield_probability`: zero means the user holds the floor and one means the user yields it. Ordinary
+user speech is HOLD. Ordinary silence or other-speaker time is YIELD. Backchannel-like user speech
+stays mostly YIELD because it does not claim the floor. A gap between two user segments uses the
+continuous same-turn merge belief: `p(HOLD)=merge_confidence` and
+`p(YIELD)=1-merge_confidence`. It is not the assistant playback state.
 
 Keep target probability and reliability independent. `yield_probability=0.4` describes an ambiguous
 HOLD/YIELD identity. `primary_reliability=0.4` says the annotation itself is weak. A null reliability

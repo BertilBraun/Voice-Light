@@ -86,12 +86,12 @@
       <section class="panel warning-card">
         <h2>Target probability and reliability are separate</h2>
         <p>
-          <code>yield_probability</code> is the soft HOLD/YIELD belief derived from the underlying
-          connection and event hypotheses. <code>primary_reliability</code> is an independent weight.
-          Existing annotations do not store that second quantity, so it is displayed as
-          <strong>unmeasured</strong>, never copied from the target probability. Assistant playback is
-          a separate, known binary conditioning input. It is not a prediction target and is not sent
-          through the frozen audio encoder.
+          HOLD/YIELD is dense on every frame: ordinary user speech is HOLD, ordinary non-user time is
+          YIELD, backchannels remain YIELD, and gaps between user segments use their continuous
+          continuation belief. The candidate mask applies only to the event-class auxiliary target.
+          <code>primary_reliability</code> remains an independent weight and is currently
+          <strong>unmeasured</strong>. Assistant playback is a separate known conditioning input, not a
+          target and not frozen-encoder audio.
         </p>
       </section>
     </main>

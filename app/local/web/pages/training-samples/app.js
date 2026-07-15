@@ -18,14 +18,14 @@ const frameDetails = document.querySelector("#frame-details");
 const rowDefinitions = [
   ["User waveform", "waveform"],
   ["INPUT · Assistant speaking", "assistant_speaking_input"],
-  ["Candidate decision mask", "candidate"],
+  ["Aux event candidate mask", "candidate"],
   ["Primary p(YIELD)", "yield_probability"],
   ["Primary p(HOLD)", "hold_probability"],
-  ["Event: turn completion", "event_distribution.turn_completion"],
-  ["Event: continuation pause", "event_distribution.continuation_pause"],
-  ["Event: backchannel", "event_distribution.backchannel"],
-  ["Event: interruption", "event_distribution.interruption"],
-  ["Event: other", "event_distribution.other"],
+  ["Candidate event: completion", "event_distribution.turn_completion"],
+  ["Candidate event: pause", "event_distribution.continuation_pause"],
+  ["Candidate event: backchannel", "event_distribution.backchannel"],
+  ["Candidate event: interruption", "event_distribution.interruption"],
+  ["Candidate event: other", "event_distribution.other"],
   ["Future activity 0–200 ms", "future_activity.0"],
   ["Future activity 200–500 ms", "future_activity.1"],
   ["Future activity 500–1000 ms", "future_activity.2"],
@@ -129,7 +129,7 @@ function renderSummary() {
     (frame) => frame.assistant_speaking_input,
   );
   const candidateFrames = supervisedFrames.filter((frame) => frame.candidate);
-  const validPrimaryFrames = candidateFrames.filter((frame) => frame.primary_valid);
+  const validPrimaryFrames = supervisedFrames.filter((frame) => frame.primary_valid);
   const ambiguousFrames = validPrimaryFrames.filter(
     (frame) => frame.yield_probability >= 0.25 && frame.yield_probability <= 0.75,
   );
@@ -150,7 +150,7 @@ function renderSummary() {
       ["Frame interval", `${Math.round(preview.frame_seconds * 1000)} ms`],
       ["Supervised frames", String(supervisedFrames.length)],
       ["Assistant-speaking input", percentage(assistantSpeakingFrames.length, preview.frames.length)],
-      ["Candidate frames", String(candidateFrames.length)],
+      ["Aux event candidate frames", String(candidateFrames.length)],
       ["Valid primary targets", String(validPrimaryFrames.length)],
       ["Mean p(YIELD)", meanYield === null ? "—" : meanYield.toFixed(3)],
       ["Ambiguous primary frames", String(ambiguousFrames.length)],

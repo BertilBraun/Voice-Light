@@ -89,6 +89,30 @@ def test_connection_confidence_remains_a_soft_target() -> None:
     assert sum(candidate_frame.event_distribution.model_dump().values()) == pytest.approx(1.0)
 
 
+def test_primary_target_is_dense_for_user_speech_and_silence() -> None:
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=3.0,
+        annotation_end_seconds=3.0,
+        user=_speaker_annotation(
+            side=SpeakerSide.SPEAKER2,
+            speech_segments=(AnnotationSpan(start_seconds=0.4, end_seconds=1.4, text="hello"),),
+            segment_targets=(_segment_target(start_seconds=0.4, end_seconds=1.4),),
+        ),
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    speech_frame = frames[6]
+    silence_frame = frames[25]
+
+    assert speech_frame.hold_probability == pytest.approx(1.0)
+    assert speech_frame.yield_probability == pytest.approx(0.0)
+    assert speech_frame.primary_valid
+    assert silence_frame.hold_probability == pytest.approx(0.0)
+    assert silence_frame.yield_probability == pytest.approx(1.0)
+    assert silence_frame.primary_valid
+
+
 def test_assistant_speaking_is_an_input_and_respects_playback_pauses() -> None:
     frames = build_frame_previews(
         start_seconds=0.0,
@@ -140,15 +164,18 @@ def test_backchannel_probability_reduces_yield_and_populates_event_target() -> N
         assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
     )
 
+    speech_frame = frames[6]
     candidate_frame = frames[12]
 
+    assert speech_frame.yield_probability == pytest.approx(0.8)
+    assert speech_frame.hold_probability == pytest.approx(0.2)
     assert candidate_frame.yield_probability == pytest.approx(0.0)
     assert candidate_frame.event_distribution is not None
     assert candidate_frame.event_distribution.backchannel == pytest.approx(0.8)
     assert candidate_frame.event_distribution.continuation_pause == pytest.approx(0.2)
 
 
-def test_censored_boundary_masks_primary_target() -> None:
+def test_censored_boundary_masks_only_event_target() -> None:
     frames = build_frame_previews(
         start_seconds=0.0,
         end_seconds=2.0,
@@ -165,9 +192,10 @@ def test_censored_boundary_masks_primary_target() -> None:
 
     assert candidate_frame.candidate
     assert candidate_frame.candidate_source is CandidateSource.CENSORED
-    assert not candidate_frame.primary_valid
-    assert candidate_frame.yield_probability is None
-    assert candidate_frame.primary_reliability_source is None
+    assert candidate_frame.primary_valid
+    assert candidate_frame.yield_probability == pytest.approx(1.0)
+    assert candidate_frame.primary_reliability_source is ReliabilitySource.UNMEASURED
+    assert not candidate_frame.event_valid
 
 
 def test_future_activity_bins_are_hard_and_masked_at_annotation_end() -> None:

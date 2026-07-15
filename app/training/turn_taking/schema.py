@@ -35,7 +35,7 @@ class EventTargetDistribution(FrozenBaseModel):
 
 class DecisionTarget(FrozenBaseModel):
     time_seconds: float = Field(ge=0.0)
-    yield_probability: float | None = Field(ge=0.0, le=1.0)
+    yield_probability: float = Field(ge=0.0, le=1.0)
     primary_reliability: float | None = Field(ge=0.0, le=1.0)
     event_distribution: EventTargetDistribution | None
     event_reliability: float | None = Field(ge=0.0, le=1.0)

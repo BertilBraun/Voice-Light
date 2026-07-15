@@ -27,10 +27,13 @@ def test_frame_targets_are_sparse_soft_and_separately_weighted() -> None:
             ActivitySpan(start_seconds=0.4, end_seconds=0.8),
             ActivitySpan(start_seconds=1.5, end_seconds=2.0),
         ),
-        decisions=(
-            _decision(time_seconds=0.5, yield_probability=0.2, reliability=0.9),
-            _decision(time_seconds=1.5, yield_probability=0.7, reliability=0.4),
-            _decision(time_seconds=2.0, yield_probability=0.3, reliability=None),
+        decisions=tuple(
+            _decision(
+                time_seconds=frame_index / 10,
+                yield_probability=(0.7 if frame_index == 15 else 0.3),
+                reliability=(0.4 if frame_index == 15 else None if frame_index == 20 else 0.9),
+            )
+            for frame_index in range(10, 30)
         ),
         source_dataset="test",
         source_license="test",
@@ -57,6 +60,32 @@ def test_frame_targets_are_sparse_soft_and_separately_weighted() -> None:
     assert not assistant_speaking[8]
     assert assistant_speaking[15]
     assert not assistant_speaking[20]
+
+
+def test_frame_targets_reject_missing_dense_primary_labels() -> None:
+    sample = TurnTakingSample(
+        sample_id="incomplete",
+        conversation_id="conversation",
+        target_speaker_id="target",
+        target_audio_path=Path("target.wav"),
+        annotation_reference_audio_path=None,
+        sample_rate_hz=16_000,
+        context_start_seconds=0.0,
+        decision_start_seconds=1.0,
+        decision_end_seconds=2.0,
+        assistant_speech_spans=(),
+        decisions=(_decision(time_seconds=1.0, yield_probability=1.0, reliability=None),),
+        source_dataset="test",
+        source_license="test",
+    )
+
+    with pytest.raises(ValueError, match="missing dense HOLD/YIELD labels"):
+        build_frame_targets(
+            sample,
+            frame_seconds=0.1,
+            burn_in_seconds=1.0,
+            unmeasured_reliability_weight=1.0,
+        )
 
 
 def _decision(
