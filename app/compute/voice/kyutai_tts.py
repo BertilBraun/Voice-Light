@@ -43,6 +43,7 @@ KYUTAI_TTS_WARMUP_TEXT: Final = "Warmup."
 KYUTAI_TTS_INPUT_QUEUE_SIZE: Final = 64
 KYUTAI_TTS_OUTPUT_QUEUE_SIZE: Final = 32
 KYUTAI_TTS_QUEUE_POLL_SECONDS: Final = 0.1
+KYUTAI_TTS_FINAL_FLUSH_MAX_STEPS: Final = 64
 
 
 class _StreamMarker(Enum):
@@ -305,6 +306,18 @@ class _KyutaiStreamingGenerator:
             if self.cancellation_event.is_set():
                 return
             self._step()
+        self._flush_to_end_step()
+
+    def _flush_to_end_step(self) -> None:
+        if self.state.end_step is None:
+            raise AssertionError("Kyutai generation ended without a model end step.")
+        samples_per_frame = round(self.model.mimi.sample_rate / self.model.mimi.frame_rate)
+        target_sample_count = self.state.end_step * samples_per_frame
+        for _ in range(KYUTAI_TTS_FINAL_FLUSH_MAX_STEPS):
+            if self.cancellation_event.is_set() or self.emitted_sample_count >= target_sample_count:
+                return
+            self._step()
+        raise RuntimeError("Kyutai delayed audio did not reach the model end step.")
 
     def _step(self) -> None:
         if self.cancellation_event.is_set():
