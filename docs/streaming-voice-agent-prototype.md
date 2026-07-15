@@ -9,7 +9,7 @@ or orchestrate voice sessions.
 
 Each compute WebSocket creates one ephemeral `VoiceSession`. That object owns the Silero VAD,
 pre-roll buffer, Nemotron decoder session, turn policy, ordered conversation, Qwen generation,
-Pocket TTS work, generation identifiers, and cancellation. Closing the WebSocket destroys all of
+Kyutai TTS generation, generation identifiers, and cancellation. Closing the WebSocket destroys all of
 that state. Only loaded model runtimes outlive a connection; there is no persistence, session
 re-entry, or reconnection protocol.
 
@@ -33,27 +33,30 @@ validated playback offsets enter model history.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
   that generation. The browser logs both a table and the complete formatted JSON snapshot to its
   developer console for prompt inspection.
-- Completed sentence chunks enter Pocket TTS while Qwen continues generating later text.
+- Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
+  final trailing word is flushed when Qwen finishes.
 - A new authoritative server speech-start cancels the active Qwen/TTS task and tells the browser
   to discard that generation's queued audio.
 
-Generated assistant text appears immediately as muted text. Each independently synthesized
-sentence is buffered until its exact PCM sample count is known. The server sends its text and sample
-metadata before its audio so interpolation is available from the first played sample. The playback
-worklet reports played samples, and the page linearly interpolates character-level visual progress
-within the sentence. Whenever playback crosses the end of a word, the page acknowledges that
-generated-text offset. The server validates generation ID, sentence ID, word boundary, range, and
-monotonicity, then updates one assistant entry in model history. Interrupted entries retain the
-acknowledged whole-word prefix with a trailing `...`; generated but unplayed text remains visible
-and muted but does not enter model history. Completely drained playback commits the full response
-without an ellipsis.
+Generated assistant text appears immediately as muted text. Kyutai's delayed-stream state exposes
+the model step at which each input word starts. The server converts that step at Mimi's 12.5 Hz frame
+rate into a generation-relative PCM sample offset and sends the boundary to the playback worklet.
+When playback consumes the first sample at or after a word start, the page highlights and
+acknowledges the entire original word, including attached punctuation. The server validates the
+generation ID, text offset, boundary sample, played sample count, and monotonicity. Interrupted
+entries retain that optimistic whole-word prefix with a trailing `...`; generated but unplayed text
+remains visible and muted but does not enter model history. Completely drained playback commits the
+full response without an ellipsis. The step/sample conversion follows Kyutai's documented frame
+rate and still requires codec-priming calibration on the target GPU deployment.
 
 ## Protocol
 
 Browser-to-server JSON events:
 
 - `session.start` with `input_sample_rate` (currently exactly 16000)
-- `playback.progress` with `generation_id`, `sentence_id`, and `text_offset`
+- `playback.progress` with `generation_id`, `text_offset`, `boundary_start_sample`, and
+  `played_sample_count`
+- `playback.stopped` with the final generation ID, text offset, and played sample count after cancel
 - `playback.complete` with `generation_id`
 - `session.stop`
 
@@ -61,14 +64,14 @@ All microphone audio uses unwrapped binary PCM16 messages. A bounded server queu
 ingestion from recognition and applies backpressure if the single ASR worker cannot keep up.
 
 Server-to-browser JSON events include `session.ready`, VAD boundaries, partial/final transcripts,
-turn commitment, the exact `llm.history` snapshot, assistant text deltas, per-sentence audio
-metadata, generation audio boundaries, cancellation, and errors. `assistant.audio.sentence`
-identifies a sentence's generation, sentence ID, generated-text range, and exact PCM sample count
-before that sentence's audio frames arrive. Assistant binary frames begin with three little-endian
-unsigned 32-bit integers: generation ID, sequence number, and sentence ID. Remaining bytes are mono
+turn commitment, the exact `llm.history` snapshot, assistant text deltas, word-start audio
+metadata, generation audio boundaries, cancellation, and errors. `assistant.audio.text_boundary`
+maps an original generated-text offset to a generation-relative PCM start sample. Assistant binary
+frames begin with three little-endian unsigned 32-bit integers: generation ID, sequence number, and
+the chunk's generation-relative start sample. Remaining bytes are mono
 PCM16 at the `output_sample_rate` announced by `session.ready`. The browser rejects stale/cancelled
 generations and out-of-sequence frames. Its playback worklet resamples from the announced server
-rate to the browser AudioContext rate while retaining per-sentence sample progress.
+rate to the browser AudioContext rate while retaining generation-relative input sample progress.
 
 For microphone-path diagnostics, the page retains the exact 16 kHz PCM buffers that it successfully
 sends over the WebSocket. When a session stops or disconnects, it exposes the buffers as a playable

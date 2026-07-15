@@ -118,7 +118,7 @@ bash deployment/compute/install-service.sh
 
 `bootstrap.sh` installs Linux audio/compiler packages, installs uv, synchronizes the locked Python
 3.12 environment with the `compute` dependency extra, validates the RTX 4090/CUDA runtime, caches
-required voice models, and performs import and Pocket TTS streaming smoke tests. Pocket TTS, NeMo,
+required voice models, and performs import and Kyutai TTS streaming smoke tests. Moshi, NeMo,
 librosa, and faster-whisper are compute-only dependencies and are not installed for the local app.
 The script creates an ignored `.env.compute` containing a new bearer token. Copy the token securely
 into `VOICE_LIGHT_COMPUTE_TOKEN` on the local machine.

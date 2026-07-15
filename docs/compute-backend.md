@@ -21,7 +21,7 @@ Compute and shared modules must never import local modules. Local modules call c
 through the schemas in `app.shared` and their authenticated clients.
 
 The browser connects directly to `/v1/voice`. One compute-side `VoiceSession` owns server Silero
-VAD, genuine streaming Nemotron state, turn decisions, conversation history, Qwen/Pocket work, and
+VAD, genuine streaming Nemotron state, turn decisions, conversation history, Qwen/Kyutai work, and
 cancellation for the life of that WebSocket. The protocol is optimized for this specific cascade,
 not for provider-neutral ASR/LLM/TTS operations. No voice state survives disconnection.
 
@@ -41,19 +41,18 @@ uploads are decoded in request-scoped temporary storage and deleted after the re
 
 ## TTS decision
 
-The prototype uses Kyutai Pocket TTS 2.1 with its `generate_audio_stream` iterator. It is a current,
-small English model with a documented roughly 200 ms first chunk, faster-than-real-time CPU
-generation, reusable voice state, and rapid abandonment when a local generation is cancelled. Its
-CPU execution leaves the RTX 4090 VRAM available to Nemotron and Qwen and it uses the same current
-Torch dependency rather than forcing the old Transformers environment required by CosyVoice.
+The prototype uses `kyutai/tts-1.6b-en_fr` through Moshi's direct PyTorch runtime. The checkpoint,
+Mimi codec, and fixed precomputed voice are loaded once. Each assistant turn creates fresh delayed-
+stream LM and codec state, accepts complete words incrementally, and emits PCM frames and model-
+predicted word-start timestamps incrementally. Batch size is always one. Cancellation signals the
+generation worker immediately; a lock prevents a canceled worker and its successor from using the
+shared model concurrently.
 
-Qwen3-TTS 0.6B is the strongest future quality challenger. It advertises a 97 ms streaming
-architecture, but its current official Python distribution pins Transformers 4.x while Nemotron's
-current implementation needs Transformers 5.x, and its supported Python generation methods return
-complete waveforms. Chatterbox Turbo also exposes whole-utterance generation in its official API.
-Kyutai's larger delayed-stream model is genuinely streaming but adds substantially more model and
-runtime complexity than this prototype needs.
+The Moshi package's conservative dependency ceilings lag this repository's Torch, Hugging Face Hub,
+and Safetensors versions. `tool.uv.override-dependencies` explicitly selects the repository's newer
+shared stack. This combination and the 32-codebook quality setting must be validated on the rented
+GPU before deployment. If memory or throughput is insufficient, codebook count is the first
+benchmark variable; lowering it trades audio quality for speed and does not change the protocol.
 
 `deployment/compute/benchmark_tts.py` measures cold/warm first-chunk latency, total generation time,
-real-time factor, and output duration on the rented machine so the choice can be revisited with
-hardware evidence.
+real-time factor, output duration, and emitted boundary count on the rented machine.

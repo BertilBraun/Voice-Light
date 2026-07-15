@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib
 import subprocess
 from collections.abc import Sequence
 
 import torch
 from huggingface_hub import snapshot_download
-from pocket_tts import TTSModel
 
+from app.compute.voice.interfaces import SynthesisWord, SynthesizedAudioChunk
+from app.compute.voice.kyutai_tts import (
+    KYUTAI_TTS_MODEL_NAME,
+    KYUTAI_TTS_MODEL_REVISION,
+    KyutaiSpeechSynthesizer,
+)
 from app.compute.voice.models import LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION
 from app.compute.voice.nemotron_worker import MODEL_NAME, MODEL_REVISION
 
@@ -46,7 +52,7 @@ def validate_imports() -> None:
         "faster_whisper",
         "librosa",
         "nemo.collections.asr",
-        "pocket_tts",
+        "moshi",
         "soundfile",
         "transformers",
     ):
@@ -58,19 +64,35 @@ def download_required_models() -> None:
     for repository_id, revision in (
         (MODEL_NAME, MODEL_REVISION),
         (LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION),
+        (KYUTAI_TTS_MODEL_NAME, KYUTAI_TTS_MODEL_REVISION),
     ):
         snapshot_download(repository_id, revision=revision)
         print(f"Cached {repository_id} at revision {revision}.")
 
 
 def smoke_test_tts() -> None:
-    model = TTSModel.load_model(language="english")
-    voice_state = model.get_state_for_audio_prompt("alba")
-    stream = model.generate_audio_stream(voice_state, "Voice Light is ready.")
-    sample_count = sum(audio_chunk.numel() for audio_chunk in stream)
+    asyncio.run(_smoke_test_tts())
+
+
+async def _smoke_test_tts() -> None:
+    synthesizer = await asyncio.to_thread(KyutaiSpeechSynthesizer)
+    session = synthesizer.start_session()
+    await session.add_word(SynthesisWord(text="Voice", text_start=0, text_end=5))
+    await session.add_word(SynthesisWord(text="Light", text_start=6, text_end=11))
+    await session.add_word(SynthesisWord(text="is", text_start=12, text_end=14))
+    await session.add_word(SynthesisWord(text="ready.", text_start=15, text_end=21))
+    await session.finish_input()
+    sample_count = 0
+    async for event in session.stream_events():
+        match event:
+            case SynthesizedAudioChunk():
+                sample_count += len(event.pcm_bytes) // 2
+            case _:
+                pass
+    await session.cancel()
     if sample_count == 0:
-        raise RuntimeError("Pocket TTS produced an empty smoke-test chunk.")
-    print("Pocket TTS model and streaming decoder smoke test passed.")
+        raise RuntimeError("Kyutai TTS produced no smoke-test audio.")
+    print("Kyutai TTS word streaming and decoder smoke test passed.")
 
 
 if __name__ == "__main__":
