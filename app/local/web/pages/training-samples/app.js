@@ -3,6 +3,7 @@ const userSideSelect = document.querySelector("#user-side-select");
 const startInput = document.querySelector("#start-input");
 const loadButton = document.querySelector("#load-button");
 const randomButton = document.querySelector("#random-button");
+const nextRandomButton = document.querySelector("#next-random-button");
 const positionSlider = document.querySelector("#position-slider");
 const positionLabel = document.querySelector("#position-label");
 const roleLabel = document.querySelector("#role-label");
@@ -35,17 +36,11 @@ const rowDefinitions = [
 let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
+let annotatedSamples = [];
 
 async function loadSamples() {
   try {
-    const response = await fetch("/api/dataset-dashboard/samples?limit=200");
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(errorMessage(payload, response.status));
-    }
-    const annotatedSamples = payload.samples.filter(
-      (sample) => sample.latest_quality?.payload?.conversation_annotation != null,
-    );
+    annotatedSamples = await loadAllAnnotatedSamples();
     sampleSelect.replaceChildren(
       ...annotatedSamples.map((sample) => {
         const option = document.createElement("option");
@@ -65,12 +60,35 @@ async function loadSamples() {
   }
 }
 
-async function loadPreview(randomLocation) {
+async function loadAllAnnotatedSamples() {
+  const pageSize = 200;
+  const samples = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const response = await fetch(
+      `/api/dataset-dashboard/samples?limit=${pageSize}&offset=${offset}`,
+    );
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(errorMessage(payload, response.status));
+    }
+    samples.push(
+      ...payload.samples.filter(
+        (sample) => sample.latest_quality?.payload?.conversation_annotation != null,
+      ),
+    );
+    if (payload.samples.length < pageSize) {
+      return samples;
+    }
+  }
+}
+
+async function loadPreview(randomLocation, autoplay = false) {
   const sampleId = sampleSelect.value;
   if (!sampleId) {
     return;
   }
   pausePlayback();
+  userAudio.autoplay = autoplay;
   setStatus("Building frame preview…", false);
   const parameters = new URLSearchParams({
     sample_id: sampleId,
@@ -97,7 +115,14 @@ async function loadPreview(randomLocation) {
       preview.annotated_duration_seconds < preview.represented_duration_seconds
         ? `Preview ready · ${formatDuration(preview.annotated_duration_seconds)} annotated of ${formatDuration(preview.represented_duration_seconds)}`
         : "Preview ready";
-    setStatus(coverageMessage, false);
+    const playbackStarted = autoplay ? await startPlayback() : false;
+    let statusMessage = coverageMessage;
+    if (playbackStarted) {
+      statusMessage = `${coverageMessage} - playing`;
+    } else if (autoplay) {
+      statusMessage = `${coverageMessage} - press Play if autoplay was blocked`;
+    }
+    setStatus(statusMessage, false);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -121,6 +146,33 @@ function configureControls() {
 function configureAudio() {
   userAudio.src = `/api/dataset-dashboard/audio/${preview.sample_id}/${preview.user_side}`;
   userAudio.currentTime = preview.start_seconds;
+}
+
+async function startPlayback() {
+  try {
+    await userAudio.play();
+    playButton.textContent = "Pause";
+    return true;
+  } catch {
+    userAudio.autoplay = false;
+    playButton.textContent = "Play user input";
+    return false;
+  }
+}
+
+async function loadNextRandomSample() {
+  if (annotatedSamples.length === 0) {
+    return;
+  }
+  const currentSampleId = sampleSelect.value;
+  const alternatives = annotatedSamples.filter(
+    (sample) => sample.sample.id !== currentSampleId,
+  );
+  const candidates = alternatives.length > 0 ? alternatives : annotatedSamples;
+  const selectedSample = candidates[Math.floor(Math.random() * candidates.length)];
+  sampleSelect.value = selectedSample.sample.id;
+  userSideSelect.value = Math.random() < 0.5 ? "speaker1" : "speaker2";
+  await loadPreview(true, true);
 }
 
 function renderSummary() {
@@ -442,6 +494,7 @@ sampleSelect.addEventListener("change", () => loadPreview(true));
 userSideSelect.addEventListener("change", () => loadPreview(true));
 loadButton.addEventListener("click", () => loadPreview(false));
 randomButton.addEventListener("click", () => loadPreview(true));
+nextRandomButton.addEventListener("click", loadNextRandomSample);
 positionSlider.addEventListener("input", () => {
   startInput.value = Number(positionSlider.value).toFixed(2);
 });

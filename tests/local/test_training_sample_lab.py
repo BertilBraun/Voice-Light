@@ -41,6 +41,10 @@ def training_sample_script() -> Iterator[str]:
         "primary_valid",
         "event_distribution",
         "future_activity",
+        "nextRandomButton",
+        "loadNextRandomSample",
+        "loadAllAnnotatedSamples",
+        "await loadPreview(true, true)",
     ),
 )
 def test_training_sample_lab_displays_target(label_field: str, training_sample_script: str) -> None:
