@@ -152,6 +152,7 @@ def test_nemotron_send_failure_replaces_worker_and_releases_lock(
             else:
                 await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2))
 
+        await session.close()
         assert worker_manager.replacement_count == 1
         assert not worker_manager.lock.locked()
 

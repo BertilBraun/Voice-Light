@@ -279,6 +279,8 @@ class NemotronStreamingSession:
 
     async def _fail_worker(self, error: Exception) -> None:
         worker = self._require_worker()
+        self.finished = True
+        self.pending_audio.clear()
         logger.error("Nemotron worker operation failed: %s", error)
         try:
             await self.worker_manager.replace(worker)
