@@ -10,9 +10,9 @@ INPUT_SAMPLE_RATE: Final = 16_000
 
 
 class SileroSpeechDetector:
-    def __init__(self) -> None:
+    def __init__(self, model: torch.nn.Module) -> None:
         self.iterator = VADIterator(
-            load_silero_vad(),
+            model,
             sampling_rate=INPUT_SAMPLE_RATE,
             threshold=0.4,
             min_silence_duration_ms=250,
@@ -33,3 +33,12 @@ class SileroSpeechDetector:
             if event is not None and "end" in event:
                 self.speech_active = False
         return self.speech_active
+
+
+class SileroSpeechDetectorFactory:
+    def __init__(self) -> None:
+        self.model: torch.nn.Module = load_silero_vad()
+        self.create()
+
+    def create(self) -> SileroSpeechDetector:
+        return SileroSpeechDetector(self.model)

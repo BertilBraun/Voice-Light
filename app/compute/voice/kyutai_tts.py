@@ -18,6 +18,7 @@ from app.compute.voice.interfaces import (
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
 )
+from app.compute.voice.subprocess_start import read_worker_start_event
 from app.compute.voice.tts_worker_protocol import (
     CancelTtsCommand,
     FinishTtsCommand,
@@ -40,6 +41,7 @@ KYUTAI_TTS_PYTHON_PATH: Final = Path(sys.executable)
 KYUTAI_TTS_GENERATION_PROGRESS_TIMEOUT_SECONDS: Final = 5.0
 KYUTAI_TTS_CANCEL_TIMEOUT_SECONDS: Final = 2.0
 KYUTAI_TTS_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
+KYUTAI_TTS_WORKER_START_TIMEOUT_SECONDS: Final = 180.0
 KYUTAI_TTS_WATCHDOG_POLL_SECONDS: Final = 0.1
 
 
@@ -79,7 +81,12 @@ class KyutaiTtsWorkerProcess:
         assert self.process.stdout is not None
         self.input_stream: TextIO = self.process.stdin
         self.output_stream: TextIO = self.process.stdout
-        ready_event = self.read_event()
+        ready_event = read_worker_start_event(
+            self.read_event,
+            self.terminate,
+            KYUTAI_TTS_WORKER_START_TIMEOUT_SECONDS,
+            "Kyutai TTS",
+        )
         if not isinstance(ready_event, TtsWorkerReadyEvent):
             self.terminate()
             raise RuntimeError("The Kyutai TTS worker failed to initialize.")
@@ -164,11 +171,6 @@ class RestartingKyutaiTtsWorkerManager:
         logger.error("replacing unresponsive Kyutai TTS worker process")
         self.worker = None
         await asyncio.to_thread(failed_worker.terminate)
-        replacement_worker = await asyncio.to_thread(KyutaiTtsWorkerProcess, self.python_path)
-        if replacement_worker.sample_rate != self._sample_rate:
-            replacement_worker.terminate()
-            raise RuntimeError("The replacement Kyutai TTS worker changed sample rate.")
-        self.worker = replacement_worker
 
     def close(self) -> None:
         worker = self.worker
@@ -296,15 +298,18 @@ class KyutaiSpeechSynthesisSession:
         except Exception as error:
             await self._fail_worker(error)
             await self._stop_background_tasks()
-            return
+            raise RuntimeError("Failed to cancel Kyutai TTS generation.") from error
         assert self.output_task is not None
         try:
             await asyncio.wait_for(
                 asyncio.shield(self.output_task),
                 timeout=self.cancel_timeout_seconds,
             )
-        except TimeoutError:
-            await self._fail_worker(RuntimeError("Kyutai TTS cancellation timed out."))
+        except TimeoutError as timeout_error:
+            error = RuntimeError("Kyutai TTS cancellation timed out.")
+            await self._fail_worker(error)
+            await self._stop_background_tasks()
+            raise error from timeout_error
         else:
             await self._finalize_worker(replace=self.reader_error is not None)
         await self._stop_background_tasks()

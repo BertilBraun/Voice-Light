@@ -22,11 +22,13 @@ from app.compute.voice.asr_worker_protocol import (
     asr_worker_event_adapter,
 )
 from app.compute.voice.interfaces import TranscriptionSession
+from app.compute.voice.subprocess_start import read_worker_start_event
 
 logger = logging.getLogger(__name__)
 NEMOTRON_PYTHON_PATH: Final = Path(sys.executable)
 NEMOTRON_SESSION_FINISH_TIMEOUT_SECONDS: Final = 15.0
 NEMOTRON_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
+NEMOTRON_WORKER_START_TIMEOUT_SECONDS: Final = 180.0
 STREAMING_CHUNK_DURATION_MS: Final = 80
 INPUT_SAMPLE_RATE: Final = 16_000
 PCM_BYTES_PER_SAMPLE: Final = 2
@@ -67,9 +69,18 @@ class NemotronWorkerProcess:
         assert self.process.stdout is not None
         self.input_stream: TextIO = self.process.stdin
         self.output_stream: TextIO = self.process.stdout
-        ready_event = self.read_event()
-        if not isinstance(ready_event, AsrWorkerReadyEvent):
-            raise RuntimeError("The Nemotron worker failed to initialize.")
+        try:
+            ready_event = read_worker_start_event(
+                self.read_event,
+                self.terminate,
+                NEMOTRON_WORKER_START_TIMEOUT_SECONDS,
+                "Nemotron",
+            )
+            if not isinstance(ready_event, AsrWorkerReadyEvent):
+                raise RuntimeError("The Nemotron worker failed to initialize.")
+        except BaseException:
+            self.terminate()
+            raise
 
     def send(self, command: AsrWorkerCommand) -> None:
         self.input_stream.write(command.model_dump_json() + "\n")
@@ -139,7 +150,6 @@ class RestartingNemotronWorkerManager:
         logger.error("replacing unresponsive Nemotron worker process")
         self.worker = None
         await asyncio.to_thread(failed_worker.terminate)
-        self.worker = await asyncio.to_thread(NemotronWorkerProcess, self.python_path)
 
     def close(self) -> None:
         if self.worker is None:

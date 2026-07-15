@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import queue
 from pathlib import Path
 
@@ -74,6 +75,27 @@ class FakeNemotronWorkerManager:
         assert failed_worker is self.worker
         self.replacement_count += 1
         self.worker.terminate()
+
+
+class FakeNemotronProcess:
+    def __init__(self) -> None:
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO(PartialAsrEvent(text="unexpected").model_dump_json() + "\n")
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return 0 if self.terminated else None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout: float) -> int:
+        del timeout
+        self.terminated = True
+        return 0
+
+    def kill(self) -> None:
+        self.terminated = True
 
 
 def test_nemotron_session_streams_partial_and_final_text() -> None:
@@ -182,3 +204,20 @@ def test_nemotron_spawn_failure_releases_manager_lock(
         assert not worker_manager.lock.locked()
 
     asyncio.run(acquire_worker())
+
+
+def test_nemotron_wrong_start_event_terminates_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeNemotronProcess()
+
+    def create_process(*arguments: object, **options: object) -> FakeNemotronProcess:
+        del arguments, options
+        return process
+
+    monkeypatch.setattr(nemotron_client.subprocess, "Popen", create_process)
+
+    with pytest.raises(RuntimeError, match="failed to initialize"):
+        nemotron_client.NemotronWorkerProcess(Path("python"))
+
+    assert process.terminated

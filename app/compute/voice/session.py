@@ -384,19 +384,52 @@ class VoiceSession:
         synthesis = self.speech_synthesizer.start_session()
         text_task = asyncio.create_task(self._stream_response_text(generation, synthesis))
         audio_task = asyncio.create_task(self._stream_speech(generation, synthesis.stream_events()))
+        generation_error: BaseException | None = None
         try:
             await asyncio.gather(text_task, audio_task)
             generation.generation_finished = True
             self._commit_assistant_if_complete(generation)
+        except BaseException as error:
+            generation_error = error
+            raise
         finally:
             pending_tasks = tuple(task for task in (text_task, audio_task) if not task.done())
             for task in pending_tasks:
                 if task.cancelling() == 0:
                     task.cancel()
-            await synthesis.cancel()
+            try:
+                await synthesis.cancel()
+            except Exception as error:
+                if isinstance(generation_error, asyncio.CancelledError):
+                    raise VoiceComponentError(
+                        VoiceComponent.SPEECH_SYNTHESIS,
+                        VoiceOperation.STREAM_SYNTHESIS,
+                        f"Speech synthesis cleanup failed: {error}",
+                    ) from error
+                if generation_error is None:
+                    raise
+                logger.exception(
+                    "speech synthesis cleanup failed after generation failure: "
+                    "session=%s generation=%d",
+                    self.session_id,
+                    generation.generation_id,
+                )
             for task in pending_tasks:
-                with contextlib.suppress(asyncio.CancelledError):
+                try:
                     await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    if isinstance(generation_error, asyncio.CancelledError):
+                        raise
+                    if generation_error is None:
+                        raise
+                    logger.exception(
+                        "generation child cleanup failed after generation failure: "
+                        "session=%s generation=%d",
+                        self.session_id,
+                        generation.generation_id,
+                    )
 
     async def _stream_response_text(
         self,

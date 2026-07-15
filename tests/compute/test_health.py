@@ -31,5 +31,6 @@ def test_liveness_is_public_and_readiness_requires_authentication(tmp_path: Path
         "pending",
         "pending",
         "pending",
+        "pending",
     ]
     assert response.headers["X-Request-ID"]

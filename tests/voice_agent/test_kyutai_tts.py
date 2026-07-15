@@ -190,7 +190,8 @@ def test_kyutai_session_replaces_worker_after_cancel_timeout() -> None:
         session = _make_session(worker_manager, cancel_timeout_seconds=0.01)
 
         await session.add_word(SynthesisWord(text="Stop", text_start=0, text_end=4))
-        await session.cancel()
+        with pytest.raises(RuntimeError, match="cancellation timed out"):
+            await session.cancel()
 
         assert worker_manager.replacement_count == 1
         assert worker.termination_count == 1

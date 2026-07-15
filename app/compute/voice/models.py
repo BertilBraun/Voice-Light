@@ -26,12 +26,14 @@ from app.compute.voice.llm_worker_protocol import (
     StartLlmCommand,
     llm_worker_event_adapter,
 )
+from app.compute.voice.subprocess_start import read_worker_start_event
 
 logger = logging.getLogger(__name__)
 QWEN_PYTHON_PATH: Final = Path(sys.executable)
 QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS: Final = 10.0
 QWEN_CANCELLATION_TIMEOUT_SECONDS: Final = 2.0
 QWEN_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
+QWEN_WORKER_START_TIMEOUT_SECONDS: Final = 180.0
 
 
 class QwenWorker(Protocol):
@@ -71,7 +73,12 @@ class QwenWorkerProcess:
         self.input_stream: TextIO = self.process.stdin
         self.output_stream: TextIO = self.process.stdout
         try:
-            ready_event = self.read_event()
+            ready_event = read_worker_start_event(
+                self.read_event,
+                self.terminate,
+                QWEN_WORKER_START_TIMEOUT_SECONDS,
+                "Qwen",
+            )
             if not isinstance(ready_event, LlmWorkerReadyEvent):
                 raise RuntimeError("The Qwen worker failed to initialize.")
         except BaseException:

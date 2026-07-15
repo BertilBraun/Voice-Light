@@ -228,6 +228,7 @@ class QwenWorkerController:
         command: StartLlmCommand,
         cancellation_event: threading.Event,
     ) -> None:
+        terminal_event: LlmWorkerEvent | None = None
         try:
             for text_delta in self.runtime.stream_text(command, cancellation_event):
                 self._send_event(
@@ -237,16 +238,14 @@ class QwenWorkerController:
                     )
                 )
             if cancellation_event.is_set():
-                self._send_event(LlmCancelledEvent(generation_id=command.generation_id))
+                terminal_event = LlmCancelledEvent(generation_id=command.generation_id)
             else:
-                self._send_event(LlmEndEvent(generation_id=command.generation_id))
+                terminal_event = LlmEndEvent(generation_id=command.generation_id)
         except Exception as error:
             logger.exception("Qwen generation failed: generation=%d", command.generation_id)
-            self._send_event(
-                LlmWorkerErrorEvent(
-                    generation_id=command.generation_id,
-                    message=str(error),
-                )
+            terminal_event = LlmWorkerErrorEvent(
+                generation_id=command.generation_id,
+                message=str(error),
             )
         finally:
             with self.state_lock:
@@ -256,6 +255,8 @@ class QwenWorkerController:
                     and active_generation.generation_id == command.generation_id
                 ):
                     self.active_generation = None
+            if terminal_event is not None:
+                self._send_event(terminal_event)
 
     def _send_event(self, event: LlmWorkerEvent) -> None:
         with self.output_lock:

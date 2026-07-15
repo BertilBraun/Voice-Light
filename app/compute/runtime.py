@@ -11,6 +11,7 @@ from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessio
 from app.compute.voice.kyutai_tts import KyutaiSpeechSynthesizer
 from app.compute.voice.models import TransformersLanguageModel
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
+from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
 from app.shared.compute_api import ModelStage, ModelStageStatus
 
 logger = logging.getLogger(__name__)
@@ -36,11 +37,13 @@ class MutableModelStage:
 class ComputeRuntime:
     def __init__(self) -> None:
         self.streaming_asr_stage = MutableModelStage("streaming_asr")
+        self.speech_detection_stage = MutableModelStage("speech_detection")
         self.language_model_stage = MutableModelStage("language_model")
         self.speech_synthesis_stage = MutableModelStage("speech_synthesis")
         self.batch_asr_models = AsrModelCache()
         self.voice_session_admission = SingleVoiceSessionAdmission()
         self.streaming_asr: NemotronStreamingTranscriber | None = None
+        self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
         self.language_model: TransformersLanguageModel | None = None
         self.speech_synthesizer: KyutaiSpeechSynthesizer | None = None
         self.loading_task: asyncio.Task[None] | None = None
@@ -82,6 +85,11 @@ class ComputeRuntime:
             raise RuntimeError("Streaming ASR is not ready.")
         return self.streaming_asr
 
+    def require_speech_detector_factory(self) -> SileroSpeechDetectorFactory:
+        if self.speech_detector_factory is None:
+            raise RuntimeError("Speech detector is not ready.")
+        return self.speech_detector_factory
+
     def require_language_model(self) -> TransformersLanguageModel:
         if self.language_model is None:
             raise RuntimeError("Language model is not ready.")
@@ -93,10 +101,19 @@ class ComputeRuntime:
         return self.speech_synthesizer
 
     async def _load_models(self) -> None:
+        await self._load_speech_detector()
         await self._load_streaming_asr()
         await self._load_language_model()
         await self._load_speech_synthesizer()
         logger.info("all required compute models ready")
+
+    async def _load_speech_detector(self) -> None:
+        factory = await self._timed_load(
+            self.speech_detection_stage,
+            SileroSpeechDetectorFactory,
+        )
+        if factory is not None:
+            self.speech_detector_factory = factory
 
     async def _load_streaming_asr(self) -> None:
         model = await self._timed_load(
@@ -149,6 +166,7 @@ class ComputeRuntime:
 
     def _stages(self) -> tuple[MutableModelStage, ...]:
         return (
+            self.speech_detection_stage,
             self.streaming_asr_stage,
             self.language_model_stage,
             self.speech_synthesis_stage,
