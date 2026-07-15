@@ -107,3 +107,10 @@ class TrainingSamplePreview(FrozenBaseModel):
     user_points: tuple[PreviewPoint, ...]
     assistant_points: tuple[PreviewPoint, ...]
     frames: tuple[TrainingFramePreview, ...]
+
+
+class TrainingSampleOption(FrozenBaseModel):
+    sample_id: UUID
+    external_id: str
+    represented_duration_seconds: float
+    usable_event_count: int

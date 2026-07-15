@@ -160,8 +160,22 @@ button.primary {
 }
 
 .transport {
+  flex-wrap: wrap;
   justify-content: flex-start;
   gap: 18px;
+}
+
+.play-both-option {
+  align-items: center;
+  display: flex;
+  font-size: 13px;
+  gap: 7px;
+}
+
+.play-both-option input {
+  accent-color: #146b63;
+  min-height: 18px;
+  width: 18px;
 }
 
 #time-readout {

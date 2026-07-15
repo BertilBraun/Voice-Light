@@ -48,9 +48,14 @@
 
       <section class="panel transport">
         <button id="play-button" type="button" disabled>Play user input</button>
+        <label class="play-both-option">
+          <input id="play-both-input" type="checkbox" />
+          Play both tracks
+        </label>
         <span id="time-readout">00:00.00 / 00:20.00</span>
         <span class="input-note">User audio plus the known assistant-speaking state are model inputs.</span>
         <audio id="user-audio" preload="metadata"></audio>
+        <audio id="assistant-audio" preload="metadata"></audio>
       </section>
 
       <section class="panel timeline-panel">

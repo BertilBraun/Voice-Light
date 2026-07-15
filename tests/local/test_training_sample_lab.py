@@ -43,8 +43,11 @@ def training_sample_script() -> Iterator[str]:
         "future_activity",
         "nextRandomButton",
         "loadNextRandomSample",
-        "loadAllAnnotatedSamples",
-        "await loadPreview(true, true)",
+        "/api/training-samples/options?limit=40",
+        "/api/training-samples/random-preview",
+        "playBothInput",
+        "assistantAudio",
+        "synchronizeAudioTracks",
     ),
 )
 def test_training_sample_lab_displays_target(label_field: str, training_sample_script: str) -> None:

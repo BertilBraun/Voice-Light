@@ -8,8 +8,10 @@ const positionSlider = document.querySelector("#position-slider");
 const positionLabel = document.querySelector("#position-label");
 const roleLabel = document.querySelector("#role-label");
 const playButton = document.querySelector("#play-button");
+const playBothInput = document.querySelector("#play-both-input");
 const timeReadout = document.querySelector("#time-readout");
 const userAudio = document.querySelector("#user-audio");
+const assistantAudio = document.querySelector("#assistant-audio");
 const timeline = document.querySelector("#timeline");
 const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
@@ -36,49 +38,29 @@ const rowDefinitions = [
 let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
-let annotatedSamples = [];
 
 async function loadSamples() {
   try {
-    annotatedSamples = await loadAllAnnotatedSamples();
+    const response = await fetch("/api/training-samples/options?limit=40");
+    const samples = await response.json();
+    if (!response.ok) {
+      throw new Error(errorMessage(samples, response.status));
+    }
     sampleSelect.replaceChildren(
-      ...annotatedSamples.map((sample) => {
+      ...samples.map((sample) => {
         const option = document.createElement("option");
-        option.value = sample.sample.id;
-        const annotation = sample.latest_quality.payload.conversation_annotation;
-        option.textContent = `${sample.sample.external_id} · ${formatDuration(sample.sample.duration_seconds ?? 0)} · ${annotation.usable_event_count} events`;
+        option.value = sample.sample_id;
+        option.textContent = sampleOptionLabel(sample);
         return option;
       }),
     );
-    if (annotatedSamples.length === 0) {
+    if (samples.length === 0) {
       throw new Error("No annotated dataset samples are available.");
     }
-    setStatus(`${annotatedSamples.length} annotated samples available`, false);
+    setStatus(`${samples.length} recent annotated samples loaded`, false);
     await loadPreview(true);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
-  }
-}
-
-async function loadAllAnnotatedSamples() {
-  const pageSize = 200;
-  const samples = [];
-  for (let offset = 0; ; offset += pageSize) {
-    const response = await fetch(
-      `/api/dataset-dashboard/samples?limit=${pageSize}&offset=${offset}`,
-    );
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(errorMessage(payload, response.status));
-    }
-    samples.push(
-      ...payload.samples.filter(
-        (sample) => sample.latest_quality?.payload?.conversation_annotation != null,
-      ),
-    );
-    if (payload.samples.length < pageSize) {
-      return samples;
-    }
   }
 }
 
@@ -88,7 +70,6 @@ async function loadPreview(randomLocation, autoplay = false) {
     return;
   }
   pausePlayback();
-  userAudio.autoplay = autoplay;
   setStatus("Building frame preview…", false);
   const parameters = new URLSearchParams({
     sample_id: sampleId,
@@ -103,29 +84,35 @@ async function loadPreview(randomLocation, autoplay = false) {
     if (!response.ok) {
       throw new Error(errorMessage(payload, response.status));
     }
-    preview = payload;
-    selectedFrameIndex = null;
-    playbackSeconds = preview.start_seconds;
-    configureControls();
-    configureAudio();
-    renderSummary();
-    renderSelectedFrame(null);
-    drawTimeline();
-    const coverageMessage =
-      preview.annotated_duration_seconds < preview.represented_duration_seconds
-        ? `Preview ready · ${formatDuration(preview.annotated_duration_seconds)} annotated of ${formatDuration(preview.represented_duration_seconds)}`
-        : "Preview ready";
-    const playbackStarted = autoplay ? await startPlayback() : false;
-    let statusMessage = coverageMessage;
-    if (playbackStarted) {
-      statusMessage = `${coverageMessage} - playing`;
-    } else if (autoplay) {
-      statusMessage = `${coverageMessage} - press Play if autoplay was blocked`;
-    }
-    setStatus(statusMessage, false);
+    await applyPreview(payload, autoplay);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   }
+}
+
+async function applyPreview(payload, autoplay) {
+  preview = payload;
+  selectedFrameIndex = null;
+  playbackSeconds = preview.start_seconds;
+  ensureSampleOption();
+  userSideSelect.value = preview.user_side;
+  configureControls();
+  configureAudio();
+  renderSummary();
+  renderSelectedFrame(null);
+  drawTimeline();
+  const coverageMessage =
+    preview.annotated_duration_seconds < preview.represented_duration_seconds
+      ? `Preview ready · ${formatDuration(preview.annotated_duration_seconds)} annotated of ${formatDuration(preview.represented_duration_seconds)}`
+      : "Preview ready";
+  const playbackStarted = autoplay ? await startPlayback() : false;
+  let statusMessage = coverageMessage;
+  if (playbackStarted) {
+    statusMessage = `${coverageMessage} - playing`;
+  } else if (autoplay) {
+    statusMessage = `${coverageMessage} - press Play if autoplay was blocked`;
+  }
+  setStatus(statusMessage, false);
 }
 
 function configureControls() {
@@ -145,34 +132,63 @@ function configureControls() {
 
 function configureAudio() {
   userAudio.src = `/api/dataset-dashboard/audio/${preview.sample_id}/${preview.user_side}`;
+  assistantAudio.src = `/api/dataset-dashboard/audio/${preview.sample_id}/${preview.assistant_side}`;
   userAudio.currentTime = preview.start_seconds;
+  assistantAudio.currentTime = preview.start_seconds;
 }
 
 async function startPlayback() {
+  synchronizeAudioTracks();
+  if (!playBothInput.checked) {
+    assistantAudio.pause();
+  }
   try {
-    await userAudio.play();
+    const playRequests = [userAudio.play()];
+    if (playBothInput.checked) {
+      playRequests.push(assistantAudio.play());
+    }
+    await Promise.all(playRequests);
     playButton.textContent = "Pause";
     return true;
   } catch {
-    userAudio.autoplay = false;
-    playButton.textContent = "Play user input";
+    pausePlayback();
     return false;
   }
 }
 
 async function loadNextRandomSample() {
-  if (annotatedSamples.length === 0) {
+  const currentSampleId = sampleSelect.value;
+  if (!currentSampleId) {
     return;
   }
-  const currentSampleId = sampleSelect.value;
-  const alternatives = annotatedSamples.filter(
-    (sample) => sample.sample.id !== currentSampleId,
+  pausePlayback();
+  setStatus("Choosing a random annotated sample…", false);
+  try {
+    const parameters = new URLSearchParams({current_sample_id: currentSampleId});
+    const response = await fetch(
+      `/api/training-samples/random-preview?${parameters.toString()}`,
+    );
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(errorMessage(payload, response.status));
+    }
+    await applyPreview(payload, true);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+function ensureSampleOption() {
+  let option = Array.from(sampleSelect.options).find(
+    (candidate) => candidate.value === String(preview.sample_id),
   );
-  const candidates = alternatives.length > 0 ? alternatives : annotatedSamples;
-  const selectedSample = candidates[Math.floor(Math.random() * candidates.length)];
-  sampleSelect.value = selectedSample.sample.id;
-  userSideSelect.value = Math.random() < 0.5 ? "speaker1" : "speaker2";
-  await loadPreview(true, true);
+  if (option === undefined) {
+    option = document.createElement("option");
+    option.value = preview.sample_id;
+    option.textContent = `${preview.external_id} · ${formatDuration(preview.represented_duration_seconds)}`;
+    sampleSelect.append(option);
+  }
+  sampleSelect.value = preview.sample_id;
 }
 
 function renderSummary() {
@@ -404,6 +420,7 @@ function selectFrameAtEvent(event) {
   const frame = preview.frames[selectedFrameIndex];
   playbackSeconds = frame.time_seconds;
   userAudio.currentTime = playbackSeconds;
+  assistantAudio.currentTime = playbackSeconds;
   renderSelectedFrame(frame);
   updateTimeReadout();
   drawTimeline();
@@ -419,14 +436,15 @@ async function togglePlayback() {
   }
   if (userAudio.currentTime < preview.start_seconds || userAudio.currentTime >= preview.end_seconds) {
     userAudio.currentTime = preview.start_seconds;
+    assistantAudio.currentTime = preview.start_seconds;
   }
-  await userAudio.play();
-  playButton.textContent = "Pause";
+  await startPlayback();
 }
 
 function pausePlayback() {
   userAudio.pause();
-  playButton.textContent = "Play user input";
+  assistantAudio.pause();
+  playButton.textContent = playBothInput.checked ? "Play both tracks" : "Play user input";
 }
 
 function trackPlayback() {
@@ -436,11 +454,38 @@ function trackPlayback() {
   playbackSeconds = userAudio.currentTime;
   if (playbackSeconds >= preview.end_seconds) {
     userAudio.currentTime = preview.end_seconds;
+    assistantAudio.currentTime = preview.end_seconds;
     playbackSeconds = preview.end_seconds;
     pausePlayback();
+  } else if (playBothInput.checked && Math.abs(assistantAudio.currentTime - playbackSeconds) > 0.08) {
+    assistantAudio.currentTime = playbackSeconds;
   }
   updateTimeReadout();
   drawTimeline();
+}
+
+function synchronizeAudioTracks() {
+  assistantAudio.currentTime = userAudio.currentTime;
+}
+
+async function updatePlaybackMode() {
+  if (!playBothInput.checked) {
+    assistantAudio.pause();
+    if (userAudio.paused) {
+      playButton.textContent = "Play user input";
+    }
+    return;
+  }
+  if (userAudio.paused) {
+    playButton.textContent = "Play both tracks";
+    return;
+  }
+  synchronizeAudioTracks();
+  try {
+    await assistantAudio.play();
+  } catch {
+    setStatus("The second track was blocked; pause and press Play both tracks.", false);
+  }
 }
 
 function updateTimeReadout() {
@@ -457,6 +502,10 @@ function setStatus(message, isError) {
 
 function errorMessage(payload, statusCode) {
   return typeof payload.detail === "string" ? payload.detail : `Request failed (${statusCode})`;
+}
+
+function sampleOptionLabel(sample) {
+  return `${sample.external_id} · ${formatDuration(sample.represented_duration_seconds)} · ${sample.usable_event_count} events`;
 }
 
 function prettySide(side) {
@@ -500,6 +549,7 @@ positionSlider.addEventListener("input", () => {
 });
 positionSlider.addEventListener("change", () => loadPreview(false));
 playButton.addEventListener("click", togglePlayback);
+playBothInput.addEventListener("change", updatePlaybackMode);
 userAudio.addEventListener("timeupdate", trackPlayback);
 userAudio.addEventListener("ended", pausePlayback);
 timeline.addEventListener("click", selectFrameAtEvent);
