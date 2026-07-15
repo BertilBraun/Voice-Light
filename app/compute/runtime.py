@@ -71,6 +71,8 @@ class ComputeRuntime:
                 pass
         if self.streaming_asr is not None:
             await asyncio.to_thread(self.streaming_asr.close)
+        if self.language_model is not None:
+            await asyncio.to_thread(self.language_model.close)
         if self.speech_synthesizer is not None:
             await asyncio.to_thread(self.speech_synthesizer.close)
         logger.info("compute runtime shutdown complete")

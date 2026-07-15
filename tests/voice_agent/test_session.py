@@ -114,6 +114,16 @@ class CancellationTrackingLanguageModel:
             self.active_generation_count -= 1
 
 
+class FailingLanguageModel:
+    async def stream_response(
+        self,
+        conversation: tuple[ConversationMessage, ...],
+    ) -> AsyncIterator[str]:
+        del conversation
+        raise RuntimeError("synthetic language failure")
+        yield
+
+
 class FakeSpeechSynthesisSession:
     def __init__(self, words: list[SynthesisWord]) -> None:
         self.words = words
@@ -329,6 +339,30 @@ def test_successor_generation_waits_for_cancelled_generation_teardown() -> None:
     assert language_model.overlapped is False
 
 
+def test_language_model_failure_reaches_client_with_component_context() -> None:
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FailingLanguageModel(),
+        RecordingSpeechSynthesizer(),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        events, _ = receive_until(websocket, "error")
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1] == {
+        "type": "error",
+        "component": "language_model",
+        "operation": "generate_text",
+        "generation_id": 1,
+        "retryable": True,
+        "message": "Response generation failed: synthetic language failure",
+    }
+
+
 def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
     language_model = SlowLanguageModel()
     web_app = create_test_app(
@@ -437,6 +471,7 @@ def create_test_app(
         | SplitWordLanguageModel
         | SlowLanguageModel
         | CancellationTrackingLanguageModel
+        | FailingLanguageModel
     ),
     speech_synthesizer: RecordingSpeechSynthesizer | FailingSpeechSynthesizer,
     policy: SessionPolicy = DEFAULT_TEST_POLICY,

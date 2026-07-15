@@ -403,8 +403,17 @@ class VoiceSession:
         generation: ActiveGeneration,
         synthesis: SpeechSynthesisSession,
     ) -> None:
-        word_stream = CompleteWordStream()
         language_stream = self.language_model.stream_response(generation.prompt_messages)
+        async with contextlib.aclosing(language_stream):
+            await self._consume_response_text(generation, synthesis, language_stream)
+
+    async def _consume_response_text(
+        self,
+        generation: ActiveGeneration,
+        synthesis: SpeechSynthesisSession,
+        language_stream: AsyncIterator[str],
+    ) -> None:
+        word_stream = CompleteWordStream()
         while True:
             try:
                 text_delta = await anext(language_stream)
@@ -551,6 +560,8 @@ class VoiceSession:
         if task is not None:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if generation.lifecycle is GenerationLifecycle.CANCELLATION_REQUESTED:
+            self._transition_generation(generation, GenerationLifecycle.CANCELLED)
         if self.pending_generation_teardown is generation:
             self.pending_generation_teardown = None
 

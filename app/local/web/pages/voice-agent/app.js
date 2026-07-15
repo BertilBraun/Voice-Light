@@ -340,8 +340,11 @@ function handleMessage(event) {
     playbackStatus.textContent = "cancelled";
   }
   if (message.type === "error") {
+    const generation = message.generation_id === null ? "session" : message.generation_id;
+    const failureDetail = `${message.component}.${message.operation} generation=${generation} retryable=${message.retryable}: ${message.message}`;
+    console.error("Voice component failure", message);
     vadStatus.textContent = "ready";
-    setConnection("error", "Server error", message.message);
+    setConnection("error", "Server error", failureDetail);
   }
 }
 
