@@ -40,6 +40,11 @@
             <span id="clock" class="clock">0:00.0 / 0:10.0</span>
           </div>
           <div id="tracks" class="tracks"></div>
+          <div
+            id="timeline-inspector"
+            class="timeline-inspector"
+            aria-label="Timeline annotation details"
+          ></div>
           <div class="legend">
             <span><i class="turn-swatch"></i>transcribed turn</span>
             <span><i class="keep-swatch"></i>keep-playing segment</span>
@@ -58,12 +63,12 @@
         </section>
 
         <section class="panel score-panel">
-          <h3>ASR scorer annotations</h3>
+          <h3>Model interpretation of the highlighted exchange</h3>
           <div id="scores" class="scores"></div>
           <p class="note">
-            Bar length shows confidence, so values near 50% are visibly ambiguous. These are
-            existing read-only annotations; the page does not save a judgment or change the
-            dataset.
+            Opposing labels share one bar and add to 100%. Pause and interruption are separate
+            evidence signals. These are existing read-only annotations; the page does not save a
+            judgment or change the dataset.
           </p>
         </section>
       </section>

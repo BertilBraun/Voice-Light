@@ -20,6 +20,7 @@ const elements = {
   seek: document.querySelector("#seek"),
   clock: document.querySelector("#clock"),
   tracks: document.querySelector("#tracks"),
+  timelineInspector: document.querySelector("#timeline-inspector"),
   beforeCard: document.querySelector("#before-card"),
   responseCard: document.querySelector("#response-card"),
   afterCard: document.querySelector("#after-card"),
@@ -100,6 +101,11 @@ function showCandidate(index) {
   renderSequence(candidate);
   renderScores(candidate);
   createPlayers(candidate);
+  renderSegmentInspection(
+    candidate.possible_backchannel_side,
+    candidate.possible_backchannel,
+    "Highlighted candidate",
+  );
 }
 
 function renderSequence(candidate) {
@@ -136,39 +142,73 @@ function renderTranscriptCard(element, label, segment) {
 function renderScores(candidate) {
   const connection = candidate.floor_holder_connection;
   const response = candidate.possible_backchannel;
-  const values = [
-    ["A same-turn merge", connection.merge_confidence, "merge"],
-    ["A pause", connection.pause_confidence, "pause"],
-    ["B backchannel", response.keep_playing_confidence, "backchannel"],
-    ["B valid turn", response.turn_confidence, "turn"],
-    ["B interruption", response.interruption_confidence, "interruption"],
-  ];
   elements.scores.replaceChildren(
-    ...values.map(([label, value, tone]) => {
-      const card = document.createElement("div");
-      card.className = "score";
-      const labelElement = document.createElement("span");
-      labelElement.textContent = label;
-      const score = document.createElement("strong");
-      score.textContent = `${Math.round(value * 100)}%`;
-      score.title = `Raw confidence: ${value.toFixed(3)}`;
-      const track = document.createElement("div");
-      track.className = "confidence-track";
-      track.setAttribute("role", "meter");
-      track.setAttribute("aria-label", label);
-      track.setAttribute("aria-valuemin", "0");
-      track.setAttribute("aria-valuemax", "100");
-      track.setAttribute("aria-valuenow", String(Math.round(value * 100)));
-      const fill = document.createElement("div");
-      fill.className = `confidence-fill ${tone}`;
-      fill.style.width = `${Math.max(0, Math.min(100, value * 100))}%`;
-      track.appendChild(fill);
-      const rawValue = document.createElement("small");
-      rawValue.textContent = value.toFixed(3);
-      card.append(labelElement, score, track, rawValue);
-      return card;
-    }),
+    interpretationCard(
+      `${speakerLabel(candidate.floor_holder_side)} connection`,
+      "Do the two surrounding transcript parts belong to the same turn?",
+      [
+        ["Same turn", connection.merge_confidence, "same-turn"],
+        ["New turn", 1 - connection.merge_confidence, "new-turn"],
+      ],
+      ["Pause evidence", connection.pause_confidence, "pause"],
+    ),
+    interpretationCard(
+      `${speakerLabel(candidate.possible_backchannel_side)} utterance`,
+      "How does the segment scorer interpret the highlighted response?",
+      [
+        ["Backchannel", response.keep_playing_confidence, "backchannel"],
+        ["Turn", response.turn_confidence, "turn"],
+      ],
+      ["Interruption evidence", response.interruption_confidence, "interruption"],
+    ),
   );
+}
+
+function interpretationCard(title, description, choices, evidence) {
+  const card = document.createElement("article");
+  card.className = "interpretation";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const explanation = document.createElement("p");
+  explanation.textContent = description;
+  card.append(heading, explanation, choiceBar(choices), evidenceMeter(...evidence));
+  return card;
+}
+
+function choiceBar(choices) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "choice";
+  const labels = document.createElement("div");
+  labels.className = "choice-labels";
+  const track = document.createElement("div");
+  track.className = "choice-track";
+  for (const [label, value, tone] of choices) {
+    const labelElement = document.createElement("span");
+    labelElement.textContent = `${label} ${formatProbability(value)}`;
+    labels.appendChild(labelElement);
+    const fill = document.createElement("div");
+    fill.className = `choice-fill ${tone}`;
+    fill.style.width = `${boundedPercentage(value)}%`;
+    fill.title = `${label}: ${value.toFixed(3)}`;
+    track.appendChild(fill);
+  }
+  wrapper.append(labels, track);
+  return wrapper;
+}
+
+function evidenceMeter(label, value, tone) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "evidence";
+  const labelElement = document.createElement("span");
+  labelElement.textContent = `${label} ${formatProbability(value)}`;
+  const track = document.createElement("div");
+  track.className = "evidence-track";
+  const fill = document.createElement("div");
+  fill.className = `evidence-fill ${tone}`;
+  fill.style.width = `${boundedPercentage(value)}%`;
+  track.appendChild(fill);
+  wrapper.append(labelElement, track);
+  return wrapper;
 }
 
 function createPlayers(candidate) {
@@ -193,7 +233,20 @@ function createPlayers(candidate) {
     canvas.setAttribute("aria-label", `${speakerLabel(side)} ASR annotations`);
     canvas.addEventListener("click", (event) => {
       const bounds = canvas.getBoundingClientRect();
-      seekToRatio((event.clientX - bounds.left) / bounds.width);
+      const ratio = (event.clientX - bounds.left) / bounds.width;
+      inspectTimelineAt(side, annotation, ratio);
+      seekToRatio(ratio);
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      const bounds = canvas.getBoundingClientRect();
+      inspectTimelineAt(side, annotation, (event.clientX - bounds.left) / bounds.width);
+    });
+    canvas.addEventListener("pointerleave", () => {
+      renderSegmentInspection(
+        candidate.possible_backchannel_side,
+        candidate.possible_backchannel,
+        "Highlighted candidate",
+      );
     });
     const audio = document.createElement("audio");
     audio.preload = "metadata";
@@ -212,6 +265,94 @@ function createPlayers(candidate) {
   seekToRatio(0);
   drawTimelines();
   state.players[0]?.audio.addEventListener("timeupdate", updatePlayback);
+}
+
+function inspectTimelineAt(side, annotation, rawRatio) {
+  const candidate = currentCandidate();
+  const ratio = Math.min(1, Math.max(0, rawRatio));
+  const seconds = candidate.window_start_seconds + ratio * clipDuration(candidate);
+  const segment = annotation.segment_targets.find(
+    (target) => target.start_seconds <= seconds && seconds <= target.end_seconds,
+  );
+  if (segment) {
+    renderSegmentInspection(side, segment, "Timeline segment");
+    return;
+  }
+  const connection = annotation.connection_targets.find(
+    (target) =>
+      target.earlier_end_seconds <= seconds && seconds <= target.later_start_seconds,
+  );
+  if (connection) {
+    renderConnectionInspection(side, connection);
+    return;
+  }
+  const pointTolerance = clipDuration(candidate) * 0.008;
+  const endOfTurn = annotation.turns.find(
+    (turn) => Math.abs(turn.time_seconds - seconds) <= pointTolerance,
+  );
+  if (endOfTurn) {
+    renderPointInspection(side, "End-of-turn marker", endOfTurn.time_seconds);
+    return;
+  }
+  elements.timelineInspector.replaceChildren(
+    inspectorHeading(`${speakerLabel(side)} at ${formatTime(seconds)}`),
+    inspectorText("No scored transcript segment or connection at this position."),
+  );
+}
+
+function renderSegmentInspection(side, segment, contextLabel) {
+  const primaryLabel =
+    segment.evidence_source === "transcript" ? "Backchannel" : "Keep playing";
+  elements.timelineInspector.replaceChildren(
+    inspectorHeading(`${contextLabel} - ${speakerLabel(side)}`),
+    inspectorText(
+      `${formatTime(segment.start_seconds)} - ${formatTime(segment.end_seconds)} | ${segment.text}`,
+    ),
+    choiceBar([
+      [primaryLabel, segment.keep_playing_confidence, "backchannel"],
+      ["Turn", segment.turn_confidence, "turn"],
+    ]),
+    evidenceMeter(
+      "Interruption evidence",
+      segment.interruption_confidence,
+      "interruption",
+    ),
+  );
+}
+
+function renderConnectionInspection(side, connection) {
+  elements.timelineInspector.replaceChildren(
+    inspectorHeading(`Timeline connection - ${speakerLabel(side)}`),
+    inspectorText(
+      `${formatTime(connection.earlier_end_seconds)} - ${formatTime(connection.later_start_seconds)} | ${connection.gap_seconds.toFixed(2)} s gap`,
+    ),
+    choiceBar([
+      ["Same turn", connection.merge_confidence, "same-turn"],
+      ["New turn", 1 - connection.merge_confidence, "new-turn"],
+    ]),
+    evidenceMeter("Pause evidence", connection.pause_confidence, "pause"),
+  );
+}
+
+function renderPointInspection(side, label, timeSeconds) {
+  elements.timelineInspector.replaceChildren(
+    inspectorHeading(`${label} - ${speakerLabel(side)}`),
+    inspectorText(
+      `${formatTime(timeSeconds)} | This emitted marker does not store a separate confidence value.`,
+    ),
+  );
+}
+
+function inspectorHeading(text) {
+  const heading = document.createElement("strong");
+  heading.textContent = text;
+  return heading;
+}
+
+function inspectorText(text) {
+  const paragraph = document.createElement("p");
+  paragraph.textContent = text;
+  return paragraph;
 }
 
 async function play() {
@@ -375,4 +516,12 @@ function formatTime(seconds) {
 function formatClipTime(seconds) {
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
+}
+
+function boundedPercentage(value) {
+  return Math.max(0, Math.min(100, value * 100));
+}
+
+function formatProbability(value) {
+  return `${Math.round(boundedPercentage(value))}%`;
 }

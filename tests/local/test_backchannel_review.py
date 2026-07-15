@@ -40,8 +40,11 @@ def backchannel_review_script() -> Iterator[str]:
         "Play both",
         "floor_holder_connection",
         "possible_backchannel",
-        "confidence-track",
-        "B backchannel",
+        "timelineInspector",
+        "inspectTimelineAt",
+        "Same turn",
+        "New turn",
+        "choice-track",
     ),
 )
 def test_backchannel_review_exposes_required_context(

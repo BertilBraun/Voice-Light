@@ -44,18 +44,26 @@ button.primary { background: #146b63; border-color: #146b63; color: #fff; }
 .card-label { color: #5a666b; display: block; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; }
 .utterance { font-size: 17px; line-height: 1.35; }
 .timestamp { color: #5a666b; display: block; font-size: 12px; margin-top: 10px; }
-.scores { display: grid; gap: 10px; grid-template-columns: repeat(5, 1fr); }
-.score { background: #f7f8f6; border-radius: 7px; padding: 12px; }
-.score strong { display: block; font-size: 21px; margin-top: 3px; }
-.score span { color: #5a666b; font-size: 12px; }
-.score small { color: #718086; display: block; font-variant-numeric: tabular-nums; margin-top: 5px; }
-.confidence-track { background: #e2e7e5; border-radius: 999px; height: 8px; margin-top: 9px; overflow: hidden; }
-.confidence-fill { border-radius: inherit; height: 100%; }
-.confidence-fill.merge { background: #267d74; }
-.confidence-fill.pause { background: #d6a442; }
-.confidence-fill.backchannel { background: #7c5ab4; }
-.confidence-fill.turn { background: #3775a5; }
-.confidence-fill.interruption { background: #ca5010; }
+.timeline-inspector { background: #f7f8f6; border: 1px solid #d7dde5; border-radius: 7px; margin-top: 12px; min-height: 104px; padding: 12px; }
+.timeline-inspector > strong { display: block; margin-bottom: 4px; }
+.timeline-inspector p { font-size: 13px; margin: 0 0 10px; }
+.scores { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.interpretation { background: #f7f8f6; border-radius: 7px; padding: 14px; }
+.interpretation > strong { display: block; font-size: 16px; }
+.interpretation p { font-size: 13px; margin: 4px 0 12px; }
+.choice-labels { display: flex; font-size: 12px; font-weight: 650; justify-content: space-between; }
+.choice-track { background: #e2e7e5; border-radius: 999px; display: flex; height: 12px; margin-top: 5px; overflow: hidden; }
+.choice-fill { height: 100%; }
+.choice-fill.same-turn { background: #267d74; }
+.choice-fill.new-turn { background: #84a9c4; }
+.choice-fill.backchannel { background: #7c5ab4; }
+.choice-fill.turn { background: #3775a5; }
+.evidence { margin-top: 12px; }
+.evidence > span { color: #5a666b; font-size: 12px; }
+.evidence-track { background: #e2e7e5; border-radius: 999px; height: 6px; margin-top: 4px; overflow: hidden; }
+.evidence-fill { height: 100%; }
+.evidence-fill.pause { background: #d6a442; }
+.evidence-fill.interruption { background: #ca5010; }
 .note { font-size: 13px; margin: 15px 0 0; }
 .empty-state { color: #5a666b; }
 
