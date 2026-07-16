@@ -54,6 +54,15 @@ def test_backchannel_review_exposes_required_context(
     assert visible_control in backchannel_review_script
 
 
+def test_next_button_autoplays_new_candidate(backchannel_review_script: str) -> None:
+    assert (
+        'elements.next.addEventListener("click", () => showCandidate(state.index + 1, true));'
+        in backchannel_review_script
+    )
+    assert "if (autoplay) {" in backchannel_review_script
+    assert "void play();" in backchannel_review_script
+
+
 def test_candidate_comes_from_opponent_transcript_inside_merged_connection() -> None:
     annotation = _conversation_annotation(
         duration_seconds=20.0,

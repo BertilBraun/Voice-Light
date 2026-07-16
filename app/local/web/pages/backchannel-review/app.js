@@ -28,7 +28,7 @@ const elements = {
 };
 
 elements.previous.addEventListener("click", () => showCandidate(state.index - 1));
-elements.next.addEventListener("click", () => showCandidate(state.index + 1));
+elements.next.addEventListener("click", () => showCandidate(state.index + 1, true));
 elements.play.addEventListener("click", () => {
   if (state.playing) {
     pause();
@@ -84,7 +84,7 @@ function showEmpty(message) {
   elements.review.hidden = true;
 }
 
-function showCandidate(index) {
+function showCandidate(index, autoplay = false) {
   if (index < 0 || index >= state.candidates.length) {
     return;
   }
@@ -106,6 +106,9 @@ function showCandidate(index) {
     candidate.possible_backchannel,
     "Highlighted candidate",
   );
+  if (autoplay) {
+    void play();
+  }
 }
 
 function renderSequence(candidate) {
