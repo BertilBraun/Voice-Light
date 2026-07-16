@@ -231,6 +231,11 @@ h1 {
   color: #405a9c;
 }
 
+.badge.unresolved {
+  background: #f7dedd;
+  color: #9d362f;
+}
+
 .review-column {
   display: grid;
   gap: 16px;

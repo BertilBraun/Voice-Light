@@ -156,6 +156,8 @@ function renderCandidateList() {
         <span>
           ${candidate.alignment_estimate_origin === "reviewed"
             ? "manually reviewed"
+            : candidate.alignment_estimate_origin === "unresolved"
+              ? "alignment unresolved"
             : candidate.source_agreement
               ? "sources agree"
               : "mixed evidence"}
@@ -275,6 +277,7 @@ function renderCandidateDetails() {
   elements.sampleSummary.innerHTML = `
     <span class="badge ${candidate.offset_pattern}">${candidate.offset_pattern} offset</span>
     ${candidate.alignment_estimate_origin === "reviewed" ? '<span class="badge reviewed">reviewed</span>' : ""}
+    ${candidate.alignment_estimate_origin === "unresolved" ? '<span class="badge unresolved">unresolved</span>' : ""}
     <span>${Math.round(candidate.likelihood_score * 100)}% likelihood</span>
     <span>recommended ${formatShift(candidate.estimated_b_shift_seconds)}</span>
     <span>full recording ${formatShift(candidate.full_recording_estimated_b_shift_seconds)}</span>

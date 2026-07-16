@@ -26,6 +26,7 @@ class GainMeasurementBasis(StrEnum):
 class AlignmentEstimateOrigin(StrEnum):
     PREDICTED = "predicted"
     REVIEWED = "reviewed"
+    UNRESOLVED = "unresolved"
 
 
 class SynchronizationEvidence(FrozenBaseModel):

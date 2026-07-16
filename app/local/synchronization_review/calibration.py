@@ -29,7 +29,18 @@ REVIEWED_ALIGNMENTS = (
     ReviewedAlignment(external_id="pmt_219", speaker2_shift_seconds=-1.4),
     ReviewedAlignment(external_id="pmt_318", speaker2_shift_seconds=-0.4),
     ReviewedAlignment(external_id="pmt_144", speaker2_shift_seconds=-2.0),
+    ReviewedAlignment(external_id="pmt_306", speaker2_shift_seconds=0.8),
+    ReviewedAlignment(external_id="pmt_246", speaker2_shift_seconds=-1.2),
+    ReviewedAlignment(external_id="pmt_214", speaker2_shift_seconds=-1.6),
+    ReviewedAlignment(external_id="pmt_310", speaker2_shift_seconds=-1.6),
+    ReviewedAlignment(external_id="pmt_245", speaker2_shift_seconds=-1.2),
+    ReviewedAlignment(external_id="pmt_222", speaker2_shift_seconds=-2.6),
+    ReviewedAlignment(external_id="pmt_324", speaker2_shift_seconds=-2.4),
+    ReviewedAlignment(external_id="pmt_298", speaker2_shift_seconds=-1.2),
+    ReviewedAlignment(external_id="pmt_007", speaker2_shift_seconds=-2.0),
 )
+
+UNRESOLVED_ALIGNMENT_IDS = ("pmt_326",)
 
 
 def reviewed_alignment(external_id: str) -> ReviewedAlignment | None:
@@ -37,3 +48,7 @@ def reviewed_alignment(external_id: str) -> ReviewedAlignment | None:
         (alignment for alignment in REVIEWED_ALIGNMENTS if alignment.external_id == external_id),
         None,
     )
+
+
+def is_unresolved_alignment(external_id: str) -> bool:
+    return external_id in UNRESOLVED_ALIGNMENT_IDS

@@ -10,7 +10,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.local.main import app
-from app.local.synchronization_review.calibration import reviewed_alignment
+from app.local.synchronization_review.calibration import (
+    is_unresolved_alignment,
+    reviewed_alignment,
+)
 from app.local.synchronization_review.models import (
     GainMeasurementBasis,
     OffsetPattern,
@@ -83,6 +86,7 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "Speech-only RMS",
         "manually reviewed",
         "alignment_estimate_origin",
+        "alignment unresolved",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(
@@ -247,6 +251,15 @@ def test_recommended_shift_uses_calibrated_initial_offset(
         ("pmt_219", -1.4),
         ("pmt_318", -0.4),
         ("pmt_144", -2.0),
+        ("pmt_306", 0.8),
+        ("pmt_246", -1.2),
+        ("pmt_214", -1.6),
+        ("pmt_310", -1.6),
+        ("pmt_245", -1.2),
+        ("pmt_222", -2.6),
+        ("pmt_324", -2.4),
+        ("pmt_298", -1.2),
+        ("pmt_007", -2.0),
     ),
 )
 def test_reviewed_alignment_uses_manual_reference(
@@ -261,6 +274,11 @@ def test_reviewed_alignment_uses_manual_reference(
 
 def test_unreviewed_alignment_keeps_model_prediction() -> None:
     assert reviewed_alignment(external_id="pmt_999") is None
+
+
+def test_pmt_326_is_marked_unresolved() -> None:
+    assert reviewed_alignment(external_id="pmt_326") is None
+    assert is_unresolved_alignment(external_id="pmt_326")
 
 
 def _source_metrics(
