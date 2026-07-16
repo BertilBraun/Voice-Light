@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.local.main import app
+from app.local.synchronization_review.calibration import reviewed_alignment
 from app.local.synchronization_review.models import (
     GainMeasurementBasis,
     OffsetPattern,
@@ -80,6 +81,8 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "fetchSpeechGains",
         "/api/synchronization-review/gain/",
         "Speech-only RMS",
+        "manually reviewed",
+        "alignment_estimate_origin",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(
@@ -220,6 +223,31 @@ def test_recommended_shift_uses_calibrated_initial_offset(
     )
 
     assert recommended == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("external_id", "expected_shift"),
+    (
+        ("pmt_095", -2.9),
+        ("pmt_192", -4.0),
+        ("pmt_205", -10.0),
+        ("pmt_226", -2.5),
+        ("pmt_236", -4.8),
+        ("pmt_284", -6.8),
+    ),
+)
+def test_reviewed_alignment_uses_manual_reference(
+    external_id: str,
+    expected_shift: float,
+) -> None:
+    alignment = reviewed_alignment(external_id=external_id)
+
+    assert alignment is not None
+    assert alignment.speaker2_shift_seconds == pytest.approx(expected_shift)
+
+
+def test_unreviewed_alignment_keeps_model_prediction() -> None:
+    assert reviewed_alignment(external_id="pmt_999") is None
 
 
 def _source_metrics(

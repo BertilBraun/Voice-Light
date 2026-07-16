@@ -8,7 +8,9 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from app.local.synchronization_review.calibration import reviewed_alignment
 from app.local.synchronization_review.models import (
+    AlignmentEstimateOrigin,
     GainMeasurementBasis,
     OffsetPattern,
     SynchronizationCandidate,
@@ -185,11 +187,13 @@ def _candidate(
         meaningful_windows=meaningful_windows,
     )
     full_recording_estimated_shift = robust_shift_estimate(meaningful_sources=meaningful_sources)
-    estimated_shift = recommended_shift_estimate(
+    predicted_shift = recommended_shift_estimate(
         offset_pattern=offset_pattern,
         full_recording_estimated_shift=full_recording_estimated_shift,
         window_estimates=window_estimates,
     )
+    reviewed = reviewed_alignment(external_id=stored_annotation.external_id)
+    estimated_shift = reviewed.speaker2_shift_seconds if reviewed is not None else predicted_shift
     likelihood_score = candidate_likelihood(
         source_metrics=source_metrics,
         source_agreement=source_agreement,
@@ -201,6 +205,11 @@ def _candidate(
         likelihood_score=likelihood_score,
         estimated_b_shift_seconds=estimated_shift,
         full_recording_estimated_b_shift_seconds=full_recording_estimated_shift,
+        alignment_estimate_origin=(
+            AlignmentEstimateOrigin.REVIEWED
+            if reviewed is not None
+            else AlignmentEstimateOrigin.PREDICTED
+        ),
         offset_pattern=offset_pattern,
         source_agreement=source_agreement,
         evidence=tuple(

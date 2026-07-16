@@ -153,7 +153,13 @@ function renderCandidateList() {
       </span>
       <span class="candidate-meta">
         <span>${candidate.overlap_silence_cycle_count} overlap/silence cycles</span>
-        <span>${candidate.source_agreement ? "sources agree" : "mixed evidence"}</span>
+        <span>
+          ${candidate.alignment_estimate_origin === "reviewed"
+            ? "manually reviewed"
+            : candidate.source_agreement
+              ? "sources agree"
+              : "mixed evidence"}
+        </span>
       </span>
     `;
     button.addEventListener("click", () => {
@@ -268,6 +274,7 @@ function renderCandidateDetails() {
   elements.sampleName.textContent = candidate.external_id.toUpperCase();
   elements.sampleSummary.innerHTML = `
     <span class="badge ${candidate.offset_pattern}">${candidate.offset_pattern} offset</span>
+    ${candidate.alignment_estimate_origin === "reviewed" ? '<span class="badge reviewed">reviewed</span>' : ""}
     <span>${Math.round(candidate.likelihood_score * 100)}% likelihood</span>
     <span>recommended ${formatShift(candidate.estimated_b_shift_seconds)}</span>
     <span>full recording ${formatShift(candidate.full_recording_estimated_b_shift_seconds)}</span>

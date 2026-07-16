@@ -226,6 +226,11 @@ h1 {
   color: #66615d;
 }
 
+.badge.reviewed {
+  background: #e2e8fa;
+  color: #405a9c;
+}
+
 .review-column {
   display: grid;
   gap: 16px;

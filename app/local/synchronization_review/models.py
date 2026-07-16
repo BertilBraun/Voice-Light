@@ -23,6 +23,11 @@ class GainMeasurementBasis(StrEnum):
     ANNOTATED_SPEECH = "annotated_speech"
 
 
+class AlignmentEstimateOrigin(StrEnum):
+    PREDICTED = "predicted"
+    REVIEWED = "reviewed"
+
+
 class SynchronizationEvidence(FrozenBaseModel):
     source: SynchronizationEvidenceSource
     estimated_b_shift_seconds: float
@@ -56,6 +61,7 @@ class SynchronizationCandidate(FrozenBaseModel):
     likelihood_score: float
     estimated_b_shift_seconds: float
     full_recording_estimated_b_shift_seconds: float
+    alignment_estimate_origin: AlignmentEstimateOrigin
     offset_pattern: OffsetPattern
     source_agreement: bool
     evidence: tuple[SynchronizationEvidence, ...]
