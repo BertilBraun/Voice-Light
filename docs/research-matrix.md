@@ -43,19 +43,19 @@ The first benchmark should compare Qwen3-1.7B against LiquidAI LFM2.5-1.2B for T
 | Rank | Candidate | Fit | Streaming Mechanism | Latency Signal | Notes |
 | ---: | --- | --- | --- | --- | --- |
 | 1 | [Kyutai TTS](https://kyutai.org/tts/) / [Delayed Streams Modeling](https://github.com/kyutai-labs/delayed-streams-modeling) | Selected for true word-in/audio-out integration. | Delayed streams modeling consumes complete words incrementally and exposes word-start model steps while emitting Mimi frames. | H100 reference needs measurement on the rented GPU. | 1.6B, direct PyTorch/Moshi integration, fixed precomputed voice, 32 codebooks. GPU memory, throughput, and codec timestamp calibration remain deployment gates. |
-| 2 | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) 12Hz 0.6B / 1.7B | Strongest near-term quality challenger. | Streaming model architecture, but supported local Python methods currently return complete waveforms. | Reported first-packet latency down to 97 ms. | Apache-2.0 and strong English voices. Current package constrains Transformers 4.x, conflicting with Nemotron's 5.x runtime. Re-evaluate when its online serving API is stable. |
+| 2 | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) 12Hz 0.6B / 1.7B | Offline quality challenger only for now. | Released local Python methods accept complete text and return complete waveforms; they expose no incremental local audio. | The open 0.6B wrapper ran at RTF 1.66-1.73 without FlashAttention and exposed no first packet. | Keep it isolated from Nemotron's Transformers 5.x environment and re-evaluate when an official incremental API exists. |
 | 3 | [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) | Small sentence-level fallback. | Official Python iterator yields decoded 24 kHz chunks after receiving a complete text segment. | About 200 ms first chunk and about 6x real time on an M4 CPU. | MIT and 100M, but it cannot preserve prosody while accepting the LLM's response word by word. |
-| 4 | [VoXtream2](https://github.com/herimor/voxtream) | Best research architecture for true incremental TTS. | Full-stream text/phoneme input to audio frames. | Reported 74 ms first-packet latency and 4x realtime. | Smaller ecosystem, but highly relevant for barge-in and incremental generation research. |
+| 4 | [VoXtream2](https://github.com/herimor/voxtream) | Primary low-latency integration candidate. | Confirmed full-stream word/phoneme input while audio is emitted. | Measured 94-102 ms official first packet; 113 ms wall-clock with a fixed prompt and immediately available words. | Requires an isolated worker environment. Build a typed worker prototype and evaluate quality, cancellation, and alignment. |
 | 5 | [ZONOS2](https://github.com/Zyphra/ZONOS2) | Experimental quality/voice cloning candidate. | Local server with documented `stream: true`. | Needs measurement. | MIT, English tier-1, CUDA server, Mini-SGLang backend. New and experimental. |
 | 6 | [Dia2](https://github.com/nari-labs/dia2) | Conversational speech generation candidate. | Can start from the first few words and supports realtime conversational conditioning. | Needs measurement. | Apache-2.0. English only; quality/stability may vary without conditioning/fine-tuning. |
 | 7 | [Chatterbox Turbo](https://github.com/resemble-ai/chatterbox) | Popular local baseline. | Public examples look more whole-text than incremental. | Low-latency voice-agent target, needs real TTFA measurement. | MIT, 350M, strong usability signal. Keep as baseline, not primary streaming engine. |
 | 8 | [Orpheus TTS](https://github.com/canopyai/Orpheus-TTS) | Naturalness baseline. | Output streaming from prompt through generator. | Around 200 ms streaming claims. | Apache-2.0, vLLM-based; not clean incremental text input. |
 | 9 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) | Tiny sanity baseline. | Segment/generator-based. | Very fast but no hard streaming-agent TTFA target. | Apache-licensed weights, easy local usage. Not top-tier for expressive incremental TTS. |
 
-Current recommendation: validate the implemented Kyutai delayed-stream integration on the rented
-machine. Revisit Qwen3-TTS 0.6B as the first quality challenger once its supported local API exposes
-incremental text input and audio output without a conflicting Transformers environment. Pocket TTS
-remains a small fallback, but its whole-segment input does not meet the current architecture goal.
+Current recommendation: keep Kyutai as the quality reference and build a VoXtream2 worker prototype
+as the first low-latency challenger. Revisit Qwen3-TTS only when its supported local API exposes
+incremental text input and audio output. Pocket TTS remains a small fallback, but its whole-segment
+input does not meet the current architecture goal.
 
 ## Turn-Taking Datasets
 
