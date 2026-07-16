@@ -8,6 +8,7 @@ import pytest
 
 from app.compute.voice.interfaces import (
     SynthesisEvent,
+    SynthesisFirstAudioMetrics,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
@@ -19,6 +20,7 @@ from app.compute.voice.kyutai_tts import (
 from app.compute.voice.tts_worker_protocol import (
     TtsAudioEvent,
     TtsEndEvent,
+    TtsFirstAudioMetricsEvent,
     TtsWordBoundaryEvent,
     TtsWordCommand,
     TtsWordProcessedEvent,
@@ -50,6 +52,17 @@ class FakeKyutaiTtsWorker:
             case TtsWorkerCommandType.WORD:
                 assert isinstance(command, TtsWordCommand)
                 if self.processes_words:
+                    if command.sequence_number == 0:
+                        self.events.put(
+                            TtsFirstAudioMetricsEvent(
+                                first_word_to_audio_seconds=0.25,
+                                tokenization_seconds=0.01,
+                                language_model_step_seconds=0.2,
+                                mimi_decode_seconds=0.04,
+                                model_step_count=6,
+                                first_audio_model_step=6,
+                            )
+                        )
                     self.events.put(
                         TtsWordBoundaryEvent(
                             text_offset=command.text_end,
@@ -135,6 +148,14 @@ def test_kyutai_session_streams_audio_and_word_boundaries() -> None:
         events = await _collect_events(session)
 
         assert events == [
+            SynthesisFirstAudioMetrics(
+                first_word_to_audio_seconds=0.25,
+                tokenization_seconds=0.01,
+                language_model_step_seconds=0.2,
+                mimi_decode_seconds=0.04,
+                model_step_count=6,
+                first_audio_model_step=6,
+            ),
             SynthesizedWordBoundary(text_offset=5, start_sample=0),
             SynthesizedAudioChunk(pcm_bytes=b"\x01\x00\x02\x00", start_sample=0),
         ]
@@ -243,6 +264,14 @@ def test_kyutai_session_recovers_on_fresh_worker_after_progress_timeout() -> Non
         events = await _collect_events(recovered_session)
 
         assert events == [
+            SynthesisFirstAudioMetrics(
+                first_word_to_audio_seconds=0.25,
+                tokenization_seconds=0.01,
+                language_model_step_seconds=0.2,
+                mimi_decode_seconds=0.04,
+                model_step_count=6,
+                first_audio_model_step=6,
+            ),
             SynthesizedWordBoundary(text_offset=9, start_sample=0),
             SynthesizedAudioChunk(pcm_bytes=b"\x01\x00\x02\x00", start_sample=0),
         ]

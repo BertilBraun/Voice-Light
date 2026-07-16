@@ -14,6 +14,7 @@ from typing import Final, Protocol, TextIO
 from app.compute.voice.interfaces import (
     SpeechSynthesisSession,
     SynthesisEvent,
+    SynthesisFirstAudioMetrics,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
@@ -26,6 +27,7 @@ from app.compute.voice.tts_worker_protocol import (
     StartTtsCommand,
     TtsAudioEvent,
     TtsEndEvent,
+    TtsFirstAudioMetricsEvent,
     TtsWordBoundaryEvent,
     TtsWordCommand,
     TtsWordProcessedEvent,
@@ -283,7 +285,11 @@ class KyutaiSpeechSynthesisSession:
                     await self._fail_worker(error)
                     await self._stop_background_tasks()
                     raise error
-                case SynthesizedAudioChunk() | SynthesizedWordBoundary():
+                case (
+                    SynthesizedAudioChunk()
+                    | SynthesizedWordBoundary()
+                    | SynthesisFirstAudioMetrics()
+                ):
                     yield item
                 case _:
                     raise AssertionError(f"Unexpected synthesis output item: {item!r}")
@@ -343,6 +349,17 @@ class KyutaiSpeechSynthesisSession:
                             SynthesizedAudioChunk(
                                 pcm_bytes=event.pcm_bytes(),
                                 start_sample=event.start_sample,
+                            )
+                        )
+                    case TtsFirstAudioMetricsEvent():
+                        await self.output_queue.put(
+                            SynthesisFirstAudioMetrics(
+                                first_word_to_audio_seconds=event.first_word_to_audio_seconds,
+                                tokenization_seconds=event.tokenization_seconds,
+                                language_model_step_seconds=event.language_model_step_seconds,
+                                mimi_decode_seconds=event.mimi_decode_seconds,
+                                model_step_count=event.model_step_count,
+                                first_audio_model_step=event.first_audio_model_step,
                             )
                         )
                     case TtsWordBoundaryEvent():

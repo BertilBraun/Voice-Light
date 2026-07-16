@@ -262,6 +262,7 @@ def test_full_session_streams_audio_and_commits_naturally_completed_history() ->
 
         send_turn(websocket)
         first_events, audio_frame = receive_until(websocket, "assistant.audio.end")
+        websocket.send_json({"type": "playback.started", "generation_id": 1})
         websocket.send_json({"type": "playback.complete", "generation_id": 1})
         send_turn(websocket)
         second_events, _ = receive_until(websocket, "assistant.audio.end")

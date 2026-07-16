@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable, Sequence
 from enum import Enum, auto
 from pathlib import Path
@@ -25,6 +26,7 @@ from app.compute.voice.tts_alignment import TranscriptBoundaryTracker
 from app.compute.voice.tts_worker_protocol import (
     TtsAudioEvent,
     TtsEndEvent,
+    TtsFirstAudioMetricsEvent,
     TtsWordBoundaryEvent,
     TtsWordCommand,
     TtsWordProcessedEvent,
@@ -149,6 +151,9 @@ class KyutaiTtsWorkerRuntime:
                             self.generator.process_last()
                             break
                         case TtsWordCommand():
+                            if first_word:
+                                self.generator.record_first_word_received()
+                            tokenization_started_at = time.perf_counter()
                             entries = script_to_entries(
                                 self.model.tokenizer,
                                 self.model.machine.token_ids,
@@ -156,6 +161,9 @@ class KyutaiTtsWorkerRuntime:
                                 [item.text],
                                 multi_speaker=first_word and self.model.multi_speaker,
                                 padding_between=1,
+                            )
+                            self.generator.record_tokenization_duration(
+                                time.perf_counter() - tokenization_started_at
                             )
                             first_word = False
                             self.generator.append_word(entries, item.text_end)
@@ -174,6 +182,8 @@ class KyutaiTtsWorkerRuntime:
     ) -> None:
         match event:
             case SynthesizedAudioChunk():
+                if event.start_sample == 0:
+                    self._send_event(self.generator.require_first_audio_metrics())
                 self._send_event(TtsAudioEvent.from_pcm_bytes(event.pcm_bytes, event.start_sample))
             case SynthesizedWordBoundary():
                 self._send_event(
@@ -264,8 +274,29 @@ class _KyutaiStreamingGenerator:
         self.offset = 0
         self.emitted_sample_count = 0
         self.transcript_index = 0
+        self.first_word_received_at: float | None = None
+        self.tokenization_seconds = 0.0
+        self.language_model_step_seconds = 0.0
+        self.mimi_decode_seconds = 0.0
+        self.model_step_count = 0
+        self.first_audio_metrics: TtsFirstAudioMetricsEvent | None = None
         self.boundary_tracker = TranscriptBoundaryTracker()
         self.state = self.model.machine.new_state([])
+
+    def record_first_word_received(self) -> None:
+        if self.first_word_received_at is not None:
+            raise AssertionError("Kyutai first-word receipt may only be recorded once.")
+        self.first_word_received_at = time.perf_counter()
+
+    def record_tokenization_duration(self, duration_seconds: float) -> None:
+        if duration_seconds < 0:
+            raise ValueError("Kyutai tokenization duration must not be negative.")
+        self.tokenization_seconds += duration_seconds
+
+    def require_first_audio_metrics(self) -> TtsFirstAudioMetricsEvent:
+        if self.first_audio_metrics is None:
+            raise AssertionError("Kyutai emitted first audio without timing metrics.")
+        return self.first_audio_metrics
 
     def append_word(self, entries: Sequence[Entry], text_offset: int) -> None:
         self.state.entries.extend(entries)
@@ -348,16 +379,32 @@ class _KyutaiStreamingGenerator:
             dtype=torch.long,
             device=self.model.lm.device,
         )
+        language_model_step_started_at = time.perf_counter()
         frame = self.lm_generation.step(input_tokens)
+        self.language_model_step_seconds += time.perf_counter() - language_model_step_started_at
+        self.model_step_count += 1
         self.offset += 1
         self._emit_new_boundaries()
         if frame is None or not bool((frame != -1).all()):
             return
+        mimi_decode_started_at = time.perf_counter()
         pcm = self.model.mimi.decode(frame[:, 1:, :]).cpu().float().numpy()
+        self.mimi_decode_seconds += time.perf_counter() - mimi_decode_started_at
         samples = np.clip(pcm[0, 0], -1.0, 1.0)
         pcm_bytes = (samples * 32_767.0).astype("<i2").tobytes()
         if not pcm_bytes:
             return
+        if self.emitted_sample_count == 0:
+            if self.first_word_received_at is None:
+                raise AssertionError("Kyutai emitted audio before receiving a word.")
+            self.first_audio_metrics = TtsFirstAudioMetricsEvent(
+                first_word_to_audio_seconds=time.perf_counter() - self.first_word_received_at,
+                tokenization_seconds=self.tokenization_seconds,
+                language_model_step_seconds=self.language_model_step_seconds,
+                mimi_decode_seconds=self.mimi_decode_seconds,
+                model_step_count=self.model_step_count,
+                first_audio_model_step=self.offset,
+            )
         self.emit(
             SynthesizedAudioChunk(
                 pcm_bytes=pcm_bytes,
@@ -383,6 +430,8 @@ def _warmup_streaming_generation(generator: _KyutaiStreamingGenerator) -> None:
     model = generator.model
     with torch.inference_mode():
         generator.start_turn(cancellation_event, _discard_output)
+        generator.record_first_word_received()
+        tokenization_started_at = time.perf_counter()
         entries = script_to_entries(
             model.tokenizer,
             model.machine.token_ids,
@@ -391,6 +440,7 @@ def _warmup_streaming_generation(generator: _KyutaiStreamingGenerator) -> None:
             multi_speaker=model.multi_speaker,
             padding_between=1,
         )
+        generator.record_tokenization_duration(time.perf_counter() - tokenization_started_at)
         generator.append_word(entries, len(KYUTAI_TTS_WARMUP_TEXT))
         generator.process_last()
         torch.cuda.synchronize()

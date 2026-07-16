@@ -235,6 +235,19 @@ async function setupPlayback(inputSampleRate) {
     processorOptions: { inputSampleRate },
   });
   playbackNode.port.onmessage = ({ data }) => {
+    if (data.type === "playback.started") {
+      console.info(`Playback started for generation ${data.generationId}`, {
+        generationId: data.generationId,
+        clientTimeMs: performance.now(),
+      });
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: "playback.started",
+          generation_id: data.generationId,
+        }));
+      }
+      return;
+    }
     if (data.type === "boundary.progress") {
       updateBoundaryProgress(data);
       return;

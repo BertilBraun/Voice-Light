@@ -29,6 +29,30 @@ The correct metric is not only average response latency. It should be a Pareto c
 - Interruption stop latency.
 - Backchannel false interruption rate.
 
+The live pipeline logs one `voice first audio latency` record per generation. It separates:
+
+- ASR finalization after `vad.stopped`.
+- Turn commit and teardown-barrier delay.
+- Qwen generation start to first text delta.
+- Qwen generation start to the first complete word accepted by TTS.
+- First complete word to first PCM.
+- Kyutai worker tokenization, delayed-stream LM steps, Mimi decoding, and model-step count.
+- Generation start to first PCM.
+
+The browser worklet reports `playback.started` when it writes the first assistant sample into an
+output render quantum. The server logs both first-audio-send to playback acknowledgement and
+generation start to playback acknowledgement. This acknowledgement includes the return network
+trip and should not be interpreted as a one-way playback delay.
+
+Run the standalone Kyutai benchmark from the repository root:
+
+```bash
+uv run python -m deployment.compute.benchmark_tts --runs 5
+```
+
+The benchmark reports first-word-to-PCM latency and the same worker-internal breakdown. It queues
+text immediately and therefore measures TTS rather than LLM word-formation latency.
+
 ## LLM Prefill Assessment
 
 Prefix caching is still useful, but it probably should not be the first complex engineering bet.

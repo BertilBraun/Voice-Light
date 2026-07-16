@@ -57,5 +57,7 @@ shared stack. This combination and the 32-codebook quality setting must be valid
 GPU before deployment. If memory or throughput is insufficient, codebook count is the first
 benchmark variable; lowering it trades audio quality for speed and does not change the protocol.
 
-`deployment/compute/benchmark_tts.py` measures cold/warm first-chunk latency, total generation time,
-real-time factor, output duration, and emitted boundary count on the rented machine.
+`uv run python -m deployment.compute.benchmark_tts --runs 5` measures cold/warm first-chunk
+latency, first-word-to-audio latency, delayed-stream LM and Mimi decode time, model-step count,
+total generation time, real-time factor, output duration, and emitted boundary count on the rented
+machine.

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from app.compute.voice.schemas import (
     PlaybackCompleteEvent,
     PlaybackProgressEvent,
+    PlaybackStartedEvent,
     PlaybackStoppedEvent,
     SessionStartEvent,
     SessionStopEvent,
@@ -21,6 +22,10 @@ from app.compute.voice.schemas import (
             SessionStartEvent(input_sample_rate=16_000),
         ),
         ('{"type":"session.stop"}', SessionStopEvent()),
+        (
+            '{"type":"playback.started","generation_id":4}',
+            PlaybackStartedEvent(generation_id=4),
+        ),
         (
             '{"type":"playback.complete","generation_id":4}',
             PlaybackCompleteEvent(generation_id=4),
@@ -51,6 +56,7 @@ def test_client_event_protocol_parses_discriminated_events(
     expected_event: (
         SessionStartEvent
         | SessionStopEvent
+        | PlaybackStartedEvent
         | PlaybackCompleteEvent
         | PlaybackProgressEvent
         | PlaybackStoppedEvent
@@ -63,6 +69,7 @@ def test_client_event_protocol_parses_discriminated_events(
     "payload",
     [
         '{"type":"asr.start","operation_id":"legacy"}',
+        '{"type":"playback.started","generation_id":0}',
         '{"type":"playback.complete","generation_id":0}',
         '{"type":"playback.progress","generation_id":1,"text_offset":0,'
         '"boundary_start_sample":0,"played_sample_count":1}',

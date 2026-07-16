@@ -12,6 +12,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.generationId = -1;
     this.cancelledGenerationId = -1;
     this.endedGenerationId = -1;
+    this.playbackStarted = false;
     this.port.onmessage = ({ data }) => this.handleMessage(data);
   }
 
@@ -49,6 +50,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.boundaries = [];
     this.generationId = generationId;
     this.endedGenerationId = -1;
+    this.playbackStarted = false;
   }
 
   stopGeneration(generationId) {
@@ -76,6 +78,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const output = outputs[0][0];
     output.fill(0);
+    let producedAudio = false;
     for (let outputIndex = 0; outputIndex < output.length; outputIndex += 1) {
       if (this.queuedSampleCount === 0) break;
       const lowerIndex = Math.floor(this.sourcePosition);
@@ -83,12 +86,17 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       const lowerSample = this.sampleAt(lowerIndex);
       const upperSample = this.sampleAt(lowerIndex + 1) ?? lowerSample;
       output[outputIndex] = (lowerSample * (1 - fraction) + upperSample * fraction) / 0x8000;
+      producedAudio = true;
       this.sourcePosition += this.inputSamplesPerOutputSample;
       const consumedSampleCount = Math.floor(this.sourcePosition);
       if (consumedSampleCount > 0) {
         this.consumeSamples(consumedSampleCount);
         this.sourcePosition -= consumedSampleCount;
       }
+    }
+    if (producedAudio && !this.playbackStarted) {
+      this.playbackStarted = true;
+      this.port.postMessage({ type: "playback.started", generationId: this.generationId });
     }
     this.reportCrossedBoundaries();
     this.reportCompletionIfDrained();

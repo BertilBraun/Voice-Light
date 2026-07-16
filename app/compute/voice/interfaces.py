@@ -49,7 +49,17 @@ class SynthesizedWordBoundary:
     start_sample: int
 
 
-SynthesisEvent = SynthesizedAudioChunk | SynthesizedWordBoundary
+@dataclass(frozen=True)
+class SynthesisFirstAudioMetrics:
+    first_word_to_audio_seconds: float
+    tokenization_seconds: float
+    language_model_step_seconds: float
+    mimi_decode_seconds: float
+    model_step_count: int
+    first_audio_model_step: int
+
+
+SynthesisEvent = SynthesizedAudioChunk | SynthesizedWordBoundary | SynthesisFirstAudioMetrics
 
 
 class SpeechSynthesisSession(Protocol):

@@ -13,6 +13,7 @@ from app.shared.base_model import FrozenBaseModel
 class VoiceClientEventType(StrEnum):
     SESSION_START = "session.start"
     SESSION_STOP = "session.stop"
+    PLAYBACK_STARTED = "playback.started"
     PLAYBACK_COMPLETE = "playback.complete"
     PLAYBACK_PROGRESS = "playback.progress"
     PLAYBACK_STOPPED = "playback.stopped"
@@ -29,6 +30,11 @@ class SessionStopEvent(FrozenBaseModel):
 
 class PlaybackCompleteEvent(FrozenBaseModel):
     type: Literal[VoiceClientEventType.PLAYBACK_COMPLETE] = VoiceClientEventType.PLAYBACK_COMPLETE
+    generation_id: int = Field(gt=0)
+
+
+class PlaybackStartedEvent(FrozenBaseModel):
+    type: Literal[VoiceClientEventType.PLAYBACK_STARTED] = VoiceClientEventType.PLAYBACK_STARTED
     generation_id: int = Field(gt=0)
 
 
@@ -50,6 +56,7 @@ class PlaybackStoppedEvent(FrozenBaseModel):
 VoiceClientEvent = Annotated[
     SessionStartEvent
     | SessionStopEvent
+    | PlaybackStartedEvent
     | PlaybackCompleteEvent
     | PlaybackProgressEvent
     | PlaybackStoppedEvent,

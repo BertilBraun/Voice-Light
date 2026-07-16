@@ -21,6 +21,7 @@ from app.compute.voice.interfaces import (
     SpeechSynthesisSession,
     SpeechSynthesizer,
     SynthesisEvent,
+    SynthesisFirstAudioMetrics,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
@@ -36,6 +37,7 @@ from app.compute.voice.schemas import (
     LlmHistoryMessage,
     PlaybackCompleteEvent,
     PlaybackProgressEvent,
+    PlaybackStartedEvent,
     PlaybackStoppedEvent,
     SessionReadyEvent,
     SessionStartEvent,
@@ -82,9 +84,23 @@ class GenerationLifecycle(StrEnum):
 
 
 @dataclass
+class GenerationLatency:
+    asr_finalization_seconds: float
+    turn_ready_at: float
+    generation_started_at: float | None = None
+    first_language_delta_at: float | None = None
+    first_synthesis_word_at: float | None = None
+    first_audio_at: float | None = None
+    first_audio_sent_at: float | None = None
+    playback_started_at: float | None = None
+    synthesis_metrics: SynthesisFirstAudioMetrics | None = None
+
+
+@dataclass
 class ActiveGeneration:
     generation_id: int
     prompt_messages: tuple[ConversationMessage, ...]
+    latency: GenerationLatency
     task: asyncio.Task[None] | None = None
     response_text: str = ""
     acknowledged_offset: int = 0
@@ -187,6 +203,8 @@ class VoiceSession:
             match event:
                 case SessionStartEvent():
                     await self._start(event)
+                case PlaybackStartedEvent():
+                    self._record_playback_started(event.generation_id)
                 case PlaybackCompleteEvent():
                     self._complete_playback(event.generation_id)
                 case PlaybackProgressEvent():
@@ -270,17 +288,18 @@ class VoiceSession:
                         component=VoiceComponent.ASR,
                         operation=VoiceOperation.TRANSCRIBE,
                     ) from error
+                finalization_seconds = time.perf_counter() - finalization_started_at
                 logger.info(
                     "transcription finalization completed: session=%s duration_seconds=%.3f "
                     "character_count=%d",
                     self.session_id,
-                    time.perf_counter() - finalization_started_at,
+                    finalization_seconds,
                     len(final_text),
                 )
                 await transcription.close()
                 transcription = self.transcriber.start_session()
                 if final_text:
-                    await self._commit_turn(final_text)
+                    await self._commit_turn(final_text, finalization_seconds)
         finally:
             await transcription.close()
 
@@ -300,7 +319,8 @@ class VoiceSession:
         if partial_text:
             await self._send_transcript(VoiceServerEventType.TRANSCRIPT_PARTIAL, partial_text)
 
-    async def _commit_turn(self, text: str) -> None:
+    async def _commit_turn(self, text: str, asr_finalization_seconds: float) -> None:
+        turn_ready_at = time.perf_counter()
         await self._send_transcript(VoiceServerEventType.TRANSCRIPT_FINAL, text)
         await self._send_transcript(VoiceServerEventType.TURN_COMMITTED, text)
         await self._finalize_cancelled_playback()
@@ -310,6 +330,10 @@ class VoiceSession:
         generation = ActiveGeneration(
             generation_id=self.next_generation_id,
             prompt_messages=tuple(self.conversation),
+            latency=GenerationLatency(
+                asr_finalization_seconds=asr_finalization_seconds,
+                turn_ready_at=turn_ready_at,
+            ),
         )
         self.generations[generation.generation_id] = generation
         self.next_generation_id += 1
@@ -342,6 +366,7 @@ class VoiceSession:
                 self._mark_generation_interrupted(generation)
 
     async def _run_generation(self, generation: ActiveGeneration) -> None:
+        generation.latency.generation_started_at = time.perf_counter()
         logger.info(
             "voice response generation started: session=%s generation=%d",
             self.session_id,
@@ -485,6 +510,7 @@ class VoiceSession:
                     str(error),
                 ) from error
             if text_delta and not generation.response_text:
+                generation.latency.first_language_delta_at = time.perf_counter()
                 logger.info(
                     "language model first delta: session=%s generation=%d",
                     self.session_id,
@@ -498,7 +524,7 @@ class VoiceSession:
                 )
             )
             for word in word_stream.add_text(text_delta):
-                await self._add_synthesis_word(synthesis, word)
+                await self._add_synthesis_word(generation, synthesis, word)
         if not generation.response_text.strip():
             raise VoiceComponentError(
                 VoiceComponent.LANGUAGE_MODEL,
@@ -506,7 +532,7 @@ class VoiceSession:
                 "The language model returned an empty response.",
             )
         for word in word_stream.finish():
-            await self._add_synthesis_word(synthesis, word)
+            await self._add_synthesis_word(generation, synthesis, word)
         try:
             await synthesis.finish_input()
         except Exception as error:
@@ -516,11 +542,20 @@ class VoiceSession:
                 str(error),
             ) from error
 
-    @staticmethod
     async def _add_synthesis_word(
+        self,
+        generation: ActiveGeneration,
         synthesis: SpeechSynthesisSession,
         word: SynthesisWord,
     ) -> None:
+        if generation.latency.first_synthesis_word_at is None:
+            generation.latency.first_synthesis_word_at = time.perf_counter()
+            logger.info(
+                "speech synthesis first word: session=%s generation=%d text=%r",
+                self.session_id,
+                generation.generation_id,
+                word.text,
+            )
         try:
             await synthesis.add_word(word)
         except Exception as error:
@@ -542,6 +577,8 @@ class VoiceSession:
             if generation.cancelled:
                 return
             match event:
+                case SynthesisFirstAudioMetrics():
+                    generation.latency.synthesis_metrics = event
                 case SynthesizedWordBoundary():
                     if event.text_offset > len(generation.response_text):
                         raise ValueError("TTS returned a text boundary beyond generated text.")
@@ -560,6 +597,7 @@ class VoiceSession:
                         raise ValueError("TTS audio chunks must have contiguous sample offsets.")
                     if not started:
                         started = True
+                        generation.latency.first_audio_at = time.perf_counter()
                         logger.info(
                             "speech synthesis first audio: session=%s generation=%d",
                             self.session_id,
@@ -575,7 +613,11 @@ class VoiceSession:
                         sequence_number,
                         event.start_sample,
                     )
+                    if sequence_number == 0:
+                        generation.latency.first_audio_sent_at = time.perf_counter()
                     await self._send_audio(header + event.pcm_bytes)
+                    if sequence_number == 0:
+                        self._log_first_audio_latency(generation)
                     sequence_number += 1
                     expected_start_sample += _pcm_sample_count(event.pcm_bytes)
         if not started:
@@ -645,6 +687,26 @@ class VoiceSession:
         if generation.lifecycle is GenerationLifecycle.STREAM_ENDED:
             self._transition_generation(generation, GenerationLifecycle.PLAYBACK_COMPLETE)
         self._commit_assistant_if_complete(generation)
+
+    def _record_playback_started(self, generation_id: int) -> None:
+        generation = self.generations.get(generation_id)
+        if generation is None:
+            return
+        latency = generation.latency
+        if latency.playback_started_at is not None or latency.first_audio_sent_at is None:
+            return
+        latency.playback_started_at = time.perf_counter()
+        logger.info(
+            "voice playback started: session=%s generation=%d "
+            "audio_send_to_playback_ack_ms=%.1f generation_to_playback_ack_ms=%.1f",
+            self.session_id,
+            generation.generation_id,
+            _milliseconds_between(latency.first_audio_sent_at, latency.playback_started_at),
+            _milliseconds_between(
+                _require_timestamp(latency.generation_started_at, "generation start"),
+                latency.playback_started_at,
+            ),
+        )
 
     def _acknowledge_playback(self, event: PlaybackProgressEvent) -> None:
         generation = self.generations.get(event.generation_id)
@@ -717,6 +779,53 @@ class VoiceSession:
             self.conversation[generation.history_index] = complete_message
         generation.accepts_playback = False
         self.active_generation = None
+
+    def _log_first_audio_latency(self, generation: ActiveGeneration) -> None:
+        latency = generation.latency
+        generation_started_at = _require_timestamp(
+            latency.generation_started_at,
+            "generation start",
+        )
+        first_language_delta_at = _require_timestamp(
+            latency.first_language_delta_at,
+            "first language delta",
+        )
+        first_synthesis_word_at = _require_timestamp(
+            latency.first_synthesis_word_at,
+            "first synthesis word",
+        )
+        first_audio_at = _require_timestamp(latency.first_audio_at, "first audio")
+        synthesis_metrics = latency.synthesis_metrics
+        logger.info(
+            "voice first audio latency: session=%s generation=%d "
+            "asr_finalization_ms=%.1f turn_commit_ms=%.1f llm_first_delta_ms=%.1f "
+            "first_synthesis_word_ms=%.1f first_word_to_audio_ms=%.1f "
+            "generation_to_audio_ms=%.1f tts_worker_first_word_to_audio_ms=%s "
+            "tts_tokenization_ms=%s tts_lm_step_ms=%s tts_mimi_decode_ms=%s "
+            "tts_model_steps=%s tts_first_audio_model_step=%s",
+            self.session_id,
+            generation.generation_id,
+            latency.asr_finalization_seconds * 1_000,
+            _milliseconds_between(latency.turn_ready_at, generation_started_at),
+            _milliseconds_between(generation_started_at, first_language_delta_at),
+            _milliseconds_between(generation_started_at, first_synthesis_word_at),
+            _milliseconds_between(first_synthesis_word_at, first_audio_at),
+            _milliseconds_between(generation_started_at, first_audio_at),
+            _optional_milliseconds(
+                None if synthesis_metrics is None else synthesis_metrics.first_word_to_audio_seconds
+            ),
+            _optional_milliseconds(
+                None if synthesis_metrics is None else synthesis_metrics.tokenization_seconds
+            ),
+            _optional_milliseconds(
+                None if synthesis_metrics is None else synthesis_metrics.language_model_step_seconds
+            ),
+            _optional_milliseconds(
+                None if synthesis_metrics is None else synthesis_metrics.mimi_decode_seconds
+            ),
+            "unknown" if synthesis_metrics is None else synthesis_metrics.model_step_count,
+            "unknown" if synthesis_metrics is None else synthesis_metrics.first_audio_model_step,
+        )
 
     async def _send_speech_state(self, event_type: VoiceServerEventType) -> None:
         audio_time_ms = self.audio_sample_count * 1_000 // INPUT_SAMPLE_RATE
@@ -808,6 +917,26 @@ def _pcm_sample_count(pcm_bytes: bytes) -> int:
 
 def _milliseconds_to_samples(duration_ms: int) -> int:
     return duration_ms * INPUT_SAMPLE_RATE // 1_000
+
+
+def _milliseconds_between(started_at: float, finished_at: float) -> float:
+    if finished_at < started_at:
+        raise AssertionError("Latency timestamps must increase monotonically.")
+    return (finished_at - started_at) * 1_000
+
+
+def _optional_milliseconds(duration_seconds: float | None) -> str:
+    if duration_seconds is None:
+        return "unknown"
+    if duration_seconds < 0:
+        raise AssertionError("Latency duration must not be negative.")
+    return f"{duration_seconds * 1_000:.1f}"
+
+
+def _require_timestamp(timestamp: float | None, label: str) -> float:
+    if timestamp is None:
+        raise AssertionError(f"Missing {label} latency timestamp.")
+    return timestamp
 
 
 def _component_error(

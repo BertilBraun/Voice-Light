@@ -20,6 +20,7 @@ class TtsWorkerCommandType(str, Enum):
 class TtsWorkerEventType(str, Enum):
     READY = "ready"
     AUDIO = "audio"
+    FIRST_AUDIO_METRICS = "first_audio_metrics"
     WORD_BOUNDARY = "word_boundary"
     WORD_PROCESSED = "word_processed"
     END = "end"
@@ -84,6 +85,16 @@ class TtsWordBoundaryEvent(FrozenBaseModel):
     start_sample: int
 
 
+class TtsFirstAudioMetricsEvent(FrozenBaseModel):
+    type: Literal[TtsWorkerEventType.FIRST_AUDIO_METRICS] = TtsWorkerEventType.FIRST_AUDIO_METRICS
+    first_word_to_audio_seconds: float = Field(ge=0)
+    tokenization_seconds: float = Field(ge=0)
+    language_model_step_seconds: float = Field(ge=0)
+    mimi_decode_seconds: float = Field(ge=0)
+    model_step_count: int = Field(gt=0)
+    first_audio_model_step: int = Field(gt=0)
+
+
 class TtsWordProcessedEvent(FrozenBaseModel):
     type: Literal[TtsWorkerEventType.WORD_PROCESSED] = TtsWorkerEventType.WORD_PROCESSED
     sequence_number: int
@@ -102,6 +113,7 @@ class TtsWorkerErrorEvent(FrozenBaseModel):
 TtsWorkerEvent = Annotated[
     TtsWorkerReadyEvent
     | TtsAudioEvent
+    | TtsFirstAudioMetricsEvent
     | TtsWordBoundaryEvent
     | TtsWordProcessedEvent
     | TtsEndEvent

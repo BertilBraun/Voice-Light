@@ -7,6 +7,7 @@ import time
 from collections.abc import Sequence
 
 from app.compute.voice.interfaces import (
+    SynthesisFirstAudioMetrics,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
@@ -45,15 +46,21 @@ async def run_benchmark(text: str, runs: int) -> None:
     for run_index in range(runs):
         session = synthesizer.start_session()
         started = time.perf_counter()
+        first_word_sent_at: float | None = None
         first_chunk_seconds: float | None = None
+        first_audio_metrics: SynthesisFirstAudioMetrics | None = None
         sample_count = 0
         boundary_count = 0
         first_boundary_sample: int | None = None
         for word in words:
+            if first_word_sent_at is None:
+                first_word_sent_at = time.perf_counter()
             await session.add_word(word)
         await session.finish_input()
         async for event in session.stream_events():
             match event:
+                case SynthesisFirstAudioMetrics():
+                    first_audio_metrics = event
                 case SynthesizedAudioChunk():
                     if first_chunk_seconds is None:
                         first_chunk_seconds = time.perf_counter() - started
@@ -65,7 +72,10 @@ async def run_benchmark(text: str, runs: int) -> None:
         await session.cancel()
         if first_chunk_seconds is None or sample_count == 0:
             raise RuntimeError("Kyutai TTS produced no audio.")
+        if first_word_sent_at is None or first_audio_metrics is None:
+            raise RuntimeError("Kyutai TTS produced no first-audio metrics.")
         total_seconds = time.perf_counter() - started
+        first_word_to_chunk_seconds = started + first_chunk_seconds - first_word_sent_at
         audio_duration_seconds = sample_count / synthesizer.sample_rate
         real_time_factor = total_seconds / audio_duration_seconds
         first_boundary_seconds = (
@@ -77,6 +87,15 @@ async def run_benchmark(text: str, runs: int) -> None:
             raise RuntimeError("Kyutai TTS produced no word boundaries.")
         print(
             f"run={run_index + 1} first_chunk_seconds={first_chunk_seconds:.3f} "
+            f"first_word_to_chunk_seconds={first_word_to_chunk_seconds:.3f} "
+            f"worker_first_word_to_audio_seconds="
+            f"{first_audio_metrics.first_word_to_audio_seconds:.3f} "
+            f"tokenization_seconds={first_audio_metrics.tokenization_seconds:.3f} "
+            f"language_model_step_seconds="
+            f"{first_audio_metrics.language_model_step_seconds:.3f} "
+            f"mimi_decode_seconds={first_audio_metrics.mimi_decode_seconds:.3f} "
+            f"model_step_count={first_audio_metrics.model_step_count} "
+            f"first_audio_model_step={first_audio_metrics.first_audio_model_step} "
             f"total_seconds={total_seconds:.3f} "
             f"audio_duration_seconds={audio_duration_seconds:.3f} "
             f"real_time_factor={real_time_factor:.3f} "
