@@ -9,11 +9,24 @@ pytest.importorskip("moshi", reason="Compute health tests require the compute ex
 
 from app.compute.config import ComputeSettings
 from app.compute.main import create_compute_app
+from app.compute.voice.tts_selection import (
+    SpeechSynthesisBackend,
+    SpeechSynthesisSettings,
+)
 
 
 def test_liveness_is_public_and_readiness_requires_authentication(tmp_path: Path) -> None:
     application = create_compute_app(
-        ComputeSettings(token="secret-token", log_directory=tmp_path / "logs")
+        ComputeSettings(
+            token="secret-token",
+            log_directory=tmp_path / "logs",
+            speech_synthesis=SpeechSynthesisSettings(
+                backend=SpeechSynthesisBackend.KYUTAI,
+                voxtream_python_path=tmp_path / "voxtream-python",
+                voxtream_config_path=tmp_path / "voxtream-config.json",
+                voxtream_prompt_audio_path=tmp_path / "voice.wav",
+            ),
+        )
     )
     client = TestClient(application)
 

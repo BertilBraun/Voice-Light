@@ -21,6 +21,7 @@ class TtsWorkerEventType(str, Enum):
     READY = "ready"
     AUDIO = "audio"
     FIRST_AUDIO_METRICS = "first_audio_metrics"
+    VOXTREAM_FIRST_AUDIO_METRICS = "voxtream_first_audio_metrics"
     WORD_BOUNDARY = "word_boundary"
     WORD_PROCESSED = "word_processed"
     END = "end"
@@ -95,6 +96,15 @@ class TtsFirstAudioMetricsEvent(FrozenBaseModel):
     first_audio_model_step: int = Field(gt=0)
 
 
+class VoxtreamTtsFirstAudioMetricsEvent(FrozenBaseModel):
+    type: Literal[TtsWorkerEventType.VOXTREAM_FIRST_AUDIO_METRICS] = (
+        TtsWorkerEventType.VOXTREAM_FIRST_AUDIO_METRICS
+    )
+    first_word_to_audio_seconds: float = Field(ge=0)
+    prompt_preparation_seconds: float = Field(ge=0)
+    first_frame_generation_seconds: float = Field(ge=0)
+
+
 class TtsWordProcessedEvent(FrozenBaseModel):
     type: Literal[TtsWorkerEventType.WORD_PROCESSED] = TtsWorkerEventType.WORD_PROCESSED
     sequence_number: int
@@ -114,6 +124,7 @@ TtsWorkerEvent = Annotated[
     TtsWorkerReadyEvent
     | TtsAudioEvent
     | TtsFirstAudioMetricsEvent
+    | VoxtreamTtsFirstAudioMetricsEvent
     | TtsWordBoundaryEvent
     | TtsWordProcessedEvent
     | TtsEndEvent

@@ -7,15 +7,16 @@ from collections.abc import Callable
 import pytest
 
 from app.compute.voice.interfaces import (
+    KyutaiSynthesisFirstAudioMetrics,
     SynthesisEvent,
-    SynthesisFirstAudioMetrics,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
+    VoxtreamSynthesisFirstAudioMetrics,
 )
-from app.compute.voice.kyutai_tts import (
-    KyutaiSpeechSynthesisSession,
-    KyutaiTtsWorker,
+from app.compute.voice.subprocess_tts import (
+    SubprocessSpeechSynthesisSession,
+    TtsWorker,
 )
 from app.compute.voice.tts_worker_protocol import (
     TtsAudioEvent,
@@ -27,6 +28,7 @@ from app.compute.voice.tts_worker_protocol import (
     TtsWorkerCommand,
     TtsWorkerCommandType,
     TtsWorkerEvent,
+    VoxtreamTtsFirstAudioMetricsEvent,
 )
 
 
@@ -35,9 +37,22 @@ class FakeKyutaiTtsWorker:
         self,
         processes_words: bool = True,
         ends_on_cancel: bool = True,
+        first_audio_metrics_event: TtsWorkerEvent | None = None,
     ) -> None:
         self.processes_words = processes_words
         self.ends_on_cancel = ends_on_cancel
+        self.first_audio_metrics_event = (
+            first_audio_metrics_event
+            if first_audio_metrics_event is not None
+            else TtsFirstAudioMetricsEvent(
+                first_word_to_audio_seconds=0.25,
+                tokenization_seconds=0.01,
+                language_model_step_seconds=0.2,
+                mimi_decode_seconds=0.04,
+                model_step_count=6,
+                first_audio_model_step=6,
+            )
+        )
         self.commands: list[TtsWorkerCommand] = []
         self.events: queue.Queue[TtsWorkerEvent] = queue.Queue()
         self.termination_count = 0
@@ -53,16 +68,7 @@ class FakeKyutaiTtsWorker:
                 assert isinstance(command, TtsWordCommand)
                 if self.processes_words:
                     if command.sequence_number == 0:
-                        self.events.put(
-                            TtsFirstAudioMetricsEvent(
-                                first_word_to_audio_seconds=0.25,
-                                tokenization_seconds=0.01,
-                                language_model_step_seconds=0.2,
-                                mimi_decode_seconds=0.04,
-                                model_step_count=6,
-                                first_audio_model_step=6,
-                            )
-                        )
+                        self.events.put(self.first_audio_metrics_event)
                     self.events.put(
                         TtsWordBoundaryEvent(
                             text_offset=command.text_end,
@@ -113,7 +119,7 @@ class FakeKyutaiTtsWorkerManager:
     def release(self) -> None:
         self.lock.release()
 
-    async def replace(self, failed_worker: KyutaiTtsWorker) -> None:
+    async def replace(self, failed_worker: TtsWorker) -> None:
         assert failed_worker is self.worker
         self.replacement_count += 1
         self.worker.terminate()
@@ -125,15 +131,17 @@ def _make_session(
     worker_manager: FakeKyutaiTtsWorkerManager,
     progress_timeout_seconds: float = 1.0,
     cancel_timeout_seconds: float = 1.0,
-) -> KyutaiSpeechSynthesisSession:
-    return KyutaiSpeechSynthesisSession(
+) -> SubprocessSpeechSynthesisSession:
+    return SubprocessSpeechSynthesisSession(
         worker_manager=worker_manager,
+        provider_name="Test TTS",
         generation_progress_timeout_seconds=progress_timeout_seconds,
         cancel_timeout_seconds=cancel_timeout_seconds,
+        watchdog_poll_seconds=0.001,
     )
 
 
-async def _collect_events(session: KyutaiSpeechSynthesisSession) -> list[SynthesisEvent]:
+async def _collect_events(session: SubprocessSpeechSynthesisSession) -> list[SynthesisEvent]:
     return [event async for event in session.stream_events()]
 
 
@@ -148,7 +156,7 @@ def test_kyutai_session_streams_audio_and_word_boundaries() -> None:
         events = await _collect_events(session)
 
         assert events == [
-            SynthesisFirstAudioMetrics(
+            KyutaiSynthesisFirstAudioMetrics(
                 first_word_to_audio_seconds=0.25,
                 tokenization_seconds=0.01,
                 language_model_step_seconds=0.2,
@@ -182,6 +190,31 @@ def test_kyutai_session_cancels_cooperatively() -> None:
         assert worker.commands[-1].type is TtsWorkerCommandType.CANCEL
         assert worker_manager.replacement_count == 0
         assert not worker_manager.lock.locked()
+
+    asyncio.run(run_session())
+
+
+def test_subprocess_session_maps_voxtream_metrics() -> None:
+    async def run_session() -> None:
+        worker = FakeKyutaiTtsWorker(
+            first_audio_metrics_event=VoxtreamTtsFirstAudioMetricsEvent(
+                first_word_to_audio_seconds=0.12,
+                prompt_preparation_seconds=0.05,
+                first_frame_generation_seconds=0.06,
+            )
+        )
+        worker_manager = FakeKyutaiTtsWorkerManager(worker)
+        session = _make_session(worker_manager)
+
+        await session.add_word(SynthesisWord(text="Hello", text_start=0, text_end=5))
+        await session.finish_input()
+        events = await _collect_events(session)
+
+        assert events[0] == VoxtreamSynthesisFirstAudioMetrics(
+            first_word_to_audio_seconds=0.12,
+            prompt_preparation_seconds=0.05,
+            first_frame_generation_seconds=0.06,
+        )
 
     asyncio.run(run_session())
 
@@ -264,7 +297,7 @@ def test_kyutai_session_recovers_on_fresh_worker_after_progress_timeout() -> Non
         events = await _collect_events(recovered_session)
 
         assert events == [
-            SynthesisFirstAudioMetrics(
+            KyutaiSynthesisFirstAudioMetrics(
                 first_word_to_audio_seconds=0.25,
                 tokenization_seconds=0.01,
                 language_model_step_seconds=0.2,

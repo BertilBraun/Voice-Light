@@ -34,6 +34,21 @@ def test_compute_deployment_installs_compute_extra() -> None:
         assert "uv sync --frozen --python 3.12 --extra compute" in script
 
 
+def test_voxtream_uses_a_pinned_isolated_environment() -> None:
+    bootstrap_script = (REPOSITORY_ROOT / "deployment/compute/bootstrap.sh").read_text(
+        encoding="utf-8"
+    )
+    installation_script = (REPOSITORY_ROOT / "deployment/compute/install_voxtream.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'VOICE_LIGHT_TTS_BACKEND:-kyutai}" == "voxtream"' in bootstrap_script
+    assert "8ec2d62159dae4716ae7058827244a962d40603c" in installation_script
+    assert 'voxtream_root="${repository_root}/.cache/compute/voxtream"' in installation_script
+    assert 'python_path="${voxtream_root}/.venv/bin/python"' in installation_script
+    assert "uv pip install" in installation_script
+
+
 def test_vast_provisioning_installs_supervisor_service() -> None:
     provisioning_script = (REPOSITORY_ROOT / "deployment/compute/provision-vast.sh").read_text(
         encoding="utf-8"

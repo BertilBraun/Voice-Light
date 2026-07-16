@@ -7,7 +7,7 @@ import time
 from collections.abc import Sequence
 
 from app.compute.voice.interfaces import (
-    SynthesisFirstAudioMetrics,
+    KyutaiSynthesisFirstAudioMetrics,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
@@ -48,7 +48,7 @@ async def run_benchmark(text: str, runs: int) -> None:
         started = time.perf_counter()
         first_word_sent_at: float | None = None
         first_chunk_seconds: float | None = None
-        first_audio_metrics: SynthesisFirstAudioMetrics | None = None
+        first_audio_metrics: KyutaiSynthesisFirstAudioMetrics | None = None
         sample_count = 0
         boundary_count = 0
         first_boundary_sample: int | None = None
@@ -59,7 +59,7 @@ async def run_benchmark(text: str, runs: int) -> None:
         await session.finish_input()
         async for event in session.stream_events():
             match event:
-                case SynthesisFirstAudioMetrics():
+                case KyutaiSynthesisFirstAudioMetrics():
                     first_audio_metrics = event
                 case SynthesizedAudioChunk():
                     if first_chunk_seconds is None:

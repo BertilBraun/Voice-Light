@@ -16,6 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.compute.voice.conversation import ConversationMessage, ConversationRole
 from app.compute.voice.errors import VoiceComponent, VoiceComponentError, VoiceOperation
 from app.compute.voice.interfaces import (
+    KyutaiSynthesisFirstAudioMetrics,
     LanguageModel,
     SpeechDetector,
     SpeechSynthesisSession,
@@ -27,6 +28,7 @@ from app.compute.voice.interfaces import (
     SynthesizedWordBoundary,
     Transcriber,
     TranscriptionSession,
+    VoxtreamSynthesisFirstAudioMetrics,
 )
 from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
@@ -577,7 +579,7 @@ class VoiceSession:
             if generation.cancelled:
                 return
             match event:
-                case SynthesisFirstAudioMetrics():
+                case KyutaiSynthesisFirstAudioMetrics() | VoxtreamSynthesisFirstAudioMetrics():
                     generation.latency.synthesis_metrics = event
                 case SynthesizedWordBoundary():
                     if event.text_offset > len(generation.response_text):
@@ -796,13 +798,49 @@ class VoiceSession:
         )
         first_audio_at = _require_timestamp(latency.first_audio_at, "first audio")
         synthesis_metrics = latency.synthesis_metrics
+        match synthesis_metrics:
+            case KyutaiSynthesisFirstAudioMetrics():
+                tts_backend = "kyutai"
+                tokenization_ms = _optional_milliseconds(synthesis_metrics.tokenization_seconds)
+                language_model_step_ms = _optional_milliseconds(
+                    synthesis_metrics.language_model_step_seconds
+                )
+                mimi_decode_ms = _optional_milliseconds(synthesis_metrics.mimi_decode_seconds)
+                model_steps: int | str = synthesis_metrics.model_step_count
+                first_audio_model_step: int | str = synthesis_metrics.first_audio_model_step
+                prompt_preparation_ms = "unknown"
+                first_frame_generation_ms = "unknown"
+            case VoxtreamSynthesisFirstAudioMetrics():
+                tts_backend = "voxtream"
+                tokenization_ms = "unknown"
+                language_model_step_ms = "unknown"
+                mimi_decode_ms = "unknown"
+                model_steps = "unknown"
+                first_audio_model_step = "unknown"
+                prompt_preparation_ms = _optional_milliseconds(
+                    synthesis_metrics.prompt_preparation_seconds
+                )
+                first_frame_generation_ms = _optional_milliseconds(
+                    synthesis_metrics.first_frame_generation_seconds
+                )
+            case None:
+                tts_backend = "unknown"
+                tokenization_ms = "unknown"
+                language_model_step_ms = "unknown"
+                mimi_decode_ms = "unknown"
+                model_steps = "unknown"
+                first_audio_model_step = "unknown"
+                prompt_preparation_ms = "unknown"
+                first_frame_generation_ms = "unknown"
         logger.info(
             "voice first audio latency: session=%s generation=%d "
             "asr_finalization_ms=%.1f turn_commit_ms=%.1f llm_first_delta_ms=%.1f "
             "first_synthesis_word_ms=%.1f first_word_to_audio_ms=%.1f "
-            "generation_to_audio_ms=%.1f tts_worker_first_word_to_audio_ms=%s "
+            "generation_to_audio_ms=%.1f tts_backend=%s "
+            "tts_worker_first_word_to_audio_ms=%s "
             "tts_tokenization_ms=%s tts_lm_step_ms=%s tts_mimi_decode_ms=%s "
-            "tts_model_steps=%s tts_first_audio_model_step=%s",
+            "tts_model_steps=%s tts_first_audio_model_step=%s "
+            "tts_prompt_preparation_ms=%s tts_first_frame_generation_ms=%s",
             self.session_id,
             generation.generation_id,
             latency.asr_finalization_seconds * 1_000,
@@ -811,20 +849,17 @@ class VoiceSession:
             _milliseconds_between(generation_started_at, first_synthesis_word_at),
             _milliseconds_between(first_synthesis_word_at, first_audio_at),
             _milliseconds_between(generation_started_at, first_audio_at),
+            tts_backend,
             _optional_milliseconds(
                 None if synthesis_metrics is None else synthesis_metrics.first_word_to_audio_seconds
             ),
-            _optional_milliseconds(
-                None if synthesis_metrics is None else synthesis_metrics.tokenization_seconds
-            ),
-            _optional_milliseconds(
-                None if synthesis_metrics is None else synthesis_metrics.language_model_step_seconds
-            ),
-            _optional_milliseconds(
-                None if synthesis_metrics is None else synthesis_metrics.mimi_decode_seconds
-            ),
-            "unknown" if synthesis_metrics is None else synthesis_metrics.model_step_count,
-            "unknown" if synthesis_metrics is None else synthesis_metrics.first_audio_model_step,
+            tokenization_ms,
+            language_model_step_ms,
+            mimi_decode_ms,
+            model_steps,
+            first_audio_model_step,
+            prompt_preparation_ms,
+            first_frame_generation_ms,
         )
 
     async def _send_speech_state(self, event_type: VoiceServerEventType) -> None:

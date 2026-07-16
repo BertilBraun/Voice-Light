@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 def create_compute_app(settings: ComputeSettings) -> FastAPI:
     configure_logging(settings.log_directory)
-    runtime = ComputeRuntime()
+    runtime = ComputeRuntime(settings.speech_synthesis)
     authorizer = BearerTokenAuthorizer(settings.token)
 
     @asynccontextmanager

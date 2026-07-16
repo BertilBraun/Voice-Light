@@ -159,10 +159,12 @@ bash deployment/compute/install-service.sh
 
 `bootstrap.sh` installs Linux audio/compiler packages, installs uv, synchronizes the locked Python
 3.12 environment with the `compute` dependency extra, validates the RTX 4090/CUDA runtime, caches
-required voice models, and performs import and Kyutai TTS streaming smoke tests. Moshi, NeMo,
-librosa, and faster-whisper are compute-only dependencies and are not installed for the local app.
-The script creates an ignored `.env.compute` containing a new bearer token. Copy the token securely
-into `VOICE_LIGHT_COMPUTE_TOKEN` on the local machine.
+required voice models, and performs a streaming TTS smoke test. Moshi, NeMo, librosa, and
+faster-whisper are compute-only dependencies and are not installed for the local app. The script
+creates an ignored `.env.compute` containing a new bearer token and
+`VOICE_LIGHT_TTS_BACKEND=kyutai`. Set that value to `voxtream` and rerun bootstrap to install the
+pinned isolated VoXtream environment. Copy the token securely into `VOICE_LIGHT_COMPUTE_TOKEN` on
+the local machine.
 
 After a later pull, synchronize dependencies and restart the Supervisor service with:
 

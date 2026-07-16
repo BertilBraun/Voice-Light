@@ -24,6 +24,7 @@ fi
   ca-certificates \
   clang \
   curl \
+  espeak-ng \
   ffmpeg \
   git \
   git-lfs \
@@ -61,6 +62,9 @@ fi
 set -a
 source .env.compute
 set +a
+if [[ "${VOICE_LIGHT_TTS_BACKEND:-kyutai}" == "voxtream" ]]; then
+  bash deployment/compute/install_voxtream.sh
+fi
 PYTHONPATH="$repository_root" \
   .venv/bin/python deployment/compute/validate_environment.py --download-models
 

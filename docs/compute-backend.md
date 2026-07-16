@@ -22,10 +22,9 @@ through the schemas in `app.shared` and their authenticated clients.
 
 The browser connects directly to `/v1/voice`. One compute-side `VoiceSession` owns server Silero
 per-session VAD state, genuine streaming Nemotron state, turn decisions, conversation history,
-Qwen/Kyutai work, and cancellation for the life of that WebSocket. The runtime admits one live
-voice WebSocket at a time. Silero is loaded during readiness; persistent Nemotron, Qwen, and Kyutai
-child processes own their CUDA models. The protocol is optimized for this specific cascade,
-not for provider-neutral ASR/LLM/TTS operations. No voice state survives disconnection.
+Qwen/TTS work, and cancellation for the life of that WebSocket. The runtime admits one live voice
+WebSocket at a time. Silero is loaded during readiness; persistent Nemotron, Qwen, and selected TTS
+child processes own their CUDA models. No voice state survives disconnection.
 
 ## Compute API
 
@@ -41,21 +40,32 @@ WebSocket is deliberately public for direct use by the browser.
 The compute server never accepts filesystem paths or shell commands from HTTP clients. Quality
 uploads are decoded in request-scoped temporary storage and deleted after the response.
 
-## TTS decision
+## TTS selection
 
-The prototype uses `kyutai/tts-1.6b-en_fr` through Moshi's direct PyTorch runtime. The checkpoint,
-Mimi codec, and fixed precomputed voice are loaded once. Each assistant turn creates fresh delayed-
-stream LM and codec state, accepts complete words incrementally, and emits PCM frames and model-
-predicted word-start timestamps incrementally. Batch size is always one. Cancellation signals the
-generation worker immediately; a lock prevents a canceled worker and its successor from using the
-shared model concurrently. Startup performs one discarded streaming utterance so the first user
-turn does not pay CUDA kernel warm-up costs.
+`VOICE_LIGHT_TTS_BACKEND` selects `kyutai` or `voxtream` at process startup. Both implement the same
+typed word-input/audio-event interface and use the same restartable subprocess lifecycle,
+cancellation deadline, progress watchdog, and exclusive worker lease.
 
-The Moshi package's conservative dependency ceilings lag this repository's Torch, Hugging Face Hub,
-and Safetensors versions. `tool.uv.override-dependencies` explicitly selects the repository's newer
-shared stack. This combination and the 32-codebook quality setting must be validated on the rented
-GPU before deployment. If memory or throughput is insufficient, codebook count is the first
-benchmark variable; lowering it trades audio quality for speed and does not change the protocol.
+- `kyutai` uses `kyutai/tts-1.6b-en_fr` through Moshi's direct PyTorch runtime. It has the stronger
+  current voice quality and model-predicted word alignment, but approximately 469 ms isolated
+  first-word-to-PCM latency.
+- `voxtream` uses VoXtream2 at pinned revision
+  `8ec2d62159dae4716ae7058827244a962d40603c`. It consumes words while emitting audio and uses
+  phoneme progress for conservative word-completion boundaries. The fixed prompt is cached.
+
+VoXtream requires older Torch, Transformers, Hugging Face Hub, and related dependencies. Bootstrap
+therefore installs it in `.cache/compute/voxtream/.venv`; those packages never enter the main
+Nemotron/Qwen environment.
+
+To select VoXtream:
+
+```bash
+sed -i 's/^VOICE_LIGHT_TTS_BACKEND=.*/VOICE_LIGHT_TTS_BACKEND=voxtream/' .env.compute
+bash deployment/compute/bootstrap.sh
+bash deployment/compute/start.sh
+```
+
+Switch the value back to `kyutai` and restart to restore the original synthesizer.
 
 `uv run python -m deployment.compute.benchmark_tts --runs 5` measures cold/warm first-chunk
 latency, first-word-to-audio latency, delayed-stream LM and Mimi decode time, model-step count,

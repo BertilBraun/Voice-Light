@@ -50,7 +50,7 @@ class SynthesizedWordBoundary:
 
 
 @dataclass(frozen=True)
-class SynthesisFirstAudioMetrics:
+class KyutaiSynthesisFirstAudioMetrics:
     first_word_to_audio_seconds: float
     tokenization_seconds: float
     language_model_step_seconds: float
@@ -59,6 +59,14 @@ class SynthesisFirstAudioMetrics:
     first_audio_model_step: int
 
 
+@dataclass(frozen=True)
+class VoxtreamSynthesisFirstAudioMetrics:
+    first_word_to_audio_seconds: float
+    prompt_preparation_seconds: float
+    first_frame_generation_seconds: float
+
+
+SynthesisFirstAudioMetrics = KyutaiSynthesisFirstAudioMetrics | VoxtreamSynthesisFirstAudioMetrics
 SynthesisEvent = SynthesizedAudioChunk | SynthesizedWordBoundary | SynthesisFirstAudioMetrics
 
 
@@ -77,3 +85,5 @@ class SpeechSynthesizer(Protocol):
     def sample_rate(self) -> int: ...
 
     def start_session(self) -> SpeechSynthesisSession: ...
+
+    def close(self) -> None: ...

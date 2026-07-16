@@ -3,19 +3,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import ParamSpec, TypeVar
 
 from app.compute.asr.models.registry import AsrModelCache
 from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessionLease
-from app.compute.voice.kyutai_tts import KyutaiSpeechSynthesizer
+from app.compute.voice.interfaces import SpeechSynthesizer
 from app.compute.voice.models import TransformersLanguageModel
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
+from app.compute.voice.tts_selection import (
+    SpeechSynthesisSettings,
+    create_speech_synthesizer,
+)
 from app.shared.compute_api import ModelStage, ModelStageStatus
 
 logger = logging.getLogger(__name__)
 ModelType = TypeVar("ModelType")
+LoaderParameters = ParamSpec("LoaderParameters")
 
 
 @dataclass
@@ -35,7 +41,8 @@ class MutableModelStage:
 
 
 class ComputeRuntime:
-    def __init__(self) -> None:
+    def __init__(self, speech_synthesis_settings: SpeechSynthesisSettings) -> None:
+        self.speech_synthesis_settings = speech_synthesis_settings
         self.streaming_asr_stage = MutableModelStage("streaming_asr")
         self.speech_detection_stage = MutableModelStage("speech_detection")
         self.language_model_stage = MutableModelStage("language_model")
@@ -45,7 +52,7 @@ class ComputeRuntime:
         self.streaming_asr: NemotronStreamingTranscriber | None = None
         self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
         self.language_model: TransformersLanguageModel | None = None
-        self.speech_synthesizer: KyutaiSpeechSynthesizer | None = None
+        self.speech_synthesizer: SpeechSynthesizer | None = None
         self.loading_task: asyncio.Task[None] | None = None
 
     @property
@@ -95,7 +102,7 @@ class ComputeRuntime:
             raise RuntimeError("Language model is not ready.")
         return self.language_model
 
-    def require_speech_synthesizer(self) -> KyutaiSpeechSynthesizer:
+    def require_speech_synthesizer(self) -> SpeechSynthesizer:
         if self.speech_synthesizer is None:
             raise RuntimeError("Speech synthesizer is not ready.")
         return self.speech_synthesizer
@@ -134,7 +141,8 @@ class ComputeRuntime:
     async def _load_speech_synthesizer(self) -> None:
         model = await self._timed_load(
             self.speech_synthesis_stage,
-            KyutaiSpeechSynthesizer,
+            create_speech_synthesizer,
+            self.speech_synthesis_settings,
         )
         if model is not None:
             self.speech_synthesizer = model
@@ -142,13 +150,14 @@ class ComputeRuntime:
     async def _timed_load(
         self,
         stage: MutableModelStage,
-        model_type: type[ModelType],
+        loader: Callable[LoaderParameters, ModelType],
+        *loader_arguments: LoaderParameters.args,
     ) -> ModelType | None:
         stage.status = ModelStageStatus.LOADING
         logger.info("model load started: %s", stage.name)
         started = time.perf_counter()
         try:
-            model = await asyncio.to_thread(model_type)
+            model = await asyncio.to_thread(loader, *loader_arguments)
         except Exception as error:
             stage.status = ModelStageStatus.FAILED
             stage.error = str(error)

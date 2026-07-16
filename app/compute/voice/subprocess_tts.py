@@ -1,0 +1,490 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import subprocess
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from enum import Enum, auto
+from pathlib import Path
+from typing import Protocol, TextIO
+
+from app.compute.voice.interfaces import (
+    KyutaiSynthesisFirstAudioMetrics,
+    SpeechSynthesisSession,
+    SynthesisEvent,
+    SynthesisWord,
+    SynthesizedAudioChunk,
+    SynthesizedWordBoundary,
+    VoxtreamSynthesisFirstAudioMetrics,
+)
+from app.compute.voice.subprocess_start import read_worker_start_event
+from app.compute.voice.tts_worker_protocol import (
+    CancelTtsCommand,
+    FinishTtsCommand,
+    ShutdownTtsCommand,
+    StartTtsCommand,
+    TtsAudioEvent,
+    TtsEndEvent,
+    TtsFirstAudioMetricsEvent,
+    TtsWordBoundaryEvent,
+    TtsWordCommand,
+    TtsWordProcessedEvent,
+    TtsWorkerCommand,
+    TtsWorkerErrorEvent,
+    TtsWorkerEvent,
+    TtsWorkerReadyEvent,
+    VoxtreamTtsFirstAudioMetricsEvent,
+    tts_worker_event_adapter,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SubprocessTtsConfiguration:
+    provider_name: str
+    python_path: Path
+    module_name: str
+    module_arguments: tuple[str, ...]
+    generation_progress_timeout_seconds: float
+    cancel_timeout_seconds: float
+    worker_stop_timeout_seconds: float
+    worker_start_timeout_seconds: float
+    watchdog_poll_seconds: float
+
+
+class TtsWorker(Protocol):
+    @property
+    def sample_rate(self) -> int: ...
+
+    def send(self, command: TtsWorkerCommand) -> None: ...
+
+    def read_event(self) -> TtsWorkerEvent: ...
+
+    def terminate(self) -> None: ...
+
+
+class TtsWorkerManager(Protocol):
+    @property
+    def sample_rate(self) -> int: ...
+
+    async def acquire(self) -> TtsWorker: ...
+
+    def release(self) -> None: ...
+
+    async def replace(self, failed_worker: TtsWorker) -> None: ...
+
+
+class TtsWorkerProcess:
+    def __init__(self, configuration: SubprocessTtsConfiguration) -> None:
+        self.configuration = configuration
+        self.process = subprocess.Popen(
+            [
+                configuration.python_path.as_posix(),
+                "-m",
+                configuration.module_name,
+                *configuration.module_arguments,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        assert self.process.stdin is not None
+        assert self.process.stdout is not None
+        self.input_stream: TextIO = self.process.stdin
+        self.output_stream: TextIO = self.process.stdout
+        ready_event = read_worker_start_event(
+            self.read_event,
+            self.terminate,
+            configuration.worker_start_timeout_seconds,
+            configuration.provider_name,
+        )
+        if not isinstance(ready_event, TtsWorkerReadyEvent):
+            self.terminate()
+            raise RuntimeError(f"The {configuration.provider_name} worker failed to initialize.")
+        self._sample_rate = ready_event.sample_rate
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
+
+    def send(self, command: TtsWorkerCommand) -> None:
+        self.input_stream.write(command.model_dump_json() + "\n")
+        self.input_stream.flush()
+
+    def read_event(self) -> TtsWorkerEvent:
+        event_json = self.output_stream.readline()
+        if not event_json:
+            raise RuntimeError(
+                f"The {self.configuration.provider_name} worker stopped unexpectedly."
+            )
+        return tts_worker_event_adapter.validate_json(event_json)
+
+    def close(self) -> None:
+        if self.process.poll() is not None:
+            self._close_streams()
+            return
+        try:
+            self.send(ShutdownTtsCommand())
+            self.process.wait(timeout=self.configuration.worker_stop_timeout_seconds)
+        except (BrokenPipeError, subprocess.TimeoutExpired):
+            self.terminate()
+            return
+        self._close_streams()
+
+    def terminate(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=self.configuration.worker_stop_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=self.configuration.worker_stop_timeout_seconds)
+        self._close_streams()
+
+    def _close_streams(self) -> None:
+        self.input_stream.close()
+        self.output_stream.close()
+
+
+class RestartingTtsWorkerManager:
+    def __init__(self, configuration: SubprocessTtsConfiguration) -> None:
+        self.configuration = configuration
+        self.worker: TtsWorkerProcess | None = TtsWorkerProcess(configuration)
+        self._sample_rate = self.worker.sample_rate
+        self.lock = asyncio.Lock()
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
+
+    async def acquire(self) -> TtsWorker:
+        await self.lock.acquire()
+        try:
+            if self.worker is None:
+                self.worker = await asyncio.to_thread(TtsWorkerProcess, self.configuration)
+                if self.worker.sample_rate != self._sample_rate:
+                    self.worker.terminate()
+                    self.worker = None
+                    raise RuntimeError(
+                        f"The replacement {self.configuration.provider_name} worker changed "
+                        "sample rate."
+                    )
+            return self.worker
+        except BaseException:
+            self.lock.release()
+            raise
+
+    def release(self) -> None:
+        if not self.lock.locked():
+            raise AssertionError("Cannot release an unowned TTS worker.")
+        self.lock.release()
+
+    async def replace(self, failed_worker: TtsWorker) -> None:
+        if not self.lock.locked():
+            raise AssertionError("Cannot replace an unowned TTS worker.")
+        if failed_worker is not self.worker:
+            raise AssertionError("Cannot replace a TTS worker owned by another session.")
+        logger.error(
+            "replacing unresponsive %s worker process",
+            self.configuration.provider_name,
+        )
+        self.worker = None
+        await asyncio.to_thread(failed_worker.terminate)
+
+    def close(self) -> None:
+        worker = self.worker
+        self.worker = None
+        if worker is not None:
+            worker.close()
+
+
+class SubprocessSpeechSynthesizer:
+    def __init__(self, configuration: SubprocessTtsConfiguration) -> None:
+        self.configuration = configuration
+        self.worker_manager = RestartingTtsWorkerManager(configuration)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.worker_manager.sample_rate
+
+    def start_session(self) -> SpeechSynthesisSession:
+        return SubprocessSpeechSynthesisSession(
+            worker_manager=self.worker_manager,
+            provider_name=self.configuration.provider_name,
+            generation_progress_timeout_seconds=(
+                self.configuration.generation_progress_timeout_seconds
+            ),
+            cancel_timeout_seconds=self.configuration.cancel_timeout_seconds,
+            watchdog_poll_seconds=self.configuration.watchdog_poll_seconds,
+        )
+
+    def close(self) -> None:
+        self.worker_manager.close()
+
+
+class _SessionMarker(Enum):
+    END = auto()
+
+
+@dataclass(frozen=True)
+class _SessionFailure:
+    error: Exception
+
+
+_SessionOutput = SynthesisEvent | _SessionFailure | _SessionMarker
+
+
+class SubprocessSpeechSynthesisSession:
+    def __init__(
+        self,
+        worker_manager: TtsWorkerManager,
+        provider_name: str,
+        generation_progress_timeout_seconds: float,
+        cancel_timeout_seconds: float,
+        watchdog_poll_seconds: float,
+    ) -> None:
+        self.worker_manager = worker_manager
+        self.provider_name = provider_name
+        self.generation_progress_timeout_seconds = generation_progress_timeout_seconds
+        self.cancel_timeout_seconds = cancel_timeout_seconds
+        self.watchdog_poll_seconds = watchdog_poll_seconds
+        self.worker: TtsWorker | None = None
+        self.output_queue: asyncio.Queue[_SessionOutput] = asyncio.Queue()
+        self.start_lock = asyncio.Lock()
+        self.finalization_lock = asyncio.Lock()
+        self.output_task: asyncio.Task[None] | None = None
+        self.watchdog_task: asyncio.Task[None] | None = None
+        self.reader_error: Exception | None = None
+        self.pending_word_sequences: set[int] = set()
+        self.next_word_sequence = 0
+        self.last_progress_time = 0.0
+        self.finish_pending = False
+        self.input_finished = False
+        self.worker_finalized = False
+
+    async def add_word(self, word: SynthesisWord) -> None:
+        if self.input_finished:
+            raise ValueError("Cannot add a word after synthesis input has finished.")
+        if not word.text or any(character.isspace() for character in word.text):
+            raise ValueError("Synthesis words must be non-empty and contain no whitespace.")
+        await self._ensure_started()
+        sequence_number = self.next_word_sequence
+        self.next_word_sequence += 1
+        self.pending_word_sequences.add(sequence_number)
+        self._record_progress()
+        try:
+            self._require_worker().send(
+                TtsWordCommand(
+                    sequence_number=sequence_number,
+                    text=word.text,
+                    text_start=word.text_start,
+                    text_end=word.text_end,
+                )
+            )
+        except Exception as error:
+            await self._fail_worker(error)
+            raise RuntimeError(
+                f"Failed to send text to the {self.provider_name} worker."
+            ) from error
+
+    async def finish_input(self) -> None:
+        if self.input_finished:
+            raise ValueError("Synthesis input may only be finished once.")
+        self.input_finished = True
+        await self._ensure_started()
+        self.finish_pending = True
+        self._record_progress()
+        try:
+            self._require_worker().send(FinishTtsCommand())
+        except Exception as error:
+            await self._fail_worker(error)
+            raise RuntimeError(f"Failed to finish {self.provider_name} input.") from error
+
+    async def stream_events(self) -> AsyncIterator[SynthesisEvent]:
+        await self._ensure_started()
+        while True:
+            item = await self.output_queue.get()
+            match item:
+                case _SessionMarker.END:
+                    await self._finalize_worker(replace=self.reader_error is not None)
+                    await self._stop_background_tasks()
+                    return
+                case _SessionFailure(error=error):
+                    await self._fail_worker(error)
+                    await self._stop_background_tasks()
+                    raise error
+                case (
+                    SynthesizedAudioChunk()
+                    | SynthesizedWordBoundary()
+                    | KyutaiSynthesisFirstAudioMetrics()
+                    | VoxtreamSynthesisFirstAudioMetrics()
+                ):
+                    yield item
+                case _:
+                    raise AssertionError(f"Unexpected synthesis output item: {item!r}")
+
+    async def cancel(self) -> None:
+        if self.worker is None or self.worker_finalized:
+            return
+        self.finish_pending = True
+        self._record_progress()
+        try:
+            self._require_worker().send(CancelTtsCommand())
+        except Exception as error:
+            await self._fail_worker(error)
+            await self._stop_background_tasks()
+            raise RuntimeError(f"Failed to cancel {self.provider_name} generation.") from error
+        assert self.output_task is not None
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(self.output_task),
+                timeout=self.cancel_timeout_seconds,
+            )
+        except TimeoutError as timeout_error:
+            error = RuntimeError(f"{self.provider_name} cancellation timed out.")
+            await self._fail_worker(error)
+            await self._stop_background_tasks()
+            raise error from timeout_error
+        else:
+            await self._finalize_worker(replace=self.reader_error is not None)
+        await self._stop_background_tasks()
+
+    async def _ensure_started(self) -> None:
+        async with self.start_lock:
+            if self.worker is not None:
+                return
+            if self.worker_finalized:
+                raise RuntimeError(f"The {self.provider_name} session has already ended.")
+            self.worker = await self.worker_manager.acquire()
+            self._record_progress()
+            try:
+                self.worker.send(StartTtsCommand())
+            except Exception as error:
+                await self._fail_worker(error)
+                raise RuntimeError(
+                    f"Failed to start the {self.provider_name} worker session."
+                ) from error
+            self.output_task = asyncio.create_task(self._read_output())
+            self.watchdog_task = asyncio.create_task(self._watch_progress())
+
+    async def _read_output(self) -> None:
+        try:
+            while True:
+                event = await asyncio.to_thread(self._require_worker().read_event)
+                self._record_progress()
+                match event:
+                    case TtsWorkerReadyEvent():
+                        raise RuntimeError(
+                            f"The {self.provider_name} worker sent an unexpected ready event."
+                        )
+                    case TtsAudioEvent():
+                        await self.output_queue.put(
+                            SynthesizedAudioChunk(
+                                pcm_bytes=event.pcm_bytes(),
+                                start_sample=event.start_sample,
+                            )
+                        )
+                    case TtsFirstAudioMetricsEvent():
+                        await self.output_queue.put(
+                            KyutaiSynthesisFirstAudioMetrics(
+                                first_word_to_audio_seconds=event.first_word_to_audio_seconds,
+                                tokenization_seconds=event.tokenization_seconds,
+                                language_model_step_seconds=event.language_model_step_seconds,
+                                mimi_decode_seconds=event.mimi_decode_seconds,
+                                model_step_count=event.model_step_count,
+                                first_audio_model_step=event.first_audio_model_step,
+                            )
+                        )
+                    case VoxtreamTtsFirstAudioMetricsEvent():
+                        await self.output_queue.put(
+                            VoxtreamSynthesisFirstAudioMetrics(
+                                first_word_to_audio_seconds=event.first_word_to_audio_seconds,
+                                prompt_preparation_seconds=event.prompt_preparation_seconds,
+                                first_frame_generation_seconds=(
+                                    event.first_frame_generation_seconds
+                                ),
+                            )
+                        )
+                    case TtsWordBoundaryEvent():
+                        await self.output_queue.put(
+                            SynthesizedWordBoundary(
+                                text_offset=event.text_offset,
+                                start_sample=event.start_sample,
+                            )
+                        )
+                    case TtsWordProcessedEvent():
+                        if event.sequence_number not in self.pending_word_sequences:
+                            raise RuntimeError(
+                                f"The {self.provider_name} worker acknowledged an unknown word."
+                            )
+                        self.pending_word_sequences.remove(event.sequence_number)
+                    case TtsEndEvent():
+                        self.finish_pending = False
+                        await self.output_queue.put(_SessionMarker.END)
+                        return
+                    case TtsWorkerErrorEvent():
+                        raise RuntimeError(f"{self.provider_name} worker failed: {event.message}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.reader_error = error
+            await self.output_queue.put(_SessionFailure(error))
+            await self.output_queue.put(_SessionMarker.END)
+
+    async def _watch_progress(self) -> None:
+        while True:
+            await asyncio.sleep(self.watchdog_poll_seconds)
+            if not self.pending_word_sequences and not self.finish_pending:
+                continue
+            elapsed_seconds = asyncio.get_running_loop().time() - self.last_progress_time
+            if elapsed_seconds < self.generation_progress_timeout_seconds:
+                continue
+            error = RuntimeError(f"{self.provider_name} generation stopped making progress.")
+            self.reader_error = error
+            await self.output_queue.put(_SessionFailure(error))
+            await self.output_queue.put(_SessionMarker.END)
+            await self._finalize_worker(replace=True)
+            return
+
+    async def _fail_worker(self, error: Exception) -> None:
+        self.reader_error = error
+        await self._finalize_worker(replace=True)
+
+    async def _finalize_worker(self, replace: bool) -> None:
+        async with self.finalization_lock:
+            if self.worker_finalized:
+                return
+            worker = self._require_worker()
+            try:
+                if replace:
+                    await self.worker_manager.replace(worker)
+            finally:
+                self.worker_manager.release()
+                self.worker = None
+                self.worker_finalized = True
+
+    async def _stop_background_tasks(self) -> None:
+        current_task = asyncio.current_task()
+        tasks = tuple(
+            task
+            for task in (self.output_task, self.watchdog_task)
+            if task is not None and task is not current_task and not task.done()
+        )
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    def _record_progress(self) -> None:
+        self.last_progress_time = asyncio.get_running_loop().time()
+
+    def _require_worker(self) -> TtsWorker:
+        if self.worker is None:
+            raise AssertionError("The synthesis session does not own a worker.")
+        return self.worker
