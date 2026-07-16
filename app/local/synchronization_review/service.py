@@ -14,6 +14,7 @@ from app.local.synchronization_review.models import (
     SynchronizationEvidence,
     SynchronizationEvidenceSource,
     SynchronizationWindowEstimate,
+    TrackGainNormalization,
 )
 from app.local.synchronization_review.repository import (
     StoredConversationAnnotation,
@@ -21,7 +22,7 @@ from app.local.synchronization_review.repository import (
     TranscriptPair,
 )
 from app.shared.asr import AsrModelId, TimestampedWord
-from app.shared.quality import AnnotationSpan, ConversationAnnotation
+from app.shared.quality import AnnotationSpan, ConversationAnnotation, TrackAudioQuality
 
 FRAME_DURATION_SECONDS = 0.1
 MERGE_WORD_GAP_SECONDS = 0.5
@@ -35,6 +36,9 @@ MAXIMUM_CYCLE_GAP_SECONDS = 5.0
 MINIMUM_MEANINGFUL_LAG_SECONDS = 0.8
 MINIMUM_MEANINGFUL_IMPROVEMENT = 0.03
 MINIMUM_JOINT_REDUCTION = 0.008
+TARGET_ACTIVE_RMS_DBFS = -20.0
+MINIMUM_DEFAULT_GAIN = 0.1
+MAXIMUM_DEFAULT_GAIN = 12.0
 
 
 class TimelineState(StrEnum):
@@ -206,6 +210,16 @@ def _candidate(
                 for source_metric in source_metrics
             )
             / len(source_metrics)
+        ),
+        speaker1_gain=track_gain_normalization(
+            stored_annotation.audio_quality.speaker1
+            if stored_annotation.audio_quality is not None
+            else None
+        ),
+        speaker2_gain=track_gain_normalization(
+            stored_annotation.audio_quality.speaker2
+            if stored_annotation.audio_quality is not None
+            else None
         ),
     )
 
@@ -527,6 +541,38 @@ def candidate_likelihood(
         + (0.10 if offset_pattern is OffsetPattern.VARIABLE else 0.0)
     )
     return min(1.0, 1.0 - math.exp(-raw_score / 1.2))
+
+
+def track_gain_normalization(
+    track_quality: TrackAudioQuality | None,
+) -> TrackGainNormalization:
+    if track_quality is None:
+        return TrackGainNormalization(
+            measured_rms_dbfs=None,
+            estimated_active_rms_dbfs=None,
+            target_active_rms_dbfs=TARGET_ACTIVE_RMS_DBFS,
+            default_gain=1.0,
+        )
+    active_rms_dbfs = estimated_active_rms_dbfs(
+        rms_dbfs=track_quality.rms_dbfs,
+        speech_ratio=track_quality.speech_ratio,
+    )
+    return TrackGainNormalization(
+        measured_rms_dbfs=track_quality.rms_dbfs,
+        estimated_active_rms_dbfs=active_rms_dbfs,
+        target_active_rms_dbfs=TARGET_ACTIVE_RMS_DBFS,
+        default_gain=default_gain_for_active_rms(active_rms_dbfs=active_rms_dbfs),
+    )
+
+
+def estimated_active_rms_dbfs(rms_dbfs: float, speech_ratio: float) -> float:
+    bounded_speech_ratio = min(1.0, max(0.01, speech_ratio))
+    return rms_dbfs - 10.0 * math.log10(bounded_speech_ratio)
+
+
+def default_gain_for_active_rms(active_rms_dbfs: float) -> float:
+    gain = 10.0 ** ((TARGET_ACTIVE_RMS_DBFS - active_rms_dbfs) / 20.0)
+    return min(MAXIMUM_DEFAULT_GAIN, max(MINIMUM_DEFAULT_GAIN, gain))
 
 
 def _lag_spread(lags: tuple[float, ...]) -> float:

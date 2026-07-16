@@ -16,6 +16,8 @@ from app.local.synchronization_review.service import (
     SpeechSpan,
     TimelineMetrics,
     classify_offset_pattern,
+    default_gain_for_active_rms,
+    estimated_active_rms_dbfs,
     timeline_metrics,
 )
 
@@ -40,6 +42,7 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "Estimated shift by minute",
         "Speaker A gain",
         "Speaker B gain",
+        "Reset automatic gains",
     ),
 )
 def test_synchronization_review_page_exposes_alignment_controls(
@@ -59,6 +62,10 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "estimate.estimated_b_shift_seconds",
         "trimmed=true",
         "setupAudioGraph",
+        "ensureMediaReady",
+        "startActivePlayers",
+        "candidate.speaker1_gain.default_gain",
+        "createDynamicsCompressor",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(
@@ -128,6 +135,20 @@ def test_offset_pattern_is_variable_when_a_middle_minute_needs_no_shift() -> Non
     )
 
     assert pattern is OffsetPattern.VARIABLE
+
+
+def test_gain_normalization_targets_active_speech_level() -> None:
+    active_rms_dbfs = estimated_active_rms_dbfs(
+        rms_dbfs=-40.0,
+        speech_ratio=0.1,
+    )
+
+    assert active_rms_dbfs == pytest.approx(-30.0)
+    assert default_gain_for_active_rms(active_rms_dbfs) == pytest.approx(10**0.5)
+
+
+def test_gain_normalization_caps_extremely_quiet_tracks() -> None:
+    assert default_gain_for_active_rms(-80.0) == pytest.approx(12.0)
 
 
 def _source_metrics(

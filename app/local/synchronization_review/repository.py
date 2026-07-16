@@ -10,7 +10,7 @@ from psycopg.rows import dict_row
 
 from app.local.asr.transcript import SpeakerTrack
 from app.shared.asr import AsrModelId, TimestampedWord
-from app.shared.quality import ConversationAnnotation
+from app.shared.quality import AudioQualityMetrics, ConversationAnnotation
 
 FILENAME_PATTERN = re.compile(r"^(pmt_\d+)_(speaker1|speaker2)\.flac$")
 
@@ -28,6 +28,7 @@ class StoredConversationAnnotation:
     sample_id: UUID
     external_id: str
     annotation: ConversationAnnotation
+    audio_quality: AudioQualityMetrics | None
 
 
 class SynchronizationReviewRepository:
@@ -98,12 +99,14 @@ class SynchronizationReviewRepository:
                   SELECT DISTINCT ON (quality_results.sample_id)
                     quality_results.sample_id,
                     samples.external_id,
-                    quality_results.payload -> 'conversation_annotation' AS annotation
+                    quality_results.payload -> 'conversation_annotation' AS annotation,
+                    quality_results.payload -> 'audio_quality' AS audio_quality
                   FROM quality_results
                   JOIN samples ON samples.id = quality_results.sample_id
                   ORDER BY quality_results.sample_id, quality_results.created_at DESC
                 )
                 SELECT sample_id, external_id, annotation
+                     , audio_quality
                 FROM latest_quality
                 WHERE jsonb_typeof(annotation) = 'object'
                 ORDER BY external_id
@@ -114,6 +117,7 @@ class SynchronizationReviewRepository:
                 sample_id=UUID(str(row["sample_id"])),
                 external_id=str(row["external_id"]),
                 annotation=ConversationAnnotation.model_validate(row["annotation"]),
+                audio_quality=_optional_audio_quality(row["audio_quality"]),
             )
             for row in rows
         )
@@ -124,3 +128,12 @@ def _timestamped_words(value: object) -> tuple[TimestampedWord, ...]:
     if not isinstance(parsed_value, list):
         raise ValueError("Cached ASR transcript words must be a JSON array.")
     return tuple(TimestampedWord.model_validate(word) for word in parsed_value)
+
+
+def _optional_audio_quality(value: object) -> AudioQualityMetrics | None:
+    parsed_value = json.loads(value) if isinstance(value, str) else value
+    if parsed_value is None:
+        return None
+    if not isinstance(parsed_value, dict):
+        raise ValueError("Stored audio quality must be a JSON object.")
+    return AudioQualityMetrics.model_validate(parsed_value)

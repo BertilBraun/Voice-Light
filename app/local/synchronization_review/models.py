@@ -36,6 +36,13 @@ class SynchronizationWindowEstimate(FrozenBaseModel):
     meaningful: bool
 
 
+class TrackGainNormalization(FrozenBaseModel):
+    measured_rms_dbfs: float | None
+    estimated_active_rms_dbfs: float | None
+    target_active_rms_dbfs: float
+    default_gain: float
+
+
 class SynchronizationCandidate(FrozenBaseModel):
     sample_id: UUID
     external_id: str
@@ -46,6 +53,8 @@ class SynchronizationCandidate(FrozenBaseModel):
     evidence: tuple[SynchronizationEvidence, ...]
     window_estimates: tuple[SynchronizationWindowEstimate, ...]
     overlap_silence_cycle_count: int
+    speaker1_gain: TrackGainNormalization
+    speaker2_gain: TrackGainNormalization
 
 
 class SynchronizationCandidateListResponse(FrozenBaseModel):

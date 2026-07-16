@@ -20,10 +20,13 @@ const elements = {
   play: document.querySelector("#play"),
   seek: document.querySelector("#seek"),
   clock: document.querySelector("#clock"),
+  playbackStatus: document.querySelector("#playback-status"),
   gainA: document.querySelector("#gain-a"),
   gainB: document.querySelector("#gain-b"),
   gainAValue: document.querySelector("#gain-a-value"),
   gainBValue: document.querySelector("#gain-b-value"),
+  useAutoGain: document.querySelector("#use-auto-gain"),
+  gainSummary: document.querySelector("#gain-summary"),
   waveform: document.querySelector("#waveform"),
   timelineTicks: document.querySelector("#timeline-ticks"),
   windowTargets: document.querySelector("#window-targets"),
@@ -42,6 +45,7 @@ const state = {
   bShiftSeconds: 0,
   timelineSeconds: 0,
   playing: false,
+  startingPlayback: false,
   playbackTimelineStart: 0,
   playbackClockStart: 0,
   animationFrame: null,
@@ -49,6 +53,7 @@ const state = {
   audioContext: null,
   gainNodeA: null,
   gainNodeB: null,
+  masterLimiter: null,
 };
 
 function selectedCandidate() {
@@ -161,9 +166,11 @@ async function selectCandidate(externalId) {
   state.selectedExternalId = externalId;
   state.bShiftSeconds = candidate.estimated_b_shift_seconds;
   state.timelineSeconds = 0;
+  applyAutomaticGains(candidate);
   state.waveformA = null;
   state.waveformB = null;
   state.durationSeconds = DEFAULT_DURATION_SECONDS;
+  setPlaybackStatus("", false);
   state.selectionVersion += 1;
   const selectionVersion = state.selectionVersion;
   renderCandidateList();
@@ -238,7 +245,35 @@ function renderCandidateDetails() {
     visibleIndex < 0 || visibleIndex >= state.visibleCandidates.length - 1;
   renderWindowTargets(candidate);
   renderEvidence(candidate);
+  renderGainSummary(candidate);
   updateTimeline();
+}
+
+function applyAutomaticGains(candidate) {
+  elements.gainA.value = String(candidate.speaker1_gain.default_gain);
+  elements.gainB.value = String(candidate.speaker2_gain.default_gain);
+  updateGain("a", elements.gainA.value);
+  updateGain("b", elements.gainB.value);
+  renderGainSummary(candidate);
+}
+
+function renderGainSummary(candidate) {
+  const speaker1 = candidate.speaker1_gain;
+  const speaker2 = candidate.speaker2_gain;
+  if (
+    speaker1.estimated_active_rms_dbfs === null ||
+    speaker2.estimated_active_rms_dbfs === null
+  ) {
+    elements.gainSummary.textContent =
+      "No stored loudness measurement is available; both tracks default to 1.00×.";
+    return;
+  }
+  elements.gainSummary.textContent =
+    `Automatic defaults target ${speaker1.target_active_rms_dbfs.toFixed(0)} dBFS ` +
+    `active speech: A ${speaker1.estimated_active_rms_dbfs.toFixed(1)} dBFS ` +
+    `→ ${speaker1.default_gain.toFixed(2)}×, ` +
+    `B ${speaker2.estimated_active_rms_dbfs.toFixed(1)} dBFS ` +
+    `→ ${speaker2.default_gain.toFixed(2)}×.`;
 }
 
 function renderWindowTargets(candidate) {
@@ -440,13 +475,23 @@ async function setupAudioGraph() {
   const sourceB = state.audioContext.createMediaElementSource(elements.audioB);
   state.gainNodeA = state.audioContext.createGain();
   state.gainNodeB = state.audioContext.createGain();
-  sourceA.connect(state.gainNodeA).connect(state.audioContext.destination);
-  sourceB.connect(state.gainNodeB).connect(state.audioContext.destination);
+  state.masterLimiter = state.audioContext.createDynamicsCompressor();
+  state.masterLimiter.threshold.value = -1;
+  state.masterLimiter.knee.value = 0;
+  state.masterLimiter.ratio.value = 20;
+  state.masterLimiter.attack.value = 0.003;
+  state.masterLimiter.release.value = 0.08;
+  sourceA.connect(state.gainNodeA).connect(state.masterLimiter);
+  sourceB.connect(state.gainNodeB).connect(state.masterLimiter);
+  state.masterLimiter.connect(state.audioContext.destination);
   updateGain("a", elements.gainA.value);
   updateGain("b", elements.gainB.value);
 }
 
 async function play() {
+  if (state.startingPlayback) {
+    return;
+  }
   if (state.playing) {
     pause();
     return;
@@ -455,12 +500,29 @@ async function play() {
   if (state.timelineSeconds >= bounds.end - 0.01) {
     state.timelineSeconds = bounds.start;
   }
-  await setupAudioGraph();
-  state.playing = true;
-  elements.play.textContent = "Pause";
-  restartPlaybackClock();
-  syncPlayers(state.timelineSeconds, true);
-  state.animationFrame = requestAnimationFrame(playbackFrame);
+  state.startingPlayback = true;
+  elements.play.disabled = true;
+  setPlaybackStatus("Preparing both speaker tracks…", false);
+  try {
+    await setupAudioGraph();
+    await Promise.all([
+      ensureMediaReady(elements.audioA),
+      ensureMediaReady(elements.audioB),
+    ]);
+    await preparePlayers(state.timelineSeconds);
+    await startActivePlayers(state.timelineSeconds);
+    state.playing = true;
+    elements.play.textContent = "Pause";
+    updateActiveTrackStatus();
+    restartPlaybackClock();
+    state.animationFrame = requestAnimationFrame(playbackFrame);
+  } catch (error) {
+    pause();
+    setPlaybackStatus(`Playback failed: ${error.message}`, true);
+  } finally {
+    state.startingPlayback = false;
+    elements.play.disabled = false;
+  }
 }
 
 function pause() {
@@ -476,6 +538,96 @@ function pause() {
     state.animationFrame = null;
   }
   updateTimeline();
+}
+
+function setPlaybackStatus(message, isError) {
+  elements.playbackStatus.textContent = message;
+  elements.playbackStatus.classList.toggle("error", isError);
+}
+
+function updateActiveTrackStatus() {
+  const speaker1Active =
+    state.timelineSeconds >= 0 && state.timelineSeconds < state.durationSeconds;
+  const speaker2Seconds = state.timelineSeconds - state.bShiftSeconds;
+  const speaker2Active =
+    speaker2Seconds >= 0 && speaker2Seconds < state.durationSeconds;
+  if (speaker1Active && speaker2Active) {
+    setPlaybackStatus("Playing speaker A and speaker B.", false);
+  } else if (speaker1Active) {
+    setPlaybackStatus("Playing speaker A; speaker B is outside the timeline here.", false);
+  } else if (speaker2Active) {
+    setPlaybackStatus("Playing speaker B; speaker A is outside the timeline here.", false);
+  } else {
+    setPlaybackStatus("Neither track has audio at this timeline position.", false);
+  }
+}
+
+function ensureMediaReady(audio) {
+  if (audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const ready = () => {
+      cleanup();
+      resolve();
+    };
+    const failed = () => {
+      cleanup();
+      reject(new Error(`Could not load ${audio === elements.audioA ? "speaker A" : "speaker B"}.`));
+    };
+    const cleanup = () => {
+      audio.removeEventListener("canplay", ready);
+      audio.removeEventListener("error", failed);
+    };
+    audio.addEventListener("canplay", ready, { once: true });
+    audio.addEventListener("error", failed, { once: true });
+  });
+}
+
+async function preparePlayers(timelineSeconds) {
+  await Promise.all([
+    preparePlayer(elements.audioA, timelineSeconds),
+    preparePlayer(elements.audioB, timelineSeconds - state.bShiftSeconds),
+  ]);
+}
+
+function preparePlayer(audio, sourceSeconds) {
+  if (sourceSeconds < 0 || sourceSeconds >= state.durationSeconds) {
+    audio.pause();
+    return Promise.resolve();
+  }
+  if (Math.abs(audio.currentTime - sourceSeconds) <= 0.02) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const seeked = () => {
+      cleanup();
+      resolve();
+    };
+    const failed = () => {
+      cleanup();
+      reject(new Error(`Could not seek ${audio === elements.audioA ? "speaker A" : "speaker B"}.`));
+    };
+    const cleanup = () => {
+      audio.removeEventListener("seeked", seeked);
+      audio.removeEventListener("error", failed);
+    };
+    audio.addEventListener("seeked", seeked, { once: true });
+    audio.addEventListener("error", failed, { once: true });
+    audio.currentTime = sourceSeconds;
+  });
+}
+
+async function startActivePlayers(timelineSeconds) {
+  const playbackPromises = [];
+  if (timelineSeconds >= 0 && timelineSeconds < state.durationSeconds) {
+    playbackPromises.push(elements.audioA.play());
+  }
+  const speaker2Seconds = timelineSeconds - state.bShiftSeconds;
+  if (speaker2Seconds >= 0 && speaker2Seconds < state.durationSeconds) {
+    playbackPromises.push(elements.audioB.play());
+  }
+  await Promise.all(playbackPromises);
 }
 
 function restartPlaybackClock() {
@@ -506,6 +658,7 @@ function playbackFrame() {
   elements.seek.value = String(state.timelineSeconds);
   elements.clock.textContent =
     `${formatTime(state.timelineSeconds)} / ${formatTime(bounds.end)}`;
+  updateActiveTrackStatus();
   drawWaveforms();
   state.animationFrame = requestAnimationFrame(playbackFrame);
 }
@@ -531,11 +684,14 @@ function syncPlayer(audio, sourceSeconds, durationSeconds, shouldPlay) {
     audio.pause();
     return;
   }
-  if (Math.abs(audio.currentTime - sourceSeconds) > 0.09) {
+  if (Math.abs(audio.currentTime - sourceSeconds) > 0.25) {
     audio.currentTime = sourceSeconds;
   }
   if (shouldPlay && audio.paused) {
-    void audio.play();
+    audio.play().catch((error) => {
+      pause();
+      setPlaybackStatus(`Playback failed: ${error.message}`, true);
+    });
   } else if (!shouldPlay) {
     audio.pause();
   }
@@ -591,6 +747,12 @@ elements.play.addEventListener("click", () => {
 elements.seek.addEventListener("input", () => seekTo(elements.seek.value));
 elements.gainA.addEventListener("input", () => updateGain("a", elements.gainA.value));
 elements.gainB.addEventListener("input", () => updateGain("b", elements.gainB.value));
+elements.useAutoGain.addEventListener("click", () => {
+  const candidate = selectedCandidate();
+  if (candidate) {
+    applyAutomaticGains(candidate);
+  }
+});
 elements.waveform.addEventListener("click", (event) => {
   const rectangle = elements.waveform.getBoundingClientRect();
   const fraction = (event.clientX - rectangle.left) / rectangle.width;

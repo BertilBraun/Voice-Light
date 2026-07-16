@@ -343,6 +343,7 @@ input[type="range"] {
 }
 
 .gain-controls {
+  align-items: center;
   display: flex;
   gap: 24px;
   margin: 18px 0 10px;
@@ -356,10 +357,31 @@ input[type="range"] {
   grid-template-columns: auto minmax(80px, 1fr) 48px;
 }
 
+.gain-controls button {
+  flex: 0 0 auto;
+}
+
 .gain-controls span,
 .gain-controls output {
   color: #657370;
   font-size: 12px;
+}
+
+.playback-status,
+.gain-summary {
+  color: #667572;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  min-height: 18px;
+}
+
+.playback-status.error {
+  color: #a43b2f;
+}
+
+.gain-summary {
+  margin: -2px 0 10px;
 }
 
 .gain-controls output {
