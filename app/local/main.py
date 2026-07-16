@@ -15,6 +15,7 @@ from app.local.backchannel_review.router import router as backchannel_review_rou
 from app.local.config import WEB_ROOT
 from app.local.dashboard.router import router as dataset_dashboard_router
 from app.local.data.sessions import SessionEntry, SpeakerName, list_sessions, session_audio_path
+from app.local.future_work.router import router as future_work_router
 from app.local.synchronization_review.router import router as synchronization_review_router
 from app.local.training_samples.router import router as training_samples_router
 from app.shared.audio.wav import capped_wave_bytes
@@ -35,6 +36,7 @@ app.include_router(dataset_dashboard_router)
 app.include_router(training_samples_router)
 app.include_router(backchannel_review_router)
 app.include_router(synchronization_review_router)
+app.include_router(future_work_router)
 app.mount("/pages", StaticFiles(directory=WEB_ROOT / "pages"), name="pages")
 
 

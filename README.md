@@ -40,11 +40,19 @@ http://127.0.0.1:8000/datasets
 http://127.0.0.1:8000/datasets/ingest
 http://127.0.0.1:8000/analyses/end-of-turn
 http://127.0.0.1:8000/analyses/asr
+http://127.0.0.1:8000/future-work
 ```
 
 See [ASR analysis](docs/asr-analysis.md) for the model, caching, and post-processing workflow.
 See [turn-taking adapter training](docs/turn-taking-training.md) for the dataset contract, model
 choice, training schedule, and runnable training prototype.
+
+## Future work
+
+The [Future Work](http://127.0.0.1:8000/future-work) page automatically lists and renders every
+Markdown file in `docs/future-work/`. To add an idea, create a kebab-case `.md` file whose first
+line is an H1 title and whose first paragraph is a short summary for the index card. No application
+code or navigation update is required.
 
 The Compose app mounts the repository `data/` directory at `/app/data` in the
 container. For local LUEL ingestion, use:

@@ -18,6 +18,7 @@ APP_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = REPOSITORY_ROOT / "data"
 SESSIONS_ROOT = DATA_ROOT / "luel" / "sessions"
 WEB_ROOT = APP_ROOT / "web"
+FUTURE_WORK_ROOT = REPOSITORY_ROOT / "docs" / "future-work"
 MIGRATIONS_ROOT = APP_ROOT / "db" / "migrations"
 DATABASE_URL = configured_database_url(os.environ)
 COMPUTE_BASE_URL = configured_compute_url(os.environ)
