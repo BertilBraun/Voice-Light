@@ -59,6 +59,7 @@ const state = {
   audioBufferExternalId: null,
   sourceNodeA: null,
   sourceNodeB: null,
+  gainNormalization: null,
 };
 
 function selectedCandidate() {
@@ -171,6 +172,7 @@ async function selectCandidate(externalId) {
   state.selectedExternalId = externalId;
   state.bShiftSeconds = candidate.estimated_b_shift_seconds;
   state.timelineSeconds = 0;
+  state.gainNormalization = candidate;
   applyAutomaticGains(candidate);
   state.waveformA = null;
   state.waveformB = null;
@@ -188,6 +190,9 @@ async function selectCandidate(externalId) {
   renderCandidateDetails();
   configureAudioUrls(candidate);
   drawWaveforms();
+  const gainResultPromise = fetchSpeechGains(candidate.sample_id)
+    .then((gainNormalization) => ({ gainNormalization, error: null }))
+    .catch((error) => ({ gainNormalization: null, error }));
 
   try {
     const [waveformA, waveformB] = await Promise.all([
@@ -203,12 +208,32 @@ async function selectCandidate(externalId) {
       DEFAULT_DURATION_SECONDS,
       Math.max(waveformA.duration_seconds, waveformB.duration_seconds),
     );
+    const gainResult = await gainResultPromise;
+    if (selectionVersion !== state.selectionVersion) {
+      return;
+    }
+    if (gainResult.gainNormalization) {
+      state.gainNormalization = gainResult.gainNormalization;
+      applyAutomaticGains(gainResult.gainNormalization);
+    } else {
+      elements.gainSummary.textContent +=
+        ` Speech-only measurement failed: ${gainResult.error.message}`;
+    }
     updateTimeline();
   } catch (error) {
     if (selectionVersion === state.selectionVersion) {
       setError(`Could not load waveforms for ${candidate.external_id}: ${error.message}`);
     }
   }
+}
+
+async function fetchSpeechGains(sampleId) {
+  const response = await fetch(`/api/synchronization-review/gain/${sampleId}`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || `Gain request failed with ${response.status}`);
+  }
+  return response.json();
 }
 
 function configureAudioUrls(candidate) {
@@ -253,21 +278,21 @@ function renderCandidateDetails() {
     visibleIndex < 0 || visibleIndex >= state.visibleCandidates.length - 1;
   renderWindowTargets(candidate);
   renderEvidence(candidate);
-  renderGainSummary(candidate);
+  renderGainSummary(state.gainNormalization || candidate);
   updateTimeline();
 }
 
-function applyAutomaticGains(candidate) {
-  elements.gainA.value = String(candidate.speaker1_gain.default_gain);
-  elements.gainB.value = String(candidate.speaker2_gain.default_gain);
+function applyAutomaticGains(gainNormalization) {
+  elements.gainA.value = String(gainNormalization.speaker1_gain.default_gain);
+  elements.gainB.value = String(gainNormalization.speaker2_gain.default_gain);
   updateGain("a", elements.gainA.value);
   updateGain("b", elements.gainB.value);
-  renderGainSummary(candidate);
+  renderGainSummary(gainNormalization);
 }
 
-function renderGainSummary(candidate) {
-  const speaker1 = candidate.speaker1_gain;
-  const speaker2 = candidate.speaker2_gain;
+function renderGainSummary(gainNormalization) {
+  const speaker1 = gainNormalization.speaker1_gain;
+  const speaker2 = gainNormalization.speaker2_gain;
   if (
     speaker1.estimated_active_rms_dbfs === null ||
     speaker2.estimated_active_rms_dbfs === null
@@ -276,8 +301,14 @@ function renderGainSummary(candidate) {
       "No stored loudness measurement is available; both tracks default to 1.00×.";
     return;
   }
+  const measurementDescription =
+    speaker1.measurement_basis === "annotated_speech"
+      ? `Speech-only RMS across A ${speaker1.measured_speech_duration_seconds.toFixed(1)} s ` +
+        `and B ${speaker2.measured_speech_duration_seconds.toFixed(1)} s. `
+      : "Temporary whole-track estimate while speech-only RMS loads. ";
   elements.gainSummary.textContent =
-    `Automatic defaults target ${speaker1.target_active_rms_dbfs.toFixed(0)} dBFS ` +
+    measurementDescription +
+    `Defaults target ${speaker1.target_active_rms_dbfs.toFixed(0)} dBFS ` +
     `active speech: A ${speaker1.estimated_active_rms_dbfs.toFixed(1)} dBFS ` +
     `→ ${speaker1.default_gain.toFixed(2)}×, ` +
     `B ${speaker2.estimated_active_rms_dbfs.toFixed(1)} dBFS ` +
@@ -757,9 +788,8 @@ elements.seek.addEventListener("input", () => seekTo(elements.seek.value));
 elements.gainA.addEventListener("input", () => updateGain("a", elements.gainA.value));
 elements.gainB.addEventListener("input", () => updateGain("b", elements.gainB.value));
 elements.useAutoGain.addEventListener("click", () => {
-  const candidate = selectedCandidate();
-  if (candidate) {
-    applyAutomaticGains(candidate);
+  if (state.gainNormalization) {
+    applyAutomaticGains(state.gainNormalization);
   }
 });
 elements.waveform.addEventListener("click", (event) => {

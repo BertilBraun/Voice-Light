@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import math
+import wave
+from array import array
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.local.main import app
 from app.local.synchronization_review.models import (
+    GainMeasurementBasis,
     OffsetPattern,
     SynchronizationEvidenceSource,
     SynchronizationWindowEstimate,
@@ -19,8 +24,10 @@ from app.local.synchronization_review.service import (
     default_gain_for_active_rms,
     estimated_active_rms_dbfs,
     recommended_shift_estimate,
+    speech_only_gain_normalization,
     timeline_metrics,
 )
+from app.shared.quality import AnnotationSpan
 
 
 @pytest.fixture(scope="module")
@@ -68,8 +75,11 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "createBufferSource",
         "scheduleTrack",
         "startBufferPlayback",
-        "candidate.speaker1_gain.default_gain",
+        "gainNormalization.speaker1_gain.default_gain",
         "createDynamicsCompressor",
+        "fetchSpeechGains",
+        "/api/synchronization-review/gain/",
+        "Speech-only RMS",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(
@@ -161,6 +171,32 @@ def test_gain_normalization_targets_active_speech_level() -> None:
 
 def test_gain_normalization_caps_extremely_quiet_tracks() -> None:
     assert default_gain_for_active_rms(-80.0) == pytest.approx(12.0)
+
+
+def test_speech_only_gain_excludes_long_track_silence(tmp_path: Path) -> None:
+    sample_rate = 8_000
+    wave_path = tmp_path / "speech-with-silence.wav"
+    samples = array("h", [0] * (sample_rate * 10))
+    for index in range(sample_rate, sample_rate * 2):
+        samples[index] = 10_000
+    with wave.open(str(wave_path), "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(2)
+        wave_writer.setframerate(sample_rate)
+        wave_writer.writeframes(samples.tobytes())
+
+    normalization = speech_only_gain_normalization(
+        wave_path=wave_path,
+        speech_segments=(AnnotationSpan(start_seconds=1.0, end_seconds=2.0, text="spoken term"),),
+    )
+
+    expected_rms_dbfs = 20.0 * math.log10(10_000 / 32_767)
+    assert normalization.measurement_basis is GainMeasurementBasis.ANNOTATED_SPEECH
+    assert normalization.measured_speech_duration_seconds == pytest.approx(1.0)
+    assert normalization.measured_rms_dbfs == pytest.approx(expected_rms_dbfs)
+    assert normalization.default_gain == pytest.approx(
+        default_gain_for_active_rms(expected_rms_dbfs)
+    )
 
 
 @pytest.mark.parametrize(
