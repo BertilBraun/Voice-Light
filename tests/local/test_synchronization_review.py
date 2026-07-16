@@ -15,6 +15,7 @@ from app.local.synchronization_review.calibration import (
     reviewed_alignment,
 )
 from app.local.synchronization_review.models import (
+    AlignmentEstimateOrigin,
     GainMeasurementBasis,
     OffsetPattern,
     SynchronizationEvidenceSource,
@@ -27,6 +28,7 @@ from app.local.synchronization_review.service import (
     classify_offset_pattern,
     default_gain_for_active_rms,
     estimated_active_rms_dbfs,
+    offset_confidence_score,
     recommended_shift_estimate,
     speech_only_gain_normalization,
     timeline_metrics,
@@ -87,6 +89,8 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "manually reviewed",
         "alignment_estimate_origin",
         "alignment unresolved",
+        "offset confidence",
+        "offset_confidence_score",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(
@@ -279,6 +283,57 @@ def test_unreviewed_alignment_keeps_model_prediction() -> None:
 def test_pmt_326_is_marked_unresolved() -> None:
     assert reviewed_alignment(external_id="pmt_326") is None
     assert is_unresolved_alignment(external_id="pmt_326")
+
+
+def test_reviewed_offset_confidence_is_certain() -> None:
+    confidence = offset_confidence_score(
+        estimate_origin=AlignmentEstimateOrigin.REVIEWED,
+        predicted_shift=-4.0,
+        full_recording_estimated_shift=-3.7,
+        source_metrics=(_source_metrics(SynchronizationEvidenceSource.PARAKEET, -3.7),),
+        meaningful_windows=(_window(0.0, -10.3),),
+    )
+
+    assert confidence == pytest.approx(1.0)
+
+
+def test_unresolved_offset_confidence_is_zero() -> None:
+    confidence = offset_confidence_score(
+        estimate_origin=AlignmentEstimateOrigin.UNRESOLVED,
+        predicted_shift=10.2,
+        full_recording_estimated_shift=-3.0,
+        source_metrics=(_source_metrics(SynchronizationEvidenceSource.PARAKEET, -3.0),),
+        meaningful_windows=(_window(0.0, 10.2),),
+    )
+
+    assert confidence == pytest.approx(0.0)
+
+
+def test_predicted_offset_confidence_penalizes_disagreement() -> None:
+    agreed = offset_confidence_score(
+        estimate_origin=AlignmentEstimateOrigin.PREDICTED,
+        predicted_shift=-3.0,
+        full_recording_estimated_shift=-3.0,
+        source_metrics=(
+            _source_metrics(SynchronizationEvidenceSource.CONVERSATION_ANNOTATION, -3.0),
+            _source_metrics(SynchronizationEvidenceSource.PARAKEET, -3.1),
+            _source_metrics(SynchronizationEvidenceSource.CANARY, -3.0),
+        ),
+        meaningful_windows=(_window(0.0, -3.0), _window(60.0, -3.1)),
+    )
+    disputed = offset_confidence_score(
+        estimate_origin=AlignmentEstimateOrigin.PREDICTED,
+        predicted_shift=-9.0,
+        full_recording_estimated_shift=-3.0,
+        source_metrics=(
+            _source_metrics(SynchronizationEvidenceSource.CONVERSATION_ANNOTATION, -2.0),
+            _source_metrics(SynchronizationEvidenceSource.PARAKEET, -6.0),
+            _source_metrics(SynchronizationEvidenceSource.CANARY, 1.0),
+        ),
+        meaningful_windows=(_window(0.0, -9.0), _window(60.0, 2.0)),
+    )
+
+    assert agreed > disputed
 
 
 def _source_metrics(

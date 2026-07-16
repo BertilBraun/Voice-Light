@@ -63,6 +63,7 @@ class SynchronizationCandidate(FrozenBaseModel):
     estimated_b_shift_seconds: float
     full_recording_estimated_b_shift_seconds: float
     alignment_estimate_origin: AlignmentEstimateOrigin
+    offset_confidence_score: float
     offset_pattern: OffsetPattern
     source_agreement: bool
     evidence: tuple[SynchronizationEvidence, ...]

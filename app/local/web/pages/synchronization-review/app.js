@@ -145,7 +145,7 @@ function renderCandidateList() {
     button.innerHTML = `
       <span class="candidate-main">
         <strong>${candidate.external_id.toUpperCase()}</strong>
-        <span class="score">${Math.round(candidate.likelihood_score * 100)}%</span>
+        <span class="score">likelihood ${Math.round(candidate.likelihood_score * 100)}%</span>
       </span>
       <span class="candidate-main">
         <span class="badge ${candidate.offset_pattern}">${candidate.offset_pattern}</span>
@@ -162,6 +162,13 @@ function renderCandidateList() {
               ? "sources agree"
               : "mixed evidence"}
         </span>
+      </span>
+      <span class="confidence-row">
+        <span>offset confidence</span>
+        <span>${Math.round(candidate.offset_confidence_score * 100)}%</span>
+      </span>
+      <span class="confidence-track" title="Heuristic offset confidence">
+        <i style="width: ${Math.round(candidate.offset_confidence_score * 100)}%"></i>
       </span>
     `;
     button.addEventListener("click", () => {
@@ -281,6 +288,7 @@ function renderCandidateDetails() {
     <span>${Math.round(candidate.likelihood_score * 100)}% likelihood</span>
     <span>recommended ${formatShift(candidate.estimated_b_shift_seconds)}</span>
     <span>full recording ${formatShift(candidate.full_recording_estimated_b_shift_seconds)}</span>
+    <span>offset confidence ${Math.round(candidate.offset_confidence_score * 100)}%</span>
     <span>${candidate.source_agreement ? "full-recording sources agree" : "sources disagree"}</span>
   `;
   elements.previous.disabled = visibleIndex <= 0;

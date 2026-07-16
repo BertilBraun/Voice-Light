@@ -199,6 +199,20 @@ def _candidate(
     unresolved = is_unresolved_alignment(external_id=stored_annotation.external_id)
     assert reviewed is None or not unresolved
     estimated_shift = reviewed.speaker2_shift_seconds if reviewed is not None else predicted_shift
+    estimate_origin = (
+        AlignmentEstimateOrigin.REVIEWED
+        if reviewed is not None
+        else (
+            AlignmentEstimateOrigin.UNRESOLVED if unresolved else AlignmentEstimateOrigin.PREDICTED
+        )
+    )
+    offset_confidence = offset_confidence_score(
+        estimate_origin=estimate_origin,
+        predicted_shift=predicted_shift,
+        full_recording_estimated_shift=full_recording_estimated_shift,
+        source_metrics=source_metrics,
+        meaningful_windows=meaningful_windows,
+    )
     likelihood_score = candidate_likelihood(
         source_metrics=source_metrics,
         source_agreement=source_agreement,
@@ -210,15 +224,8 @@ def _candidate(
         likelihood_score=likelihood_score,
         estimated_b_shift_seconds=estimated_shift,
         full_recording_estimated_b_shift_seconds=full_recording_estimated_shift,
-        alignment_estimate_origin=(
-            AlignmentEstimateOrigin.REVIEWED
-            if reviewed is not None
-            else (
-                AlignmentEstimateOrigin.UNRESOLVED
-                if unresolved
-                else AlignmentEstimateOrigin.PREDICTED
-            )
-        ),
+        alignment_estimate_origin=estimate_origin,
+        offset_confidence_score=offset_confidence,
         offset_pattern=offset_pattern,
         source_agreement=source_agreement,
         evidence=tuple(
@@ -583,6 +590,41 @@ def candidate_likelihood(
         + (0.10 if offset_pattern is OffsetPattern.VARIABLE else 0.0)
     )
     return min(1.0, 1.0 - math.exp(-raw_score / 1.2))
+
+
+def offset_confidence_score(
+    estimate_origin: AlignmentEstimateOrigin,
+    predicted_shift: float,
+    full_recording_estimated_shift: float,
+    source_metrics: tuple[SourceMetrics, ...],
+    meaningful_windows: tuple[SynchronizationWindowEstimate, ...],
+) -> float:
+    if estimate_origin is AlignmentEstimateOrigin.REVIEWED:
+        return 1.0
+    if estimate_origin is AlignmentEstimateOrigin.UNRESOLVED:
+        return 0.0
+    metrics = tuple(source_metric.metrics for source_metric in source_metrics)
+    evidence_strength = sum(
+        0.5 * min(1.0, metric.bad_state_improvement / 0.20)
+        + 0.5 * min(1.0, metric.joint_reduction / 0.10)
+        for metric in metrics
+    ) / len(metrics)
+    source_spread = _lag_spread(tuple(metric.best_lag_seconds for metric in metrics))
+    source_agreement = math.exp(-source_spread / 1.5)
+    recommendation_consistency = math.exp(
+        -abs(predicted_shift - full_recording_estimated_shift) / 2.0
+    )
+    window_spread = _lag_spread(
+        tuple(window.estimated_b_shift_seconds for window in meaningful_windows)
+    )
+    temporal_consistency = math.exp(-window_spread / 4.0)
+    confidence = (
+        evidence_strength
+        * (0.35 + 0.65 * source_agreement)
+        * (0.50 + 0.50 * recommendation_consistency)
+        * (0.60 + 0.40 * temporal_consistency)
+    )
+    return min(1.0, max(0.0, confidence))
 
 
 def track_gain_normalization(

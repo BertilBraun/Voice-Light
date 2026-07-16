@@ -186,6 +186,27 @@ h1 {
   justify-content: space-between;
 }
 
+.confidence-row {
+  color: #667572;
+  display: flex;
+  font-size: 11px;
+  justify-content: space-between;
+}
+
+.confidence-track {
+  background: #dfe6e3;
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  overflow: hidden;
+}
+
+.confidence-track i {
+  background: #168074;
+  display: block;
+  height: 100%;
+}
+
 .candidate-main strong {
   font-size: 15px;
 }
