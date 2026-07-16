@@ -17,7 +17,9 @@ git -C "$source_root" checkout --detach "$revision"
 git -C "$source_root" lfs install --local
 git -C "$source_root" lfs pull
 
-uv venv --clear --python 3.12 "${voxtream_root}/.venv"
+if [[ ! -x "$python_path" ]] || ! "$python_path" -c "import torch; import torchaudio"; then
+  uv venv --clear --python 3.12 "${voxtream_root}/.venv"
+fi
 (
   cd "$source_root"
   uv pip install --no-config --python "$python_path" --editable .
