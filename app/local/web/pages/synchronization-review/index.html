@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Synchronization review - Voice Light</title>
+    <link rel="stylesheet" href="/pages/synchronization-review/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <div>
+          <a class="back-link" href="/">&larr; Voice Light</a>
+          <h1>Track synchronization review</h1>
+          <p>
+            Transcript-derived candidates where shifting speaker B reduces both implausible
+            overlap and dual silence. Playback is capped at the first three minutes.
+          </p>
+        </div>
+        <div id="coverage" class="coverage">Analyzing candidates...</div>
+      </header>
+
+      <section id="error-state" class="panel empty-state" hidden></section>
+      <section id="workspace" class="workspace" hidden>
+        <aside class="panel candidate-panel">
+          <div class="candidate-panel-header">
+            <div>
+              <span class="eyebrow">Possible offsets</span>
+              <h2 id="candidate-count">Candidates</h2>
+            </div>
+            <label class="filter">
+              <span>Filter</span>
+              <input id="filter" type="search" placeholder="PMT number" />
+            </label>
+          </div>
+          <div id="candidate-list" class="candidate-list"></div>
+        </aside>
+
+        <section class="review-column">
+          <section class="panel sample-header">
+            <div>
+              <span id="position" class="eyebrow"></span>
+              <h2 id="sample-name"></h2>
+              <div id="sample-summary" class="sample-summary"></div>
+            </div>
+            <div class="navigation">
+              <button id="previous" type="button">Previous</button>
+              <button id="next" type="button">Next</button>
+            </div>
+          </section>
+
+          <section class="panel alignment-panel">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Manual alignment</span>
+                <h3>Slide speaker B relative to speaker A</h3>
+              </div>
+              <button id="use-prediction" type="button">Use full-recording estimate</button>
+            </div>
+
+            <div class="shift-control">
+              <span class="range-label">B earlier</span>
+              <input
+                id="shift"
+                type="range"
+                min="-12"
+                max="12"
+                step="0.1"
+                value="0"
+                aria-label="Speaker B shift in seconds"
+              />
+              <span class="range-label">B later</span>
+              <label class="shift-value">
+                <input id="shift-number" type="number" min="-12" max="12" step="0.1" />
+                <span>seconds</span>
+              </label>
+            </div>
+            <p class="shift-help">
+              Negative values move B before A. Positive values delay B. The shared timeline
+              expands so either track can extend beyond the other.
+            </p>
+
+            <div class="playback-controls">
+              <button id="play" type="button" class="primary">Play both</button>
+              <input id="seek" type="range" step="0.05" value="0" aria-label="Timeline position" />
+              <span id="clock" class="clock">0:00.0 / 3:00.0</span>
+            </div>
+
+            <div class="gain-controls">
+              <label>
+                <span>Speaker A gain</span>
+                <input id="gain-a" type="range" min="0" max="3" step="0.05" value="1" />
+                <output id="gain-a-value">1.00×</output>
+              </label>
+              <label>
+                <span>Speaker B gain</span>
+                <input id="gain-b" type="range" min="0" max="3" step="0.05" value="1" />
+                <output id="gain-b-value">1.00×</output>
+              </label>
+            </div>
+
+            <div class="waveform-shell">
+              <canvas
+                id="waveform"
+                aria-label="Speaker A and shifted speaker B waveforms"
+              ></canvas>
+              <div class="track-label track-label-a">A</div>
+              <div class="track-label track-label-b">B</div>
+            </div>
+            <div id="timeline-ticks" class="timeline-ticks"></div>
+          </section>
+
+          <section class="panel targets-panel">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Relative targets</span>
+                <h3>Estimated shift by minute</h3>
+              </div>
+              <span class="muted">Click a target to apply its shift and seek there.</span>
+            </div>
+            <div id="window-targets" class="window-targets"></div>
+          </section>
+
+          <section class="panel evidence-panel">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Independent evidence</span>
+                <h3>Full-recording estimates</h3>
+              </div>
+              <span class="muted">B shift; negative means earlier.</span>
+            </div>
+            <div id="evidence" class="evidence"></div>
+            <p class="note">
+              This page is read-only. It does not rewrite files or save the manual slider value.
+              Estimates come only from our generated timestamps and annotations, not the vendor
+              manifest.
+            </p>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <audio id="audio-a" preload="metadata"></audio>
+    <audio id="audio-b" preload="metadata"></audio>
+    <script type="module" src="/pages/synchronization-review/app.js"></script>
+  </body>
+</html>

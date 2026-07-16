@@ -15,6 +15,7 @@ from app.local.backchannel_review.router import router as backchannel_review_rou
 from app.local.config import WEB_ROOT
 from app.local.dashboard.router import router as dataset_dashboard_router
 from app.local.data.sessions import SessionEntry, SpeakerName, list_sessions, session_audio_path
+from app.local.synchronization_review.router import router as synchronization_review_router
 from app.local.training_samples.router import router as training_samples_router
 from app.shared.audio.wav import capped_wave_bytes
 from app.shared.base_model import FrozenBaseModel
@@ -33,6 +34,7 @@ app.include_router(end_of_turn_router)
 app.include_router(dataset_dashboard_router)
 app.include_router(training_samples_router)
 app.include_router(backchannel_review_router)
+app.include_router(synchronization_review_router)
 app.mount("/pages", StaticFiles(directory=WEB_ROOT / "pages"), name="pages")
 
 
@@ -88,6 +90,14 @@ def training_sample_lab_page() -> FileResponse:
 def backchannel_review_page() -> FileResponse:
     return FileResponse(
         WEB_ROOT / "pages" / "backchannel-review" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/analyses/synchronization-review")
+def synchronization_review_page() -> FileResponse:
+    return FileResponse(
+        WEB_ROOT / "pages" / "synchronization-review" / "index.html",
         headers={"Cache-Control": "no-store"},
     )
 
