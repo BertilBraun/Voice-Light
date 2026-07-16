@@ -51,7 +51,7 @@ class BenchmarkMetadata(FrozenBaseModel):
     max_new_tokens: int = Field(gt=0)
     temperature: float = Field(gt=0.0)
     top_p: float = Field(gt=0.0, le=1.0)
-    presence_penalty: float
+    repetition_penalty: float = Field(gt=0.0)
 
 
 class BenchmarkResult(FrozenBaseModel):
@@ -64,6 +64,7 @@ class BenchmarkResult(FrozenBaseModel):
     prompt_tokens: int = Field(gt=0)
     output_tokens: int = Field(gt=0)
     output_words: int = Field(ge=0)
+    first_token_seconds: float = Field(ge=0.0)
     first_text_seconds: float = Field(ge=0.0)
     first_complete_word_seconds: float = Field(ge=0.0)
     total_seconds: float = Field(gt=0.0)
@@ -85,7 +86,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     parser.add_argument("--max-new-tokens", type=int, default=96)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--presence-penalty", type=float, default=0.0)
+    parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--output-jsonl", type=Path)
     options = parser.parse_args(arguments)
@@ -97,6 +98,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
         raise ValueError("--temperature must be positive.")
     if not 0.0 < options.top_p <= 1.0:
         raise ValueError("--top-p must be greater than zero and at most one.")
+    if options.repetition_penalty <= 0.0:
+        raise ValueError("--repetition-penalty must be positive.")
 
     revision = options.revision or _default_revision(options.model)
     run_benchmark(
@@ -107,7 +110,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         max_new_tokens=options.max_new_tokens,
         temperature=options.temperature,
         top_p=options.top_p,
-        presence_penalty=options.presence_penalty,
+        repetition_penalty=options.repetition_penalty,
         initial_seed=options.seed,
         output_jsonl=options.output_jsonl,
     )
@@ -121,7 +124,7 @@ def run_benchmark(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
-    presence_penalty: float,
+    repetition_penalty: float,
     initial_seed: int,
     output_jsonl: Path | None,
 ) -> None:
@@ -149,7 +152,7 @@ def run_benchmark(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_p=top_p,
-        presence_penalty=presence_penalty,
+        repetition_penalty=repetition_penalty,
     )
     _emit_record(metadata, output_jsonl, overwrite=True)
 
@@ -170,7 +173,7 @@ def run_benchmark(
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                presence_penalty=presence_penalty,
+                repetition_penalty=repetition_penalty,
             )
             _emit_record(result, output_jsonl, overwrite=False)
 
@@ -212,7 +215,7 @@ def _run_case(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
-    presence_penalty: float,
+    repetition_penalty: float,
 ) -> BenchmarkResult:
     messages: list[ChatMessage] = [
         {"role": "system", "content": system_prompt},
@@ -226,7 +229,7 @@ def _run_case(
     )
     model_inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     prompt_tokens = int(model_inputs.input_ids.shape[1])
-    streamer = TextIteratorStreamer(
+    streamer = TimedTextIteratorStreamer(
         tokenizer,
         skip_prompt=True,
         skip_special_tokens=True,
@@ -245,7 +248,7 @@ def _run_case(
                     do_sample=True,
                     temperature=temperature,
                     top_p=top_p,
-                    presence_penalty=presence_penalty,
+                    repetition_penalty=repetition_penalty,
                 )
         except Exception as error:
             generation_errors.append(error)
@@ -253,6 +256,7 @@ def _run_case(
 
     torch.cuda.synchronize()
     started_at = time.perf_counter()
+    streamer.mark_started(started_at)
     generation_thread = threading.Thread(target=generate, daemon=True)
     generation_thread.start()
     output_parts: list[str] = []
@@ -275,6 +279,8 @@ def _run_case(
         raise RuntimeError(f"Language model benchmark failed: {generation_errors[0]}")
 
     output_text = "".join(output_parts).strip()
+    if streamer.first_token_seconds is None:
+        raise RuntimeError("Language model benchmark produced no generated token.")
     if first_text_seconds is None or not output_text:
         raise RuntimeError("Language model benchmark produced no text.")
     if first_complete_word_seconds is None:
@@ -291,6 +297,7 @@ def _run_case(
         prompt_tokens=prompt_tokens,
         output_tokens=output_tokens,
         output_words=len(output_text.split()),
+        first_token_seconds=streamer.first_token_seconds,
         first_text_seconds=first_text_seconds,
         first_complete_word_seconds=first_complete_word_seconds,
         total_seconds=total_seconds,
@@ -303,6 +310,34 @@ def _nonempty_deltas(streamer: TextIteratorStreamer) -> Iterator[str]:
     for text_delta in streamer:
         if text_delta:
             yield text_delta
+
+
+class TimedTextIteratorStreamer(TextIteratorStreamer):
+    def __init__(
+        self,
+        tokenizer: AutoTokenizer,
+        skip_prompt: bool,
+        skip_special_tokens: bool,
+    ) -> None:
+        super().__init__(
+            tokenizer,
+            skip_prompt=skip_prompt,
+            skip_special_tokens=skip_special_tokens,
+        )
+        self.started_at: float | None = None
+        self.first_token_seconds: float | None = None
+
+    def mark_started(self, started_at: float) -> None:
+        self.started_at = started_at
+
+    def put(self, value: torch.Tensor) -> None:
+        is_prompt = self.skip_prompt and self.next_tokens_are_prompt
+        super().put(value)
+        if is_prompt or self.first_token_seconds is not None:
+            return
+        if self.started_at is None:
+            raise AssertionError("Timed streamer received a token before generation started.")
+        self.first_token_seconds = time.perf_counter() - self.started_at
 
 
 def _system_prompt(prompt_style: PromptStyle) -> str:
