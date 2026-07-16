@@ -62,8 +62,10 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "estimate.estimated_b_shift_seconds",
         "trimmed=true",
         "setupAudioGraph",
-        "ensureMediaReady",
-        "startActivePlayers",
+        "decodeAudioData",
+        "createBufferSource",
+        "scheduleTrack",
+        "startBufferPlayback",
         "candidate.speaker1_gain.default_gain",
         "createDynamicsCompressor",
     ),
@@ -74,6 +76,14 @@ def test_synchronization_review_script_uses_shared_shifted_timeline(
 ) -> None:
     _, script = synchronization_review_assets
     assert required_script in script
+
+
+def test_synchronization_review_does_not_seek_streaming_media_elements(
+    synchronization_review_assets: tuple[str, str],
+) -> None:
+    _, script = synchronization_review_assets
+    assert "createMediaElementSource" not in script
+    assert ".currentTime =" not in script
 
 
 def test_timeline_metrics_recovers_speaker_b_delay() -> None:
