@@ -146,11 +146,34 @@ h1 {
   font-size: 12px;
 }
 
-.filter input {
+.filter input,
+.filter select {
+  background: #fff;
   border: 1px solid #cbd4d2;
   border-radius: 7px;
   padding: 8px 10px;
   width: 100%;
+}
+
+.candidate-filter-controls {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-top: 11px;
+}
+
+.checkbox-filter {
+  align-items: center;
+  align-self: end;
+  display: flex;
+  gap: 6px;
+  min-height: 36px;
+}
+
+.checkbox-filter span {
+  color: #50605d;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .candidate-list {

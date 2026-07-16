@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Synchronization review - Voice Light</title>
-    <link rel="stylesheet" href="/pages/synchronization-review/styles.css?v=7" />
+    <link rel="stylesheet" href="/pages/synchronization-review/styles.css?v=8" />
   </head>
   <body>
     <main>
@@ -25,13 +25,28 @@
         <aside class="panel candidate-panel">
           <div class="candidate-panel-header">
             <div>
-              <span class="eyebrow">Possible offsets</span>
+              <span class="eyebrow">Analyzed sessions</span>
               <h2 id="candidate-count">Candidates</h2>
             </div>
             <label class="filter">
               <span>Filter</span>
               <input id="filter" type="search" placeholder="PMT number" />
             </label>
+            <div class="candidate-filter-controls">
+              <label class="checkbox-filter">
+                <input id="hide-reviewed" type="checkbox" checked />
+                <span>Hide reviewed</span>
+              </label>
+              <label class="filter">
+                <span>Sort</span>
+                <select id="candidate-sort">
+                  <option value="confidence_ascending">Lowest confidence first</option>
+                  <option value="confidence_descending">Highest confidence first</option>
+                  <option value="likelihood_descending">Highest likelihood first</option>
+                  <option value="sample_id">Sample ID</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div id="candidate-list" class="candidate-list"></div>
         </aside>
@@ -151,6 +166,6 @@
       </section>
     </main>
 
-    <script type="module" src="/pages/synchronization-review/app.js?v=10"></script>
+    <script type="module" src="/pages/synchronization-review/app.js?v=11"></script>
   </body>
 </html>

@@ -11,6 +11,8 @@ const elements = {
   candidateCount: document.querySelector("#candidate-count"),
   candidateList: document.querySelector("#candidate-list"),
   filter: document.querySelector("#filter"),
+  hideReviewed: document.querySelector("#hide-reviewed"),
+  candidateSort: document.querySelector("#candidate-sort"),
   position: document.querySelector("#position"),
   sampleName: document.querySelector("#sample-name"),
   sampleSummary: document.querySelector("#sample-summary"),
@@ -123,25 +125,60 @@ async function loadCandidates() {
     }
     const payload = await response.json();
     state.candidates = payload.candidates;
-    state.visibleCandidates = payload.candidates;
     const belowCandidateThreshold =
-      payload.analyzed_session_count - payload.candidates.length;
+      payload.analyzed_session_count - payload.offset_candidate_count;
     elements.coverage.textContent =
       `${payload.analyzed_session_count} sessions analyzed · ` +
-      `${payload.candidates.length} offset candidates · ` +
+      `${payload.offset_candidate_count} offset candidates · ` +
       `${belowCandidateThreshold} below the candidate threshold · ` +
       `${payload.excluded_session_count} without complete timing evidence`;
     elements.workspace.hidden = false;
-    elements.candidateCount.textContent = `${payload.candidates.length} candidates`;
-    renderCandidateList();
-    if (payload.candidates.length === 0) {
-      setError("No synchronization candidates passed the current evidence thresholds.");
+    applyCandidateFilters();
+    if (state.visibleCandidates.length === 0) {
+      setError("No analyzed sessions match the current review filters.");
       return;
     }
-    await selectCandidate(payload.candidates[0].external_id);
+    await selectCandidate(state.visibleCandidates[0].external_id);
   } catch (error) {
     setError(`Could not load synchronization candidates: ${error.message}`);
   }
+}
+
+function applyCandidateFilters() {
+  const query = elements.filter.value.trim().toLowerCase();
+  const hideReviewed = elements.hideReviewed.checked;
+  state.visibleCandidates = state.candidates
+    .filter(
+      (candidate) =>
+        candidate.external_id.toLowerCase().includes(query) &&
+        (!hideReviewed || candidate.alignment_estimate_origin !== "reviewed"),
+    )
+    .sort(candidateComparator(elements.candidateSort.value));
+  const reviewedCount = state.candidates.filter(
+    (candidate) => candidate.alignment_estimate_origin === "reviewed",
+  ).length;
+  elements.candidateCount.textContent =
+    `${state.visibleCandidates.length} shown · ${reviewedCount} reviewed`;
+  renderCandidateList();
+}
+
+function candidateComparator(sortMode) {
+  if (sortMode === "confidence_descending") {
+    return (left, right) =>
+      right.offset_confidence_score - left.offset_confidence_score ||
+      right.likelihood_score - left.likelihood_score;
+  }
+  if (sortMode === "likelihood_descending") {
+    return (left, right) =>
+      right.likelihood_score - left.likelihood_score ||
+      left.offset_confidence_score - right.offset_confidence_score;
+  }
+  if (sortMode === "sample_id") {
+    return (left, right) => left.external_id.localeCompare(right.external_id);
+  }
+  return (left, right) =>
+    left.offset_confidence_score - right.offset_confidence_score ||
+    right.likelihood_score - left.likelihood_score;
 }
 
 function renderCandidateList() {
@@ -164,7 +201,10 @@ function renderCandidateList() {
         <strong>${formatShift(candidate.estimated_b_shift_seconds)}</strong>
       </span>
       <span class="candidate-meta">
-        <span>${candidate.overlap_silence_cycle_count} overlap/silence cycles</span>
+        <span>
+          ${candidate.is_offset_candidate ? "offset candidate" : "below threshold"} ·
+          ${candidate.overlap_silence_cycle_count} cycles
+        </span>
         <span>
           ${candidate.alignment_estimate_origin === "reviewed"
             ? "manually reviewed"
@@ -383,6 +423,7 @@ async function saveCurrentOffsetAsReviewed() {
   if (!candidate) {
     return;
   }
+  const previousVisibleIndex = selectedVisibleIndex();
   elements.saveReview.disabled = true;
   setReviewSaveStatus(`Saving ${formatShift(state.bShiftSeconds)}…`, false);
   try {
@@ -405,10 +446,29 @@ async function saveCurrentOffsetAsReviewed() {
     candidate.alignment_estimate_origin = "reviewed";
     candidate.offset_confidence_score = 1;
     state.bShiftSeconds = savedReview.speaker2_shift_seconds;
-    renderCandidateList();
-    renderCandidateDetails();
+    applyCandidateFilters();
+    const savedMessage =
+      `Saved ${candidate.external_id.toUpperCase()} at ` +
+      `${formatShift(savedReview.speaker2_shift_seconds)}.`;
+    if (
+      !state.visibleCandidates.some(
+        (visibleCandidate) => visibleCandidate.external_id === candidate.external_id,
+      ) &&
+      state.visibleCandidates.length > 0
+    ) {
+      const nextCandidate =
+        state.visibleCandidates[
+          Math.max(
+            0,
+            Math.min(previousVisibleIndex, state.visibleCandidates.length - 1),
+          )
+        ];
+      await selectCandidate(nextCandidate.external_id);
+    } else {
+      renderCandidateDetails();
+    }
     setReviewSaveStatus(
-      `Saved ${candidate.external_id.toUpperCase()} at ${formatShift(savedReview.speaker2_shift_seconds)}.`,
+      savedMessage,
       false,
     );
   } catch (error) {
@@ -995,15 +1055,21 @@ function moveSelection(delta) {
   }
 }
 
-elements.filter.addEventListener("input", () => {
-  const query = elements.filter.value.trim().toLowerCase();
-  state.visibleCandidates = state.candidates.filter((candidate) =>
-    candidate.external_id.toLowerCase().includes(query),
+function refreshCandidateFilterSelection() {
+  applyCandidateFilters();
+  const selectedStillVisible = state.visibleCandidates.some(
+    (candidate) => candidate.external_id === state.selectedExternalId,
   );
-  elements.candidateCount.textContent = `${state.visibleCandidates.length} candidates`;
-  renderCandidateList();
-  renderCandidateDetails();
-});
+  if (selectedStillVisible) {
+    renderCandidateDetails();
+  } else if (state.visibleCandidates.length > 0) {
+    void selectCandidate(state.visibleCandidates[0].external_id);
+  }
+}
+
+elements.filter.addEventListener("input", refreshCandidateFilterSelection);
+elements.hideReviewed.addEventListener("change", refreshCandidateFilterSelection);
+elements.candidateSort.addEventListener("change", refreshCandidateFilterSelection);
 elements.previous.addEventListener("click", () => moveSelection(-1));
 elements.next.addEventListener("click", () => moveSelection(1));
 elements.usePrediction.addEventListener("click", () => {

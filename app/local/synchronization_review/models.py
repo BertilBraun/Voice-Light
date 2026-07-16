@@ -62,6 +62,7 @@ class SynchronizationCandidate(FrozenBaseModel):
     sample_id: UUID
     external_id: str
     likelihood_score: float
+    is_offset_candidate: bool
     estimated_b_shift_seconds: float
     full_recording_estimated_b_shift_seconds: float
     alignment_estimate_origin: AlignmentEstimateOrigin
@@ -78,6 +79,7 @@ class SynchronizationCandidate(FrozenBaseModel):
 class SynchronizationCandidateListResponse(FrozenBaseModel):
     candidates: tuple[SynchronizationCandidate, ...]
     analyzed_session_count: int
+    offset_candidate_count: int
     excluded_session_count: int
 
 

@@ -63,6 +63,8 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "Save current offset as reviewed",
         "Scrub full recording",
         "three-minute playback window",
+        "Hide reviewed",
+        "Lowest confidence first",
     ),
 )
 def test_synchronization_review_page_exposes_alignment_controls(
@@ -100,6 +102,8 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "saveCurrentOffsetAsReviewed",
         "toggleFullRecordingMode",
         "/api/synchronization-review/audio-window/",
+        "candidateComparator",
+        "offset_candidate_count",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(

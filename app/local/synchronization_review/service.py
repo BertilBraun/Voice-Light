@@ -106,6 +106,7 @@ def synchronization_candidates(
     pair_by_key = {(pair.external_id, pair.model_id): pair for pair in transcript_pairs}
     candidates: list[SynchronizationCandidate] = []
     analyzed_session_count = 0
+    offset_candidate_count = 0
 
     for stored_annotation in annotations:
         parakeet_pair = pair_by_key.get((stored_annotation.external_id, AsrModelId.PARAKEET_TDT))
@@ -119,8 +120,9 @@ def synchronization_candidates(
             canary_pair=canary_pair,
             stored_alignments=stored_alignments,
         )
-        if candidate is not None:
-            candidates.append(candidate)
+        if candidate.is_offset_candidate:
+            offset_candidate_count += 1
+        candidates.append(candidate)
 
     return SynchronizationCandidateListResponse(
         candidates=tuple(
@@ -134,6 +136,7 @@ def synchronization_candidates(
             )
         ),
         analyzed_session_count=analyzed_session_count,
+        offset_candidate_count=offset_candidate_count,
         excluded_session_count=total_session_count - analyzed_session_count,
     )
 
@@ -143,7 +146,7 @@ def _candidate(
     parakeet_pair: TranscriptPair,
     canary_pair: TranscriptPair,
     stored_alignments: tuple[ReviewedAlignment, ...],
-) -> SynchronizationCandidate | None:
+) -> SynchronizationCandidate:
     annotation = stored_annotation.annotation
     duration_seconds = min(annotation.analyzed_duration_seconds, 180.0)
     source_metrics = (
@@ -185,15 +188,17 @@ def _candidate(
         )
         >= 1.5
     )
-    if len(meaningful_sources) < 2 and not (annotation_is_meaningful and has_variable_annotation):
-        return None
+    is_offset_candidate = len(meaningful_sources) >= 2 or (
+        annotation_is_meaningful and has_variable_annotation
+    )
 
-    source_agreement = lag_agreement(meaningful_sources=meaningful_sources)
+    estimation_sources = meaningful_sources if meaningful_sources else source_metrics
+    source_agreement = lag_agreement(meaningful_sources=estimation_sources)
     offset_pattern = classify_offset_pattern(
         meaningful_sources=meaningful_sources,
         meaningful_windows=meaningful_windows,
     )
-    full_recording_estimated_shift = robust_shift_estimate(meaningful_sources=meaningful_sources)
+    full_recording_estimated_shift = robust_shift_estimate(meaningful_sources=estimation_sources)
     predicted_shift = recommended_shift_estimate(
         offset_pattern=offset_pattern,
         full_recording_estimated_shift=full_recording_estimated_shift,
@@ -230,6 +235,7 @@ def _candidate(
         sample_id=stored_annotation.sample_id,
         external_id=stored_annotation.external_id,
         likelihood_score=likelihood_score,
+        is_offset_candidate=is_offset_candidate,
         estimated_b_shift_seconds=estimated_shift,
         full_recording_estimated_b_shift_seconds=full_recording_estimated_shift,
         alignment_estimate_origin=estimate_origin,
@@ -525,8 +531,11 @@ def robust_shift_estimate(meaningful_sources: tuple[SourceMetrics, ...]) -> floa
     ordered = sorted(
         (
             source_metric.metrics.best_lag_seconds,
-            source_metric.metrics.bad_state_improvement
-            + 2.0 * source_metric.metrics.joint_reduction,
+            max(
+                0.001,
+                source_metric.metrics.bad_state_improvement
+                + 2.0 * source_metric.metrics.joint_reduction,
+            ),
         )
         for source_metric in meaningful_sources
     )
