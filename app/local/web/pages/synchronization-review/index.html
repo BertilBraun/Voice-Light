@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Synchronization review - Voice Light</title>
-    <link rel="stylesheet" href="/pages/synchronization-review/styles.css?v=5" />
+    <link rel="stylesheet" href="/pages/synchronization-review/styles.css?v=6" />
   </head>
   <body>
     <main>
@@ -55,8 +55,14 @@
                 <span class="eyebrow">Manual alignment</span>
                 <h3>Slide speaker B relative to speaker A</h3>
               </div>
-              <button id="use-prediction" type="button">Use recommended estimate</button>
+              <div class="alignment-actions">
+                <button id="use-prediction" type="button">Use recommended estimate</button>
+                <button id="save-review" type="button" class="primary">
+                  Save current offset as reviewed
+                </button>
+              </div>
             </div>
+            <p id="review-save-status" class="review-save-status" role="status"></p>
 
             <div class="shift-control">
               <span class="range-label">B earlier</span>
@@ -143,6 +149,6 @@
       </section>
     </main>
 
-    <script type="module" src="/pages/synchronization-review/app.js?v=8"></script>
+    <script type="module" src="/pages/synchronization-review/app.js?v=9"></script>
   </body>
 </html>

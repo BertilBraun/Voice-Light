@@ -15,6 +15,8 @@ const elements = {
   previous: document.querySelector("#previous"),
   next: document.querySelector("#next"),
   usePrediction: document.querySelector("#use-prediction"),
+  saveReview: document.querySelector("#save-review"),
+  reviewSaveStatus: document.querySelector("#review-save-status"),
   shift: document.querySelector("#shift"),
   shiftNumber: document.querySelector("#shift-number"),
   play: document.querySelector("#play"),
@@ -196,6 +198,7 @@ async function selectCandidate(externalId) {
   state.audioBufferExternalId = null;
   state.durationSeconds = DEFAULT_DURATION_SECONDS;
   setPlaybackStatus("", false);
+  setReviewSaveStatus("", false);
   state.selectionVersion += 1;
   const selectionVersion = state.selectionVersion;
   renderCandidateList();
@@ -294,10 +297,59 @@ function renderCandidateDetails() {
   elements.previous.disabled = visibleIndex <= 0;
   elements.next.disabled =
     visibleIndex < 0 || visibleIndex >= state.visibleCandidates.length - 1;
+  elements.saveReview.textContent =
+    candidate.alignment_estimate_origin === "reviewed"
+      ? "Update reviewed offset"
+      : "Save current offset as reviewed";
   renderWindowTargets(candidate);
   renderEvidence(candidate);
   renderGainSummary(state.gainNormalization || candidate);
   updateTimeline();
+}
+
+function setReviewSaveStatus(message, isError) {
+  elements.reviewSaveStatus.textContent = message;
+  elements.reviewSaveStatus.classList.toggle("error", isError);
+}
+
+async function saveCurrentOffsetAsReviewed() {
+  const candidate = selectedCandidate();
+  if (!candidate) {
+    return;
+  }
+  elements.saveReview.disabled = true;
+  setReviewSaveStatus(`Saving ${formatShift(state.bShiftSeconds)}…`, false);
+  try {
+    const response = await fetch(
+      `/api/synchronization-review/reviews/${candidate.sample_id}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          speaker2_shift_seconds: state.bShiftSeconds,
+        }),
+      },
+    );
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || `Save failed with ${response.status}`);
+    }
+    const savedReview = await response.json();
+    candidate.estimated_b_shift_seconds = savedReview.speaker2_shift_seconds;
+    candidate.alignment_estimate_origin = "reviewed";
+    candidate.offset_confidence_score = 1;
+    state.bShiftSeconds = savedReview.speaker2_shift_seconds;
+    renderCandidateList();
+    renderCandidateDetails();
+    setReviewSaveStatus(
+      `Saved ${candidate.external_id.toUpperCase()} at ${formatShift(savedReview.speaker2_shift_seconds)}.`,
+      false,
+    );
+  } catch (error) {
+    setReviewSaveStatus(`Could not save review: ${error.message}`, true);
+  } finally {
+    elements.saveReview.disabled = false;
+  }
 }
 
 function applyAutomaticGains(gainNormalization) {
@@ -794,6 +846,9 @@ elements.usePrediction.addEventListener("click", () => {
   if (candidate) {
     setShift(candidate.estimated_b_shift_seconds);
   }
+});
+elements.saveReview.addEventListener("click", () => {
+  void saveCurrentOffsetAsReviewed();
 });
 elements.shift.addEventListener("input", () => setShift(elements.shift.value));
 elements.shiftNumber.addEventListener("change", () =>

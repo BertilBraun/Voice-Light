@@ -43,9 +43,16 @@ REVIEWED_ALIGNMENTS = (
 UNRESOLVED_ALIGNMENT_IDS = ("pmt_326",)
 
 
-def reviewed_alignment(external_id: str) -> ReviewedAlignment | None:
+def reviewed_alignment(
+    external_id: str,
+    stored_alignments: tuple[ReviewedAlignment, ...] = (),
+) -> ReviewedAlignment | None:
     return next(
-        (alignment for alignment in REVIEWED_ALIGNMENTS if alignment.external_id == external_id),
+        (
+            alignment
+            for alignment in (*stored_alignments, *REVIEWED_ALIGNMENTS)
+            if alignment.external_id == external_id
+        ),
         None,
     )
 

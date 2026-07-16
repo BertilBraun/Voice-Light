@@ -9,6 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.local.asr.transcript import SpeakerTrack
+from app.local.synchronization_review.calibration import ReviewedAlignment
 from app.shared.asr import AsrModelId, TimestampedWord
 from app.shared.quality import AudioQualityMetrics, ConversationAnnotation
 
@@ -90,6 +91,55 @@ class SynchronizationReviewRepository:
             ).fetchone()
         assert row is not None
         return int(str(row["sample_count"]))
+
+    def load_reviewed_alignments(self) -> tuple[ReviewedAlignment, ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT samples.external_id, synchronization_reviews.speaker2_shift_seconds
+                FROM synchronization_reviews
+                JOIN samples ON samples.id = synchronization_reviews.sample_id
+                ORDER BY samples.external_id
+                """
+            ).fetchall()
+        return tuple(
+            ReviewedAlignment(
+                external_id=str(row["external_id"]),
+                speaker2_shift_seconds=float(row["speaker2_shift_seconds"]),
+            )
+            for row in rows
+        )
+
+    def save_reviewed_alignment(
+        self,
+        sample_id: UUID,
+        speaker2_shift_seconds: float,
+    ) -> ReviewedAlignment:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                WITH saved_review AS (
+                  INSERT INTO synchronization_reviews (
+                    sample_id, speaker2_shift_seconds, updated_at
+                  )
+                  VALUES (%s, %s, now())
+                  ON CONFLICT (sample_id) DO UPDATE
+                  SET speaker2_shift_seconds = EXCLUDED.speaker2_shift_seconds,
+                      updated_at = now()
+                  RETURNING sample_id, speaker2_shift_seconds
+                )
+                SELECT samples.external_id, saved_review.speaker2_shift_seconds
+                FROM saved_review
+                JOIN samples ON samples.id = saved_review.sample_id
+                """,
+                (sample_id, speaker2_shift_seconds),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Sample not found: {sample_id}")
+        return ReviewedAlignment(
+            external_id=str(row["external_id"]),
+            speaker2_shift_seconds=float(row["speaker2_shift_seconds"]),
+        )
 
     def load_annotations(self) -> tuple[StoredConversationAnnotation, ...]:
         with self.connection() as connection:

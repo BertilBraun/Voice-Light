@@ -3,6 +3,8 @@ from __future__ import annotations
 from enum import StrEnum
 from uuid import UUID
 
+from pydantic import Field
+
 from app.shared.base_model import FrozenBaseModel
 
 
@@ -83,3 +85,13 @@ class SynchronizationGainResponse(FrozenBaseModel):
     sample_id: UUID
     speaker1_gain: TrackGainNormalization
     speaker2_gain: TrackGainNormalization
+
+
+class SynchronizationReviewRequest(FrozenBaseModel):
+    speaker2_shift_seconds: float = Field(ge=-12.0, le=12.0)
+
+
+class SynchronizationReviewSaveResponse(FrozenBaseModel):
+    sample_id: UUID
+    external_id: str
+    speaker2_shift_seconds: float

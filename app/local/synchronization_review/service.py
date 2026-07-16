@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.local.synchronization_review.calibration import (
+    ReviewedAlignment,
     is_unresolved_alignment,
     reviewed_alignment,
 )
@@ -99,6 +100,7 @@ def synchronization_candidates(
     repository: SynchronizationReviewRepository,
 ) -> SynchronizationCandidateListResponse:
     total_session_count = repository.count_pmt_samples()
+    stored_alignments = repository.load_reviewed_alignments()
     transcript_pairs = repository.load_transcript_pairs()
     annotations = repository.load_annotations()
     pair_by_key = {(pair.external_id, pair.model_id): pair for pair in transcript_pairs}
@@ -115,6 +117,7 @@ def synchronization_candidates(
             stored_annotation=stored_annotation,
             parakeet_pair=parakeet_pair,
             canary_pair=canary_pair,
+            stored_alignments=stored_alignments,
         )
         if candidate is not None:
             candidates.append(candidate)
@@ -139,6 +142,7 @@ def _candidate(
     stored_annotation: StoredConversationAnnotation,
     parakeet_pair: TranscriptPair,
     canary_pair: TranscriptPair,
+    stored_alignments: tuple[ReviewedAlignment, ...],
 ) -> SynchronizationCandidate | None:
     annotation = stored_annotation.annotation
     duration_seconds = min(annotation.analyzed_duration_seconds, 180.0)
@@ -195,9 +199,13 @@ def _candidate(
         full_recording_estimated_shift=full_recording_estimated_shift,
         window_estimates=window_estimates,
     )
-    reviewed = reviewed_alignment(external_id=stored_annotation.external_id)
-    unresolved = is_unresolved_alignment(external_id=stored_annotation.external_id)
-    assert reviewed is None or not unresolved
+    reviewed = reviewed_alignment(
+        external_id=stored_annotation.external_id,
+        stored_alignments=stored_alignments,
+    )
+    unresolved = reviewed is None and is_unresolved_alignment(
+        external_id=stored_annotation.external_id
+    )
     estimated_shift = reviewed.speaker2_shift_seconds if reviewed is not None else predicted_shift
     estimate_origin = (
         AlignmentEstimateOrigin.REVIEWED

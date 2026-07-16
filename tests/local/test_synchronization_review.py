@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.local.main import app
 from app.local.synchronization_review.calibration import (
+    ReviewedAlignment,
     is_unresolved_alignment,
     reviewed_alignment,
 )
@@ -19,6 +20,7 @@ from app.local.synchronization_review.models import (
     GainMeasurementBasis,
     OffsetPattern,
     SynchronizationEvidenceSource,
+    SynchronizationReviewRequest,
     SynchronizationWindowEstimate,
 )
 from app.local.synchronization_review.service import (
@@ -58,6 +60,7 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "Speaker B gain",
         "Reset automatic gains",
         "Use recommended estimate",
+        "Save current offset as reviewed",
     ),
 )
 def test_synchronization_review_page_exposes_alignment_controls(
@@ -91,6 +94,8 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "alignment unresolved",
         "offset confidence",
         "offset_confidence_score",
+        "/api/synchronization-review/reviews/",
+        "saveCurrentOffsetAsReviewed",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(
@@ -283,6 +288,28 @@ def test_unreviewed_alignment_keeps_model_prediction() -> None:
 def test_pmt_326_is_marked_unresolved() -> None:
     assert reviewed_alignment(external_id="pmt_326") is None
     assert is_unresolved_alignment(external_id="pmt_326")
+
+
+def test_stored_review_overrides_static_alignment_state() -> None:
+    stored = ReviewedAlignment(
+        external_id="pmt_326",
+        speaker2_shift_seconds=-3.4,
+    )
+
+    alignment = reviewed_alignment(
+        external_id="pmt_326",
+        stored_alignments=(stored,),
+    )
+
+    assert alignment is stored
+
+
+@pytest.mark.parametrize("shift_seconds", (-12.1, 12.1))
+def test_review_request_rejects_shift_outside_slider_range(
+    shift_seconds: float,
+) -> None:
+    with pytest.raises(ValueError):
+        SynchronizationReviewRequest(speaker2_shift_seconds=shift_seconds)
 
 
 def test_reviewed_offset_confidence_is_certain() -> None:

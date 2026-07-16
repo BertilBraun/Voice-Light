@@ -12,6 +12,8 @@ from app.local.db.repository import Repository
 from app.local.synchronization_review.models import (
     SynchronizationCandidateListResponse,
     SynchronizationGainResponse,
+    SynchronizationReviewRequest,
+    SynchronizationReviewSaveResponse,
 )
 from app.local.synchronization_review.repository import SynchronizationReviewRepository
 from app.local.synchronization_review.service import (
@@ -38,6 +40,28 @@ def list_synchronization_candidates() -> SynchronizationCandidateListResponse:
 def synchronization_gain(sample_id: UUID) -> SynchronizationGainResponse:
     try:
         return cached_synchronization_gain(database_url=DATABASE_URL, sample_id=sample_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/reviews/{sample_id}")
+def save_synchronization_review(
+    sample_id: UUID,
+    request: SynchronizationReviewRequest,
+) -> SynchronizationReviewSaveResponse:
+    try:
+        reviewed = SynchronizationReviewRepository(
+            database_url=DATABASE_URL
+        ).save_reviewed_alignment(
+            sample_id=sample_id,
+            speaker2_shift_seconds=request.speaker2_shift_seconds,
+        )
+        cached_synchronization_candidates.cache_clear()
+        return SynchronizationReviewSaveResponse(
+            sample_id=sample_id,
+            external_id=reviewed.external_id,
+            speaker2_shift_seconds=reviewed.speaker2_shift_seconds,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

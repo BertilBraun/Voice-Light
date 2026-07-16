@@ -308,6 +308,25 @@ h1 {
   margin: 4px 0 0;
 }
 
+.alignment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.review-save-status {
+  color: #2d6f62;
+  font-size: 12px;
+  margin: -8px 0 12px;
+  min-height: 18px;
+  text-align: right;
+}
+
+.review-save-status.error {
+  color: #a43b2f;
+}
+
 .muted,
 .note,
 .shift-help {
