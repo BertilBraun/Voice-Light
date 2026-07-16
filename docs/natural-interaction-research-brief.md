@@ -1,5 +1,7 @@
 # Natural Interaction Research Brief
 
+Completed design study: [Voice Light Natural Interaction Design Study](natural-interaction-design-study.md).
+
 Conduct a ground-up, research-backed design study for Voice Light's natural conversational
 interaction. This is a decision task, not an implementation task. Treat current behavior as a
 prototype rather than the intended final architecture.
