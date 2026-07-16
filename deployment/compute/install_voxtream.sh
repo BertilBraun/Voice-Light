@@ -17,7 +17,10 @@ git -C "$source_root" checkout --detach "$revision"
 git -C "$source_root" lfs install --local
 git -C "$source_root" lfs pull
 
-uv venv --python 3.12 "${voxtream_root}/.venv"
-uv pip install --python "$python_path" --editable "$source_root"
+uv venv --clear --python 3.12 "${voxtream_root}/.venv"
+(
+  cd "$source_root"
+  uv pip install --python "$python_path" --editable .
+)
 
 echo "VoXtream2 environment installed at ${voxtream_root}."
