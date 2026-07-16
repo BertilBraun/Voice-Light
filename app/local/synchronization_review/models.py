@@ -48,6 +48,7 @@ class SynchronizationCandidate(FrozenBaseModel):
     external_id: str
     likelihood_score: float
     estimated_b_shift_seconds: float
+    full_recording_estimated_b_shift_seconds: float
     offset_pattern: OffsetPattern
     source_agreement: bool
     evidence: tuple[SynchronizationEvidence, ...]

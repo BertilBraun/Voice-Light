@@ -18,6 +18,7 @@ from app.local.synchronization_review.service import (
     classify_offset_pattern,
     default_gain_for_active_rms,
     estimated_active_rms_dbfs,
+    recommended_shift_estimate,
     timeline_metrics,
 )
 
@@ -43,6 +44,7 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "Speaker A gain",
         "Speaker B gain",
         "Reset automatic gains",
+        "Use recommended estimate",
     ),
 )
 def test_synchronization_review_page_exposes_alignment_controls(
@@ -159,6 +161,29 @@ def test_gain_normalization_targets_active_speech_level() -> None:
 
 def test_gain_normalization_caps_extremely_quiet_tracks() -> None:
     assert default_gain_for_active_rms(-80.0) == pytest.approx(12.0)
+
+
+@pytest.mark.parametrize(
+    ("offset_pattern", "full_recording_shift", "first_window_shift", "expected"),
+    (
+        (OffsetPattern.CONSTANT, -6.8, -6.7, -6.8),
+        (OffsetPattern.VARIABLE, -9.5, -10.0, -10.0),
+        (OffsetPattern.VARIABLE, -5.6, -4.9, -4.8),
+    ),
+)
+def test_recommended_shift_uses_calibrated_initial_offset(
+    offset_pattern: OffsetPattern,
+    full_recording_shift: float,
+    first_window_shift: float,
+    expected: float,
+) -> None:
+    recommended = recommended_shift_estimate(
+        offset_pattern=offset_pattern,
+        full_recording_estimated_shift=full_recording_shift,
+        window_estimates=(_window(0.0, first_window_shift),),
+    )
+
+    assert recommended == pytest.approx(expected)
 
 
 def _source_metrics(

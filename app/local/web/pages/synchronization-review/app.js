@@ -244,6 +244,8 @@ function renderCandidateDetails() {
   elements.sampleSummary.innerHTML = `
     <span class="badge ${candidate.offset_pattern}">${candidate.offset_pattern} offset</span>
     <span>${Math.round(candidate.likelihood_score * 100)}% likelihood</span>
+    <span>recommended ${formatShift(candidate.estimated_b_shift_seconds)}</span>
+    <span>full recording ${formatShift(candidate.full_recording_estimated_b_shift_seconds)}</span>
     <span>${candidate.source_agreement ? "full-recording sources agree" : "sources disagree"}</span>
   `;
   elements.previous.disabled = visibleIndex <= 0;

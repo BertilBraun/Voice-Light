@@ -39,6 +39,7 @@ MINIMUM_JOINT_REDUCTION = 0.008
 TARGET_ACTIVE_RMS_DBFS = -20.0
 MINIMUM_DEFAULT_GAIN = 0.1
 MAXIMUM_DEFAULT_GAIN = 12.0
+RECOMMENDED_SHIFT_RESOLUTION_SECONDS = 0.2
 
 
 class TimelineState(StrEnum):
@@ -175,11 +176,16 @@ def _candidate(
     if len(meaningful_sources) < 2 and not (annotation_is_meaningful and has_variable_annotation):
         return None
 
-    estimated_shift = robust_shift_estimate(meaningful_sources=meaningful_sources)
     source_agreement = lag_agreement(meaningful_sources=meaningful_sources)
     offset_pattern = classify_offset_pattern(
         meaningful_sources=meaningful_sources,
         meaningful_windows=meaningful_windows,
+    )
+    full_recording_estimated_shift = robust_shift_estimate(meaningful_sources=meaningful_sources)
+    estimated_shift = recommended_shift_estimate(
+        offset_pattern=offset_pattern,
+        full_recording_estimated_shift=full_recording_estimated_shift,
+        window_estimates=window_estimates,
     )
     likelihood_score = candidate_likelihood(
         source_metrics=source_metrics,
@@ -191,6 +197,7 @@ def _candidate(
         external_id=stored_annotation.external_id,
         likelihood_score=likelihood_score,
         estimated_b_shift_seconds=estimated_shift,
+        full_recording_estimated_b_shift_seconds=full_recording_estimated_shift,
         offset_pattern=offset_pattern,
         source_agreement=source_agreement,
         evidence=tuple(
@@ -495,6 +502,20 @@ def robust_shift_estimate(meaningful_sources: tuple[SourceMetrics, ...]) -> floa
         if accumulated_weight >= midpoint:
             return lag_seconds
     return ordered[-1][0]
+
+
+def recommended_shift_estimate(
+    offset_pattern: OffsetPattern,
+    full_recording_estimated_shift: float,
+    window_estimates: tuple[SynchronizationWindowEstimate, ...],
+) -> float:
+    raw_estimate = (
+        window_estimates[0].estimated_b_shift_seconds
+        if offset_pattern is OffsetPattern.VARIABLE and window_estimates
+        else full_recording_estimated_shift
+    )
+    quantized_steps = round(raw_estimate / RECOMMENDED_SHIFT_RESOLUTION_SECONDS)
+    return round(quantized_steps * RECOMMENDED_SHIFT_RESOLUTION_SECONDS, 1)
 
 
 def lag_agreement(meaningful_sources: tuple[SourceMetrics, ...]) -> bool:
