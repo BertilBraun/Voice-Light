@@ -23,6 +23,10 @@ Start Postgres, apply migrations, and run the app:
 docker compose up
 ```
 
+This builds the shared application image, including the ML dependencies used by the compute code.
+For a lightweight Windows restart of only Postgres and the local web application, use the
+instructions under **Local on Windows** instead.
+
 Then open:
 
 ```text
@@ -51,12 +55,43 @@ container. For local LUEL ingestion, use:
 
 Postgres data is stored in the `voice-light-postgres` Docker volume.
 
-### Local
+### Local on Windows
+
+The project's uv resolution is currently limited to Linux x86_64, and the shared dependency list
+contains Linux-oriented ML packages. Do not use `uv run` for routine Windows restarts because it
+may try to synchronize those dependencies. Use the existing `.venv` directly.
+
+Start only the local Postgres service and apply migrations:
+
+```powershell
+docker compose up -d postgres
+.\.venv\Scripts\python.exe -m app.local.db.migrate
+```
 
 Start the FastAPI server from the repository root:
 
 ```powershell
-uv run python -m app.local.server
+$env:VOICE_LIGHT_HOST = '127.0.0.1'
+$env:VOICE_LIGHT_PORT = '8000'
+$env:VOICE_LIGHT_RELOAD = 'false'
+.\.venv\Scripts\python.exe -m app.local.server
+```
+
+To keep it running in the background:
+
+```powershell
+$env:VOICE_LIGHT_HOST = '127.0.0.1'
+$env:VOICE_LIGHT_PORT = '8000'
+$env:VOICE_LIGHT_RELOAD = 'false'
+$runtimeDirectory = (New-Item -ItemType Directory -Force '.\.runtime').FullName
+
+Start-Process `
+  -FilePath '.\.venv\Scripts\python.exe' `
+  -ArgumentList '-m', 'app.local.server' `
+  -WorkingDirectory (Get-Location) `
+  -WindowStyle Hidden `
+  -RedirectStandardOutput (Join-Path $runtimeDirectory 'local-server.stdout.log') `
+  -RedirectStandardError (Join-Path $runtimeDirectory 'local-server.stderr.log')
 ```
 
 Then open:
@@ -70,10 +105,16 @@ Set `VOICE_LIGHT_PORT` to use a different port.
 For DB-backed dataset pages outside Docker, the app defaults to the Postgres service exposed by
 this repository's Compose configuration at
 `postgresql://voice_light:voice_light@127.0.0.1:5432/voice_light`. Override
-`VOICE_LIGHT_DATABASE_URL` only when using a different database. Run migrations with:
+`VOICE_LIGHT_DATABASE_URL` only when using a different database.
+
+### Local on Linux
+
+The uv-managed path remains available on Linux x86_64:
 
 ```powershell
+docker compose up -d postgres
 uv run python -m app.local.db.migrate
+uv run python -m app.local.server
 ```
 
 Batch ASR and dataset quality analysis require the local application to know the compute backend:
