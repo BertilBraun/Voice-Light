@@ -51,14 +51,33 @@ def mono_samples(
 
 
 def read_mono_wave_audio(wave_path: Path) -> MonoWaveAudio:
+    return read_mono_wave_audio_window(
+        wave_path=wave_path,
+        start_seconds=0.0,
+        maximum_duration_seconds=ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
+    )
+
+
+def read_mono_wave_audio_window(
+    wave_path: Path,
+    start_seconds: float,
+    maximum_duration_seconds: float,
+) -> MonoWaveAudio:
+    if start_seconds < 0.0:
+        raise ValueError("start_seconds must be non-negative")
+    if maximum_duration_seconds <= 0.0:
+        raise ValueError("maximum_duration_seconds must be positive")
     with wave.open(str(wave_path), "rb") as wave_reader:
         sample_rate = wave_reader.getframerate()
         sample_width = wave_reader.getsampwidth()
         channel_count = wave_reader.getnchannels()
-        frame_count = capped_frame_count(
-            source_frame_count=wave_reader.getnframes(),
-            sample_rate=sample_rate,
+        source_frame_count = wave_reader.getnframes()
+        start_frame = min(source_frame_count, round(start_seconds * sample_rate))
+        frame_count = min(
+            source_frame_count - start_frame,
+            round(maximum_duration_seconds * sample_rate),
         )
+        wave_reader.setpos(start_frame)
         fragment = wave_reader.readframes(frame_count)
 
     samples = mono_samples(
@@ -78,6 +97,23 @@ def read_mono_wave_audio(wave_path: Path) -> MonoWaveAudio:
 
 def capped_wave_bytes(wave_path: Path) -> bytes:
     audio = read_mono_wave_audio(wave_path=wave_path)
+    return playback_wave_bytes(audio=audio)
+
+
+def wave_window_bytes(
+    wave_path: Path,
+    start_seconds: float,
+    maximum_duration_seconds: float,
+) -> bytes:
+    audio = read_mono_wave_audio_window(
+        wave_path=wave_path,
+        start_seconds=start_seconds,
+        maximum_duration_seconds=maximum_duration_seconds,
+    )
+    return playback_wave_bytes(audio=audio)
+
+
+def playback_wave_bytes(audio: MonoWaveAudio) -> bytes:
     fragment = playback_pcm16_fragment(audio=audio)
 
     output_buffer = io.BytesIO()
@@ -100,7 +136,3 @@ def playback_pcm16_fragment(audio: MonoWaveAudio) -> bytes:
         target_maximum_amplitude,
     )
     return clipped_samples.astype("<i2").tobytes()
-
-
-def capped_frame_count(source_frame_count: int, sample_rate: int) -> int:
-    return min(source_frame_count, round(sample_rate * ANALYSIS_AUDIO_MAX_DURATION_SECONDS))

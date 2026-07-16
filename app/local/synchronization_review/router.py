@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.local.config import DATABASE_URL
 from app.local.db.models import DashboardSample, TrackSide
@@ -20,6 +20,7 @@ from app.local.synchronization_review.service import (
     speech_only_gain_normalization,
     synchronization_candidates,
 )
+from app.shared.audio.wav import wave_window_bytes
 from app.shared.quality import QualityResult
 
 router = APIRouter(
@@ -40,6 +41,28 @@ def list_synchronization_candidates() -> SynchronizationCandidateListResponse:
 def synchronization_gain(sample_id: UUID) -> SynchronizationGainResponse:
     try:
         return cached_synchronization_gain(database_url=DATABASE_URL, sample_id=sample_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/audio-window/{sample_id}/{side}")
+def synchronization_audio_window(
+    sample_id: UUID,
+    side: TrackSide,
+    start_seconds: float = Query(ge=0.0),
+    duration_seconds: float = Query(default=180.0, gt=0.0, le=180.0),
+) -> Response:
+    try:
+        dashboard_sample = Repository(DATABASE_URL).get_dashboard_sample(sample_id=sample_id)
+        return Response(
+            content=wave_window_bytes(
+                wave_path=track_path(dashboard_sample=dashboard_sample, side=side),
+                start_seconds=start_seconds,
+                maximum_duration_seconds=duration_seconds,
+            ),
+            media_type="audio/wav",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

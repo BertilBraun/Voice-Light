@@ -1,5 +1,7 @@
 const MAXIMUM_SHIFT_SECONDS = 12;
 const DEFAULT_DURATION_SECONDS = 180;
+const PLAYBACK_WINDOW_SECONDS = 180;
+const PLAYBACK_WINDOW_PREROLL_SECONDS = 30;
 const WAVEFORM_POINT_COUNT = 1800;
 
 const elements = {
@@ -15,6 +17,7 @@ const elements = {
   previous: document.querySelector("#previous"),
   next: document.querySelector("#next"),
   usePrediction: document.querySelector("#use-prediction"),
+  toggleFullRecording: document.querySelector("#toggle-full-recording"),
   saveReview: document.querySelector("#save-review"),
   reviewSaveStatus: document.querySelector("#review-save-status"),
   shift: document.querySelector("#shift"),
@@ -42,6 +45,8 @@ const state = {
   waveformA: null,
   waveformB: null,
   durationSeconds: DEFAULT_DURATION_SECONDS,
+  durationA: DEFAULT_DURATION_SECONDS,
+  durationB: DEFAULT_DURATION_SECONDS,
   bShiftSeconds: 0,
   timelineSeconds: 0,
   playing: false,
@@ -54,14 +59,15 @@ const state = {
   gainNodeA: null,
   gainNodeB: null,
   masterLimiter: null,
-  audioUrlA: null,
-  audioUrlB: null,
   audioBufferA: null,
   audioBufferB: null,
-  audioBufferExternalId: null,
+  audioBufferKey: null,
+  audioBufferStartA: 0,
+  audioBufferStartB: 0,
   sourceNodeA: null,
   sourceNodeB: null,
   gainNormalization: null,
+  fullRecordingMode: false,
 };
 
 function selectedCandidate() {
@@ -92,8 +98,8 @@ function timelineBounds() {
   return {
     start: Math.min(0, state.bShiftSeconds),
     end: Math.max(
-      state.durationSeconds,
-      state.durationSeconds + state.bShiftSeconds,
+      state.durationA,
+      state.durationB + state.bShiftSeconds,
     ),
   };
 }
@@ -118,8 +124,12 @@ async function loadCandidates() {
     const payload = await response.json();
     state.candidates = payload.candidates;
     state.visibleCandidates = payload.candidates;
+    const belowCandidateThreshold =
+      payload.analyzed_session_count - payload.candidates.length;
     elements.coverage.textContent =
       `${payload.analyzed_session_count} sessions analyzed · ` +
+      `${payload.candidates.length} offset candidates · ` +
+      `${belowCandidateThreshold} below the candidate threshold · ` +
       `${payload.excluded_session_count} without complete timing evidence`;
     elements.workspace.hidden = false;
     elements.candidateCount.textContent = `${payload.candidates.length} candidates`;
@@ -195,8 +205,12 @@ async function selectCandidate(externalId) {
   state.waveformB = null;
   state.audioBufferA = null;
   state.audioBufferB = null;
-  state.audioBufferExternalId = null;
+  state.audioBufferKey = null;
+  state.audioBufferStartA = 0;
+  state.audioBufferStartB = 0;
   state.durationSeconds = DEFAULT_DURATION_SECONDS;
+  state.durationA = DEFAULT_DURATION_SECONDS;
+  state.durationB = DEFAULT_DURATION_SECONDS;
   setPlaybackStatus("", false);
   setReviewSaveStatus("", false);
   state.selectionVersion += 1;
@@ -206,7 +220,6 @@ async function selectCandidate(externalId) {
     .querySelector(`.candidate[data-external-id="${externalId}"]`)
     ?.scrollIntoView({ block: "nearest" });
   renderCandidateDetails();
-  configureAudioUrls(candidate);
   drawWaveforms();
   const gainResultPromise = fetchSpeechGains(candidate.sample_id)
     .then((gainNormalization) => ({ gainNormalization, error: null }))
@@ -222,9 +235,11 @@ async function selectCandidate(externalId) {
     }
     state.waveformA = waveformA;
     state.waveformB = waveformB;
+    state.durationA = waveformA.duration_seconds;
+    state.durationB = waveformB.duration_seconds;
     state.durationSeconds = Math.min(
-      DEFAULT_DURATION_SECONDS,
       Math.max(waveformA.duration_seconds, waveformB.duration_seconds),
+      state.fullRecordingMode ? Number.POSITIVE_INFINITY : DEFAULT_DURATION_SECONDS,
     );
     const gainResult = await gainResultPromise;
     if (selectionVersion !== state.selectionVersion) {
@@ -254,23 +269,71 @@ async function fetchSpeechGains(sampleId) {
   return response.json();
 }
 
-function configureAudioUrls(candidate) {
-  state.audioUrlA =
-    `/api/dataset-dashboard/audio/${candidate.sample_id}/speaker1?trimmed=true`;
-  state.audioUrlB =
-    `/api/dataset-dashboard/audio/${candidate.sample_id}/speaker2?trimmed=true`;
-}
-
 async function fetchWaveform(sampleId, side) {
   const response = await fetch(
     `/api/dataset-dashboard/waveform/${sampleId}/${side}` +
-      `?points=${WAVEFORM_POINT_COUNT}&trimmed=true`,
+      `?points=${WAVEFORM_POINT_COUNT}&trimmed=${!state.fullRecordingMode}`,
   );
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.detail || `Waveform request failed with ${response.status}`);
   }
   return response.json();
+}
+
+async function toggleFullRecordingMode() {
+  const candidate = selectedCandidate();
+  if (!candidate) {
+    return;
+  }
+  pause();
+  state.fullRecordingMode = !state.fullRecordingMode;
+  state.selectionVersion += 1;
+  const selectionVersion = state.selectionVersion;
+  state.waveformA = null;
+  state.waveformB = null;
+  state.audioBufferA = null;
+  state.audioBufferB = null;
+  state.audioBufferKey = null;
+  elements.toggleFullRecording.disabled = true;
+  renderCandidateDetails();
+  drawWaveforms();
+  setPlaybackStatus(
+    state.fullRecordingMode
+      ? "Loading full-recording waveforms…"
+      : "Loading first-three-minute waveforms…",
+    false,
+  );
+  try {
+    const [waveformA, waveformB] = await Promise.all([
+      fetchWaveform(candidate.sample_id, "speaker1"),
+      fetchWaveform(candidate.sample_id, "speaker2"),
+    ]);
+    if (selectionVersion !== state.selectionVersion) {
+      return;
+    }
+    state.waveformA = waveformA;
+    state.waveformB = waveformB;
+    state.durationA = waveformA.duration_seconds;
+    state.durationB = waveformB.duration_seconds;
+    state.durationSeconds = Math.max(
+      waveformA.duration_seconds,
+      waveformB.duration_seconds,
+    );
+    const bounds = timelineBounds();
+    state.timelineSeconds = clamp(state.timelineSeconds, bounds.start, bounds.end);
+    setPlaybackStatus(
+      state.fullRecordingMode
+        ? "Full recording loaded. Seek anywhere, then press Play."
+        : "Playback limited to the first three minutes.",
+      false,
+    );
+    updateTimeline();
+  } catch (error) {
+    setPlaybackStatus(`Could not load recording waveforms: ${error.message}`, true);
+  } finally {
+    elements.toggleFullRecording.disabled = false;
+  }
 }
 
 function renderCandidateDetails() {
@@ -301,6 +364,9 @@ function renderCandidateDetails() {
     candidate.alignment_estimate_origin === "reviewed"
       ? "Update reviewed offset"
       : "Save current offset as reviewed";
+  elements.toggleFullRecording.textContent = state.fullRecordingMode
+    ? "Use first 3 minutes"
+    : "Scrub full recording";
   renderWindowTargets(candidate);
   renderEvidence(candidate);
   renderGainSummary(state.gainNormalization || candidate);
@@ -595,19 +661,25 @@ async function setupAudioGraph() {
 
 async function loadAudioBuffers(selectionVersion) {
   const candidate = selectedCandidate();
-  if (!candidate || !state.audioUrlA || !state.audioUrlB) {
+  if (!candidate) {
     throw new Error("No synchronization candidate is selected.");
   }
+  const sourceSecondsA = state.timelineSeconds;
+  const sourceSecondsB = state.timelineSeconds - state.bShiftSeconds;
+  const windowStartA = playbackWindowStart(sourceSecondsA, state.durationA);
+  const windowStartB = playbackWindowStart(sourceSecondsB, state.durationB);
+  const bufferKey =
+    `${candidate.external_id}:${windowStartA.toFixed(1)}:${windowStartB.toFixed(1)}`;
   if (
-    state.audioBufferExternalId === candidate.external_id &&
+    state.audioBufferKey === bufferKey &&
     state.audioBufferA &&
     state.audioBufferB
   ) {
     return true;
   }
   const [responseA, responseB] = await Promise.all([
-    fetch(state.audioUrlA),
-    fetch(state.audioUrlB),
+    fetch(audioWindowUrl(candidate.sample_id, "speaker1", windowStartA)),
+    fetch(audioWindowUrl(candidate.sample_id, "speaker2", windowStartB)),
   ]);
   if (!responseA.ok || !responseB.ok) {
     throw new Error("Could not download both speaker tracks.");
@@ -628,12 +700,29 @@ async function loadAudioBuffers(selectionVersion) {
   }
   state.audioBufferA = audioBufferA;
   state.audioBufferB = audioBufferB;
-  state.audioBufferExternalId = candidate.external_id;
-  state.durationSeconds = Math.min(
-    DEFAULT_DURATION_SECONDS,
-    Math.max(audioBufferA.duration, audioBufferB.duration),
-  );
+  state.audioBufferKey = bufferKey;
+  state.audioBufferStartA = windowStartA;
+  state.audioBufferStartB = windowStartB;
   return true;
+}
+
+function playbackWindowStart(sourceSeconds, trackDuration) {
+  if (!state.fullRecordingMode) {
+    return 0;
+  }
+  if (sourceSeconds >= trackDuration) {
+    return Math.max(0, Math.floor(trackDuration - 1));
+  }
+  return Math.floor(
+    Math.max(0, sourceSeconds - PLAYBACK_WINDOW_PREROLL_SECONDS),
+  );
+}
+
+function audioWindowUrl(sampleId, side, startSeconds) {
+  return (
+    `/api/synchronization-review/audio-window/${sampleId}/${side}` +
+    `?start_seconds=${startSeconds}&duration_seconds=${PLAYBACK_WINDOW_SECONDS}`
+  );
 }
 
 async function play() {
@@ -650,7 +739,7 @@ async function play() {
   }
   state.startingPlayback = true;
   elements.play.disabled = true;
-  setPlaybackStatus("Decoding both speaker tracks…", false);
+  setPlaybackStatus("Decoding a three-minute playback window…", false);
   const selectionVersion = state.selectionVersion;
   try {
     await setupAudioGraph();
@@ -696,10 +785,10 @@ function setPlaybackStatus(message, isError) {
 
 function updateActiveTrackStatus() {
   const speaker1Active =
-    state.timelineSeconds >= 0 && state.timelineSeconds < state.durationSeconds;
+    state.timelineSeconds >= 0 && state.timelineSeconds < state.durationA;
   const speaker2Seconds = state.timelineSeconds - state.bShiftSeconds;
   const speaker2Active =
-    speaker2Seconds >= 0 && speaker2Seconds < state.durationSeconds;
+    speaker2Seconds >= 0 && speaker2Seconds < state.durationB;
   if (speaker1Active && speaker2Active) {
     setPlaybackStatus("Playing speaker A and speaker B.", false);
   } else if (speaker1Active) {
@@ -719,22 +808,31 @@ function startBufferPlayback() {
   state.sourceNodeA = scheduleTrack(
     state.audioBufferA,
     0,
+    state.audioBufferStartA,
     state.gainNodeA,
     startTime,
   );
   state.sourceNodeB = scheduleTrack(
     state.audioBufferB,
     state.bShiftSeconds,
+    state.audioBufferStartB,
     state.gainNodeB,
     startTime,
   );
 }
 
-function scheduleTrack(audioBuffer, trackTimelineStart, gainNode, startTime) {
+function scheduleTrack(
+  audioBuffer,
+  trackTimelineStart,
+  bufferSourceStart,
+  gainNode,
+  startTime,
+) {
   if (!audioBuffer || !gainNode) {
     return null;
   }
-  const sourceSeconds = state.timelineSeconds - trackTimelineStart;
+  const sourceSeconds =
+    state.timelineSeconds - trackTimelineStart - bufferSourceStart;
   if (sourceSeconds >= audioBuffer.duration) {
     return null;
   }
@@ -774,7 +872,52 @@ function restartBufferPlayback() {
   if (!state.playing || !state.audioBufferA || !state.audioBufferB) {
     return;
   }
-  startBufferPlayback();
+  if (buffersCoverTimeline()) {
+    startBufferPlayback();
+    return;
+  }
+  stopPlaybackSources();
+  state.playing = false;
+  state.audioBufferKey = null;
+  elements.play.textContent = "Play both";
+  if (state.animationFrame !== null) {
+    cancelAnimationFrame(state.animationFrame);
+    state.animationFrame = null;
+  }
+  setPlaybackStatus("Press Play to load audio around this position.", false);
+}
+
+function buffersCoverTimeline() {
+  return (
+    bufferCoversSource(
+      state.timelineSeconds,
+      state.durationA,
+      state.audioBufferA,
+      state.audioBufferStartA,
+    ) &&
+    bufferCoversSource(
+      state.timelineSeconds - state.bShiftSeconds,
+      state.durationB,
+      state.audioBufferB,
+      state.audioBufferStartB,
+    )
+  );
+}
+
+function bufferCoversSource(
+  sourceSeconds,
+  trackDuration,
+  audioBuffer,
+  bufferSourceStart,
+) {
+  if (sourceSeconds < 0 || sourceSeconds >= trackDuration) {
+    return true;
+  }
+  return (
+    audioBuffer &&
+    sourceSeconds >= bufferSourceStart &&
+    sourceSeconds < bufferSourceStart + audioBuffer.duration
+  );
 }
 
 function updateTimelineFromClock() {
@@ -799,12 +942,34 @@ function playbackFrame() {
     pause();
     return;
   }
+  if (
+    state.fullRecordingMode &&
+    state.timelineSeconds >= currentBufferTimelineEnd() - 0.02
+  ) {
+    pause();
+    state.audioBufferKey = null;
+    setPlaybackStatus(
+      "Playback window ended. Press Play to load the next three-minute window.",
+      false,
+    );
+    return;
+  }
   elements.seek.value = String(state.timelineSeconds);
   elements.clock.textContent =
     `${formatTime(state.timelineSeconds)} / ${formatTime(bounds.end)}`;
   updateActiveTrackStatus();
   drawWaveforms();
   state.animationFrame = requestAnimationFrame(playbackFrame);
+}
+
+function currentBufferTimelineEnd() {
+  const speaker1End =
+    state.audioBufferStartA + (state.audioBufferA?.duration || 0);
+  const speaker2End =
+    state.bShiftSeconds +
+    state.audioBufferStartB +
+    (state.audioBufferB?.duration || 0);
+  return Math.max(speaker1End, speaker2End);
 }
 
 function updateGain(side, value) {
@@ -846,6 +1011,9 @@ elements.usePrediction.addEventListener("click", () => {
   if (candidate) {
     setShift(candidate.estimated_b_shift_seconds);
   }
+});
+elements.toggleFullRecording.addEventListener("click", () => {
+  void toggleFullRecordingMode();
 });
 elements.saveReview.addEventListener("click", () => {
   void saveCurrentOffsetAsReviewed();

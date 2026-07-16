@@ -61,6 +61,8 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "Reset automatic gains",
         "Use recommended estimate",
         "Save current offset as reviewed",
+        "Scrub full recording",
+        "three-minute playback window",
     ),
 )
 def test_synchronization_review_page_exposes_alignment_controls(
@@ -78,7 +80,7 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "timelineSeconds - state.bShiftSeconds",
         "candidate.estimated_b_shift_seconds",
         "estimate.estimated_b_shift_seconds",
-        "trimmed=true",
+        "trimmed=${!state.fullRecordingMode}",
         "setupAudioGraph",
         "decodeAudioData",
         "createBufferSource",
@@ -96,6 +98,8 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "offset_confidence_score",
         "/api/synchronization-review/reviews/",
         "saveCurrentOffsetAsReviewed",
+        "toggleFullRecordingMode",
+        "/api/synchronization-review/audio-window/",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(

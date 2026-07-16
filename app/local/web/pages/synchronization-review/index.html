@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Synchronization review - Voice Light</title>
-    <link rel="stylesheet" href="/pages/synchronization-review/styles.css?v=6" />
+    <link rel="stylesheet" href="/pages/synchronization-review/styles.css?v=7" />
   </head>
   <body>
     <main>
@@ -57,6 +57,7 @@
               </div>
               <div class="alignment-actions">
                 <button id="use-prediction" type="button">Use recommended estimate</button>
+                <button id="toggle-full-recording" type="button">Scrub full recording</button>
                 <button id="save-review" type="button" class="primary">
                   Save current offset as reviewed
                 </button>
@@ -83,7 +84,8 @@
             </div>
             <p class="shift-help">
               Negative values move B before A. Positive values delay B. The shared timeline
-              expands so either track can extend beyond the other.
+              expands so either track can extend beyond the other. Full-recording mode loads a
+              three-minute playback window around the selected position.
             </p>
 
             <div class="playback-controls">
@@ -149,6 +151,6 @@
       </section>
     </main>
 
-    <script type="module" src="/pages/synchronization-review/app.js?v=9"></script>
+    <script type="module" src="/pages/synchronization-review/app.js?v=10"></script>
   </body>
 </html>

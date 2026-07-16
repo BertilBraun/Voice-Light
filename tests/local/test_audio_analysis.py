@@ -15,7 +15,11 @@ from app.local.analyses.end_of_turn.service import SpeechSegment
 from app.local.data.sessions import list_sessions
 from app.local.data.transcripts import read_transcript_turns
 from app.local.main import delete_file, write_playback_wave_file
-from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS, capped_wave_bytes
+from app.shared.audio.wav import (
+    ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
+    capped_wave_bytes,
+    wave_window_bytes,
+)
 
 
 @pytest.mark.parametrize(
@@ -130,6 +134,19 @@ def test_capped_wave_bytes_serves_browser_seekable_pcm16() -> None:
         assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(
             ANALYSIS_AUDIO_MAX_DURATION_SECONDS
         )
+
+
+def test_wave_window_bytes_reads_requested_recording_region() -> None:
+    wave_bytes = wave_window_bytes(
+        wave_path=Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav"),
+        start_seconds=60.0,
+        maximum_duration_seconds=10.0,
+    )
+
+    with wave.open(io.BytesIO(wave_bytes), "rb") as wave_reader:
+        assert wave_reader.getnchannels() == 1
+        assert wave_reader.getsampwidth() == 2
+        assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(10.0)
 
 
 def test_write_playback_wave_file_creates_and_deletes_capped_audio_file() -> None:
