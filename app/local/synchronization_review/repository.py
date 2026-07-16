@@ -78,6 +78,18 @@ class SynchronizationReviewRepository:
                 )
         return tuple(pairs)
 
+    def count_pmt_samples(self) -> int:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT count(*) AS sample_count
+                FROM samples
+                WHERE external_id ~ '^pmt_[0-9]+$'
+                """
+            ).fetchone()
+        assert row is not None
+        return int(str(row["sample_count"]))
+
     def load_annotations(self) -> tuple[StoredConversationAnnotation, ...]:
         with self.connection() as connection:
             rows = connection.execute(

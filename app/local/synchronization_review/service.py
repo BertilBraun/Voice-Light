@@ -85,6 +85,7 @@ class SourceMetrics:
 def synchronization_candidates(
     repository: SynchronizationReviewRepository,
 ) -> SynchronizationCandidateListResponse:
+    total_session_count = repository.count_pmt_samples()
     transcript_pairs = repository.load_transcript_pairs()
     annotations = repository.load_annotations()
     pair_by_key = {(pair.external_id, pair.model_id): pair for pair in transcript_pairs}
@@ -117,7 +118,7 @@ def synchronization_candidates(
             )
         ),
         analyzed_session_count=analyzed_session_count,
-        excluded_session_count=len(annotations) - analyzed_session_count,
+        excluded_session_count=total_session_count - analyzed_session_count,
     )
 
 
