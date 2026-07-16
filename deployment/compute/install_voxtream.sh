@@ -20,7 +20,7 @@ git -C "$source_root" lfs pull
 uv venv --clear --python 3.12 "${voxtream_root}/.venv"
 (
   cd "$source_root"
-  uv pip install --python "$python_path" --editable .
+  uv pip install --no-config --python "$python_path" --editable .
 )
 
 echo "VoXtream2 environment installed at ${voxtream_root}."
