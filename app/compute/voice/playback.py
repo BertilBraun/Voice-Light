@@ -66,6 +66,7 @@ class PlaybackAcknowledgementDisposition(StrEnum):
 @dataclass
 class PlaybackCommandRecord:
     command: PlaybackCommandEvent
+    generation_command_sequence: int
     estimated_rendered_output_sample_position: int
     acknowledgement: PlaybackCommandAcknowledgementEvent | None = None
     acknowledgement_received_monotonic_time_ns: int | None = None
@@ -164,6 +165,9 @@ class PlaybackController:
         self.config = config
         self.active_generation_id: int | None = None
         self.command_records: dict[str, PlaybackCommandRecord] = {}
+        self.next_command_sequence_by_generation: dict[int, int] = {}
+        self.latest_acknowledged_command_sequence_by_generation: dict[int, int] = {}
+        self.latest_browser_monotonic_time_ns_by_generation: dict[int, int] = {}
         self.metrics = PlaybackMetrics()
         self.paused_at_server_monotonic_time_ns: int | None = None
         self.condition = PlaybackCondition(
@@ -198,6 +202,9 @@ class PlaybackController:
         if self.active_generation_id is not None and generation_id <= self.active_generation_id:
             raise ValueError("Replacement generation IDs must increase.")
         self.active_generation_id = generation_id
+        self.next_command_sequence_by_generation[generation_id] = 1
+        self.latest_acknowledged_command_sequence_by_generation[generation_id] = 0
+        self.latest_browser_monotonic_time_ns_by_generation[generation_id] = 0
         self.paused_at_server_monotonic_time_ns = None
         self._set_condition(
             generation_id=generation_id,
@@ -401,6 +408,30 @@ class PlaybackController:
         if event.generation_id != self.active_generation_id:
             self.metrics.stale_acknowledgement_count += 1
             return PlaybackAcknowledgementDisposition.STALE
+        latest_sequence = self.latest_acknowledged_command_sequence_by_generation[
+            event.generation_id
+        ]
+        self.latest_acknowledged_command_sequence_by_generation[event.generation_id] = max(
+            latest_sequence,
+            record.generation_command_sequence,
+        )
+        if record.generation_command_sequence < latest_sequence:
+            self.metrics.stale_acknowledgement_count += 1
+            return PlaybackAcknowledgementDisposition.STALE
+        condition = self.condition
+        latest_browser_time_ns = self.latest_browser_monotonic_time_ns_by_generation[
+            event.generation_id
+        ]
+        if (
+            event.browser_monotonic_time_ns < latest_browser_time_ns
+            or event.rendered_output_sample_position < condition.latest_output_sample_position
+            or event.source_sample_position < condition.latest_source_sample_position
+        ):
+            self.metrics.stale_acknowledgement_count += 1
+            return PlaybackAcknowledgementDisposition.STALE
+        self.latest_browser_monotonic_time_ns_by_generation[event.generation_id] = (
+            event.browser_monotonic_time_ns
+        )
         self._set_condition_from_browser(
             generation_id=event.generation_id,
             state=event.resulting_state,
@@ -469,8 +500,11 @@ class PlaybackController:
             gain_ramp_duration_ms=gain_ramp_duration_ms,
             maximum_paused_age_ms=maximum_paused_age_ms,
         )
+        generation_command_sequence = self.next_command_sequence_by_generation[generation_id]
+        self.next_command_sequence_by_generation[generation_id] = generation_command_sequence + 1
         self.command_records[command.command_id] = PlaybackCommandRecord(
             command=command,
+            generation_command_sequence=generation_command_sequence,
             estimated_rendered_output_sample_position=(
                 self.condition.latest_output_sample_position
             ),

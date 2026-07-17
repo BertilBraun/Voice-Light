@@ -822,6 +822,57 @@ def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
     assert transcriber.sessions[1].audio[0] == SPEECH_CHUNK
 
 
+def test_final_lexical_interruption_never_resumes_provisional_backchannel() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (None, None)),
+        final_texts=("hello agent", "How?"),
+    )
+    language_model = SlowLanguageModel()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        duck = receive_playback_command(websocket)
+        pause = receive_playback_command(websocket)
+        assert duck.action is PlaybackCommandAction.DUCK
+        assert pause.action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        websocket.send_bytes(SILENCE_CHUNK)
+        cancel = receive_playback_command(websocket)
+        assert cancel.action is PlaybackCommandAction.CANCEL
+        assert all(
+            record.command.action is not PlaybackCommandAction.RESUME
+            for record in sessions[0].playback_controller.command_records.values()
+        )
+        send_playback_command_acknowledgement(
+            websocket,
+            cancel,
+            resulting_state=PlaybackState.CANCELLED,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        events, _ = receive_until(websocket, "llm.history")
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1]["generation_id"] == 2
+    assert events[-1]["messages"][-1] == {
+        "role": "user",
+        "content": "How?",
+    }
+
+
 def test_sustained_transcript_free_overlap_yields_at_500_milliseconds() -> None:
     transcriber = ScriptedTranscriber(
         partials_by_turn=(("hello", None, None), tuple(None for _ in range(30))),

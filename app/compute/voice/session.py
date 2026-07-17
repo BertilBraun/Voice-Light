@@ -796,34 +796,10 @@ class VoiceSession:
         elapsed_ms: int,
     ) -> OverlapResolutionKind:
         generation = self.active_generation
-        decision_event_id = overlap.decision_event_id
-        assert decision_event_id is not None
+        assert overlap.decision_event_id is not None
         if generation is None or generation.generation_id != overlap.generation_id:
             self.active_user_overlap = None
             return OverlapResolutionKind.NON_FLOOR_TAKING
-        generation.continuation_allowed.set()
-        generation.synthesis_budget_available.set()
-        resume_command = self.playback_controller.issue_resume(
-            generation_id=generation.generation_id,
-            causal_event_id=decision_event_id,
-            causal_source=provisional_decision.causal_source,
-            stream_epoch=overlap.stream_epoch,
-            turn_epoch=overlap.turn_epoch,
-            confidence=provisional_decision.confidence,
-        )
-        if resume_command is None:
-            cancel_command = await self._request_generation_cancellation(
-                send_event=True,
-                causal_event_id=decision_event_id,
-                causal_source=provisional_decision.causal_source,
-                confidence=provisional_decision.confidence,
-            )
-            overlap.cancel_command_id = (
-                None if cancel_command is None else cancel_command.command_id
-            )
-        else:
-            overlap.resume_command_id = resume_command.command_id
-            await self._send_event(resume_command)
         finalization_started_at = time.perf_counter()
         try:
             finalized_turn = await speech_understanding.finalize_turn()
@@ -860,10 +836,18 @@ class VoiceSession:
                 interruption_evidence_event_id=None,
             )
         )
+        overlap.decision = final_decision
+        decision_event_id = str(uuid4())
+        overlap.decision_event_id = decision_event_id
+        overlap.decision_monotonic_time_ns = time.perf_counter_ns()
+        overlap.decision_input_sample_position = self.audio_sample_count
+        overlap.decision_rendered_output_sample_position = (
+            self.playback_condition.latest_output_sample_position
+        )
+        overlap.decision_source_sample_position = (
+            self.playback_condition.latest_source_sample_position
+        )
         if final_decision.kind is not OverlapResolutionKind.NON_FLOOR_TAKING:
-            overlap.decision = final_decision
-            overlap.decision_event_id = str(uuid4())
-            overlap.decision_monotonic_time_ns = time.perf_counter_ns()
             generation = self.generations[overlap.generation_id]
             self._record_overlap_resolution(overlap, final_decision, generation)
             await self._promote_overlap_to_user_turn(overlap, final_decision, final_text)
@@ -875,6 +859,34 @@ class VoiceSession:
                 finalization_seconds=finalized_at - finalization_started_at,
             )
             return OverlapResolutionKind.NON_FLOOR_TAKING
+        active_generation = self.active_generation
+        if (
+            active_generation is not None
+            and active_generation.generation_id == overlap.generation_id
+        ):
+            resume_command = self.playback_controller.issue_resume(
+                generation_id=active_generation.generation_id,
+                causal_event_id=decision_event_id,
+                causal_source=final_decision.causal_source,
+                stream_epoch=overlap.stream_epoch,
+                turn_epoch=overlap.turn_epoch,
+                confidence=final_decision.confidence,
+            )
+            if resume_command is None:
+                cancel_command = await self._request_generation_cancellation(
+                    send_event=True,
+                    causal_event_id=decision_event_id,
+                    causal_source=final_decision.causal_source,
+                    confidence=final_decision.confidence,
+                )
+                overlap.cancel_command_id = (
+                    None if cancel_command is None else cancel_command.command_id
+                )
+            else:
+                active_generation.continuation_allowed.set()
+                active_generation.synthesis_budget_available.set()
+                overlap.resume_command_id = resume_command.command_id
+                await self._send_event(resume_command)
         self._record_overlap_resolution(overlap, final_decision, generation)
         self.active_user_overlap = None
         logger.info(

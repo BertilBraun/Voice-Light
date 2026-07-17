@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.compute.voice.playback import (
     PlaybackAcknowledgementDisposition,
     PlaybackController,
@@ -8,6 +10,7 @@ from app.compute.voice.playback import (
 from app.compute.voice.schemas import (
     CausalSource,
     PlaybackCommandAcknowledgementEvent,
+    PlaybackCommandAction,
     PlaybackPauseResult,
     PlaybackProgressEvent,
     PlaybackStartedEvent,
@@ -27,7 +30,7 @@ def _started_event(generation_id: int) -> PlaybackStartedEvent:
 
 def _acknowledgement(
     command_id: str,
-    action: str,
+    action: PlaybackCommandAction,
     state: PlaybackState,
     rendered_output_sample_position: int,
     source_sample_position: int,
@@ -141,6 +144,117 @@ def test_duplicate_and_stale_acknowledgements_do_not_rewrite_playback_truth() ->
         is PlaybackAcknowledgementDisposition.STALE
     )
     assert controller.condition == stale_condition
+
+
+@pytest.mark.parametrize(
+    ("late_rendered_output_sample_position", "late_source_sample_position"),
+    [(140, 70), (220, 110)],
+)
+def test_older_acknowledgement_cannot_rewind_authoritative_playback_truth(
+    late_rendered_output_sample_position: int,
+    late_source_sample_position: int,
+) -> None:
+    controller = PlaybackController(24_000, PlaybackPolicyConfig())
+    controller.replace_generation(1)
+    controller.record_started(_started_event(1))
+    duck = controller.issue_duck(
+        generation_id=1,
+        causal_event_id="silero-1",
+        causal_source=CausalSource.SILERO_VAD,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=1.0,
+    )
+    pause = controller.issue_pause(
+        generation_id=1,
+        causal_event_id="silero-1",
+        causal_source=CausalSource.SILERO_VAD,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=1.0,
+        requested_boundary_source_sample_position=100,
+    )
+    assert (
+        controller.acknowledge(
+            _acknowledgement(
+                pause.command_id,
+                pause.action,
+                PlaybackState.PAUSED_BUFFERED,
+                rendered_output_sample_position=200,
+                source_sample_position=100,
+            ),
+            received_monotonic_time_ns=10**18,
+        )
+        is PlaybackAcknowledgementDisposition.APPLIED
+    )
+    authoritative_condition = controller.condition
+
+    assert (
+        controller.acknowledge(
+            _acknowledgement(
+                duck.command_id,
+                duck.action,
+                PlaybackState.DUCKING,
+                rendered_output_sample_position=late_rendered_output_sample_position,
+                source_sample_position=late_source_sample_position,
+            ),
+            received_monotonic_time_ns=10**18 + 1,
+        )
+        is PlaybackAcknowledgementDisposition.STALE
+    )
+    assert controller.condition == authoritative_condition
+    report = controller.metrics.report()
+    assert report.acknowledgement_count == 2
+    assert report.stale_acknowledgement_count == 1
+
+
+def test_newer_acknowledgement_cannot_regress_authoritative_sample_positions() -> None:
+    controller = PlaybackController(24_000, PlaybackPolicyConfig())
+    controller.replace_generation(1)
+    controller.record_started(_started_event(1))
+    duck = controller.issue_duck(
+        generation_id=1,
+        causal_event_id="silero-1",
+        causal_source=CausalSource.SILERO_VAD,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=1.0,
+    )
+    pause = controller.issue_pause(
+        generation_id=1,
+        causal_event_id="silero-1",
+        causal_source=CausalSource.SILERO_VAD,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=1.0,
+        requested_boundary_source_sample_position=100,
+    )
+    controller.acknowledge(
+        _acknowledgement(
+            duck.command_id,
+            duck.action,
+            PlaybackState.DUCKING,
+            rendered_output_sample_position=200,
+            source_sample_position=100,
+        ),
+        received_monotonic_time_ns=10**18,
+    )
+    authoritative_condition = controller.condition
+
+    assert (
+        controller.acknowledge(
+            _acknowledgement(
+                pause.command_id,
+                pause.action,
+                PlaybackState.PAUSED_BUFFERED,
+                rendered_output_sample_position=140,
+                source_sample_position=70,
+            ),
+            received_monotonic_time_ns=10**18 + 1,
+        )
+        is PlaybackAcknowledgementDisposition.STALE
+    )
+    assert controller.condition == authoritative_condition
 
 
 def test_server_rejects_resume_after_maximum_paused_age() -> None:
