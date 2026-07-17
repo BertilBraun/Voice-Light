@@ -26,6 +26,9 @@ async def immediate_weather(arguments: GetWeatherArguments) -> WeatherResult:
 def test_weather_registry_validates_london_call_and_returns_typed_result() -> None:
     async def execute() -> None:
         registry = WeatherToolRegistry(immediate_weather)
+        assert "never make the function call the first assistant output" in (
+            registry.specifications[0].function.description
+        )
         validated = registry.validate(
             SerializedToolCall(
                 id="call-1",

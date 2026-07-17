@@ -146,7 +146,12 @@ class WeatherToolRegistry:
             ToolSpecification(
                 function=ToolFunctionSpecification(
                     name=ToolName.GET_WEATHER,
-                    description="Get deterministic current weather for a location.",
+                    description=(
+                        "Get deterministic current weather for a location. Before calling this "
+                        "function, emit exactly one short natural spoken bridge sentence of no "
+                        "more than eight words; never make the function call the first assistant "
+                        "output."
+                    ),
                     parameters=GetWeatherParameters(
                         properties=GetWeatherParameterProperties(
                             location=ToolStringParameter(
