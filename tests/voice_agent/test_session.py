@@ -14,10 +14,22 @@ from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
-from app.compute.voice.conversation import ConversationMessage, ConversationRole
+from app.compute.voice.conversation import (
+    ConversationMessage,
+    ConversationRole,
+    ModelAssistantMessage,
+    ModelToolMessage,
+    ModelUserMessage,
+)
 from app.compute.voice.interfaces import (
     LanguageModel,
+    LanguageModelCompleted,
+    LanguageModelEvent,
+    LanguageModelRequest,
     LanguageModelTextDelta,
+    LanguageModelToolCall,
+    LanguageModelToolCallFailure,
+    LanguageModelToolCallStarted,
     SpeechDetector,
     SpeechSynthesisSession,
     SpeechSynthesizer,
@@ -36,7 +48,9 @@ from app.compute.voice.predictive import (
     PlaybackSink,
     ReleasedAudioChunk,
     ReleasedAudioEnd,
+    ReleasedAudioStart,
     ReleasedTextDelta,
+    ReleasedWordBoundary,
 )
 from app.compute.voice.schemas import (
     CausalSource,
@@ -56,6 +70,20 @@ from app.compute.voice.session import SessionPolicy, VoiceSession
 from app.compute.voice.speech_understanding import (
     CompositeSpeechUnderstandingProvider,
     SingleSessionTurnPredictionProvider,
+)
+from app.compute.voice.tools import (
+    GetWeatherArguments,
+    SerializedToolCall,
+    ToolCallFailure,
+    ToolCallFailureReason,
+    ToolExecutionFailure,
+    ToolExecutionFailureReason,
+    ToolExecutor,
+    ToolLifecycle,
+    ToolSuccess,
+    WeatherResult,
+    WeatherToolRegistry,
+    create_demo_tool_registry,
 )
 
 SPEECH_CHUNK = b"\x01\x00" * 320
@@ -110,6 +138,30 @@ def test_session_policy_rejects_negative_prediction_lag() -> None:
         SessionPolicy(maximum_prediction_lag_ms=-1)
 
 
+def test_session_policy_reads_tool_timeouts() -> None:
+    policy = SessionPolicy.from_environment(
+        {
+            "VOICE_LIGHT_TOOL_TIMEOUT_SECONDS": "3.5",
+            "VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS": "0.4",
+        }
+    )
+
+    assert policy.tool_timeout_seconds == 3.5
+    assert policy.tool_cancellation_timeout_seconds == 0.4
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    (
+        "VOICE_LIGHT_TOOL_TIMEOUT_SECONDS",
+        "VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS",
+    ),
+)
+def test_session_policy_rejects_nonpositive_tool_timeouts(environment_name: str) -> None:
+    with pytest.raises(ValueError, match="tool .*timeout"):
+        SessionPolicy.from_environment({environment_name: "0"})
+
+
 class FakeSpeechDetector:
     def process_audio(self, pcm_bytes: bytes) -> bool:
         return any(pcm_bytes)
@@ -122,6 +174,31 @@ class FailingSpeechDetector:
 
 
 DEFAULT_TEST_SPEECH_DETECTOR = FakeSpeechDetector()
+
+
+def audible_conversation(
+    request: LanguageModelRequest,
+) -> tuple[ConversationMessage, ...]:
+    messages: list[ConversationMessage] = []
+    for message in request.messages:
+        match message:
+            case ModelUserMessage():
+                messages.append(
+                    ConversationMessage(
+                        role=ConversationRole.USER,
+                        content=message.content,
+                    )
+                )
+            case ModelAssistantMessage() if not message.tool_calls:
+                messages.append(
+                    ConversationMessage(
+                        role=ConversationRole.ASSISTANT,
+                        content=message.content,
+                    )
+                )
+            case _:
+                raise AssertionError("Expected an audible-only test conversation.")
+    return tuple(messages)
 
 
 class RecordingTranscriber:
@@ -206,25 +283,270 @@ class FakeLanguageModel:
 
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
     ) -> AsyncIterator[LanguageModelTextDelta]:
-        self.conversations.append(conversation)
-        yield LanguageModelTextDelta(text="One two three four ", cumulative_token_count=4)
+        self.conversations.append(audible_conversation(request))
+        yield LanguageModelTextDelta(
+            text="One two three four ",
+            cumulative_token_count=4,
+            invocation_id=1,
+        )
         yield LanguageModelTextDelta(
             text="five six seven eight.",
             cumulative_token_count=9,
+            invocation_id=1,
         )
+        yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=9)
 
 
 class SplitWordLanguageModel:
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
     ) -> AsyncIterator[LanguageModelTextDelta]:
-        del conversation
-        yield LanguageModelTextDelta(text="  Hello", cumulative_token_count=1)
-        yield LanguageModelTextDelta(text=", wor", cumulative_token_count=3)
-        yield LanguageModelTextDelta(text="ld! Next", cumulative_token_count=5)
+        del request
+        yield LanguageModelTextDelta(text="  Hello", cumulative_token_count=1, invocation_id=1)
+        yield LanguageModelTextDelta(text=", wor", cumulative_token_count=3, invocation_id=1)
+        yield LanguageModelTextDelta(text="ld! Next", cumulative_token_count=5, invocation_id=1)
+        yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=5)
+
+
+class ScriptedWeatherLanguageModel:
+    def __init__(
+        self,
+        second_pass_answer: str = "It is 12 degrees and lightly cloudy in London.",
+    ) -> None:
+        self.requests: list[LanguageModelRequest] = []
+        self.raw_first_pass = (
+            "Let me check that."
+            '<tool_call>{"name":"get_weather","arguments":{"location":"London"}}</tool_call>'
+        )
+        self.parsed_first_pass_events: list[LanguageModelEvent] = []
+        self.second_pass_answer = second_pass_answer
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        invocation_id = len(self.requests)
+        if invocation_id == 1:
+            events: tuple[LanguageModelEvent, ...] = (
+                LanguageModelTextDelta(
+                    invocation_id=1,
+                    text="Let me check that.",
+                    cumulative_token_count=5,
+                ),
+                LanguageModelToolCallStarted(
+                    invocation_id=1,
+                    call_id="qwen-1-tool-1",
+                    cumulative_token_count=6,
+                ),
+                LanguageModelToolCall(
+                    invocation_id=1,
+                    request=SerializedToolCall(
+                        id="qwen-1-tool-1",
+                        name="get_weather",
+                        arguments_json='{"location":"London"}',
+                    ),
+                    cumulative_token_count=16,
+                ),
+                LanguageModelCompleted(
+                    invocation_id=1,
+                    cumulative_token_count=17,
+                ),
+            )
+            self.parsed_first_pass_events.extend(events)
+            for event in events:
+                yield event
+            return
+        yield LanguageModelTextDelta(
+            invocation_id=2,
+            text=self.second_pass_answer,
+            cumulative_token_count=12,
+        )
+        yield LanguageModelCompleted(invocation_id=2, cumulative_token_count=12)
+
+
+class InvalidToolCallLanguageModel:
+    def __init__(self, failure: ToolCallFailure) -> None:
+        self.failure = failure
+        self.requests: list[LanguageModelRequest] = []
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        invocation_id = len(self.requests)
+        if invocation_id == 1:
+            yield LanguageModelTextDelta(
+                invocation_id=1,
+                text="Let me check that.",
+                cumulative_token_count=5,
+            )
+            yield LanguageModelToolCallFailure(
+                invocation_id=1,
+                failure=self.failure,
+                cumulative_token_count=10,
+            )
+            yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=10)
+            return
+        yield LanguageModelTextDelta(
+            invocation_id=2,
+            text="I could not retrieve the weather right now.",
+            cumulative_token_count=9,
+        )
+        yield LanguageModelCompleted(invocation_id=2, cumulative_token_count=9)
+
+
+class ControlledWeatherHandler:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.cancelled = threading.Event()
+        self.arguments: list[GetWeatherArguments] = []
+
+    async def __call__(self, arguments: GetWeatherArguments) -> WeatherResult:
+        self.arguments.append(arguments)
+        self.started.set()
+        try:
+            await asyncio.to_thread(self.release.wait)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return WeatherResult(
+            location="London",
+            temperature_celsius=12,
+            conditions="lightly cloudy",
+        )
+
+
+class CancellationResistantWeatherHandler:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.cancelled = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    async def __call__(self, arguments: GetWeatherArguments) -> WeatherResult:
+        del arguments
+        self.started.set()
+        try:
+            await asyncio.to_thread(self.release.wait)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await asyncio.to_thread(self.release.wait)
+        self.finished.set()
+        return WeatherResult(
+            location="London",
+            temperature_celsius=12,
+            conditions="lightly cloudy",
+        )
+
+
+class GenerationAwareToolLanguageModel:
+    def __init__(self) -> None:
+        self.requests: list[LanguageModelRequest] = []
+        self.old_continuation_started = threading.Event()
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        invocation_id = len(self.requests)
+        if request.assistant_generation_id == 1 and len(request.messages) == 1:
+            yield LanguageModelTextDelta(
+                invocation_id=invocation_id,
+                text="Let me check that.",
+                cumulative_token_count=5,
+            )
+            yield LanguageModelToolCallStarted(
+                invocation_id=invocation_id,
+                call_id=f"qwen-{invocation_id}-tool-1",
+                cumulative_token_count=6,
+            )
+            yield LanguageModelToolCall(
+                invocation_id=invocation_id,
+                request=SerializedToolCall(
+                    id=f"qwen-{invocation_id}-tool-1",
+                    name="get_weather",
+                    arguments_json='{"location":"London"}',
+                ),
+                cumulative_token_count=16,
+            )
+            yield LanguageModelCompleted(
+                invocation_id=invocation_id,
+                cumulative_token_count=17,
+            )
+            return
+        if request.assistant_generation_id == 1:
+            self.old_continuation_started.set()
+            yield LanguageModelTextDelta(
+                invocation_id=invocation_id,
+                text="Stale London answer.",
+                cumulative_token_count=4,
+            )
+            yield LanguageModelCompleted(
+                invocation_id=invocation_id,
+                cumulative_token_count=4,
+            )
+            return
+        yield LanguageModelTextDelta(
+            invocation_id=invocation_id,
+            text="Replacement answer.",
+            cumulative_token_count=3,
+        )
+        yield LanguageModelCompleted(
+            invocation_id=invocation_id,
+            cumulative_token_count=3,
+        )
+
+
+class PartialToolCallLanguageModel:
+    def __init__(self) -> None:
+        self.requests: list[LanguageModelRequest] = []
+        self.partial_call_started = threading.Event()
+        self.partial_call_cancelled = threading.Event()
+        self.release = threading.Event()
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        invocation_id = len(self.requests)
+        if request.assistant_generation_id == 1:
+            try:
+                yield LanguageModelTextDelta(
+                    invocation_id=invocation_id,
+                    text="Let me check that.",
+                    cumulative_token_count=5,
+                )
+                yield LanguageModelToolCallStarted(
+                    invocation_id=invocation_id,
+                    call_id=f"qwen-{invocation_id}-tool-1",
+                    cumulative_token_count=6,
+                )
+                self.partial_call_started.set()
+                await asyncio.to_thread(self.release.wait)
+                yield LanguageModelCompleted(
+                    invocation_id=invocation_id,
+                    cumulative_token_count=6,
+                )
+            finally:
+                self.partial_call_cancelled.set()
+            return
+        yield LanguageModelTextDelta(
+            invocation_id=invocation_id,
+            text="Replacement answer.",
+            cumulative_token_count=3,
+        )
+        yield LanguageModelCompleted(
+            invocation_id=invocation_id,
+            cumulative_token_count=3,
+        )
 
 
 class SlowLanguageModel:
@@ -233,10 +555,14 @@ class SlowLanguageModel:
 
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
     ) -> AsyncIterator[LanguageModelTextDelta]:
-        self.conversations.append(conversation)
-        yield LanguageModelTextDelta(text="One two three ", cumulative_token_count=3)
+        self.conversations.append(audible_conversation(request))
+        yield LanguageModelTextDelta(
+            text="One two three ",
+            cumulative_token_count=3,
+            invocation_id=1,
+        )
         await asyncio.sleep(10)
 
 
@@ -247,14 +573,18 @@ class CancellationTrackingLanguageModel:
 
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
     ) -> AsyncIterator[LanguageModelTextDelta]:
-        del conversation
+        del request
         self.active_generation_count += 1
         if self.active_generation_count > 1:
             self.overlapped = True
         try:
-            yield LanguageModelTextDelta(text="One two three ", cumulative_token_count=3)
+            yield LanguageModelTextDelta(
+                text="One two three ",
+                cumulative_token_count=3,
+                invocation_id=1,
+            )
             await asyncio.sleep(10)
         finally:
             await asyncio.sleep(0.05)
@@ -279,20 +609,29 @@ class PredictiveTrackingLanguageModel:
 
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
     ) -> AsyncIterator[LanguageModelTextDelta]:
-        self.conversations.append(conversation)
+        self.conversations.append(audible_conversation(request))
         self.active_generation_count += 1
         self.overlapped = self.overlapped or self.active_generation_count > 1
         self.generation_started.set()
         completed = False
         try:
             await asyncio.sleep(self.initial_delay_seconds)
-            yield LanguageModelTextDelta(text="Prepared answer ", cumulative_token_count=2)
+            yield LanguageModelTextDelta(
+                text="Prepared answer ",
+                cumulative_token_count=2,
+                invocation_id=1,
+            )
             self.first_delta_produced.set()
             if self.block:
                 await asyncio.sleep(10)
-            yield LanguageModelTextDelta(text="complete.", cumulative_token_count=4)
+            yield LanguageModelTextDelta(
+                text="complete.",
+                cumulative_token_count=4,
+                invocation_id=1,
+            )
+            yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=4)
             completed = True
             self.completed_count += 1
         finally:
@@ -429,12 +768,16 @@ class InMemoryPlaybackSink:
         self.outputs.append(output)
 
 
+def released_text(sink: InMemoryPlaybackSink) -> str:
+    return "".join(output.text for output in sink.outputs if isinstance(output, ReleasedTextDelta))
+
+
 class FailingLanguageModel:
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
     ) -> AsyncIterator[LanguageModelTextDelta]:
-        del conversation
+        del request
         raise RuntimeError("synthetic language failure")
         yield
 
@@ -442,11 +785,15 @@ class FailingLanguageModel:
 class CancellationFailingLanguageModel:
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
     ) -> AsyncIterator[LanguageModelTextDelta]:
-        del conversation
+        del request
         try:
-            yield LanguageModelTextDelta(text="One two three ", cumulative_token_count=3)
+            yield LanguageModelTextDelta(
+                text="One two three ",
+                cumulative_token_count=3,
+                invocation_id=1,
+            )
             await asyncio.sleep(10)
         finally:
             raise RuntimeError("synthetic language cancellation failure")
@@ -593,6 +940,327 @@ def test_full_session_streams_audio_and_commits_naturally_completed_history() ->
     ]
     assert len(synthesizer.sessions) == 2
     assert synthesizer.sessions[0] is not synthesizer.sessions[1]
+
+
+def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> None:
+    language_model = ScriptedWeatherLanguageModel()
+    weather_handler = ControlledWeatherHandler()
+    transcriber = RecordingTranscriber()
+    synthesizer = RecordingSpeechSynthesizer()
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        synthesizer,
+        playback_sink=sink,
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        history_events, _ = receive_until(websocket, "llm.history")
+        assert weather_handler.started.wait(timeout=1)
+        wait_until(lambda: any(isinstance(output, ReleasedAudioChunk) for output in sink.outputs))
+
+        assert len(language_model.requests) == 1
+        assert len(synthesizer.sessions) == 1
+        assert not synthesizer.sessions[0].finished
+        assert weather_handler.arguments == [GetWeatherArguments(location="London")]
+        assert released_text(sink) == "Let me check that."
+        assert all("<tool_call>" not in word.text for word in synthesizer.words)
+
+        weather_handler.release.set()
+        wait_until(
+            lambda: (
+                len(language_model.requests) == 2
+                and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
+            )
+        )
+        send_playback_complete(websocket, generation_id=1)
+        wait_until(
+            lambda: (
+                sessions[0].conversation[-1]
+                == ConversationMessage(
+                    role=ConversationRole.ASSISTANT,
+                    content=("Let me check that. It is 12 degrees and lightly cloudy in London."),
+                )
+            )
+        )
+
+        second_request = language_model.requests[1]
+        assistant_message = second_request.messages[-2]
+        tool_message = second_request.messages[-1]
+        assert isinstance(assistant_message, ModelAssistantMessage)
+        assert assistant_message.content == "Let me check that."
+        assert assistant_message.tool_calls[0].function.arguments == GetWeatherArguments(
+            location="London"
+        )
+        assert isinstance(tool_message, ModelToolMessage)
+        assert tool_message.tool_call_id == "qwen-1-tool-1"
+        assert isinstance(tool_message.outcome, ToolSuccess)
+        assert tool_message.outcome.result.temperature_celsius == 12
+        assert second_request.tools == ()
+        assert len(synthesizer.sessions) == 1
+        assert synthesizer.sessions[0].finished
+
+        released_outputs = tuple(sink.outputs)
+        assert sum(isinstance(output, ReleasedAudioStart) for output in released_outputs) == 1
+        assert sum(isinstance(output, ReleasedAudioEnd) for output in released_outputs) == 1
+        assert {output.generation_id for output in released_outputs} == {1}
+        boundaries = [
+            output for output in released_outputs if isinstance(output, ReleasedWordBoundary)
+        ]
+        assert [boundary.text_offset for boundary in boundaries] == sorted(
+            boundary.text_offset for boundary in boundaries
+        )
+        assert [boundary.start_sample for boundary in boundaries] == sorted(
+            boundary.start_sample for boundary in boundaries
+        )
+        audio_chunks = [
+            output for output in released_outputs if isinstance(output, ReleasedAudioChunk)
+        ]
+        assert [chunk.sequence_number for chunk in audio_chunks] == list(range(len(audio_chunks)))
+        assert [chunk.start_sample for chunk in audio_chunks] == list(
+            range(0, len(audio_chunks) * 2, 2)
+        )
+
+        public_text = released_text(sink)
+        public_history = json.dumps(history_events)
+        durable_text = " ".join(message.content for message in sessions[0].conversation)
+        for private_fragment in ("<tool_call>", "</tool_call>", '"location"', "qwen-1-tool-1"):
+            assert private_fragment not in public_text
+            assert private_fragment not in public_history
+            assert private_fragment not in durable_text
+            assert all(private_fragment not in word.text for word in synthesizer.words)
+
+        generation = sessions[0].generations[1]
+        assert generation.invocation_ids == [1, 2]
+        assert generation.latency.first_bridge_text is not None
+        assert generation.latency.first_bridge_pcm is not None
+        assert generation.latency.tool_call_started_at is not None
+        assert generation.latency.tool_call_completed_at is not None
+        assert generation.latency.tool_execution_started_at is not None
+        assert generation.latency.tool_execution_completed_at is not None
+        assert generation.latency.tool_result_committed_at is not None
+        assert generation.latency.second_invocation_started_at is not None
+        assert generation.latency.first_final_answer_text is not None
+        assert generation.latency.first_final_answer_pcm is not None
+        assert (
+            generation.latency.tool_call_started_at
+            <= generation.latency.tool_call_completed_at
+            <= generation.latency.tool_execution_started_at
+            <= generation.latency.tool_execution_completed_at
+            <= generation.latency.tool_result_committed_at
+            <= generation.latency.second_invocation_started_at
+            <= generation.latency.first_final_answer_text.monotonic_time_seconds
+            <= generation.latency.first_final_answer_pcm.monotonic_time_seconds
+        )
+        assert (
+            generation.latency.first_bridge_pcm.monotonic_time_seconds
+            < generation.latency.tool_execution_completed_at
+        )
+        websocket.send_json({"type": "session.stop"})
+
+    assert language_model.raw_first_pass.startswith("Let me check that.")
+    assert language_model.parsed_first_pass_events[0] == LanguageModelTextDelta(
+        invocation_id=1,
+        text="Let me check that.",
+        cumulative_token_count=5,
+    )
+    assert language_model.second_pass_answer.endswith("in London.")
+
+
+def test_invalid_tool_call_is_private_and_produces_spoken_recovery() -> None:
+    failure = ToolCallFailure(
+        call_id="qwen-1-tool-1",
+        reason=ToolCallFailureReason.MALFORMED_JSON,
+        message="The tool call was malformed.",
+        attempted_tool_name=None,
+    )
+    language_model = InvalidToolCallLanguageModel(failure)
+    weather_handler = ControlledWeatherHandler()
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert not weather_handler.started.is_set()
+    assert released_text(sink) == "Let me check that. I could not retrieve the weather right now."
+    tool_message = language_model.requests[1].messages[-1]
+    assert isinstance(tool_message, ModelToolMessage)
+    assert isinstance(tool_message.outcome, ToolExecutionFailure)
+    assert tool_message.outcome.reason is ToolCallFailureReason.MALFORMED_JSON
+    assert "<tool_call>" not in released_text(sink)
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    ("handler", "timeout"),
+)
+def test_tool_execution_failure_is_typed_and_does_not_fabricate_weather(
+    failure_mode: str,
+) -> None:
+    language_model = ScriptedWeatherLanguageModel(
+        second_pass_answer="I could not retrieve the weather right now."
+    )
+    controlled_handler = ControlledWeatherHandler()
+
+    async def failing_handler(arguments: GetWeatherArguments) -> WeatherResult:
+        del arguments
+        raise RuntimeError("synthetic weather failure")
+
+    tool_executor = WeatherToolRegistry(
+        failing_handler if failure_mode == "handler" else controlled_handler
+    )
+    sink = InMemoryPlaybackSink()
+    policy = SessionPolicy(
+        silence_duration_ms=40,
+        pre_roll_duration_ms=20,
+        vad_speculation_enabled=False,
+        tool_timeout_seconds=1.0 if failure_mode == "handler" else 0.01,
+    )
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        policy=policy,
+        playback_sink=sink,
+        tool_executor=tool_executor,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        controlled_handler.release.set()
+        websocket.send_json({"type": "session.stop"})
+
+    tool_message = language_model.requests[1].messages[-1]
+    assert isinstance(tool_message, ModelToolMessage)
+    assert isinstance(tool_message.outcome, ToolExecutionFailure)
+    expected_reason = (
+        ToolExecutionFailureReason.HANDLER_FAILURE
+        if failure_mode == "handler"
+        else ToolExecutionFailureReason.TIMEOUT
+    )
+    assert tool_message.outcome.reason is expected_reason
+    assert released_text(sink).endswith("I could not retrieve the weather right now.")
+    assert "12 degrees" not in released_text(sink)
+
+
+def test_user_cancellation_while_tool_runs_discards_late_result() -> None:
+    language_model = GenerationAwareToolLanguageModel()
+    weather_handler = CancellationResistantWeatherHandler()
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert weather_handler.started.wait(timeout=1)
+        wait_until(lambda: released_text(sink) == "Let me check that.")
+
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert weather_handler.cancelled.wait(timeout=1)
+        wait_until(
+            lambda: any(request.assistant_generation_id == 2 for request in language_model.requests)
+        )
+        weather_handler.release.set()
+        assert weather_handler.finished.wait(timeout=1)
+        wait_until(
+            lambda: any(
+                isinstance(output, ReleasedAudioEnd) and output.generation_id == 2
+                for output in sink.outputs
+            )
+        )
+
+        assert not language_model.old_continuation_started.is_set()
+        generation_one_text = "".join(
+            output.text
+            for output in sink.outputs
+            if isinstance(output, ReleasedTextDelta) and output.generation_id == 1
+        )
+        assert generation_one_text == "Let me check that."
+        assert "Stale London answer" not in released_text(sink)
+        assert all(
+            not (
+                isinstance(message, ConversationMessage)
+                and "Stale London answer" in message.content
+            )
+            for message in sessions[0].conversation
+        )
+        first_tool = sessions[0].generations[1].tool
+        assert first_tool is not None
+        assert first_tool.lifecycle is ToolLifecycle.CANCELLED
+        assert first_tool.wasted
+        websocket.send_json({"type": "session.stop"})
+
+
+def test_user_cancellation_while_call_is_buffering_never_starts_tool() -> None:
+    language_model = PartialToolCallLanguageModel()
+    weather_handler = ControlledWeatherHandler()
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert language_model.partial_call_started.wait(timeout=1)
+        wait_until(lambda: released_text(sink) == "Let me check that.")
+
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert language_model.partial_call_cancelled.wait(timeout=1)
+        wait_until(
+            lambda: any(request.assistant_generation_id == 2 for request in language_model.requests)
+        )
+        language_model.release.set()
+        assert not weather_handler.started.is_set()
+        first_generation_text = "".join(
+            output.text
+            for output in sink.outputs
+            if isinstance(output, ReleasedTextDelta) and output.generation_id == 1
+        )
+        assert first_generation_text == "Let me check that."
+        assert "<tool" not in released_text(sink)
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_words_are_forwarded_on_whitespace_and_trailing_word_is_flushed() -> None:
@@ -767,6 +1435,76 @@ def test_non_floor_taking_overlap_resumes_existing_generation_without_history(
     assert transcriber.sessions[1].finish_count == 1
 
 
+def test_backchannel_during_tool_wait_preserves_tool_and_resumes_same_generation() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("weather", None, None), ("mm-hm", None)),
+        final_texts=("weather in London", "mm-hm"),
+    )
+    language_model = ScriptedWeatherLanguageModel()
+    weather_handler = ControlledWeatherHandler()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        assert weather_handler.started.wait(timeout=1)
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        duck = receive_playback_command(websocket)
+        pause = receive_playback_command(websocket)
+        send_playback_command_acknowledgement(
+            websocket,
+            duck,
+            resulting_state=PlaybackState.DUCKING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        paused_source_position = pause.requested_boundary_source_sample_position or 1
+        send_playback_command_acknowledgement(
+            websocket,
+            pause,
+            resulting_state=PlaybackState.PAUSED_BUFFERED,
+            pause_result=(
+                PlaybackPauseResult.WORD_BOUNDARY
+                if pause.requested_boundary_source_sample_position is not None
+                else PlaybackPauseResult.FORCED_SAMPLE
+            ),
+            source_sample_position=paused_source_position,
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        resume = receive_playback_command(websocket)
+        assert resume.action is PlaybackCommandAction.RESUME
+        assert resume.generation_id == 1
+        send_playback_command_acknowledgement(
+            websocket,
+            resume,
+            resulting_state=PlaybackState.RESUMING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=paused_source_position,
+        )
+
+        weather_handler.release.set()
+        receive_until(websocket, "assistant.audio.end")
+        assert len(language_model.requests) == 2
+        assert {request.assistant_generation_id for request in language_model.requests} == {1}
+        tool = sessions[0].generations[1].tool
+        assert tool is not None
+        assert tool.lifecycle is ToolLifecycle.SUCCEEDED
+        assert all(message.content != "mm-hm" for message in sessions[0].conversation)
+        websocket.send_json({"type": "session.stop"})
+
+
 @pytest.mark.parametrize("interruption_text", ["How?", "No, wait", "Yeah, but this is wrong"])
 def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
     interruption_text: str,
@@ -820,6 +1558,59 @@ def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
         content=interruption_text,
     )
     assert transcriber.sessions[1].audio[0] == SPEECH_CHUNK
+
+
+def test_response_requiring_overlap_cancels_running_tool() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("weather", None, None), ("How?", None, None)),
+        final_texts=("weather in London", "How?"),
+    )
+    language_model = GenerationAwareToolLanguageModel()
+    weather_handler = CancellationResistantWeatherHandler()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        assert weather_handler.started.wait(timeout=1)
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        cancel = receive_playback_command(websocket)
+        assert cancel.action is PlaybackCommandAction.CANCEL
+        send_playback_command_acknowledgement(
+            websocket,
+            cancel,
+            resulting_state=PlaybackState.CANCELLED,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        assert weather_handler.cancelled.wait(timeout=1)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
+        assert events[-1]["generation_id"] == 2
+
+        weather_handler.release.set()
+        assert weather_handler.finished.wait(timeout=1)
+        receive_until(websocket, "assistant.audio.end")
+        assert not language_model.old_continuation_started.is_set()
+        first_tool = sessions[0].generations[1].tool
+        assert first_tool is not None
+        assert first_tool.lifecycle is ToolLifecycle.CANCELLED
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_final_lexical_interruption_never_resumes_provisional_backchannel() -> None:
@@ -1773,6 +2564,7 @@ def create_test_app(
     turn_prediction_source: TurnPredictionSource | None = None,
     playback_sink: PlaybackSink | None = None,
     created_sessions: list[VoiceSession] | None = None,
+    tool_executor: ToolExecutor | None = None,
 ) -> FastAPI:
     web_app = FastAPI()
 
@@ -1796,6 +2588,7 @@ def create_test_app(
             language_model=language_model,
             speech_synthesizer=speech_synthesizer,
             policy=policy,
+            tool_executor=tool_executor or create_demo_tool_registry(),
             playback_sink=playback_sink,
         )
         if created_sessions is not None:

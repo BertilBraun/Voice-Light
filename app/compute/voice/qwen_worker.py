@@ -5,7 +5,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol, TypedDict
+from typing import Final, Literal, NotRequired, Protocol, TypedDict
 
 import torch
 from transformers import (
@@ -16,11 +16,25 @@ from transformers import (
     TextIteratorStreamer,
 )
 
+from app.compute.voice.hermes_tool_parser import (
+    HermesParserEvent,
+    HermesSpokenText,
+    HermesToolCallCompleted,
+    HermesToolCallFailed,
+    HermesToolCallParser,
+    HermesToolCallStarted,
+)
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
+    LlmAssistantMessage,
     LlmCancelledEvent,
     LlmEndEvent,
-    LlmTextDeltaEvent,
+    LlmSpokenTextDeltaEvent,
+    LlmToolCallEvent,
+    LlmToolCallFailureEvent,
+    LlmToolCallStartedEvent,
+    LlmToolMessage,
+    LlmUserMessage,
     LlmWorkerCommand,
     LlmWorkerErrorEvent,
     LlmWorkerEvent,
@@ -34,15 +48,51 @@ from app.compute.voice.model_constants import LANGUAGE_MODEL_NAME, LANGUAGE_MODE
 LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "You are a conversational voice agent. Respond naturally and directly to the user's latest "
     "message. Use the complete conversation history as context and do not repeat earlier answers. "
-    "Start with substantive content instead of filler acknowledgements such as 'Sure' or 'Of "
+    "Use a provided tool only when it is needed. Before a latency-bearing tool call, say at most "
+    "one short, natural bridge sentence, targeting no more than eight spoken words. Do not claim "
+    "or guess the result before receiving it, and emit the tool call immediately after the bridge. "
+    "After a tool result, answer directly in one or two short spoken sentences. Do not repeat the "
+    "bridge, narrate JSON, or mention tools or internal processing. For answers that need no tool, "
+    "start with substantive content instead of filler acknowledgements such as 'Sure' or 'Of "
     "course.' Use plain text without Markdown or emoji."
 )
 logger = logging.getLogger(__name__)
 
 
-class ChatMessage(TypedDict):
-    role: Literal["system", "user", "assistant"]
+class QwenSystemMessage(TypedDict):
+    role: Literal["system"]
     content: str
+
+
+class QwenUserMessage(TypedDict):
+    role: Literal["user"]
+    content: str
+
+
+class QwenToolCallFunction(TypedDict):
+    name: str
+    arguments: str
+
+
+class QwenToolCall(TypedDict):
+    id: str
+    type: Literal["function"]
+    function: QwenToolCallFunction
+
+
+class QwenAssistantMessage(TypedDict):
+    role: Literal["assistant"]
+    content: str
+    tool_calls: NotRequired[list[QwenToolCall]]
+
+
+class QwenToolMessage(TypedDict):
+    role: Literal["tool"]
+    content: str
+    tool_call_id: str
+
+
+QwenChatMessage = QwenSystemMessage | QwenUserMessage | QwenAssistantMessage | QwenToolMessage
 
 
 class GenerationStreamer(Protocol):
@@ -86,17 +136,15 @@ class QwenRuntime:
         command: StartLlmCommand,
         cancellation_event: threading.Event,
     ) -> Iterator[str]:
-        messages: list[ChatMessage] = [
+        messages: list[QwenChatMessage] = [
             {"role": "system", "content": LANGUAGE_MODEL_SYSTEM_PROMPT},
-            *(
-                {"role": message.role.value, "content": message.content}
-                for message in command.messages
-            ),
+            *(_qwen_chat_message(message) for message in command.messages),
         ]
         prompt = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
+            tools=[specification.model_dump(mode="json") for specification in command.tools],
             enable_thinking=False,
         )
         model_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
@@ -124,7 +172,7 @@ class QwenRuntime:
             target=_run_model_generation,
             args=(generate, streamer, generation_errors),
             daemon=True,
-            name=f"qwen-model-{command.generation_id}",
+            name=f"qwen-model-{command.invocation_id}",
         )
         model_thread.start()
         stream_completed = False
@@ -145,8 +193,8 @@ class QwenRuntime:
 
 
 @dataclass(frozen=True)
-class ActiveWorkerGeneration:
-    generation_id: int
+class ActiveWorkerInvocation:
+    invocation_id: int
     cancellation_event: threading.Event
     thread: threading.Thread
 
@@ -156,7 +204,7 @@ class QwenWorkerController:
         self.runtime = runtime
         self.output_lock = threading.Lock()
         self.state_lock = threading.Lock()
-        self.active_generation: ActiveWorkerGeneration | None = None
+        self.active_invocation: ActiveWorkerInvocation | None = None
 
     def run(self) -> None:
         self._send_event(LlmWorkerReadyEvent())
@@ -182,49 +230,49 @@ class QwenWorkerController:
 
     def _start(self, command: StartLlmCommand) -> None:
         with self.state_lock:
-            if self.active_generation is not None:
+            if self.active_invocation is not None:
                 self._send_event(
                     LlmWorkerErrorEvent(
-                        generation_id=command.generation_id,
-                        message="Qwen worker already has an active generation.",
+                        invocation_id=command.invocation_id,
+                        message="Qwen worker already has an active invocation.",
                     )
                 )
                 return
             cancellation_event = threading.Event()
-            generation_thread = threading.Thread(
+            invocation_thread = threading.Thread(
                 target=self._generate,
                 args=(command, cancellation_event),
                 daemon=True,
-                name=f"qwen-stream-{command.generation_id}",
+                name=f"qwen-stream-{command.invocation_id}",
             )
-            self.active_generation = ActiveWorkerGeneration(
-                generation_id=command.generation_id,
+            self.active_invocation = ActiveWorkerInvocation(
+                invocation_id=command.invocation_id,
                 cancellation_event=cancellation_event,
-                thread=generation_thread,
+                thread=invocation_thread,
             )
-            generation_thread.start()
+            invocation_thread.start()
 
     def _cancel(self, command: CancelLlmCommand) -> None:
         with self.state_lock:
-            active_generation = self.active_generation
+            active_invocation = self.active_invocation
             if (
-                active_generation is None
-                or active_generation.generation_id != command.generation_id
+                active_invocation is None
+                or active_invocation.invocation_id != command.invocation_id
             ):
                 logger.warning(
-                    "ignoring Qwen cancellation for inactive generation: generation=%d",
-                    command.generation_id,
+                    "ignoring Qwen cancellation for inactive invocation: invocation=%d",
+                    command.invocation_id,
                 )
                 return
-            active_generation.cancellation_event.set()
+            active_invocation.cancellation_event.set()
 
     def _shutdown(self) -> None:
         with self.state_lock:
-            active_generation = self.active_generation
-            if active_generation is not None:
-                active_generation.cancellation_event.set()
-        if active_generation is not None:
-            active_generation.thread.join()
+            active_invocation = self.active_invocation
+            if active_invocation is not None:
+                active_invocation.cancellation_event.set()
+        if active_invocation is not None:
+            active_invocation.thread.join()
 
     def _generate(
         self,
@@ -232,37 +280,88 @@ class QwenWorkerController:
         cancellation_event: threading.Event,
     ) -> None:
         terminal_event: LlmWorkerEvent | None = None
-        response_text = ""
+        raw_response_text = ""
+        parser = HermesToolCallParser(command.invocation_id)
         try:
             for text_delta in self.runtime.stream_text(command, cancellation_event):
-                response_text += text_delta
-                self._send_event(
-                    LlmTextDeltaEvent(
-                        generation_id=command.generation_id,
-                        text=text_delta,
-                        cumulative_token_count=self.runtime.count_response_tokens(response_text),
+                raw_response_text += text_delta
+                cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
+                for parser_event in parser.add_text(text_delta):
+                    self._send_parser_event(
+                        command.invocation_id,
+                        cumulative_token_count,
+                        parser_event,
                     )
+            cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
+            for parser_event in parser.finish():
+                self._send_parser_event(
+                    command.invocation_id,
+                    cumulative_token_count,
+                    parser_event,
                 )
             if cancellation_event.is_set():
-                terminal_event = LlmCancelledEvent(generation_id=command.generation_id)
+                terminal_event = LlmCancelledEvent(invocation_id=command.invocation_id)
             else:
-                terminal_event = LlmEndEvent(generation_id=command.generation_id)
+                terminal_event = LlmEndEvent(
+                    invocation_id=command.invocation_id,
+                    cumulative_token_count=cumulative_token_count,
+                )
         except Exception as error:
-            logger.exception("Qwen generation failed: generation=%d", command.generation_id)
+            logger.exception("Qwen generation failed: invocation=%d", command.invocation_id)
             terminal_event = LlmWorkerErrorEvent(
-                generation_id=command.generation_id,
+                invocation_id=command.invocation_id,
                 message=str(error),
             )
         finally:
             with self.state_lock:
-                active_generation = self.active_generation
+                active_invocation = self.active_invocation
                 if (
-                    active_generation is not None
-                    and active_generation.generation_id == command.generation_id
+                    active_invocation is not None
+                    and active_invocation.invocation_id == command.invocation_id
                 ):
-                    self.active_generation = None
+                    self.active_invocation = None
             if terminal_event is not None:
                 self._send_event(terminal_event)
+
+    def _send_parser_event(
+        self,
+        invocation_id: int,
+        cumulative_token_count: int,
+        parser_event: HermesParserEvent,
+    ) -> None:
+        match parser_event:
+            case HermesSpokenText():
+                self._send_event(
+                    LlmSpokenTextDeltaEvent(
+                        invocation_id=invocation_id,
+                        text=parser_event.text,
+                        cumulative_token_count=cumulative_token_count,
+                    )
+                )
+            case HermesToolCallStarted():
+                self._send_event(
+                    LlmToolCallStartedEvent(
+                        invocation_id=invocation_id,
+                        call_id=parser_event.call_id,
+                        cumulative_token_count=cumulative_token_count,
+                    )
+                )
+            case HermesToolCallCompleted():
+                self._send_event(
+                    LlmToolCallEvent(
+                        invocation_id=invocation_id,
+                        request=parser_event.request,
+                        cumulative_token_count=cumulative_token_count,
+                    )
+                )
+            case HermesToolCallFailed():
+                self._send_event(
+                    LlmToolCallFailureEvent(
+                        invocation_id=invocation_id,
+                        failure=parser_event.failure,
+                        cumulative_token_count=cumulative_token_count,
+                    )
+                )
 
     def _send_event(self, event: LlmWorkerEvent) -> None:
         with self.output_lock:
@@ -280,6 +379,38 @@ def _run_model_generation(
     except Exception as error:
         generation_errors.append(error)
         streamer.on_finalized_text("", stream_end=True)
+
+
+def _qwen_chat_message(
+    message: LlmUserMessage | LlmAssistantMessage | LlmToolMessage,
+) -> QwenChatMessage:
+    match message:
+        case LlmUserMessage():
+            return {"role": "user", "content": message.content}
+        case LlmAssistantMessage():
+            assistant_message: QwenAssistantMessage = {
+                "role": "assistant",
+                "content": message.content,
+            }
+            if message.tool_calls:
+                assistant_message["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments.model_dump_json(),
+                        },
+                    }
+                    for call in message.tool_calls
+                ]
+            return assistant_message
+        case LlmToolMessage():
+            return {
+                "role": "tool",
+                "content": message.content.model_dump_json(),
+                "tool_call_id": message.tool_call_id,
+            }
 
 
 def main() -> None:

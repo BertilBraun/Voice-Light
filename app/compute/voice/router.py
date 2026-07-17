@@ -7,6 +7,7 @@ from fastapi import WebSocket
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope
 from app.compute.voice.session import SessionPolicy, VoiceSession
+from app.compute.voice.tools import create_demo_tool_registry
 
 
 async def run_voice_session(
@@ -22,5 +23,6 @@ async def run_voice_session(
             language_model=runtime.require_language_model(),
             speech_synthesizer=runtime.require_speech_synthesizer(),
             policy=SessionPolicy.from_environment(os.environ),
+            tool_executor=create_demo_tool_registry(),
         )
         await session.run()

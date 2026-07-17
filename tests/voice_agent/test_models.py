@@ -8,13 +8,18 @@ from pathlib import Path
 import pytest
 
 import app.compute.voice.models as language_models
-from app.compute.voice.conversation import ConversationMessage, ConversationRole
-from app.compute.voice.interfaces import LanguageModelTextDelta
+from app.compute.voice.conversation import ModelUserMessage
+from app.compute.voice.interfaces import (
+    LanguageModelEvent,
+    LanguageModelFailed,
+    LanguageModelRequest,
+    LanguageModelTextDelta,
+)
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
     LlmCancelledEvent,
     LlmEndEvent,
-    LlmTextDeltaEvent,
+    LlmSpokenTextDeltaEvent,
     LlmWorkerCommand,
     LlmWorkerCommandType,
     LlmWorkerErrorEvent,
@@ -22,13 +27,18 @@ from app.compute.voice.llm_worker_protocol import (
     StartLlmCommand,
 )
 from app.compute.voice.models import (
-    QwenGenerationSession,
+    QwenInvocationSession,
     QwenWorker,
     QwenWorkerLease,
     RestartingQwenWorkerManager,
 )
+from app.compute.voice.tools import create_demo_tool_registry
 
-CONVERSATION = (ConversationMessage(role=ConversationRole.USER, content="Hello"),)
+REQUEST = LanguageModelRequest(
+    assistant_generation_id=7,
+    messages=(ModelUserMessage(content="Hello"),),
+    tools=create_demo_tool_registry().specifications,
+)
 
 
 class FakeQwenWorker:
@@ -54,7 +64,7 @@ class FakeQwenWorker:
                     self.events.put(event)
             case CancelLlmCommand():
                 if self.cancel_completes:
-                    self.events.put(LlmCancelledEvent(generation_id=command.generation_id))
+                    self.events.put(LlmCancelledEvent(invocation_id=command.invocation_id))
             case _:
                 pass
 
@@ -69,16 +79,16 @@ class FakeQwenWorkerManager:
     def __init__(self, worker: FakeQwenWorker) -> None:
         self.worker = worker
         self.lock = asyncio.Lock()
-        self.next_generation_id = 1
+        self.next_invocation_id = 1
         self.replacement_count = 0
 
     async def acquire(self) -> QwenWorkerLease:
         await self.lock.acquire()
         lease = QwenWorkerLease(
             worker=self.worker,
-            generation_id=self.next_generation_id,
+            invocation_id=self.next_invocation_id,
         )
-        self.next_generation_id += 1
+        self.next_invocation_id += 1
         return lease
 
     def release(self) -> None:
@@ -90,44 +100,51 @@ class FakeQwenWorkerManager:
         failed_worker.terminate()
 
 
-def test_qwen_worker_exception_is_surfaced_and_worker_is_replaced() -> None:
-    async def run_generation() -> None:
+def test_qwen_worker_exception_is_typed_and_worker_is_replaced() -> None:
+    async def run_invocation() -> None:
         worker = FakeQwenWorker(
-            start_events=(LlmWorkerErrorEvent(generation_id=1, message="CUDA failed"),)
+            start_events=(LlmWorkerErrorEvent(invocation_id=1, message="CUDA failed"),)
         )
         worker_manager = FakeQwenWorkerManager(worker)
         session = create_session(worker_manager)
 
-        with pytest.raises(RuntimeError, match="Qwen worker failed: CUDA failed"):
-            await collect_text(session.stream_text())
+        events = [event async for event in session.stream_events()]
 
+        assert events == [
+            LanguageModelFailed(
+                invocation_id=1,
+                message="Qwen worker failed: CUDA failed",
+            )
+        ]
         assert worker_manager.replacement_count == 1
         assert not worker_manager.lock.locked()
 
-    asyncio.run(run_generation())
+    asyncio.run(run_invocation())
 
 
 def test_qwen_no_progress_timeout_replaces_worker() -> None:
-    async def run_generation() -> None:
+    async def run_invocation() -> None:
         worker = FakeQwenWorker()
         worker_manager = FakeQwenWorkerManager(worker)
         session = create_session(worker_manager, progress_timeout_seconds=0.01)
 
-        with pytest.raises(RuntimeError, match="stopped making progress"):
-            await collect_text(session.stream_text())
+        events = [event async for event in session.stream_events()]
 
+        assert len(events) == 1
+        assert isinstance(events[0], LanguageModelFailed)
+        assert "stopped making progress" in events[0].message
         assert worker_manager.replacement_count == 1
         assert not worker_manager.lock.locked()
 
-    asyncio.run(run_generation())
+    asyncio.run(run_invocation())
 
 
 def test_qwen_cancel_timeout_replaces_worker() -> None:
-    async def run_generation() -> None:
+    async def run_invocation() -> None:
         worker = FakeQwenWorker(
             start_events=(
-                LlmTextDeltaEvent(
-                    generation_id=1,
+                LlmSpokenTextDeltaEvent(
+                    invocation_id=1,
                     text="Hello",
                     cumulative_token_count=1,
                 ),
@@ -136,10 +153,11 @@ def test_qwen_cancel_timeout_replaces_worker() -> None:
         )
         worker_manager = FakeQwenWorkerManager(worker)
         session = create_session(worker_manager, cancellation_timeout_seconds=0.01)
-        stream = session.stream_text()
+        stream = session.stream_events()
         assert await anext(stream) == LanguageModelTextDelta(
             text="Hello",
             cumulative_token_count=1,
+            invocation_id=1,
         )
 
         with pytest.raises(RuntimeError, match="cancellation timed out"):
@@ -149,45 +167,72 @@ def test_qwen_cancel_timeout_replaces_worker() -> None:
         assert worker_manager.replacement_count == 1
         assert not worker_manager.lock.locked()
 
-    asyncio.run(run_generation())
+    asyncio.run(run_invocation())
 
 
-def test_qwen_worker_is_reused_after_completed_generation() -> None:
-    async def run_generations() -> None:
+def test_qwen_worker_is_reused_for_monotonic_invocations() -> None:
+    async def run_invocations() -> None:
         worker = FakeQwenWorker(
             start_events=(
-                LlmTextDeltaEvent(
-                    generation_id=1,
+                LlmSpokenTextDeltaEvent(
+                    invocation_id=1,
                     text="Hello",
                     cumulative_token_count=1,
                 ),
-                LlmEndEvent(generation_id=1),
+                LlmEndEvent(invocation_id=1, cumulative_token_count=1),
             )
         )
         worker_manager = FakeQwenWorkerManager(worker)
         first_session = create_session(worker_manager)
-        assert await collect_text(first_session.stream_text()) == "Hello"
+        assert await collect_text(first_session.stream_events()) == "Hello"
         assert not worker_manager.lock.locked()
 
         worker.start_events = (
-            LlmTextDeltaEvent(
-                generation_id=2,
+            LlmSpokenTextDeltaEvent(
+                invocation_id=2,
                 text="Again",
                 cumulative_token_count=1,
             ),
-            LlmEndEvent(generation_id=2),
+            LlmEndEvent(invocation_id=2, cumulative_token_count=1),
         )
         second_session = create_session(worker_manager)
-        assert await collect_text(second_session.stream_text()) == "Again"
+        assert await collect_text(second_session.stream_events()) == "Again"
 
         start_commands = [
             command for command in worker.commands if isinstance(command, StartLlmCommand)
         ]
-        assert [command.generation_id for command in start_commands] == [1, 2]
+        assert [command.invocation_id for command in start_commands] == [1, 2]
+        assert [command.assistant_generation_id for command in start_commands] == [7, 7]
         assert worker_manager.replacement_count == 0
         assert not worker_manager.lock.locked()
 
-    asyncio.run(run_generations())
+    asyncio.run(run_invocations())
+
+
+def test_second_qwen_invocation_failure_replaces_worker_and_releases_lock() -> None:
+    async def run_invocations() -> None:
+        worker = FakeQwenWorker(
+            start_events=(LlmEndEvent(invocation_id=1, cumulative_token_count=0),)
+        )
+        worker_manager = FakeQwenWorkerManager(worker)
+        first_session = create_session(worker_manager)
+        assert [event async for event in first_session.stream_events()]
+        assert not worker_manager.lock.locked()
+
+        worker.start_events = (LlmWorkerErrorEvent(invocation_id=2, message="second pass failed"),)
+        second_session = create_session(worker_manager)
+        events = [event async for event in second_session.stream_events()]
+
+        assert events == [
+            LanguageModelFailed(
+                invocation_id=2,
+                message="Qwen worker failed: second pass failed",
+            )
+        ]
+        assert worker_manager.replacement_count == 1
+        assert not worker_manager.lock.locked()
+
+    asyncio.run(run_invocations())
 
 
 @pytest.mark.parametrize(
@@ -197,12 +242,12 @@ def test_qwen_worker_is_reused_after_completed_generation() -> None:
 def test_qwen_send_failure_replaces_worker_and_releases_lock(
     failing_command_type: LlmWorkerCommandType,
 ) -> None:
-    async def run_generation() -> None:
+    async def run_invocation() -> None:
         start_events: tuple[LlmWorkerEvent, ...] = ()
         if failing_command_type is LlmWorkerCommandType.CANCEL:
             start_events = (
-                LlmTextDeltaEvent(
-                    generation_id=1,
+                LlmSpokenTextDeltaEvent(
+                    invocation_id=1,
                     text="Hello",
                     cumulative_token_count=1,
                 ),
@@ -216,19 +261,20 @@ def test_qwen_send_failure_replaces_worker_and_releases_lock(
 
         with pytest.raises(RuntimeError, match="Failed to"):
             if failing_command_type is LlmWorkerCommandType.START:
-                await anext(session.stream_text())
+                await anext(session.stream_events())
             else:
-                stream = session.stream_text()
+                stream = session.stream_events()
                 assert await anext(stream) == LanguageModelTextDelta(
                     text="Hello",
                     cumulative_token_count=1,
+                    invocation_id=1,
                 )
                 await session.cancel()
 
         assert worker_manager.replacement_count == 1
         assert not worker_manager.lock.locked()
 
-    asyncio.run(run_generation())
+    asyncio.run(run_invocation())
 
 
 def test_qwen_spawn_failure_releases_manager_lock(
@@ -260,14 +306,16 @@ def create_session(
     worker_manager: FakeQwenWorkerManager,
     progress_timeout_seconds: float = 1.0,
     cancellation_timeout_seconds: float = 1.0,
-) -> QwenGenerationSession:
-    return QwenGenerationSession(
+) -> QwenInvocationSession:
+    return QwenInvocationSession(
         worker_manager=worker_manager,
-        conversation=CONVERSATION,
+        request=REQUEST,
         progress_timeout_seconds=progress_timeout_seconds,
         cancellation_timeout_seconds=cancellation_timeout_seconds,
     )
 
 
-async def collect_text(stream: AsyncIterator[LanguageModelTextDelta]) -> str:
-    return "".join([delta.text async for delta in stream])
+async def collect_text(stream: AsyncIterator[LanguageModelEvent]) -> str:
+    return "".join(
+        [event.text async for event in stream if isinstance(event, LanguageModelTextDelta)]
+    )

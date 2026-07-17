@@ -6,7 +6,7 @@ from collections.abc import Iterator
 
 from app.compute.voice.llm_worker_protocol import (
     LlmEndEvent,
-    LlmTextDeltaEvent,
+    LlmSpokenTextDeltaEvent,
     LlmWorkerEvent,
     StartLlmCommand,
 )
@@ -38,21 +38,41 @@ class RecordingQwenWorkerController(QwenWorkerController):
         self.events.put(event)
 
 
-def test_terminal_event_means_worker_accepts_next_generation() -> None:
+def test_terminal_event_means_worker_accepts_next_invocation() -> None:
     controller = RecordingQwenWorkerController()
 
-    controller._start(StartLlmCommand(generation_id=1, messages=()))
-    assert controller.events.get(timeout=1) == LlmTextDeltaEvent(
-        generation_id=1,
+    controller._start(
+        StartLlmCommand(
+            invocation_id=1,
+            assistant_generation_id=9,
+            messages=(),
+            tools=(),
+        )
+    )
+    assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
+        invocation_id=1,
         text="ready",
         cumulative_token_count=5,
     )
-    assert controller.events.get(timeout=1) == LlmEndEvent(generation_id=1)
+    assert controller.events.get(timeout=1) == LlmEndEvent(
+        invocation_id=1,
+        cumulative_token_count=5,
+    )
 
-    controller._start(StartLlmCommand(generation_id=2, messages=()))
-    assert controller.events.get(timeout=1) == LlmTextDeltaEvent(
-        generation_id=2,
+    controller._start(
+        StartLlmCommand(
+            invocation_id=2,
+            assistant_generation_id=9,
+            messages=(),
+            tools=(),
+        )
+    )
+    assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
+        invocation_id=2,
         text="ready",
         cumulative_token_count=5,
     )
-    assert controller.events.get(timeout=1) == LlmEndEvent(generation_id=2)
+    assert controller.events.get(timeout=1) == LlmEndEvent(
+        invocation_id=2,
+        cumulative_token_count=5,
+    )

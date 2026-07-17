@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
-from app.compute.voice.conversation import ConversationMessage
+from app.compute.voice.conversation import ModelMessage
 from app.compute.voice.schemas import (
     CapturedAudioChunk,
     InteractionPrediction,
     SpeechUnderstandingEvent,
     TranscriptRevision,
 )
+from app.compute.voice.tools import SerializedToolCall, ToolCallFailure, ToolSpecification
 
 
 class SpeechDetector(Protocol):
@@ -34,14 +36,80 @@ class Transcriber(Protocol):
 class LanguageModel(Protocol):
     def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[LanguageModelTextDelta]: ...
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]: ...
+
+
+@dataclass(frozen=True)
+class LanguageModelRequest:
+    assistant_generation_id: int
+    messages: tuple[ModelMessage, ...]
+    tools: tuple[ToolSpecification, ...]
+
+
+class LanguageModelEventType(StrEnum):
+    SPOKEN_TEXT_DELTA = "spoken_text_delta"
+    TOOL_CALL_STARTED = "tool_call_started"
+    TOOL_CALL = "tool_call"
+    TOOL_CALL_FAILURE = "tool_call_failure"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True)
 class LanguageModelTextDelta:
     text: str
     cumulative_token_count: int
+    invocation_id: int
+    type: LanguageModelEventType = LanguageModelEventType.SPOKEN_TEXT_DELTA
+
+
+@dataclass(frozen=True)
+class LanguageModelToolCallStarted:
+    invocation_id: int
+    call_id: str
+    cumulative_token_count: int
+    type: LanguageModelEventType = LanguageModelEventType.TOOL_CALL_STARTED
+
+
+@dataclass(frozen=True)
+class LanguageModelToolCall:
+    invocation_id: int
+    request: SerializedToolCall
+    cumulative_token_count: int
+    type: LanguageModelEventType = LanguageModelEventType.TOOL_CALL
+
+
+@dataclass(frozen=True)
+class LanguageModelToolCallFailure:
+    invocation_id: int
+    failure: ToolCallFailure
+    cumulative_token_count: int
+    type: LanguageModelEventType = LanguageModelEventType.TOOL_CALL_FAILURE
+
+
+@dataclass(frozen=True)
+class LanguageModelCompleted:
+    invocation_id: int
+    cumulative_token_count: int
+    type: LanguageModelEventType = LanguageModelEventType.COMPLETED
+
+
+@dataclass(frozen=True)
+class LanguageModelFailed:
+    invocation_id: int
+    message: str
+    type: LanguageModelEventType = LanguageModelEventType.FAILED
+
+
+LanguageModelEvent = (
+    LanguageModelTextDelta
+    | LanguageModelToolCallStarted
+    | LanguageModelToolCall
+    | LanguageModelToolCallFailure
+    | LanguageModelCompleted
+    | LanguageModelFailed
+)
 
 
 @dataclass(frozen=True)
