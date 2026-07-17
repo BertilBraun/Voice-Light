@@ -11,8 +11,6 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    LogitsProcessor,
-    LogitsProcessorList,
     StoppingCriteria,
     StoppingCriteriaList,
     TextIteratorStreamer,
@@ -60,7 +58,6 @@ LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "course.' Use plain text without Markdown or emoji."
 )
 logger = logging.getLogger(__name__)
-TOOL_CALL_OPEN_TOKEN: Final = "<tool_call>"
 
 
 class QwenSystemMessage(TypedDict):
@@ -122,29 +119,6 @@ class CancellationStoppingCriteria(StoppingCriteria):
         )
 
 
-class SpokenBridgeBeforeToolCall(LogitsProcessor):
-    def __init__(
-        self,
-        prompt_token_count: int,
-        tool_call_token_id: int,
-        decode_generated_tokens: Callable[[list[int]], str],
-    ) -> None:
-        self.prompt_token_count = prompt_token_count
-        self.tool_call_token_id = tool_call_token_id
-        self.decode_generated_tokens = decode_generated_tokens
-
-    def __call__(
-        self,
-        input_ids: torch.LongTensor,
-        scores: torch.FloatTensor,
-    ) -> torch.FloatTensor:
-        generated_token_ids = input_ids[0, self.prompt_token_count :].tolist()
-        generated_text = self.decode_generated_tokens(generated_token_ids)
-        if not _has_complete_spoken_bridge(generated_text):
-            scores[:, self.tool_call_token_id] = -torch.inf
-        return scores
-
-
 class QwenRuntime:
     def __init__(self) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -175,18 +149,6 @@ class QwenRuntime:
             enable_thinking=False,
         )
         model_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-        logits_processors = LogitsProcessorList()
-        if command.tools:
-            tool_call_token_id = self.tokenizer.convert_tokens_to_ids(TOOL_CALL_OPEN_TOKEN)
-            if not isinstance(tool_call_token_id, int):
-                raise ValueError("Qwen tokenizer did not resolve the Hermes tool-call opener.")
-            logits_processors.append(
-                SpokenBridgeBeforeToolCall(
-                    prompt_token_count=model_inputs["input_ids"].shape[1],
-                    tool_call_token_id=tool_call_token_id,
-                    decode_generated_tokens=self._decode_generated_tokens,
-                )
-            )
         streamer = TextIteratorStreamer(
             self.tokenizer,
             skip_prompt=True,
@@ -205,7 +167,6 @@ class QwenRuntime:
                 do_sample=True,
                 temperature=0.6,
                 top_p=0.9,
-                logits_processor=logits_processors,
             )
 
         model_thread = threading.Thread(
@@ -230,9 +191,6 @@ class QwenRuntime:
 
     def count_response_tokens(self, text: str) -> int:
         return len(self.tokenizer.encode(text, add_special_tokens=False))
-
-    def _decode_generated_tokens(self, token_ids: list[int]) -> str:
-        return self.tokenizer.decode(token_ids, skip_special_tokens=False)
 
 
 @dataclass(frozen=True)
@@ -422,13 +380,6 @@ def _run_model_generation(
     except Exception as error:
         generation_errors.append(error)
         streamer.on_finalized_text("", stream_end=True)
-
-
-def _has_complete_spoken_bridge(generated_text: str) -> bool:
-    spoken_prefix = generated_text.split(TOOL_CALL_OPEN_TOKEN, maxsplit=1)[0].strip()
-    return bool(spoken_prefix) and any(
-        sentence_terminator in spoken_prefix for sentence_terminator in (".", "!", "?")
-    )
 
 
 def _qwen_chat_message(
