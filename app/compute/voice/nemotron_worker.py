@@ -10,7 +10,7 @@ from typing import Final, TextIO, cast
 
 import numpy as np
 import torch
-from transformers import AutoModelForRNNT, AutoProcessor, TextIteratorStreamer
+from transformers import AutoModelForRNNT, AutoProcessor
 from transformers.models.nemotron_asr_streaming.modeling_nemotron_asr_streaming import (
     NemotronAsrStreamingForRNNT,
 )
@@ -18,6 +18,7 @@ from transformers.models.nemotron_asr_streaming.processing_nemotron_asr_streamin
     NemotronAsrStreamingProcessor,
 )
 
+from app.compute.voice.asr_text_streamer import CumulativeAsrTextIteratorStreamer
 from app.compute.voice.asr_worker_protocol import (
     AsrAudioCommand,
     AsrWorkerCommandType,
@@ -106,10 +107,7 @@ class NemotronRecognition:
                 first_input_features=first_inputs.input_features,
                 first_audio_reached_end=first_audio.reached_end,
             )
-            streamer = TextIteratorStreamer(
-                self.processor.tokenizer,
-                skip_special_tokens=True,
-            )
+            streamer = CumulativeAsrTextIteratorStreamer(self.processor.tokenizer)
             generation_errors: list[Exception] = []
             generate = partial(
                 self.model.generate,
@@ -128,14 +126,17 @@ class NemotronRecognition:
 
             generation_thread = threading.Thread(target=run_generation, daemon=True)
             generation_thread.start()
-            transcript_parts: list[str] = []
-            for text_delta in streamer:
-                transcript_parts.append(text_delta)
-                self._send_event(PartialAsrEvent(text="".join(transcript_parts).strip()))
+            transcript = ""
+            for cumulative_text in streamer:
+                normalized_text = cumulative_text.strip()
+                if not normalized_text or normalized_text == transcript:
+                    continue
+                transcript = normalized_text
+                self._send_event(PartialAsrEvent(text=transcript))
             generation_thread.join()
             if generation_errors:
                 raise generation_errors[0]
-            self._send_event(FinalAsrEvent(text="".join(transcript_parts).strip()))
+            self._send_event(FinalAsrEvent(text=transcript))
         except Exception as error:
             self._send_event(AsrWorkerErrorEvent(message=str(error)))
 
