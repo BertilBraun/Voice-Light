@@ -26,6 +26,7 @@ from app.compute.voice.schemas import (
 )
 from app.compute.voice.speech_understanding import (
     CompositeSpeechUnderstandingProvider,
+    InteractionPredictionReducer,
     SingleSessionTurnPredictionProvider,
 )
 
@@ -117,11 +118,13 @@ class BlockingPredictionSource:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.cancelled = False
+        self.observation_count = 0
 
     async def predict(
         self,
         observation: TurnPredictionObservation,
     ) -> InteractionPrediction:
+        self.observation_count += 1
         self.started.set()
         try:
             await asyncio.sleep(60)
@@ -246,7 +249,7 @@ def test_late_optional_result_is_cancelled_and_old_turn_audio_is_rejected() -> N
     asyncio.run(exercise())
 
 
-def test_optional_predictor_queue_reports_gaps_without_stalling_asr() -> None:
+def test_optional_predictor_queue_gap_disables_detector_without_stalling_asr() -> None:
     async def exercise() -> None:
         source = BlockingPredictionSource()
         transcriber = RecordingTranscriber(RecordingTranscriptionSession)
@@ -267,15 +270,90 @@ def test_optional_predictor_queue_reports_gaps_without_stalling_asr() -> None:
                     turn_epoch=1,
                 )
             )
+        await session.add_audio(create_chunk(sequence_number=4, stream_epoch=1, turn_epoch=1))
 
+        events = session.drain_events()
         degraded = tuple(
-            event
-            for event in session.drain_events()
-            if isinstance(event, SpeechUnderstandingDegradedEvent)
+            event for event in events if isinstance(event, SpeechUnderstandingDegradedEvent)
         )
-        assert len(transcriber.sessions[0].audio) == 4
-        assert degraded[-1].dropped_observation_count == 1
-        assert "oldest observation was dropped" in degraded[-1].reason
+        assert len(transcriber.sessions[0].audio) == 5
+        assert degraded[-1].dropped_observation_count >= 1
+        assert "disabled for the conversation" in degraded[-1].reason
+        assert source.cancelled is True
+        assert source.observation_count == 1
+        assert not any(isinstance(event, YieldEvidence) for event in events)
+        await session.close()
+
+    asyncio.run(exercise())
+
+
+def test_prediction_reducer_bounds_and_prunes_causal_state() -> None:
+    reducer = InteractionPredictionReducer(
+        maximum_playback_conditions=2,
+        maximum_evidence_groups=2,
+        maximum_sample_lag=320,
+    )
+    first_chunk = create_chunk(sequence_number=0, stream_epoch=1, turn_epoch=1)
+    second_chunk = create_chunk(sequence_number=1, stream_epoch=1, turn_epoch=1)
+    third_chunk = create_chunk(sequence_number=2, stream_epoch=1, turn_epoch=1)
+
+    reducer.observe_audio_chunk(first_chunk)
+    reducer.observe_audio_chunk(second_chunk)
+    reducer.observe_audio_chunk(third_chunk)
+
+    assert reducer.retained_playback_condition_count == 2
+
+    for group_number in range(3):
+        prediction = create_prediction(third_chunk, transcript_revision=None)
+        reducer.reduce(
+            YieldEvidence(
+                stamp=prediction.stamp,
+                evidence_group_id=f"incomplete-{group_number}",
+                p_user_yield=prediction.p_user_yield,
+                p_user_speech=prediction.p_user_speech,
+                confidence=prediction.confidence,
+            )
+        )
+
+    assert reducer.pending_evidence_group_count == 2
+
+    far_chunk = create_chunk(sequence_number=5, stream_epoch=1, turn_epoch=1)
+    reducer.observe_audio_chunk(far_chunk)
+
+    assert reducer.pending_evidence_group_count == 0
+    assert reducer.retained_playback_condition_count == 1
+
+    next_turn_chunk = create_chunk(sequence_number=6, stream_epoch=1, turn_epoch=2)
+    reducer.observe_audio_chunk(next_turn_chunk)
+
+    assert reducer.retained_playback_condition_count == 1
+    reducer.reset_turn()
+    assert reducer.pending_evidence_group_count == 0
+    assert reducer.retained_playback_condition_count == 0
+
+
+def test_prediction_reducer_releases_completed_group_playback_condition() -> None:
+    async def exercise() -> None:
+        source = RecordingPredictionSource(condition_on_transcript=False)
+        provider = create_provider(source)
+        session = provider.create_session(stream_epoch=1)
+        first_chunk = create_chunk(sequence_number=0, stream_epoch=1, turn_epoch=1)
+        second_chunk = create_chunk(sequence_number=1, stream_epoch=1, turn_epoch=1)
+        reducer = InteractionPredictionReducer()
+        reducer.observe_audio_chunk(first_chunk)
+        reducer.observe_audio_chunk(second_chunk)
+
+        await session.add_audio(first_chunk)
+        await session.add_audio(second_chunk)
+        predictions = tuple(
+            prediction
+            for event in session.drain_events()
+            if (prediction := reducer.reduce(event)) is not None
+        )
+
+        assert len(predictions) == 1
+        assert reducer.pending_evidence_group_count == 0
+        assert reducer.retained_playback_condition_count == 1
         await session.close()
 
     asyncio.run(exercise())

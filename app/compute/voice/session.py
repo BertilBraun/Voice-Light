@@ -102,6 +102,7 @@ class SessionPolicy:
     vad_speculation_debounce_ms: int = 100
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
+    maximum_prediction_lag_ms: int = 80
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> Self:
@@ -147,6 +148,8 @@ class SessionPolicy:
             raise ValueError("The speculative threshold cannot exceed the commitment threshold.")
         if self.vad_speculation_debounce_ms < 0:
             raise ValueError("The VAD speculation debounce cannot be negative.")
+        if self.maximum_prediction_lag_ms < 0:
+            raise ValueError("The maximum prediction lag cannot be negative.")
 
 
 class SessionLifecycle(StrEnum):
@@ -307,6 +310,7 @@ class VoiceSession:
         self.first_endpoint_at: float | None = None
         self.first_endpoint_input_sample_position: int | None = None
         self.turn_had_invalidated_candidate = False
+        self.latest_user_speech_input_sample: int | None = None
         self.next_audio_sequence_number = 0
         now_ns = time.perf_counter_ns()
         self.playback_condition = PlaybackCondition(
@@ -438,6 +442,18 @@ class VoiceSession:
                         VoiceOperation.DETECT_SPEECH,
                         str(error),
                     ) from error
+                current_playback_condition = self.playback_condition
+                observed_playback_condition = PlaybackCondition(
+                    event_id=str(uuid4()),
+                    generation_id=current_playback_condition.generation_id,
+                    state=current_playback_condition.state,
+                    assistant_audible=current_playback_condition.assistant_audible,
+                    latest_output_sample_position=(
+                        current_playback_condition.latest_output_sample_position
+                    ),
+                    monotonic_time_ns=observation_time_ns,
+                    authority=current_playback_condition.authority,
+                )
                 chunk = CapturedAudioChunk(
                     pcm16=pcm_bytes,
                     sequence_number=self.next_audio_sequence_number,
@@ -450,7 +466,7 @@ class VoiceSession:
                         is_speech=is_speech,
                         monotonic_time_ns=observation_time_ns,
                     ),
-                    playback_condition=self.playback_condition,
+                    playback_condition=observed_playback_condition,
                 )
                 self.next_audio_sequence_number += 1
                 if not speech_active:
@@ -551,6 +567,7 @@ class VoiceSession:
                 self.first_endpoint_at = None
                 self.first_endpoint_input_sample_position = None
                 self.turn_had_invalidated_candidate = False
+                self.latest_user_speech_input_sample = None
         finally:
             await speech_understanding.close()
 
@@ -559,6 +576,8 @@ class VoiceSession:
         speech_understanding: SpeechUnderstandingSession,
         chunk: CapturedAudioChunk,
     ) -> InteractionPrediction | None:
+        if chunk.silero_evidence.is_speech:
+            self.latest_user_speech_input_sample = chunk.end_input_sample
         self.interaction_prediction_reducer.observe_audio_chunk(chunk)
         try:
             await speech_understanding.add_audio(chunk)
@@ -589,9 +608,48 @@ class VoiceSession:
                     )
                 case _:
                     prediction = self.interaction_prediction_reducer.reduce(event)
-                    if prediction is not None:
+                    if prediction is not None and self._prediction_is_applicable(
+                        prediction,
+                        current_input_sample=chunk.end_input_sample,
+                    ):
                         latest_prediction = prediction
         return latest_prediction
+
+    def _prediction_is_applicable(
+        self,
+        prediction: InteractionPrediction,
+        current_input_sample: int,
+    ) -> bool:
+        observed_through_input_sample = prediction.stamp.observed_through_input_sample
+        if observed_through_input_sample > current_input_sample:
+            raise ValueError("Prediction cannot observe beyond received input audio.")
+        maximum_lag_samples = _milliseconds_to_samples(self.policy.maximum_prediction_lag_ms)
+        lag_samples = current_input_sample - observed_through_input_sample
+        if lag_samples > maximum_lag_samples:
+            logger.info(
+                "stale interaction prediction discarded: session=%s event=%s lag_samples=%d "
+                "maximum_lag_samples=%d",
+                self.session_id,
+                prediction.stamp.event_id,
+                lag_samples,
+                maximum_lag_samples,
+            )
+            return False
+        latest_user_speech_input_sample = self.latest_user_speech_input_sample
+        if (
+            latest_user_speech_input_sample is not None
+            and latest_user_speech_input_sample > observed_through_input_sample
+        ):
+            logger.info(
+                "causally superseded interaction prediction discarded: session=%s event=%s "
+                "observed_through_sample=%d later_speech_sample=%d",
+                self.session_id,
+                prediction.stamp.event_id,
+                observed_through_input_sample,
+                latest_user_speech_input_sample,
+            )
+            return False
+        return True
 
     def _vad_endpoint_prediction(self, chunk: CapturedAudioChunk) -> InteractionPrediction:
         return InteractionPrediction(

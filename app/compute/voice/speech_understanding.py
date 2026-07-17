@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Final
@@ -42,6 +43,9 @@ from app.compute.voice.schemas import (
 )
 
 DEFAULT_OPTIONAL_PREDICTOR_QUEUE_SIZE: Final = 8
+DEFAULT_REDUCER_MAXIMUM_PLAYBACK_CONDITIONS: Final = 128
+DEFAULT_REDUCER_MAXIMUM_EVIDENCE_GROUPS: Final = 64
+DEFAULT_REDUCER_MAXIMUM_SAMPLE_LAG: Final = 1_600
 
 
 @dataclass(frozen=True)
@@ -52,36 +56,86 @@ class _PredictionWork:
 
 @dataclass
 class _EvidenceGroup:
+    stream_epoch: int
+    turn_epoch: int
+    observed_through_input_sample: int
     yield_evidence: YieldEvidence | None = None
     future_activity: FutureActivityEvidence | None = None
     turn_event: TurnEventEvidence | None = None
     overlap: OverlapDispositionEvidence | None = None
 
 
+@dataclass(frozen=True)
+class _PlaybackConditionRecord:
+    condition: PlaybackCondition
+    stream_epoch: int
+    turn_epoch: int
+    observed_through_input_sample: int
+
+
 class InteractionPredictionReducer:
     """Policy compatibility reducer for complete evidence emitted by legacy predictors."""
 
-    def __init__(self) -> None:
-        self._playback_conditions: dict[str, PlaybackCondition] = {}
-        self._groups: dict[str, _EvidenceGroup] = {}
+    def __init__(
+        self,
+        maximum_playback_conditions: int = DEFAULT_REDUCER_MAXIMUM_PLAYBACK_CONDITIONS,
+        maximum_evidence_groups: int = DEFAULT_REDUCER_MAXIMUM_EVIDENCE_GROUPS,
+        maximum_sample_lag: int = DEFAULT_REDUCER_MAXIMUM_SAMPLE_LAG,
+    ) -> None:
+        if maximum_playback_conditions <= 0:
+            raise ValueError("Reducer playback-condition capacity must be positive.")
+        if maximum_evidence_groups <= 0:
+            raise ValueError("Reducer evidence-group capacity must be positive.")
+        if maximum_sample_lag < 0:
+            raise ValueError("Reducer maximum sample lag cannot be negative.")
+        self.maximum_playback_conditions = maximum_playback_conditions
+        self.maximum_evidence_groups = maximum_evidence_groups
+        self.maximum_sample_lag = maximum_sample_lag
+        self._playback_conditions: OrderedDict[str, _PlaybackConditionRecord] = OrderedDict()
+        self._groups: OrderedDict[str, _EvidenceGroup] = OrderedDict()
+        self._stream_epoch: int | None = None
+        self._turn_epoch: int | None = None
+        self._minimum_observed_through_input_sample = 0
+
+    @property
+    def retained_playback_condition_count(self) -> int:
+        return len(self._playback_conditions)
+
+    @property
+    def pending_evidence_group_count(self) -> int:
+        return len(self._groups)
 
     def observe_audio_chunk(self, chunk: CapturedAudioChunk) -> None:
         condition = chunk.playback_condition
-        self._playback_conditions[condition.event_id] = condition
+        self._stream_epoch = chunk.stream_epoch
+        self._turn_epoch = chunk.turn_epoch
+        self._minimum_observed_through_input_sample = max(
+            0,
+            chunk.end_input_sample - self.maximum_sample_lag,
+        )
+        self._prune_stale_state()
+        self._playback_conditions[condition.event_id] = _PlaybackConditionRecord(
+            condition=condition,
+            stream_epoch=chunk.stream_epoch,
+            turn_epoch=chunk.turn_epoch,
+            observed_through_input_sample=chunk.end_input_sample,
+        )
+        self._playback_conditions.move_to_end(condition.event_id)
+        while len(self._playback_conditions) > self.maximum_playback_conditions:
+            self._playback_conditions.popitem(last=False)
 
     def reduce(self, event: SpeechUnderstandingEvent) -> InteractionPrediction | None:
+        group = self._group_for_event(event)
+        if group is None:
+            return None
         match event:
             case YieldEvidence():
-                group = self._groups.setdefault(event.evidence_group_id, _EvidenceGroup())
                 group.yield_evidence = event
             case FutureActivityEvidence():
-                group = self._groups.setdefault(event.evidence_group_id, _EvidenceGroup())
                 group.future_activity = event
             case TurnEventEvidence():
-                group = self._groups.setdefault(event.evidence_group_id, _EvidenceGroup())
                 group.turn_event = event
             case OverlapDispositionEvidence():
-                group = self._groups.setdefault(event.evidence_group_id, _EvidenceGroup())
                 group.overlap = event
             case _:
                 return None
@@ -89,6 +143,51 @@ class InteractionPredictionReducer:
 
     def reset_turn(self) -> None:
         self._groups.clear()
+        self._playback_conditions.clear()
+        self._stream_epoch = None
+        self._turn_epoch = None
+        self._minimum_observed_through_input_sample = 0
+
+    def _group_for_event(
+        self,
+        event: SpeechUnderstandingEvent,
+    ) -> _EvidenceGroup | None:
+        match event:
+            case (
+                YieldEvidence()
+                | FutureActivityEvidence()
+                | TurnEventEvidence()
+                | OverlapDispositionEvidence()
+            ):
+                pass
+            case _:
+                return None
+        stamp = event.stamp
+        if (
+            stamp.stream_epoch != self._stream_epoch
+            or stamp.turn_epoch != self._turn_epoch
+            or stamp.observed_through_input_sample < self._minimum_observed_through_input_sample
+        ):
+            return None
+        group = self._groups.get(event.evidence_group_id)
+        if group is None:
+            group = _EvidenceGroup(
+                stream_epoch=stamp.stream_epoch,
+                turn_epoch=stamp.turn_epoch,
+                observed_through_input_sample=stamp.observed_through_input_sample,
+            )
+            self._groups[event.evidence_group_id] = group
+            while len(self._groups) > self.maximum_evidence_groups:
+                self._groups.popitem(last=False)
+            return group
+        if (
+            stamp.stream_epoch != group.stream_epoch
+            or stamp.turn_epoch != group.turn_epoch
+            or stamp.observed_through_input_sample != group.observed_through_input_sample
+        ):
+            raise ValueError("Evidence siblings must share one causal observation.")
+        self._groups.move_to_end(event.evidence_group_id)
+        return group
 
     def _complete_prediction(self, evidence_group_id: str) -> InteractionPrediction | None:
         group = self._groups[evidence_group_id]
@@ -99,7 +198,12 @@ class InteractionPredictionReducer:
             or group.overlap is None
         ):
             return None
+        del self._groups[evidence_group_id]
         yield_evidence = group.yield_evidence
+        playback_event_id = yield_evidence.stamp.conditioned_playback_event_id
+        if playback_event_id is None:
+            raise ValueError("Legacy prediction evidence must cite its playback condition.")
+        playback_record = self._playback_conditions.pop(playback_event_id, None)
         if yield_evidence.p_user_speech is None or group.overlap.p_user_interruption is None:
             return None
         backchannel_probability = next(
@@ -112,11 +216,8 @@ class InteractionPredictionReducer:
         )
         if backchannel_probability is None:
             return None
-        playback_event_id = yield_evidence.stamp.conditioned_playback_event_id
-        if playback_event_id is None:
-            raise ValueError("Legacy prediction evidence must cite its playback condition.")
-        playback_condition = self._playback_conditions[playback_event_id]
-        del self._groups[evidence_group_id]
+        if playback_record is None:
+            return None
         return InteractionPrediction(
             stamp=yield_evidence.stamp,
             p_user_speech=yield_evidence.p_user_speech,
@@ -124,7 +225,7 @@ class InteractionPredictionReducer:
             p_user_backchannel=backchannel_probability,
             p_user_interruption=group.overlap.p_user_interruption,
             future_user_activity_horizons=group.future_activity.horizons,
-            assistant_playback_state=playback_condition.state,
+            assistant_playback_state=playback_record.condition.state,
             confidence=min(
                 yield_evidence.confidence,
                 group.future_activity.confidence,
@@ -132,6 +233,26 @@ class InteractionPredictionReducer:
                 group.overlap.confidence,
             ),
         )
+
+    def _prune_stale_state(self) -> None:
+        stale_playback_event_ids = tuple(
+            event_id
+            for event_id, record in self._playback_conditions.items()
+            if record.stream_epoch != self._stream_epoch
+            or record.turn_epoch != self._turn_epoch
+            or record.observed_through_input_sample < self._minimum_observed_through_input_sample
+        )
+        for event_id in stale_playback_event_ids:
+            del self._playback_conditions[event_id]
+        stale_evidence_group_ids = tuple(
+            group_id
+            for group_id, group in self._groups.items()
+            if group.stream_epoch != self._stream_epoch
+            or group.turn_epoch != self._turn_epoch
+            or group.observed_through_input_sample < self._minimum_observed_through_input_sample
+        )
+        for group_id in stale_evidence_group_ids:
+            del self._groups[group_id]
 
 
 class CompositeSpeechUnderstandingProvider:
@@ -401,9 +522,16 @@ class CompositeSpeechUnderstandingSession:
             transcript_revision=self.transcript_revisions.latest,
         )
         if self.prediction_queue.full():
-            dropped_work = self.prediction_queue.get_nowait()
-            assert dropped_work is not None
-            self.dropped_prediction_observations += 1
+            dropped_observation_count = (
+                self.prediction_queue.qsize() + int(self.prediction_in_flight) + 1
+            )
+            self.dropped_prediction_observations += dropped_observation_count
+            self.optional_predictor_degraded = True
+            while not self.prediction_queue.empty():
+                self.prediction_queue.get_nowait()
+            if self.prediction_task is not None and not self.prediction_task.done():
+                self.prediction_task.cancel()
+            self.prediction_in_flight = False
             self.event_queue.put_nowait(
                 SpeechUnderstandingDegradedEvent(
                     stamp=self._chunk_stamp(
@@ -415,11 +543,13 @@ class CompositeSpeechUnderstandingSession:
                     ),
                     component=SpeechUnderstandingComponent.STANDALONE_TURN_DETECTOR,
                     reason=(
-                        "Optional detector queue overflowed; the oldest observation was dropped."
+                        "Optional detector queue overflowed; continuity was lost and the detector "
+                        "was disabled for the conversation."
                     ),
                     dropped_observation_count=self.dropped_prediction_observations,
                 )
             )
+            return
         self.prediction_queue.put_nowait(work)
 
     async def _run_optional_predictor(self) -> None:
@@ -435,6 +565,8 @@ class CompositeSpeechUnderstandingSession:
             self.prediction_in_flight = True
             try:
                 prediction = await self.prediction_source.predict(observation)
+                if self.optional_predictor_degraded:
+                    return
                 if prediction is None:
                     if self._is_current(work.chunk):
                         self.event_queue.put_nowait(

@@ -96,6 +96,11 @@ def test_session_policy_rejects_invalid_vad_speculation_debounce(value: str) -> 
         SessionPolicy.from_environment({"VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS": value})
 
 
+def test_session_policy_rejects_negative_prediction_lag() -> None:
+    with pytest.raises(ValueError, match="maximum prediction lag"):
+        SessionPolicy(maximum_prediction_lag_ms=-1)
+
+
 class FakeSpeechDetector:
     def process_audio(self, pcm_bytes: bytes) -> bool:
         return any(pcm_bytes)
@@ -318,44 +323,76 @@ class DeterministicTurnPredictionSource:
         self.next_directive_index += 1
         if directive is None:
             return None
-        revision = observation.transcript_revision
-        chunk = observation.audio_chunk
-        return InteractionPrediction(
-            stamp=TraceStamp(
-                event_id=str(uuid4()),
-                parent_event_ids=(() if revision is None else (revision.stamp.event_id,)),
-                stream_epoch=chunk.stream_epoch,
-                turn_epoch=chunk.turn_epoch,
-                inference_step=chunk.sequence_number,
-                observation_id=f"audio:{chunk.stream_epoch}:{chunk.sequence_number}",
-                observation_monotonic_time_ns=chunk.monotonic_observation_time_ns,
-                emission_monotonic_time_ns=chunk.monotonic_observation_time_ns,
-                encoder_frame_start=None,
-                encoder_frame_end=None,
-                input_start_sample=chunk.start_input_sample,
-                input_end_sample=chunk.end_input_sample,
-                observed_through_input_sample=chunk.end_input_sample,
-                input_sample_position=chunk.end_input_sample,
-                output_sample_position=None,
-                conditioned_transcript_revision_id=(
-                    None if revision is None else revision.revision_id
-                ),
-                conditioned_playback_event_id=chunk.playback_condition.event_id,
-                source=CausalSource.TURN_ADAPTER,
-                model_name="deterministic-test-source",
-                model_revision="1",
-            ),
-            p_user_speech=directive.p_user_speech,
-            p_user_yield=directive.p_user_yield,
-            p_user_backchannel=0.0,
-            p_user_interruption=directive.p_user_interruption,
-            future_user_activity_horizons=(),
-            assistant_playback_state=chunk.playback_condition.state,
-            confidence=directive.confidence,
-        )
+        return create_test_prediction(observation, directive)
 
     async def close(self) -> None:
         self.closed = True
+
+
+class DelayedTurnPredictionSource:
+    def __init__(self, directive: PredictionDirective) -> None:
+        self.directive = directive
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.completed = threading.Event()
+        self.observation_count = 0
+        self.closed = False
+
+    async def predict(
+        self,
+        observation: TurnPredictionObservation,
+    ) -> InteractionPrediction | None:
+        self.observation_count += 1
+        if self.observation_count > 1:
+            return None
+        self.started.set()
+        await asyncio.to_thread(self.release.wait)
+        prediction = create_test_prediction(observation, self.directive)
+        self.completed.set()
+        return prediction
+
+    async def close(self) -> None:
+        self.closed = True
+        self.release.set()
+
+
+def create_test_prediction(
+    observation: TurnPredictionObservation,
+    directive: PredictionDirective,
+) -> InteractionPrediction:
+    revision = observation.transcript_revision
+    chunk = observation.audio_chunk
+    return InteractionPrediction(
+        stamp=TraceStamp(
+            event_id=str(uuid4()),
+            parent_event_ids=(() if revision is None else (revision.stamp.event_id,)),
+            stream_epoch=chunk.stream_epoch,
+            turn_epoch=chunk.turn_epoch,
+            inference_step=chunk.sequence_number,
+            observation_id=f"audio:{chunk.stream_epoch}:{chunk.sequence_number}",
+            observation_monotonic_time_ns=chunk.monotonic_observation_time_ns,
+            emission_monotonic_time_ns=chunk.monotonic_observation_time_ns,
+            encoder_frame_start=None,
+            encoder_frame_end=None,
+            input_start_sample=chunk.start_input_sample,
+            input_end_sample=chunk.end_input_sample,
+            observed_through_input_sample=chunk.end_input_sample,
+            input_sample_position=chunk.end_input_sample,
+            output_sample_position=None,
+            conditioned_transcript_revision_id=(None if revision is None else revision.revision_id),
+            conditioned_playback_event_id=chunk.playback_condition.event_id,
+            source=CausalSource.TURN_ADAPTER,
+            model_name="deterministic-test-source",
+            model_revision="1",
+        ),
+        p_user_speech=directive.p_user_speech,
+        p_user_yield=directive.p_user_yield,
+        p_user_backchannel=0.0,
+        p_user_interruption=directive.p_user_interruption,
+        future_user_activity_horizons=(),
+        assistant_playback_state=chunk.playback_condition.state,
+        confidence=directive.confidence,
+    )
 
 
 class InMemoryPlaybackSink:
@@ -910,6 +947,96 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
     assert latency.first_released_pcm is not None
     assert latency.first_browser_playback_ack is not None
     assert report.commit_to_first_played_audio_p50_ms is not None
+
+
+def test_prediction_observed_before_resumed_speech_cannot_start_candidate() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello", "hello", "hello", "hello"),),
+        final_texts=("hello",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DelayedTurnPredictionSource(
+        PredictionDirective(p_user_speech=0.0, p_user_yield=0.95)
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        policy=SessionPolicy(
+            silence_duration_ms=200,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=False,
+        ),
+        turn_prediction_source=prediction_source,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        assert prediction_source.started.wait(timeout=1)
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: transcriber.sessions[0].next_partial_index >= 3)
+        prediction_source.release.set()
+        assert prediction_source.completed.wait(timeout=1)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: transcriber.sessions[0].next_partial_index >= 5)
+
+        assert language_model.generation_started.is_set() is False
+        websocket.send_json({"type": "session.stop"})
+
+    assert sessions[0].generations == {}
+    assert language_model.conversations == []
+
+
+def test_prediction_beyond_policy_lag_cannot_start_candidate() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello",) * 8,),
+        final_texts=("hello",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DelayedTurnPredictionSource(
+        PredictionDirective(p_user_speech=0.0, p_user_yield=0.95)
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        policy=SessionPolicy(
+            silence_duration_ms=500,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=False,
+            maximum_prediction_lag_ms=80,
+        ),
+        turn_prediction_source=prediction_source,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        assert prediction_source.started.wait(timeout=1)
+        for _ in range(5):
+            websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: transcriber.sessions[0].next_partial_index >= 7)
+        prediction_source.release.set()
+        assert prediction_source.completed.wait(timeout=1)
+        wait_until(lambda: prediction_source.observation_count >= 6)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: transcriber.sessions[0].next_partial_index >= 8)
+
+        assert language_model.generation_started.is_set() is False
+        websocket.send_json({"type": "session.stop"})
+
+    assert sessions[0].generations == {}
+    assert language_model.conversations == []
 
 
 def test_first_vad_endpoint_speculates_during_commitment_silence() -> None:

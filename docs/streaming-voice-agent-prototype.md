@@ -114,9 +114,10 @@ evidence, and the current `PlaybackCondition`.
 `PlaybackCondition` is a causal input, not a detector output. It contains its own event ID, optional
 generation ID, `PlaybackState`, whether the assistant is believed audible, the latest output sample
 position, its monotonic observation time, and an authority value. The current implementation
-constructs the best server estimate from generation creation, private-candidate promotion, PCM
-release, playback-start/progress/stop/completion messages, and cancellation. Browser-authoritative
-playback acknowledgements remain a later milestone. The compatibility
+constructs a causal server-side estimate from generation creation, private-candidate promotion, PCM
+release, playback-start/progress/stop/completion messages, and cancellation. It is not authoritative
+playback state. Browser acknowledgements must first report what was actually queued, played,
+paused, and stopped before the authority can move to `BROWSER_AUTHORITATIVE`. The compatibility
 `InteractionPrediction.assistant_playback_state` field is deprecated and, where still populated,
 mirrors this input instead of being hardcoded to `IDLE`.
 
@@ -213,11 +214,17 @@ restarted worker reports the original output sample rate.
 Within the composite speech-understanding session, ASR is mandatory and authoritative. Any ASR
 send, stream, or finalization failure remains session-fatal and uses the existing Nemotron
 replacement path. The standalone interaction detector is optional. It runs behind a bounded queue
-and cannot delay ASR ingestion. Queue overflow drops the oldest detector observation and emits a
-degraded event with a cumulative gap count. Detector exceptions disable that source for the
-conversation and emit degradation while ASR plus Silero continue. Finalizing a turn cancels and
-reports any lagging old-turn detector work. Inputs from old stream or turn epochs are rejected, and
-late detector results are discarded before they enter policy state.
+and cannot delay ASR ingestion. Queue overflow is an acoustic continuity failure: it cancels and
+disables the standalone detector for the conversation rather than continuing recurrent state across
+a gap. A degraded event reports the cumulative discarded-observation count while ASR plus Silero
+continue. Detector exceptions likewise disable that source. Finalizing a turn cancels and reports
+any lagging old-turn detector work. Inputs from old stream or turn epochs are rejected. Within a
+turn, policy also rejects evidence beyond its bounded sample lag or superseded by a later
+speech-bearing chunk, so an old yield cannot create or commit a candidate after speech resumes.
+
+The compatibility reducer bounds playback-condition and incomplete evidence-group retention,
+prunes both by stream/turn epoch and observed-through sample watermark, removes completed groups
+immediately, and clears all retained causal input at logical-turn reset.
 
 The session lifecycle is explicit: `created`, `connected`, `ready`, `failed`, `stopping`, and
 `closed`. A generation moves through `created`, `streaming`, cancellation or stream completion, and
