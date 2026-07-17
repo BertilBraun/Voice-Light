@@ -23,15 +23,13 @@ from app.compute.voice.interfaces import (
     SpeechDetector,
     SpeechSynthesisSession,
     SpeechSynthesizer,
+    SpeechUnderstandingProvider,
+    SpeechUnderstandingSession,
     SynthesisEvent,
     SynthesisFirstAudioMetrics,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
-    Transcriber,
-    TranscriptionSession,
-    TurnPredictionObservation,
-    TurnPredictionSource,
     VoxtreamSynthesisFirstAudioMetrics,
 )
 from app.compute.voice.predictive import (
@@ -47,7 +45,6 @@ from app.compute.voice.predictive import (
     ReleasedAudioStart,
     ReleasedTextDelta,
     ReleasedWordBoundary,
-    TranscriptRevisionTracker,
     candidate_final_invalidation_reason,
     candidate_revision_invalidation_reason,
 )
@@ -55,12 +52,15 @@ from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
     AssistantAudioTextBoundaryEvent,
     AssistantTextDeltaEvent,
+    CapturedAudioChunk,
     CausalSource,
     ErrorEvent,
     InteractionPrediction,
     LlmHistoryEvent,
     LlmHistoryMessage,
     PlaybackCompleteEvent,
+    PlaybackCondition,
+    PlaybackConditionAuthority,
     PlaybackProgressEvent,
     PlaybackStartedEvent,
     PlaybackState,
@@ -68,7 +68,9 @@ from app.compute.voice.schemas import (
     SessionReadyEvent,
     SessionStartEvent,
     SessionStopEvent,
+    SileroEvidence,
     SpeechStateEvent,
+    SpeechUnderstandingDegradedEvent,
     TraceStamp,
     TranscriptEvent,
     TranscriptRevision,
@@ -76,6 +78,7 @@ from app.compute.voice.schemas import (
     VoiceServerEventType,
     voice_client_event_adapter,
 )
+from app.compute.voice.speech_understanding import InteractionPredictionReducer
 from app.compute.voice.word_stream import CompleteWordStream
 
 INPUT_SAMPLE_RATE = 16_000
@@ -190,6 +193,7 @@ class ActiveGeneration:
     candidate_id: int
     generation_id: int
     transcript_revision_id: int | None
+    prediction_evidence_event_id: str | None
     stable_transcript_prefix: str
     anchored_text: str
     input_audio_sample_position: int
@@ -270,20 +274,18 @@ class VoiceSession:
         self,
         websocket: WebSocket,
         speech_detector: SpeechDetector,
-        transcriber: Transcriber,
+        speech_understanding_provider: SpeechUnderstandingProvider,
         language_model: LanguageModel,
         speech_synthesizer: SpeechSynthesizer,
         policy: SessionPolicy,
-        turn_prediction_source: TurnPredictionSource | None = None,
         playback_sink: PlaybackSink | None = None,
     ) -> None:
         self.websocket = websocket
         self.speech_detector = speech_detector
-        self.transcriber = transcriber
+        self.speech_understanding = speech_understanding_provider.create_session(stream_epoch=1)
         self.language_model = language_model
         self.speech_synthesizer = speech_synthesizer
         self.policy = policy
-        self.turn_prediction_source = turn_prediction_source
         self.session_id = str(uuid4())
         self.audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(
             maxsize=AUDIO_QUEUE_MAX_CHUNKS
@@ -298,12 +300,24 @@ class VoiceSession:
         self.started = False
         self.lifecycle = SessionLifecycle.CREATED
         self.pending_generation_teardown: ActiveGeneration | None = None
-        self.transcript_revisions = TranscriptRevisionTracker()
+        self.latest_transcript_revision: TranscriptRevision | None = None
+        self.interaction_prediction_reducer = InteractionPredictionReducer()
         self.predictive_metrics = PredictiveMetrics()
         self.latest_prediction: InteractionPrediction | None = None
         self.first_endpoint_at: float | None = None
         self.first_endpoint_input_sample_position: int | None = None
         self.turn_had_invalidated_candidate = False
+        self.next_audio_sequence_number = 0
+        now_ns = time.perf_counter_ns()
+        self.playback_condition = PlaybackCondition(
+            event_id=str(uuid4()),
+            generation_id=None,
+            state=PlaybackState.IDLE,
+            assistant_audible=False,
+            latest_output_sample_position=0,
+            monotonic_time_ns=now_ns,
+            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
+        )
 
     async def run(self) -> None:
         await self.websocket.accept()
@@ -331,8 +345,7 @@ class VoiceSession:
             await self._request_generation_cancellation(send_event=False)
             await self._await_generation_teardown()
             await self._close_generation_tasks()
-            if self.turn_prediction_source is not None:
-                await self.turn_prediction_source.close()
+            await self.speech_understanding.close()
             for task in (receive_task, recognition_task):
                 try:
                     await task
@@ -399,12 +412,12 @@ class VoiceSession:
         )
 
     async def _recognition_loop(self) -> None:
-        transcription = self.transcriber.start_session()
+        speech_understanding = self.speech_understanding
         speech_active = False
         previous_chunk_was_speech = False
         silent_samples = 0
         vad_speculation_pending = False
-        pre_roll_chunks: deque[bytes] = deque()
+        pre_roll_chunks: deque[CapturedAudioChunk] = deque()
         pre_roll_samples = 0
         required_silent_samples = _milliseconds_to_samples(self.policy.silence_duration_ms)
         required_vad_speculation_debounce_samples = _milliseconds_to_samples(
@@ -414,7 +427,9 @@ class VoiceSession:
         try:
             while (pcm_bytes := await self.audio_queue.get()) is not None:
                 sample_count = _pcm_sample_count(pcm_bytes)
+                start_input_sample = self.audio_sample_count
                 self.audio_sample_count += sample_count
+                observation_time_ns = time.perf_counter_ns()
                 try:
                     is_speech = self.speech_detector.process_audio(pcm_bytes)
                 except Exception as error:
@@ -423,11 +438,26 @@ class VoiceSession:
                         VoiceOperation.DETECT_SPEECH,
                         str(error),
                     ) from error
+                chunk = CapturedAudioChunk(
+                    pcm16=pcm_bytes,
+                    sequence_number=self.next_audio_sequence_number,
+                    start_input_sample=start_input_sample,
+                    end_input_sample=self.audio_sample_count,
+                    monotonic_observation_time_ns=observation_time_ns,
+                    stream_epoch=speech_understanding.stream_epoch,
+                    turn_epoch=speech_understanding.turn_epoch,
+                    silero_evidence=SileroEvidence(
+                        is_speech=is_speech,
+                        monotonic_time_ns=observation_time_ns,
+                    ),
+                    playback_condition=self.playback_condition,
+                )
+                self.next_audio_sequence_number += 1
                 if not speech_active:
-                    pre_roll_chunks.append(pcm_bytes)
+                    pre_roll_chunks.append(chunk)
                     pre_roll_samples += sample_count
                     while pre_roll_samples > maximum_pre_roll_samples:
-                        pre_roll_samples -= _pcm_sample_count(pre_roll_chunks.popleft())
+                        pre_roll_samples -= _pcm_sample_count(pre_roll_chunks.popleft().pcm16)
                     if not is_speech:
                         continue
                     speech_active = True
@@ -438,7 +468,13 @@ class VoiceSession:
                     logger.info("speech started: session=%s", self.session_id)
                     await self._send_speech_state(VoiceServerEventType.VAD_STARTED)
                     for pre_roll_chunk in pre_roll_chunks:
-                        await self._add_transcription_audio(transcription, pre_roll_chunk)
+                        prediction = await self._add_speech_understanding_audio(
+                            speech_understanding,
+                            pre_roll_chunk,
+                        )
+                        if prediction is not None:
+                            self.latest_prediction = prediction
+                            await self._handle_prediction(prediction)
                     pre_roll_chunks.clear()
                     pre_roll_samples = 0
                     continue
@@ -449,9 +485,10 @@ class VoiceSession:
                     await self._invalidate_speculative_candidate(
                         CandidateInvalidationReason.USER_ACTIVITY_RESUMED
                     )
-                revision = await self._add_transcription_audio(transcription, pcm_bytes)
-                if revision is not None:
-                    await self._validate_candidate_revision(revision)
+                prediction = await self._add_speech_understanding_audio(
+                    speech_understanding,
+                    chunk,
+                )
                 if not is_speech and self.first_endpoint_at is None:
                     self.first_endpoint_at = time.perf_counter()
                     self.first_endpoint_input_sample_position = self.audio_sample_count
@@ -464,7 +501,6 @@ class VoiceSession:
                             output_sample_position=None,
                             text_offset=None,
                         )
-                prediction = await self._predict_turn(pcm_bytes, is_speech)
                 if vad_endpoint_detected and self.policy.vad_speculation_enabled:
                     vad_speculation_pending = True
                 prospective_silent_samples = silent_samples + sample_count
@@ -474,7 +510,7 @@ class VoiceSession:
                     and not is_speech
                     and prospective_silent_samples >= required_vad_speculation_debounce_samples
                 ):
-                    prediction = self._vad_endpoint_prediction()
+                    prediction = self._vad_endpoint_prediction(chunk)
                     vad_speculation_pending = False
                 if prediction is not None:
                     self.latest_prediction = prediction
@@ -508,48 +544,75 @@ class VoiceSession:
                 silent_samples = 0
                 vad_speculation_pending = False
                 await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
-                await self._finalize_turn(transcription)
-                await transcription.close()
-                transcription = self.transcriber.start_session()
-                self.transcript_revisions.reset_turn()
+                await self._finalize_turn(speech_understanding)
+                self.latest_transcript_revision = None
+                self.interaction_prediction_reducer.reset_turn()
                 self.latest_prediction = None
                 self.first_endpoint_at = None
                 self.first_endpoint_input_sample_position = None
                 self.turn_had_invalidated_candidate = False
         finally:
-            await transcription.close()
+            await speech_understanding.close()
 
-    async def _add_transcription_audio(
+    async def _add_speech_understanding_audio(
         self,
-        transcription: TranscriptionSession,
-        pcm_bytes: bytes,
-    ) -> TranscriptRevision | None:
+        speech_understanding: SpeechUnderstandingSession,
+        chunk: CapturedAudioChunk,
+    ) -> InteractionPrediction | None:
+        self.interaction_prediction_reducer.observe_audio_chunk(chunk)
         try:
-            partial_text = await transcription.add_audio(pcm_bytes)
+            await speech_understanding.add_audio(chunk)
         except Exception as error:
             raise _component_error(
                 error,
                 component=VoiceComponent.ASR,
                 operation=VoiceOperation.TRANSCRIBE,
             ) from error
-        if partial_text:
-            await self._send_transcript(VoiceServerEventType.TRANSCRIPT_PARTIAL, partial_text)
-            return self.transcript_revisions.update(
-                partial_text,
-                self.audio_sample_count,
-            )
-        return None
+        latest_prediction: InteractionPrediction | None = None
+        for event in speech_understanding.drain_events():
+            match event:
+                case TranscriptRevision():
+                    self.latest_transcript_revision = event
+                    await self._send_transcript(
+                        VoiceServerEventType.TRANSCRIPT_PARTIAL,
+                        f"{event.stable_prefix}{event.volatile_suffix}".strip(),
+                    )
+                    await self._validate_candidate_revision(event)
+                case SpeechUnderstandingDegradedEvent():
+                    logger.warning(
+                        "speech understanding degraded: session=%s component=%s reason=%s "
+                        "dropped_observations=%d",
+                        self.session_id,
+                        event.component,
+                        event.reason,
+                        event.dropped_observation_count,
+                    )
+                case _:
+                    prediction = self.interaction_prediction_reducer.reduce(event)
+                    if prediction is not None:
+                        latest_prediction = prediction
+        return latest_prediction
 
-    def _vad_endpoint_prediction(self) -> InteractionPrediction:
-        revision = self.transcript_revisions.latest
+    def _vad_endpoint_prediction(self, chunk: CapturedAudioChunk) -> InteractionPrediction:
         return InteractionPrediction(
             stamp=TraceStamp(
                 event_id=str(uuid4()),
-                parent_event_ids=(() if revision is None else (revision.stamp.event_id,)),
-                monotonic_time_ns=time.perf_counter_ns(),
-                input_sample_position=self.audio_sample_count,
-                output_sample_position=None,
-                transcript_revision_id=(None if revision is None else revision.revision_id),
+                parent_event_ids=(),
+                stream_epoch=chunk.stream_epoch,
+                turn_epoch=chunk.turn_epoch,
+                inference_step=chunk.sequence_number,
+                observation_id=f"audio:{chunk.stream_epoch}:{chunk.sequence_number}",
+                observation_monotonic_time_ns=chunk.monotonic_observation_time_ns,
+                emission_monotonic_time_ns=time.perf_counter_ns(),
+                encoder_frame_start=None,
+                encoder_frame_end=None,
+                input_start_sample=chunk.start_input_sample,
+                input_end_sample=chunk.end_input_sample,
+                observed_through_input_sample=chunk.end_input_sample,
+                input_sample_position=chunk.end_input_sample,
+                output_sample_position=chunk.playback_condition.latest_output_sample_position,
+                conditioned_transcript_revision_id=None,
+                conditioned_playback_event_id=chunk.playback_condition.event_id,
                 source=CausalSource.SILERO_VAD,
                 model_name="silero-vad",
                 model_revision=None,
@@ -559,52 +622,9 @@ class VoiceSession:
             p_user_backchannel=0.0,
             p_user_interruption=0.0,
             future_user_activity_horizons=(),
-            assistant_playback_state=PlaybackState.IDLE,
+            assistant_playback_state=chunk.playback_condition.state,
             confidence=self.policy.vad_endpoint_confidence,
         )
-
-    async def _predict_turn(
-        self,
-        pcm_bytes: bytes,
-        is_speech: bool,
-    ) -> InteractionPrediction | None:
-        source = self.turn_prediction_source
-        if source is None:
-            return None
-        observation = TurnPredictionObservation(
-            pcm_bytes=pcm_bytes,
-            is_speech=is_speech,
-            input_sample_position=self.audio_sample_count,
-            monotonic_time_ns=time.perf_counter_ns(),
-            transcript_revision=self.transcript_revisions.latest,
-        )
-        try:
-            prediction = await source.predict(observation)
-        except Exception as error:
-            raise VoiceComponentError(
-                VoiceComponent.TURN_PREDICTION,
-                VoiceOperation.PREDICT_TURN,
-                str(error),
-            ) from error
-        if prediction is None:
-            return None
-        if prediction.stamp.input_sample_position != observation.input_sample_position:
-            raise ValueError("Turn predictions must identify the observed input sample position.")
-        revision_id = (
-            None
-            if observation.transcript_revision is None
-            else observation.transcript_revision.revision_id
-        )
-        if prediction.stamp.transcript_revision_id != revision_id:
-            raise ValueError("Turn predictions must identify the observed transcript revision.")
-        if (
-            observation.transcript_revision is not None
-            and observation.transcript_revision.stamp.event_id
-            not in prediction.stamp.parent_event_ids
-        ):
-            raise ValueError("Turn predictions must cite the transcript revision as a parent.")
-        self.latest_prediction = prediction
-        return prediction
 
     async def _handle_prediction(self, prediction: InteractionPrediction) -> None:
         generation = self.active_generation
@@ -617,7 +637,7 @@ class VoiceSession:
                 await self._invalidate_speculative_candidate(
                     CandidateInvalidationReason.PREDICTION_RETURNED_TO_HOLD
                 )
-        revision = self.transcript_revisions.latest
+        revision = self.latest_transcript_revision
         prompted_text = (
             "" if revision is None else self._speculative_prompt_text(revision, prediction)
         )
@@ -713,11 +733,27 @@ class VoiceSession:
             return f"{revision.stable_prefix}{revision.volatile_suffix}".strip()
         return revision.stable_prefix.strip()
 
-    async def _finalize_turn(self, transcription: TranscriptionSession) -> None:
+    async def _finalize_turn(
+        self,
+        speech_understanding: SpeechUnderstandingSession,
+    ) -> None:
         committed_at = time.perf_counter()
         logger.info("transcription finalization started: session=%s", self.session_id)
         try:
-            final_text = (await transcription.finish()).strip()
+            finalized_turn = await speech_understanding.finalize_turn()
+            final_text = finalized_turn.text.strip()
+            for event in speech_understanding.drain_events():
+                if isinstance(event, TranscriptRevision):
+                    self.latest_transcript_revision = event
+                elif isinstance(event, SpeechUnderstandingDegradedEvent):
+                    logger.warning(
+                        "speech understanding degraded during finalization: "
+                        "session=%s component=%s reason=%s dropped_observations=%d",
+                        self.session_id,
+                        event.component,
+                        event.reason,
+                        event.dropped_observation_count,
+                    )
         except Exception as error:
             raise _component_error(
                 error,
@@ -811,6 +847,12 @@ class VoiceSession:
             hidden_qwen_tokens=generation.qwen_token_count,
             hidden_tts_samples=generation.release_gate.buffered_pcm_sample_count,
         )
+        self._set_playback_condition(
+            generation_id=generation.generation_id,
+            state=PlaybackState.QUEUED,
+            assistant_audible=False,
+            latest_output_sample_position=generation.tts_sample_count,
+        )
         if generation.release_gate.first_released_pcm_at is not None:
             generation.latency.first_audio_sent_at = generation.release_gate.first_released_pcm_at
             generation.latency.first_released_pcm = MediaLatencyPoint(
@@ -842,8 +884,8 @@ class VoiceSession:
         generation = self._create_generation(
             transcript_revision_id=(
                 None
-                if self.transcript_revisions.latest is None
-                else self.transcript_revisions.latest.revision_id
+                if self.latest_transcript_revision is None
+                else self.latest_transcript_revision.revision_id
             ),
             stable_transcript_prefix=final_text,
             anchored_text=final_text,
@@ -886,6 +928,12 @@ class VoiceSession:
         )
         self._transition_generation(generation, CandidateLifecycle.COMMITTED)
         self.active_generation = generation
+        self._set_playback_condition(
+            generation_id=generation.generation_id,
+            state=PlaybackState.QUEUED,
+            assistant_audible=False,
+            latest_output_sample_position=0,
+        )
         await self._send_event(
             LlmHistoryEvent(
                 generation_id=generation.generation_id,
@@ -917,6 +965,9 @@ class VoiceSession:
             candidate_id=generation_id,
             generation_id=generation_id,
             transcript_revision_id=transcript_revision_id,
+            prediction_evidence_event_id=(
+                None if causal_prediction is None else causal_prediction.stamp.event_id
+            ),
             stable_transcript_prefix=stable_transcript_prefix,
             anchored_text=anchored_text,
             input_audio_sample_position=input_audio_sample_position,
@@ -1272,6 +1323,16 @@ class VoiceSession:
                         )
                     )
                     generation.tts_sample_count += _pcm_sample_count(event.pcm_bytes)
+                    if (
+                        generation.release_gate.released
+                        and not self.playback_condition.assistant_audible
+                    ):
+                        self._set_playback_condition(
+                            generation_id=generation.generation_id,
+                            state=PlaybackState.QUEUED,
+                            assistant_audible=False,
+                            latest_output_sample_position=generation.tts_sample_count,
+                        )
                     if sequence_number == 0 and generation.release_gate.released:
                         generation.latency.first_audio_sent_at = (
                             generation.release_gate.first_released_pcm_at
@@ -1332,6 +1393,12 @@ class VoiceSession:
         self._transition_generation(generation, CandidateLifecycle.CANCELLATION_REQUESTED)
         self._mark_generation_interrupted(generation)
         self.active_generation = None
+        self._set_playback_condition(
+            generation_id=generation.generation_id,
+            state=PlaybackState.CANCELLED,
+            assistant_audible=False,
+            latest_output_sample_position=generation.tts_sample_count,
+        )
         self.pending_generation_teardown = generation
         if send_event:
             await self._send_audio_boundary(
@@ -1421,6 +1488,12 @@ class VoiceSession:
             return
         generation.playback_complete = True
         generation.accepts_playback = False
+        self._set_playback_condition(
+            generation_id=generation.generation_id,
+            state=PlaybackState.COMPLETED,
+            assistant_audible=False,
+            latest_output_sample_position=generation.tts_sample_count,
+        )
         self._commit_assistant_if_complete(generation)
 
     def _record_playback_started(self, generation_id: int) -> None:
@@ -1431,6 +1504,12 @@ class VoiceSession:
         if latency.playback_started_at is not None or latency.first_audio_sent_at is None:
             return
         latency.playback_started_at = time.perf_counter()
+        self._set_playback_condition(
+            generation_id=generation.generation_id,
+            state=PlaybackState.SPEAKING,
+            assistant_audible=True,
+            latest_output_sample_position=0,
+        )
         latency.first_browser_playback_ack = MediaLatencyPoint(
             monotonic_time_seconds=latency.playback_started_at,
             input_sample_position=self.audio_sample_count,
@@ -1469,6 +1548,12 @@ class VoiceSession:
             return
         if event.played_sample_count <= boundary_sample:
             return
+        self._set_playback_condition(
+            generation_id=generation.generation_id,
+            state=PlaybackState.SPEAKING,
+            assistant_audible=True,
+            latest_output_sample_position=event.played_sample_count,
+        )
         if event.text_offset <= generation.acknowledged_offset:
             return
         self._update_assistant_history(generation, event.text_offset)
@@ -1485,6 +1570,12 @@ class VoiceSession:
                 self._update_assistant_history(generation, event.text_offset)
         generation.accepts_playback = False
         generation.playback_stopped.set()
+        self._set_playback_condition(
+            generation_id=generation.generation_id,
+            state=PlaybackState.CANCELLED,
+            assistant_audible=False,
+            latest_output_sample_position=event.played_sample_count,
+        )
         self._mark_generation_interrupted(generation)
 
     def _update_assistant_history(
@@ -1531,6 +1622,23 @@ class VoiceSession:
             self.conversation[generation.history_index] = complete_message
         generation.accepts_playback = False
         self.active_generation = None
+
+    def _set_playback_condition(
+        self,
+        generation_id: int | None,
+        state: PlaybackState,
+        assistant_audible: bool,
+        latest_output_sample_position: int,
+    ) -> None:
+        self.playback_condition = PlaybackCondition(
+            event_id=str(uuid4()),
+            generation_id=generation_id,
+            state=state,
+            assistant_audible=assistant_audible,
+            latest_output_sample_position=latest_output_sample_position,
+            monotonic_time_ns=time.perf_counter_ns(),
+            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
+        )
 
     def _log_first_audio_latency(self, generation: ActiveGeneration) -> None:
         latency = generation.latency

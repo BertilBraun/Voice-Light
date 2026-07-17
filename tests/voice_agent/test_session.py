@@ -41,10 +41,13 @@ from app.compute.voice.predictive import (
 from app.compute.voice.schemas import (
     CausalSource,
     InteractionPrediction,
-    PlaybackState,
     TraceStamp,
 )
 from app.compute.voice.session import SessionPolicy, VoiceSession
+from app.compute.voice.speech_understanding import (
+    CompositeSpeechUnderstandingProvider,
+    SingleSessionTurnPredictionProvider,
+)
 
 SPEECH_CHUNK = b"\x01\x00" * 320
 SILENCE_CHUNK = b"\x00\x00" * 320
@@ -316,14 +319,28 @@ class DeterministicTurnPredictionSource:
         if directive is None:
             return None
         revision = observation.transcript_revision
+        chunk = observation.audio_chunk
         return InteractionPrediction(
             stamp=TraceStamp(
                 event_id=str(uuid4()),
                 parent_event_ids=(() if revision is None else (revision.stamp.event_id,)),
-                monotonic_time_ns=observation.monotonic_time_ns,
-                input_sample_position=observation.input_sample_position,
+                stream_epoch=chunk.stream_epoch,
+                turn_epoch=chunk.turn_epoch,
+                inference_step=chunk.sequence_number,
+                observation_id=f"audio:{chunk.stream_epoch}:{chunk.sequence_number}",
+                observation_monotonic_time_ns=chunk.monotonic_observation_time_ns,
+                emission_monotonic_time_ns=chunk.monotonic_observation_time_ns,
+                encoder_frame_start=None,
+                encoder_frame_end=None,
+                input_start_sample=chunk.start_input_sample,
+                input_end_sample=chunk.end_input_sample,
+                observed_through_input_sample=chunk.end_input_sample,
+                input_sample_position=chunk.end_input_sample,
                 output_sample_position=None,
-                transcript_revision_id=(None if revision is None else revision.revision_id),
+                conditioned_transcript_revision_id=(
+                    None if revision is None else revision.revision_id
+                ),
+                conditioned_playback_event_id=chunk.playback_condition.event_id,
                 source=CausalSource.TURN_ADAPTER,
                 model_name="deterministic-test-source",
                 model_revision="1",
@@ -333,7 +350,7 @@ class DeterministicTurnPredictionSource:
             p_user_backchannel=0.0,
             p_user_interruption=directive.p_user_interruption,
             future_user_activity_horizons=(),
-            assistant_playback_state=PlaybackState.IDLE,
+            assistant_playback_state=chunk.playback_condition.state,
             confidence=directive.confidence,
         )
 
@@ -1334,14 +1351,24 @@ def create_test_app(
 
     @web_app.websocket("/session")
     async def endpoint(websocket: WebSocket) -> None:
+        turn_prediction_provider = (
+            None
+            if turn_prediction_source is None
+            else SingleSessionTurnPredictionProvider(turn_prediction_source)
+        )
+        speech_understanding_provider = CompositeSpeechUnderstandingProvider(
+            transcriber=transcriber,
+            turn_prediction_provider=turn_prediction_provider,
+            asr_model_name="test-asr",
+            asr_model_revision="1",
+        )
         session = VoiceSession(
             websocket=websocket,
             speech_detector=speech_detector,
-            transcriber=transcriber,
+            speech_understanding_provider=speech_understanding_provider,
             language_model=language_model,
             speech_synthesizer=speech_synthesizer,
             policy=policy,
-            turn_prediction_source=turn_prediction_source,
             playback_sink=playback_sink,
         )
         if created_sessions is not None:

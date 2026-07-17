@@ -9,10 +9,15 @@ from typing import ParamSpec, TypeVar
 
 from app.compute.asr.models.registry import AsrModelCache
 from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessionLease
-from app.compute.voice.interfaces import SpeechSynthesizer
+from app.compute.voice.interfaces import SpeechSynthesizer, SpeechUnderstandingProvider
+from app.compute.voice.model_constants import (
+    NEMOTRON_ASR_MODEL_NAME,
+    NEMOTRON_ASR_MODEL_REVISION,
+)
 from app.compute.voice.models import TransformersLanguageModel
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
+from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingProvider
 from app.compute.voice.tts_selection import (
     SpeechSynthesisSettings,
     create_speech_synthesizer,
@@ -49,7 +54,7 @@ class ComputeRuntime:
         self.speech_synthesis_stage = MutableModelStage("speech_synthesis")
         self.batch_asr_models = AsrModelCache()
         self.voice_session_admission = SingleVoiceSessionAdmission()
-        self.streaming_asr: NemotronStreamingTranscriber | None = None
+        self.speech_understanding_provider: SpeechUnderstandingProvider | None = None
         self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
         self.language_model: TransformersLanguageModel | None = None
         self.speech_synthesizer: SpeechSynthesizer | None = None
@@ -79,18 +84,18 @@ class ComputeRuntime:
                 await self.loading_task
             except asyncio.CancelledError:
                 pass
-        if self.streaming_asr is not None:
-            await asyncio.to_thread(self.streaming_asr.close)
+        if self.speech_understanding_provider is not None:
+            await asyncio.to_thread(self.speech_understanding_provider.close)
         if self.language_model is not None:
             await asyncio.to_thread(self.language_model.close)
         if self.speech_synthesizer is not None:
             await asyncio.to_thread(self.speech_synthesizer.close)
         logger.info("compute runtime shutdown complete")
 
-    def require_streaming_asr(self) -> NemotronStreamingTranscriber:
-        if self.streaming_asr is None:
-            raise RuntimeError("Streaming ASR is not ready.")
-        return self.streaming_asr
+    def require_speech_understanding_provider(self) -> SpeechUnderstandingProvider:
+        if self.speech_understanding_provider is None:
+            raise RuntimeError("Speech understanding is not ready.")
+        return self.speech_understanding_provider
 
     def require_speech_detector_factory(self) -> SileroSpeechDetectorFactory:
         if self.speech_detector_factory is None:
@@ -123,12 +128,17 @@ class ComputeRuntime:
             self.speech_detector_factory = factory
 
     async def _load_streaming_asr(self) -> None:
-        model = await self._timed_load(
+        transcriber = await self._timed_load(
             self.streaming_asr_stage,
             NemotronStreamingTranscriber,
         )
-        if model is not None:
-            self.streaming_asr = model
+        if transcriber is not None:
+            self.speech_understanding_provider = CompositeSpeechUnderstandingProvider(
+                transcriber=transcriber,
+                turn_prediction_provider=None,
+                asr_model_name=NEMOTRON_ASR_MODEL_NAME,
+                asr_model_revision=NEMOTRON_ASR_MODEL_REVISION,
+            )
 
     async def _load_language_model(self) -> None:
         model = await self._timed_load(

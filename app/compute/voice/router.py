@@ -18,7 +18,7 @@ async def run_voice_session(
         session = VoiceSession(
             websocket=websocket,
             speech_detector=runtime.require_speech_detector_factory().create(),
-            transcriber=runtime.require_streaming_asr(),
+            speech_understanding_provider=runtime.require_speech_understanding_provider(),
             language_model=runtime.require_language_model(),
             speech_synthesizer=runtime.require_speech_synthesizer(),
             policy=SessionPolicy.from_environment(os.environ),

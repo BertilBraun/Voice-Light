@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.compute.voice.conversation import ConversationMessage
-from app.compute.voice.schemas import InteractionPrediction, TranscriptRevision
+from app.compute.voice.schemas import (
+    CapturedAudioChunk,
+    InteractionPrediction,
+    SpeechUnderstandingEvent,
+    TranscriptRevision,
+)
 
 
 class SpeechDetector(Protocol):
@@ -23,6 +28,8 @@ class TranscriptionSession(Protocol):
 class Transcriber(Protocol):
     def start_session(self) -> TranscriptionSession: ...
 
+    def close(self) -> None: ...
+
 
 class LanguageModel(Protocol):
     def stream_response(
@@ -39,10 +46,7 @@ class LanguageModelTextDelta:
 
 @dataclass(frozen=True)
 class TurnPredictionObservation:
-    pcm_bytes: bytes
-    is_speech: bool
-    input_sample_position: int
-    monotonic_time_ns: int
+    audio_chunk: CapturedAudioChunk
     transcript_revision: TranscriptRevision | None
 
 
@@ -53,6 +57,54 @@ class TurnPredictionSource(Protocol):
     ) -> InteractionPrediction | None: ...
 
     async def close(self) -> None: ...
+
+
+class TurnPredictionProvider(Protocol):
+    def create_session(self) -> TurnPredictionSource: ...
+
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class FinalizedSpeechTurn:
+    text: str
+    transcript_revision: TranscriptRevision | None
+
+
+class SpeechUnderstandingSession(Protocol):
+    @property
+    def stream_epoch(self) -> int: ...
+
+    @property
+    def turn_epoch(self) -> int: ...
+
+    async def add_audio(self, chunk: CapturedAudioChunk) -> None: ...
+
+    def events(self) -> AsyncIterator[SpeechUnderstandingEvent]: ...
+
+    def drain_events(self) -> tuple[SpeechUnderstandingEvent, ...]: ...
+
+    async def finalize_turn(self) -> FinalizedSpeechTurn: ...
+
+    async def close(self) -> None: ...
+
+
+class SpeechUnderstandingProvider(Protocol):
+    def create_session(self, stream_epoch: int) -> SpeechUnderstandingSession: ...
+
+    def close(self) -> None: ...
+
+
+class SpeechUnderstandingProviderFactory(Protocol):
+    def create(self) -> SpeechUnderstandingProvider: ...
+
+
+class IntegratedNemotronSpeechUnderstandingSession(SpeechUnderstandingSession, Protocol):
+    """Future same-pass Nemotron ASR and turn-adapter conversation state."""
+
+
+class IntegratedNemotronSpeechUnderstandingProvider(SpeechUnderstandingProvider, Protocol):
+    """Future application owner for the integrated Nemotron worker manager."""
 
 
 @dataclass(frozen=True)

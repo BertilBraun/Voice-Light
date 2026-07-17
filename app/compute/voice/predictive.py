@@ -10,7 +10,12 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import uuid4
 
-from app.compute.voice.schemas import CausalSource, TraceStamp, TranscriptRevision
+from app.compute.voice.schemas import (
+    CapturedAudioChunk,
+    CausalSource,
+    TraceStamp,
+    TranscriptRevision,
+)
 
 
 class CandidateLifecycle(StrEnum):
@@ -164,7 +169,15 @@ class TranscriptRevisionTracker:
         self.stable_prefix = ""
         self.latest: TranscriptRevision | None = None
 
-    def update(self, text: str, input_sample_position: int) -> TranscriptRevision | None:
+    def update(
+        self,
+        text: str,
+        chunk: CapturedAudioChunk,
+        inference_step: int,
+        observed_through_input_sample: int,
+        model_name: str | None,
+        model_revision: str | None,
+    ) -> TranscriptRevision | None:
         normalized_text = text.strip()
         if not normalized_text:
             return None
@@ -182,20 +195,31 @@ class TranscriptRevisionTracker:
             stamp=TraceStamp(
                 event_id=str(uuid4()),
                 parent_event_ids=(() if self.latest is None else (self.latest.stamp.event_id,)),
-                monotonic_time_ns=time.perf_counter_ns(),
-                input_sample_position=input_sample_position,
+                stream_epoch=chunk.stream_epoch,
+                turn_epoch=chunk.turn_epoch,
+                inference_step=inference_step,
+                observation_id=f"audio:{chunk.stream_epoch}:{chunk.sequence_number}",
+                observation_monotonic_time_ns=chunk.monotonic_observation_time_ns,
+                emission_monotonic_time_ns=time.perf_counter_ns(),
+                encoder_frame_start=None,
+                encoder_frame_end=None,
+                input_start_sample=chunk.start_input_sample,
+                input_end_sample=chunk.end_input_sample,
+                observed_through_input_sample=observed_through_input_sample,
+                input_sample_position=chunk.end_input_sample,
                 output_sample_position=None,
-                transcript_revision_id=revision_id,
+                conditioned_transcript_revision_id=None,
+                conditioned_playback_event_id=chunk.playback_condition.event_id,
                 source=CausalSource.NEMOTRON_ASR,
-                model_name=None,
-                model_revision=None,
+                model_name=model_name,
+                model_revision=model_revision,
             ),
             revision_id=revision_id,
             supersedes_revision_id=(None if self.latest is None else self.latest.revision_id),
             stable_prefix=stable_prefix,
             volatile_suffix=volatile_suffix,
-            audio_sample_position=input_sample_position,
-            stable_prefix_end_sample=input_sample_position,
+            audio_sample_position=chunk.end_input_sample,
+            stable_prefix_end_sample=chunk.end_input_sample,
             confidence=1.0,
         )
         self.previous_text = normalized_text

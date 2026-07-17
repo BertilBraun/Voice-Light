@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
@@ -16,7 +17,15 @@ from app.compute.voice.predictive import (
     candidate_final_invalidation_reason,
     candidate_revision_invalidation_reason,
 )
-from app.compute.voice.schemas import CausalSource
+from app.compute.voice.schemas import (
+    CapturedAudioChunk,
+    CausalSource,
+    PlaybackCondition,
+    PlaybackConditionAuthority,
+    PlaybackState,
+    SileroEvidence,
+    TranscriptRevision,
+)
 
 
 class InMemoryPlaybackSink:
@@ -74,10 +83,10 @@ def test_discarded_release_gate_never_reaches_sink() -> None:
 def test_transcript_revision_retains_stable_prefix_across_volatile_changes() -> None:
     tracker = TranscriptRevisionTracker()
 
-    first = tracker.update("book a", input_sample_position=320)
-    anchored = tracker.update("book a", input_sample_position=640)
-    extended = tracker.update("book a table", input_sample_position=960)
-    revised_suffix = tracker.update("book a train", input_sample_position=1_280)
+    first = update_transcript(tracker, "book a", sequence_number=0)
+    anchored = update_transcript(tracker, "book a", sequence_number=1)
+    extended = update_transcript(tracker, "book a table", sequence_number=2)
+    revised_suffix = update_transcript(tracker, "book a train", sequence_number=3)
 
     assert first is not None
     assert anchored is not None
@@ -89,6 +98,44 @@ def test_transcript_revision_retains_stable_prefix_across_volatile_changes() -> 
     assert revised_suffix.stable_prefix == "book a "
     assert revised_suffix.volatile_suffix == "train"
     assert revised_suffix.supersedes_revision_id == extended.revision_id
+
+
+def update_transcript(
+    tracker: TranscriptRevisionTracker,
+    text: str,
+    sequence_number: int,
+) -> TranscriptRevision | None:
+    start_sample = sequence_number * 320
+    chunk = CapturedAudioChunk(
+        pcm16=b"\x00\x00" * 320,
+        sequence_number=sequence_number,
+        start_input_sample=start_sample,
+        end_input_sample=start_sample + 320,
+        monotonic_observation_time_ns=sequence_number,
+        stream_epoch=1,
+        turn_epoch=1,
+        silero_evidence=SileroEvidence(
+            is_speech=True,
+            monotonic_time_ns=sequence_number,
+        ),
+        playback_condition=PlaybackCondition(
+            event_id=str(uuid4()),
+            generation_id=None,
+            state=PlaybackState.IDLE,
+            assistant_audible=False,
+            latest_output_sample_position=0,
+            monotonic_time_ns=sequence_number,
+            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
+        ),
+    )
+    return tracker.update(
+        text=text,
+        chunk=chunk,
+        inference_step=sequence_number,
+        observed_through_input_sample=chunk.end_input_sample,
+        model_name="test-asr",
+        model_revision="1",
+    )
 
 
 def test_final_candidate_validation_is_conservative() -> None:
