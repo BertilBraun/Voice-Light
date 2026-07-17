@@ -4,9 +4,11 @@ import argparse
 import asyncio
 import math
 import struct
+import sys
 import time
 import wave
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import Field, TypeAdapter
@@ -112,6 +114,7 @@ async def run_trial(
     speech_pcm: bytes,
     tail_silence_ms: int,
     trial: int,
+    trace_transcripts: bool,
 ) -> VoiceTrialResult:
     connected_at = time.perf_counter()
     observations = TrialObservations()
@@ -136,6 +139,19 @@ async def run_trial(
                         )
                 case str():
                     event = VOICE_SERVER_EVENT_ADAPTER.validate_json(message)
+                    if trace_transcripts:
+                        match event:
+                            case TranscriptEvent():
+                                observed_at = datetime.now(UTC).isoformat(timespec="milliseconds")
+                                print(
+                                    f"TRANSCRIPT_TRACE trial={trial} "
+                                    f"observed_at={observed_at} "
+                                    f"type={event.type} text={event.text!r}",
+                                    file=sys.stderr,
+                                    flush=True,
+                                )
+                            case _:
+                                pass
                     match event:
                         case SessionReadyEvent():
                             observations.ready_at = now
@@ -237,6 +253,7 @@ async def run_benchmark(
     wav_path: Path,
     trial_count: int,
     tail_silence_ms: int,
+    trace_transcripts: bool,
 ) -> VoiceBenchmarkReport:
     speech_pcm = read_pcm16_mono(wav_path)
     trials = tuple(
@@ -246,6 +263,7 @@ async def run_benchmark(
                 speech_pcm=speech_pcm,
                 tail_silence_ms=tail_silence_ms,
                 trial=trial,
+                trace_transcripts=trace_transcripts,
             )
             for trial in range(1, trial_count + 1)
         ]
@@ -287,6 +305,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--wav", required=True, type=Path)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--tail-silence-ms", type=int, default=1_200)
+    parser.add_argument("--trace-transcripts", action="store_true")
     arguments = parser.parse_args()
     if arguments.trials <= 0:
         parser.error("--trials must be positive.")
@@ -303,6 +322,7 @@ def main() -> None:
             wav_path=arguments.wav,
             trial_count=arguments.trials,
             tail_silence_ms=arguments.tail_silence_ms,
+            trace_transcripts=arguments.trace_transcripts,
         )
     )
     print(report.model_dump_json(indent=2))
