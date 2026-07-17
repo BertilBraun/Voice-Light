@@ -8,11 +8,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
-from app.local.asr.full_recording_models import (
-    FullRecordingAsrBatchItem,
-    FullRecordingAsrBatchRecord,
-    FullRecordingAsrTranscriptRecord,
-)
+from app.local.asr.full_recording_models import FullRecordingAsrTranscriptRecord
 from app.local.asr.service import RemoteAsrClient
 from app.shared.asr import (
     AsrModelId,
@@ -77,73 +73,7 @@ class FullRecordingTranscriptStore(Protocol):
     ) -> FullRecordingAsrTranscriptRecord: ...
 
 
-class FullRecordingAsrStore(FullRecordingTranscriptStore, Protocol):
-    def get_batch(self, batch_id: UUID) -> FullRecordingAsrBatchRecord: ...
-
-    def recover_running_items(self, batch_id: UUID) -> int: ...
-
-    def retry_failed_items(self, batch_id: UUID) -> int: ...
-
-    def claim_next_item(self, batch_id: UUID) -> FullRecordingAsrBatchItem | None: ...
-
-    def complete_item(self, item_id: UUID) -> None: ...
-
-    def fail_item(self, item_id: UUID, error: str) -> None: ...
-
-    def finalize_batch(self, batch_id: UUID) -> FullRecordingAsrBatchRecord: ...
-
-
 RemoteAsrClientFactory = Callable[[], RemoteAsrClient]
-
-
-def run_full_recording_asr_batch(
-    batch_id: UUID,
-    store: FullRecordingAsrStore,
-    remote_client_factory: RemoteAsrClientFactory,
-    maximum_tracks: int | None,
-    recover_running: bool,
-    retry_failed: bool,
-) -> FullRecordingAsrBatchRecord:
-    if maximum_tracks is not None and maximum_tracks <= 0:
-        raise ValueError("maximum_tracks must be positive when supplied.")
-    store.get_batch(batch_id)
-    if recover_running:
-        store.recover_running_items(batch_id)
-    if retry_failed:
-        store.retry_failed_items(batch_id)
-    processed_track_count = 0
-    while maximum_tracks is None or processed_track_count < maximum_tracks:
-        item = store.claim_next_item(batch_id)
-        if item is None:
-            break
-        try:
-            transcribe_full_recording_item(
-                item=item,
-                store=store,
-                remote_client_factory=remote_client_factory,
-            )
-        except Exception as error:
-            store.fail_item(item_id=item.id, error=f"{type(error).__name__}: {error}")
-        else:
-            store.complete_item(item.id)
-        processed_track_count += 1
-    return store.finalize_batch(batch_id)
-
-
-def transcribe_full_recording_item(
-    item: FullRecordingAsrBatchItem,
-    store: FullRecordingTranscriptStore,
-    remote_client_factory: RemoteAsrClientFactory,
-) -> tuple[FullRecordingAsrTranscriptRecord, ...]:
-    return transcribe_full_recording_track(
-        track=FullRecordingAsrTrack(
-            sample_track_id=item.sample_track_id,
-            access_uri=item.access_uri,
-            models=item.models,
-        ),
-        store=store,
-        remote_client_factory=remote_client_factory,
-    )
 
 
 def transcribe_full_recording_track(
