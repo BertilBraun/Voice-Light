@@ -6,6 +6,7 @@ from app.local.analyses.asr.crosstalk import (
     filter_crosstalk_words,
     frame_power,
 )
+from app.local.analyses.asr.merger import parakeet_canary_union_words
 from app.local.analyses.asr.service import word_from_timestamped_word
 from app.local.analyses.end_of_turn.conversation_scoring import (
     ConversationScoringConfig,
@@ -22,7 +23,7 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     TranscriptTurn,
 )
 from app.local.analyses.end_of_turn.service import SpeechSegment
-from app.local.asr.full_recording_models import FullRecordingAsrTranscriptPair
+from app.local.asr.full_recording_models import FullRecordingAsrTranscriptBundle
 from app.local.ingestion.alignment import SynchronizationAlignment, shift_words
 from app.shared.audio import AudioTrack
 from app.shared.quality import (
@@ -42,7 +43,7 @@ from app.shared.quality_analysis.vad import (
     speech_segments_for_mask,
 )
 
-ANNOTATION_VERSION = "asr-full-parakeet-two-speaker-annotation-v2"
+ANNOTATION_VERSION = "asr-full-parakeet-canary-two-speaker-annotation-v3"
 SCORING_CONFIG = ConversationScoringConfig()
 CROSSTALK_FILTER_CONFIG = CrosstalkFilterConfig()
 
@@ -50,7 +51,7 @@ CROSSTALK_FILTER_CONFIG = CrosstalkFilterConfig()
 def analyze_conversation(
     speaker1_audio: AudioTrack,
     speaker2_audio: AudioTrack,
-    transcript_pair: FullRecordingAsrTranscriptPair,
+    transcripts: FullRecordingAsrTranscriptBundle,
     alignment: SynchronizationAlignment,
 ) -> ConversationAnnotation:
     if speaker1_audio.metadata.sample_rate != speaker2_audio.metadata.sample_rate:
@@ -59,12 +60,26 @@ def analyze_conversation(
         raise ValueError("Full conversation annotation requires a shared audio timeline.")
     duration_seconds = speaker1_audio.metadata.duration_seconds
     speaker1_words = shift_words(
-        words=tuple(word_from_timestamped_word(word) for word in transcript_pair.speaker1.words),
+        words=parakeet_canary_union_words(
+            parakeet_words=tuple(
+                word_from_timestamped_word(word) for word in transcripts.parakeet.speaker1.words
+            ),
+            canary_words=tuple(
+                word_from_timestamped_word(word) for word in transcripts.canary.speaker1.words
+            ),
+        ),
         shift_seconds=0.0,
         timeline_duration_seconds=duration_seconds,
     )
     speaker2_words = shift_words(
-        words=tuple(word_from_timestamped_word(word) for word in transcript_pair.speaker2.words),
+        words=parakeet_canary_union_words(
+            parakeet_words=tuple(
+                word_from_timestamped_word(word) for word in transcripts.parakeet.speaker2.words
+            ),
+            canary_words=tuple(
+                word_from_timestamped_word(word) for word in transcripts.canary.speaker2.words
+            ),
+        ),
         shift_seconds=alignment.speaker2_shift_seconds,
         timeline_duration_seconds=duration_seconds,
     )

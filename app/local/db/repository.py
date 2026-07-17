@@ -91,8 +91,10 @@ class QualityResultInput:
     duration_mismatch_seconds: float | None
     track_correlation: float | None
     energy_envelope_correlation: float | None
-    speaker1_full_asr_transcript_id: UUID | None
-    speaker2_full_asr_transcript_id: UUID | None
+    speaker1_parakeet_full_asr_transcript_id: UUID | None
+    speaker2_parakeet_full_asr_transcript_id: UUID | None
+    speaker1_canary_full_asr_transcript_id: UUID | None
+    speaker2_canary_full_asr_transcript_id: UUID | None
     speaker2_shift_seconds: float | None
     synchronization_alignment_origin: str | None
     flags: tuple[str, ...]
@@ -402,7 +404,10 @@ class Repository:
                   estimated_usable_event_count,
                   conversation_events_per_hour, speech_ratio, silence_ratio, overlap_ratio,
                   duration_mismatch_seconds, track_correlation, energy_envelope_correlation,
-                  speaker1_full_asr_transcript_id, speaker2_full_asr_transcript_id,
+                  speaker1_parakeet_full_asr_transcript_id,
+                  speaker2_parakeet_full_asr_transcript_id,
+                  speaker1_canary_full_asr_transcript_id,
+                  speaker2_canary_full_asr_transcript_id,
                   speaker2_shift_seconds, synchronization_alignment_origin,
                   flags, payload
                 )
@@ -410,7 +415,8 @@ class Repository:
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s
                 )
                 RETURNING *
                 """,
@@ -449,8 +455,10 @@ class Repository:
                     quality_result.duration_mismatch_seconds,
                     quality_result.track_correlation,
                     quality_result.energy_envelope_correlation,
-                    quality_result.speaker1_full_asr_transcript_id,
-                    quality_result.speaker2_full_asr_transcript_id,
+                    quality_result.speaker1_parakeet_full_asr_transcript_id,
+                    quality_result.speaker2_parakeet_full_asr_transcript_id,
+                    quality_result.speaker1_canary_full_asr_transcript_id,
+                    quality_result.speaker2_canary_full_asr_transcript_id,
                     quality_result.speaker2_shift_seconds,
                     quality_result.synchronization_alignment_origin,
                     list(quality_result.flags),

@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import numpy as np
+import pytest
 
 from app.local.asr.full_recording_models import (
+    FullRecordingAsrTranscriptBundle,
     FullRecordingAsrTranscriptPair,
     FullRecordingAsrTranscriptRecord,
 )
@@ -16,6 +18,7 @@ from app.local.ingestion.discovery import DiscoveredSample
 from app.local.ingestion.service import (
     RegisteredSample,
     ready_sample,
+    track_durations_are_compatible,
 )
 from app.shared.asr import AsrModelId, TimestampedWord
 from app.shared.audio import AudioTrack
@@ -32,9 +35,9 @@ class ReadinessRepository:
 
 
 class ReadinessFullAsrRepository:
-    def __init__(self, pair: FullRecordingAsrTranscriptPair | None) -> None:
-        self.pair = pair
-        self.request: tuple[UUID, UUID, str, UUID, str, AsrModelId] | None = None
+    def __init__(self, transcripts: FullRecordingAsrTranscriptBundle | None) -> None:
+        self.transcripts = transcripts
+        self.requests: list[tuple[UUID, UUID, str, UUID, str, AsrModelId]] = []
 
     def get_exact_transcript_pair(
         self,
@@ -45,24 +48,32 @@ class ReadinessFullAsrRepository:
         speaker2_source_audio_sha256: str,
         model_id: AsrModelId,
     ) -> FullRecordingAsrTranscriptPair | None:
-        self.request = (
-            sample_id,
-            speaker1_track_id,
-            speaker1_source_audio_sha256,
-            speaker2_track_id,
-            speaker2_source_audio_sha256,
-            model_id,
+        self.requests.append(
+            (
+                sample_id,
+                speaker1_track_id,
+                speaker1_source_audio_sha256,
+                speaker2_track_id,
+                speaker2_source_audio_sha256,
+                model_id,
+            )
         )
-        return self.pair
+        if self.transcripts is None:
+            return None
+        return (
+            self.transcripts.parakeet
+            if model_id is AsrModelId.PARAKEET_TDT
+            else self.transcripts.canary
+        )
 
 
 def test_unreviewed_sample_uses_explicit_auditable_zero_alignment() -> None:
     registered = registered_sample()
-    pair = transcript_pair(registered=registered)
+    transcripts = transcript_bundle(registered=registered)
 
     ready = ready_sample(
         repository=ReadinessRepository(reviewed_shift_seconds=None),
-        full_asr_repository=ReadinessFullAsrRepository(pair=pair),
+        full_asr_repository=ReadinessFullAsrRepository(transcripts=transcripts),
         registered=registered,
     )
 
@@ -75,7 +86,9 @@ def test_reviewed_sample_uses_stored_offset() -> None:
 
     ready = ready_sample(
         repository=ReadinessRepository(reviewed_shift_seconds=-2.5),
-        full_asr_repository=ReadinessFullAsrRepository(pair=transcript_pair(registered=registered)),
+        full_asr_repository=ReadinessFullAsrRepository(
+            transcripts=transcript_bundle(registered=registered)
+        ),
         registered=registered,
     )
 
@@ -85,7 +98,8 @@ def test_reviewed_sample_uses_stored_offset() -> None:
 
 def test_full_conversation_annotation_uses_words_beyond_three_minutes() -> None:
     registered = registered_sample()
-    pair = transcript_pair(registered=registered)
+    transcripts = transcript_bundle(registered=registered)
+    pair = transcripts.parakeet
     pair = pair.model_copy(
         update={
             "speaker1": pair.speaker1.model_copy(
@@ -117,7 +131,12 @@ def test_full_conversation_annotation_uses_words_beyond_three_minutes() -> None:
     annotation = analyze_conversation(
         speaker1_audio=audio,
         speaker2_audio=audio,
-        transcript_pair=pair,
+        transcripts=transcripts.model_copy(
+            update={
+                "parakeet": pair,
+                "canary": pair.model_copy(update={"model_id": AsrModelId.CANARY}),
+            }
+        ),
         alignment=SynchronizationAlignment(
             speaker2_shift_seconds=0.0,
             origin=SynchronizationAlignmentOrigin.UNREVIEWED_ZERO,
@@ -130,6 +149,31 @@ def test_full_conversation_annotation_uses_words_beyond_three_minutes() -> None:
         target.start_seconds >= 200.0
         for speaker in (annotation.speaker1, annotation.speaker2)
         for target in speaker.segment_targets
+    )
+
+
+@pytest.mark.parametrize(
+    ("speaker1_duration_seconds", "speaker2_duration_seconds", "expected"),
+    (
+        (1_000.0, 1_010.0, True),
+        (1_000.0, 1_010.01, False),
+        (2_000.0, 2_020.0, True),
+        (2_001.0, 2_021.01, False),
+        (10_000.0, 10_020.0, True),
+        (10_000.0, 10_020.01, False),
+    ),
+)
+def test_track_duration_compatibility_requires_absolute_and_relative_limits(
+    speaker1_duration_seconds: float,
+    speaker2_duration_seconds: float,
+    expected: bool,
+) -> None:
+    assert (
+        track_durations_are_compatible(
+            speaker1_duration_seconds=speaker1_duration_seconds,
+            speaker2_duration_seconds=speaker2_duration_seconds,
+        )
+        is expected
     )
 
 
@@ -157,19 +201,44 @@ def registered_sample() -> RegisteredSample:
 
 
 def transcript_pair(registered: RegisteredSample) -> FullRecordingAsrTranscriptPair:
+    return transcript_pair_for_model(
+        registered=registered,
+        model_id=AsrModelId.PARAKEET_TDT,
+    )
+
+
+def transcript_bundle(registered: RegisteredSample) -> FullRecordingAsrTranscriptBundle:
+    return FullRecordingAsrTranscriptBundle(
+        parakeet=transcript_pair_for_model(
+            registered=registered,
+            model_id=AsrModelId.PARAKEET_TDT,
+        ),
+        canary=transcript_pair_for_model(
+            registered=registered,
+            model_id=AsrModelId.CANARY,
+        ),
+    )
+
+
+def transcript_pair_for_model(
+    registered: RegisteredSample,
+    model_id: AsrModelId,
+) -> FullRecordingAsrTranscriptPair:
     return FullRecordingAsrTranscriptPair(
         sample_id=registered.sample_id,
         sample_external_id=registered.discovered.external_id,
-        model_id=AsrModelId.PARAKEET_TDT,
+        model_id=model_id,
         speaker1=transcript_record(
             registered=registered,
             side=TrackSide.SPEAKER1,
             track_id=registered.speaker1_track_id,
+            model_id=model_id,
         ),
         speaker2=transcript_record(
             registered=registered,
             side=TrackSide.SPEAKER2,
             track_id=registered.speaker2_track_id,
+            model_id=model_id,
         ),
     )
 
@@ -178,6 +247,7 @@ def transcript_record(
     registered: RegisteredSample,
     side: TrackSide,
     track_id: UUID,
+    model_id: AsrModelId = AsrModelId.PARAKEET_TDT,
 ) -> FullRecordingAsrTranscriptRecord:
     now = datetime.now(tz=UTC)
     return FullRecordingAsrTranscriptRecord(
@@ -193,7 +263,7 @@ def transcript_record(
         ),
         prepared_audio_sha256="c" * 64,
         audio_filename=f"{registered.discovered.external_id}_{side.value}.flac",
-        model_id=AsrModelId.PARAKEET_TDT,
+        model_id=model_id,
         transcript_text="hello",
         words=(
             TimestampedWord(

@@ -127,8 +127,10 @@ class QualityResultRecord(FrozenBaseModel):
     duration_mismatch_seconds: float | None
     track_correlation: float | None
     energy_envelope_correlation: float | None
-    speaker1_full_asr_transcript_id: UUID | None
-    speaker2_full_asr_transcript_id: UUID | None
+    speaker1_parakeet_full_asr_transcript_id: UUID | None
+    speaker2_parakeet_full_asr_transcript_id: UUID | None
+    speaker1_canary_full_asr_transcript_id: UUID | None
+    speaker2_canary_full_asr_transcript_id: UUID | None
     speaker2_shift_seconds: float | None
     synchronization_alignment_origin: str | None
     flags: tuple[str, ...]

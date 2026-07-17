@@ -9,7 +9,10 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from app.local.asr.client import HttpRemoteAsrClient
-from app.local.asr.full_recording_models import FullRecordingAsrTranscriptPair
+from app.local.asr.full_recording_models import (
+    FullRecordingAsrTranscriptBundle,
+    FullRecordingAsrTranscriptPair,
+)
 from app.local.asr.full_recording_repository import FullRecordingAsrRepository
 from app.local.asr.full_recording_service import (
     FullRecordingAsrTrack,
@@ -62,6 +65,9 @@ from app.shared.storage.local import LocalStorageBackend
 
 logger = logging.getLogger(__name__)
 
+MAXIMUM_TRACK_DURATION_DIFFERENCE_SECONDS = 20.0
+MAXIMUM_TRACK_DURATION_DIFFERENCE_RATIO = 0.01
+
 
 @dataclass(frozen=True)
 class ProcessedSample:
@@ -86,7 +92,7 @@ class RegisteredSample:
 @dataclass(frozen=True)
 class ReadySample:
     registered: RegisteredSample
-    transcript_pair: FullRecordingAsrTranscriptPair
+    transcripts: FullRecordingAsrTranscriptBundle
     alignment: SynchronizationAlignment
 
 
@@ -98,8 +104,10 @@ class ProcessedReadySample:
 
 @dataclass(frozen=True)
 class QualityResultProvenance:
-    speaker1_full_asr_transcript_id: UUID
-    speaker2_full_asr_transcript_id: UUID
+    speaker1_parakeet_full_asr_transcript_id: UUID
+    speaker2_parakeet_full_asr_transcript_id: UUID
+    speaker1_canary_full_asr_transcript_id: UUID
+    speaker2_canary_full_asr_transcript_id: UUID
     speaker2_shift_seconds: float
     synchronization_alignment_origin: SynchronizationAlignmentOrigin
 
@@ -125,6 +133,12 @@ class IngestionSummary:
     status: JobStatus
     message: str
     error: str | None
+
+
+@dataclass(frozen=True)
+class DurationValidatedSamples:
+    accepted: list[DiscoveredSample]
+    excluded: list[DiscoveredSample]
 
 
 class IngestionService:
@@ -184,12 +198,19 @@ class IngestionService:
                 )
             )
             samples = discover_samples(storage, root, layout)
+            duration_validated = duration_validated_samples(
+                storage=storage,
+                samples=samples,
+            )
             completed_sample_ids = self.repository.completed_quality_sample_ids(
                 dataset.id,
                 METRIC_VERSION,
             )
-            pending_samples = pending_discovered_samples(samples, completed_sample_ids)
-            skipped_samples = len(samples) - len(pending_samples)
+            pending_samples = pending_discovered_samples(
+                duration_validated.accepted,
+                completed_sample_ids,
+            )
+            skipped_samples = len(duration_validated.accepted) - len(pending_samples)
             selected_samples = select_duration_limited_samples(
                 storage=storage,
                 samples=pending_samples,
@@ -199,8 +220,9 @@ class IngestionService:
                 job.id,
                 JobStatus.RUNNING,
                 (
-                    f"Discovered {len(samples)} samples; skipped {skipped_samples} completed "
-                    f"samples; selected {len(selected_samples)} samples"
+                    f"Discovered {len(samples)} samples; excluded "
+                    f"{len(duration_validated.excluded)} duration-mismatched samples; skipped "
+                    f"{skipped_samples} completed samples; selected {len(selected_samples)} samples"
                 ),
                 dataset_id=dataset.id,
                 total_samples=len(selected_samples),
@@ -299,6 +321,43 @@ def pending_discovered_samples(
     completed_sample_ids: set[str],
 ) -> list[DiscoveredSample]:
     return [sample for sample in samples if sample.external_id not in completed_sample_ids]
+
+
+def duration_validated_samples(
+    storage: StorageBackend,
+    samples: list[DiscoveredSample],
+) -> DurationValidatedSamples:
+    accepted: list[DiscoveredSample] = []
+    excluded: list[DiscoveredSample] = []
+    for sample in samples:
+        speaker1_duration_seconds = probe_local_audio_metadata(
+            local_storage_path(storage, sample.speaker1_path)
+        ).duration_seconds
+        speaker2_duration_seconds = probe_local_audio_metadata(
+            local_storage_path(storage, sample.speaker2_path)
+        ).duration_seconds
+        target = (
+            accepted
+            if track_durations_are_compatible(
+                speaker1_duration_seconds=speaker1_duration_seconds,
+                speaker2_duration_seconds=speaker2_duration_seconds,
+            )
+            else excluded
+        )
+        target.append(sample)
+    return DurationValidatedSamples(accepted=accepted, excluded=excluded)
+
+
+def track_durations_are_compatible(
+    speaker1_duration_seconds: float,
+    speaker2_duration_seconds: float,
+) -> bool:
+    shorter_duration_seconds = min(speaker1_duration_seconds, speaker2_duration_seconds)
+    difference_seconds = abs(speaker1_duration_seconds - speaker2_duration_seconds)
+    return (
+        difference_seconds <= MAXIMUM_TRACK_DURATION_DIFFERENCE_SECONDS
+        and difference_seconds <= shorter_duration_seconds * MAXIMUM_TRACK_DURATION_DIFFERENCE_RATIO
+    )
 
 
 def select_duration_limited_samples(
@@ -415,7 +474,7 @@ def ready_sample(
     full_asr_repository: FullTranscriptPairRepository,
     registered: RegisteredSample,
 ) -> ReadySample:
-    transcript_pair = full_asr_repository.get_exact_transcript_pair(
+    parakeet = full_asr_repository.get_exact_transcript_pair(
         sample_id=registered.sample_id,
         speaker1_track_id=registered.speaker1_track_id,
         speaker1_source_audio_sha256=registered.speaker1_source_audio_sha256,
@@ -423,8 +482,17 @@ def ready_sample(
         speaker2_source_audio_sha256=registered.speaker2_source_audio_sha256,
         model_id=AsrModelId.PARAKEET_TDT,
     )
+    canary = full_asr_repository.get_exact_transcript_pair(
+        sample_id=registered.sample_id,
+        speaker1_track_id=registered.speaker1_track_id,
+        speaker1_source_audio_sha256=registered.speaker1_source_audio_sha256,
+        speaker2_track_id=registered.speaker2_track_id,
+        speaker2_source_audio_sha256=registered.speaker2_source_audio_sha256,
+        model_id=AsrModelId.CANARY,
+    )
     speaker2_shift_seconds = repository.reviewed_speaker2_shift(sample_id=registered.sample_id)
-    assert transcript_pair is not None
+    assert parakeet is not None
+    assert canary is not None
     alignment = (
         SynchronizationAlignment(
             speaker2_shift_seconds=speaker2_shift_seconds,
@@ -438,7 +506,10 @@ def ready_sample(
     )
     return ReadySample(
         registered=registered,
-        transcript_pair=transcript_pair,
+        transcripts=FullRecordingAsrTranscriptBundle(
+            parakeet=parakeet,
+            canary=canary,
+        ),
         alignment=alignment,
     )
 
@@ -461,13 +532,13 @@ def process_ingestion_sample(
         FullRecordingAsrTrack(
             sample_track_id=registered.speaker1_track_id,
             access_uri=storage.access_uri(discovered.speaker1_path),
-            models=(AsrModelId.PARAKEET_TDT,),
+            models=(AsrModelId.PARAKEET_TDT, AsrModelId.CANARY),
             source_audio_sha256=registered.speaker1_source_audio_sha256,
         ),
         FullRecordingAsrTrack(
             sample_track_id=registered.speaker2_track_id,
             access_uri=storage.access_uri(discovered.speaker2_path),
-            models=(AsrModelId.PARAKEET_TDT,),
+            models=(AsrModelId.PARAKEET_TDT, AsrModelId.CANARY),
             source_audio_sha256=registered.speaker2_source_audio_sha256,
         ),
     ):
@@ -509,7 +580,7 @@ def process_ready_sample(
     annotation = analyze_conversation(
         speaker1_audio=aligned.speaker1,
         speaker2_audio=aligned.speaker2,
-        transcript_pair=ready.transcript_pair,
+        transcripts=ready.transcripts,
         alignment=ready.alignment,
     )
     quality_result = score_two_track_sample(
@@ -627,8 +698,10 @@ def persist_processed_ready_sample(
             sample_id=ready.registered.sample_id,
             quality_result=processed.quality_result,
             provenance=QualityResultProvenance(
-                speaker1_full_asr_transcript_id=ready.transcript_pair.speaker1.id,
-                speaker2_full_asr_transcript_id=ready.transcript_pair.speaker2.id,
+                speaker1_parakeet_full_asr_transcript_id=(ready.transcripts.parakeet.speaker1.id),
+                speaker2_parakeet_full_asr_transcript_id=(ready.transcripts.parakeet.speaker2.id),
+                speaker1_canary_full_asr_transcript_id=ready.transcripts.canary.speaker1.id,
+                speaker2_canary_full_asr_transcript_id=ready.transcripts.canary.speaker2.id,
                 speaker2_shift_seconds=ready.alignment.speaker2_shift_seconds,
                 synchronization_alignment_origin=ready.alignment.origin,
             ),
@@ -737,10 +810,20 @@ def quality_result_input(
         energy_envelope_correlation=audio_quality.energy_envelope_correlation
         if audio_quality is not None
         else None,
-        speaker1_full_asr_transcript_id=provenance.speaker1_full_asr_transcript_id
+        speaker1_parakeet_full_asr_transcript_id=(
+            provenance.speaker1_parakeet_full_asr_transcript_id
+        )
         if provenance is not None
         else None,
-        speaker2_full_asr_transcript_id=provenance.speaker2_full_asr_transcript_id
+        speaker2_parakeet_full_asr_transcript_id=(
+            provenance.speaker2_parakeet_full_asr_transcript_id
+        )
+        if provenance is not None
+        else None,
+        speaker1_canary_full_asr_transcript_id=(provenance.speaker1_canary_full_asr_transcript_id)
+        if provenance is not None
+        else None,
+        speaker2_canary_full_asr_transcript_id=(provenance.speaker2_canary_full_asr_transcript_id)
         if provenance is not None
         else None,
         speaker2_shift_seconds=provenance.speaker2_shift_seconds

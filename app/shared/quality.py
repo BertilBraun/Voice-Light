@@ -6,7 +6,7 @@ from pydantic import computed_field
 
 from app.shared.base_model import FrozenBaseModel
 
-METRIC_VERSION = "quality-conversation-full-parakeet-v5"
+METRIC_VERSION = "quality-conversation-full-parakeet-canary-v6"
 QUALITY_SAMPLE_RATE = 16_000
 
 

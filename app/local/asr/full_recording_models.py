@@ -35,3 +35,8 @@ class FullRecordingAsrTranscriptPair(FrozenBaseModel):
     model_id: AsrModelId
     speaker1: FullRecordingAsrTranscriptRecord
     speaker2: FullRecordingAsrTranscriptRecord
+
+
+class FullRecordingAsrTranscriptBundle(FrozenBaseModel):
+    parakeet: FullRecordingAsrTranscriptPair
+    canary: FullRecordingAsrTranscriptPair
