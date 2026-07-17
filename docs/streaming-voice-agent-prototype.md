@@ -49,6 +49,35 @@ validated playback offsets enter model history.
   utterance while teardown runs. Before starting the successor Qwen generation, the session awaits
   a teardown barrier, so old and new Qwen/TTS work never overlap accidentally.
 
+### Predictive generation
+
+`VoiceSession` accepts an optional typed `TurnPredictionSource`. No turn-taking checkpoint or
+canned production predictor is required: when no source is configured, the existing silence/VAD
+commit path remains the measurable baseline. A source consumes typed audio/transcript observations
+and may return the `InteractionPrediction` contract from the natural-interaction design study.
+Predictions must cite the exact transcript revision and input sample position they observed.
+
+Incremental ASR snapshots are tracked as a monotonic revision lineage with a stable prefix and
+volatile suffix. Crossing the configurable speculative yield threshold starts at most one Qwen/TTS
+candidate, anchored to the stable prefix, immutable conversation snapshot, revision ID, prediction,
+input sample position, and monotonic creation time. This does not call `finish()`; Nemotron remains
+open until the high-confidence commitment rule fires.
+
+Candidate output passes through a private release gate. Text deltas, word boundaries, PCM bytes,
+and their original offsets are retained in production order but are not sent to the browser and do
+not enter durable history. At commitment the server finalizes ASR and conservatively validates the
+final text without asking Qwen to judge its own response. An unchanged stable anchor with the same
+normalized lexical request is promoted; otherwise Qwen and TTS are cancelled, their teardown
+barrier is awaited, and a new authoritative generation receives the next monotonic generation ID.
+Promotion releases buffered output in order and turns the gate into a pass-through for a candidate
+that is still streaming.
+
+Candidates move through explicit created, prefilling, streaming, ready, committed, invalidated,
+cancellation-requested, cancelled, and failed states. Resumed user activity, a revised stable
+prefix, a decisive return to hold/continuation, floor-taking overlap, shutdown, or model failure
+invalidates speculative work. Backchannel probability alone does not invalidate committed output;
+audible pause, duck, and resume behavior remains outside this server milestone.
+
 ## Process and lifecycle boundaries
 
 Runtime readiness has four stages: speech detection, streaming ASR, language model, and speech
@@ -76,7 +105,8 @@ the development browser as structured `error` events containing `component`, `op
 `generation_id`, `retryable`, and `message`. The browser prints the complete error object and shows
 the fields in its connection status. Failures are not converted into successful empty output.
 
-Generated assistant text appears immediately as muted text. Kyutai's delayed-stream state exposes
+Committed assistant text appears immediately as muted text; speculative text remains private until
+promotion. Kyutai's delayed-stream state exposes
 the model step at which each input word starts. The server converts that step at Mimi's 12.5 Hz frame
 rate into a generation-relative PCM sample offset and sends the boundary to the playback worklet.
 Kyutai's delayed zero-code frames are decoded to prime Mimi but omitted from the transmitted PCM,
@@ -122,3 +152,15 @@ The voice research WebSocket is intentionally unauthenticated so the browser can
 Other compute HTTP APIs retain bearer-token authentication. The compute service rejects voice
 connections while its models are not ready and rejects concurrent live voice connections with code
 `1013`.
+
+## Predictive latency instrumentation
+
+Each candidate records monotonic timestamps together with input/output media positions for the
+first endpoint observation, speculation, Qwen start and first complete word, first TTS word and PCM,
+turn commitment, ASR finalization, promotion/invalidation, first released PCM, and first browser
+playback acknowledgement. Session summaries report candidate hit and invalidation rates with
+reasons, stale-candidate escapes, commit-to-first-playback p50/p90/p95, ground-truth end latency
+when annotations are supplied, hidden pre-commit work, wasted Qwen output tokens and TTS samples,
+baseline latency without a candidate, and latency after invalidation. Qwen token accounting uses
+the worker tokenizer's cumulative tokenization of decoded response text rather than word or
+character estimates.
