@@ -135,7 +135,13 @@ async def run_trial(
                         observations.first_pcm_at = now
                         observations.generation_id = generation_id
                         await websocket.send(
-                            PlaybackStartedEvent(generation_id=generation_id).model_dump_json()
+                            PlaybackStartedEvent(
+                                generation_id=generation_id,
+                                browser_monotonic_time_ns=time.perf_counter_ns(),
+                                rendered_output_sample_position=1,
+                                source_sample_position=1,
+                                output_sample_rate=24_000,
+                            ).model_dump_json()
                         )
                 case str():
                     event = VOICE_SERVER_EVENT_ADAPTER.validate_json(message)
@@ -189,7 +195,11 @@ async def run_trial(
                             observations.generation_id = event.generation_id
                             await websocket.send(
                                 PlaybackCompleteEvent(
-                                    generation_id=event.generation_id
+                                    generation_id=event.generation_id,
+                                    browser_monotonic_time_ns=time.perf_counter_ns(),
+                                    rendered_output_sample_position=1,
+                                    source_sample_position=1,
+                                    output_sample_rate=24_000,
                                 ).model_dump_json()
                             )
                             await websocket.send(SessionStopEvent().model_dump_json())

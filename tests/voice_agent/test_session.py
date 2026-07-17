@@ -41,6 +41,15 @@ from app.compute.voice.predictive import (
 from app.compute.voice.schemas import (
     CausalSource,
     InteractionPrediction,
+    PlaybackCommandAcknowledgementEvent,
+    PlaybackCommandAction,
+    PlaybackCommandEvent,
+    PlaybackCompleteEvent,
+    PlaybackPauseResult,
+    PlaybackProgressEvent,
+    PlaybackStartedEvent,
+    PlaybackState,
+    PlaybackStoppedEvent,
     TraceStamp,
 )
 from app.compute.voice.session import SessionPolicy, VoiceSession
@@ -542,11 +551,11 @@ def test_full_session_streams_audio_and_commits_naturally_completed_history() ->
 
         send_turn(websocket)
         first_events, audio_frame = receive_until(websocket, "assistant.audio.end")
-        websocket.send_json({"type": "playback.started", "generation_id": 1})
-        websocket.send_json({"type": "playback.complete", "generation_id": 1})
+        send_playback_started(websocket, 1)
+        send_playback_complete(websocket, 1)
         send_turn(websocket)
         second_events, _ = receive_until(websocket, "assistant.audio.end")
-        websocket.send_json({"type": "playback.complete", "generation_id": 2})
+        send_playback_complete(websocket, 2)
         websocket.send_json({"type": "session.stop"})
 
     assert "assistant.audio.text_boundary" in [event["type"] for event in first_events]
@@ -626,7 +635,7 @@ def test_synthesis_failure_cancels_generation_and_reaches_client() -> None:
         events, _ = receive_until(websocket, "error")
         websocket.send_json({"type": "session.stop"})
 
-    assert "assistant.cancel" in [event["type"] for event in events[:-1]]
+    assert "playback.command" in [event["type"] for event in events[:-1]]
     assert events[-1]["type"] == "error"
     assert events[-1]["message"] == ("Response generation failed: synthetic speech failure")
     assert events[-1]["component"] == "speech_synthesis"
@@ -649,15 +658,8 @@ def test_successor_generation_waits_for_cancelled_generation_teardown() -> None:
         send_turn(websocket)
         receive_until(websocket, "assistant.audio.start")
         websocket.send_bytes(SPEECH_CHUNK)
-        receive_until(websocket, "assistant.cancel")
-        websocket.send_json(
-            {
-                "type": "playback.stopped",
-                "generation_id": 1,
-                "text_offset": 0,
-                "played_sample_count": 0,
-            }
-        )
+        receive_until(websocket, "playback.command")
+        send_playback_stopped(websocket, 1, text_offset=0, played_sample_count=0)
         websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "assistant.text.delta")
@@ -665,6 +667,211 @@ def test_successor_generation_waits_for_cancelled_generation_teardown() -> None:
 
     assert events[-1]["generation_id"] == 2
     assert language_model.overlapped is False
+
+
+@pytest.mark.parametrize(
+    ("partial_text", "final_text"),
+    [
+        (None, ""),
+        ("mm-hm", "mm-hm"),
+        ("haha", "haha"),
+        ("okay", "okay"),
+    ],
+)
+def test_non_floor_taking_overlap_resumes_existing_generation_without_history(
+    partial_text: str | None,
+    final_text: str,
+) -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (partial_text, None)),
+        final_texts=("hello agent", final_text),
+    )
+    language_model = SlowLanguageModel()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        duck = receive_playback_command(websocket)
+        pause = receive_playback_command(websocket)
+        assert duck.action is PlaybackCommandAction.DUCK
+        assert pause.action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        send_playback_command_acknowledgement(
+            websocket,
+            duck,
+            resulting_state=PlaybackState.DUCKING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        paused_source_position = pause.requested_boundary_source_sample_position or 1
+        send_playback_command_acknowledgement(
+            websocket,
+            pause,
+            resulting_state=PlaybackState.PAUSED_BUFFERED,
+            pause_result=(
+                PlaybackPauseResult.WORD_BOUNDARY
+                if pause.requested_boundary_source_sample_position is not None
+                else PlaybackPauseResult.FORCED_SAMPLE
+            ),
+            source_sample_position=paused_source_position,
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        resume = receive_playback_command(websocket)
+        assert resume.action is PlaybackCommandAction.RESUME
+        assert resume.generation_id == 1
+        send_playback_command_acknowledgement(
+            websocket,
+            resume,
+            resulting_state=PlaybackState.RESUMING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=paused_source_position,
+        )
+        assert len(language_model.conversations) == 1
+        assert all(message.content != final_text for message in sessions[0].conversation)
+        websocket.send_json({"type": "session.stop"})
+
+    assert transcriber.sessions[1].finish_count == 1
+
+
+@pytest.mark.parametrize("interruption_text", ["How?", "No, wait", "Yeah, but this is wrong"])
+def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
+    interruption_text: str,
+) -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (interruption_text, None, None)),
+        final_texts=("hello agent", interruption_text),
+    )
+    language_model = SlowLanguageModel()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        cancel = receive_playback_command(websocket)
+        assert cancel.action is PlaybackCommandAction.CANCEL
+        send_playback_command_acknowledgement(
+            websocket,
+            cancel,
+            resulting_state=PlaybackState.CANCELLED,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1]["generation_id"] == 2
+    assert events[-1]["messages"][-1] == {
+        "role": "user",
+        "content": interruption_text,
+    }
+    assert language_model.conversations[-1][-1] == ConversationMessage(
+        role=ConversationRole.USER,
+        content=interruption_text,
+    )
+
+
+def test_sustained_transcript_free_overlap_yields_at_500_milliseconds() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), tuple(None for _ in range(30))),
+        final_texts=("hello agent", "continued request"),
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        SlowLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        for _ in range(25):
+            websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        cancel = receive_playback_command(websocket)
+        assert cancel.action is PlaybackCommandAction.CANCEL
+        send_playback_command_acknowledgement(
+            websocket,
+            cancel,
+            resulting_state=PlaybackState.CANCELLED,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1]["generation_id"] == 2
+    assert events[-1]["messages"][-1]["content"] == "continued request"
+
+
+def test_overlap_pause_command_marks_missing_word_boundary_for_forced_pause() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (None, None)),
+        final_texts=("hello agent", ""),
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        SlowLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+        generation = sessions[0].active_generation
+        assert generation is not None
+        generation.boundary_samples.clear()
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        pause = receive_playback_command(websocket)
+        assert pause.action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        assert pause.requested_boundary_source_sample_position is None
+        assert pause.rendered_output_sample_deadline is not None
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_language_model_failure_reaches_client_with_component_context() -> None:
@@ -729,7 +936,7 @@ def test_synthesis_cancellation_failure_reaches_client() -> None:
         receive_until(websocket, "assistant.text.delta")
         websocket.send_json({"type": "session.stop"})
 
-    assert "assistant.cancel" in [event["type"] for event in events[:-1]]
+    assert "playback.command" in [event["type"] for event in events[:-1]]
     assert events[-1]["type"] == "error"
     assert events[-1]["component"] == "speech_synthesis"
     assert events[-1]["message"] == (
@@ -795,15 +1002,8 @@ def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
         receive_until(websocket, "assistant.audio.start")
 
         websocket.send_bytes(SPEECH_CHUNK)
-        receive_until(websocket, "assistant.cancel")
-        websocket.send_json(
-            {
-                "type": "playback.stopped",
-                "generation_id": 1,
-                "text_offset": 7,
-                "played_sample_count": 3,
-            }
-        )
+        receive_until(websocket, "playback.command")
+        send_playback_stopped(websocket, 1, text_offset=7, played_sample_count=3)
         websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
@@ -829,25 +1029,16 @@ def test_invalid_or_stale_playback_progress_is_ignored() -> None:
         websocket.receive_json()
         send_turn(websocket)
         receive_until(websocket, "assistant.audio.start")
-        websocket.send_json(
-            {
-                "type": "playback.progress",
-                "generation_id": 1,
-                "text_offset": 7,
-                "boundary_start_sample": 99,
-                "played_sample_count": 100,
-            }
+        send_playback_progress(
+            websocket,
+            generation_id=1,
+            text_offset=7,
+            boundary_start_sample=99,
+            played_sample_count=100,
         )
         websocket.send_bytes(SPEECH_CHUNK)
-        receive_until(websocket, "assistant.cancel")
-        websocket.send_json(
-            {
-                "type": "playback.stopped",
-                "generation_id": 1,
-                "text_offset": 0,
-                "played_sample_count": 0,
-            }
-        )
+        receive_until(websocket, "playback.command")
+        send_playback_stopped(websocket, 1, text_offset=0, played_sample_count=0)
         websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
@@ -917,7 +1108,7 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
         websocket.send_bytes(SILENCE_CHUNK)
         events, audio_frame = receive_until(websocket, "llm.history")
         wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
-        websocket.send_json({"type": "playback.started", "generation_id": 1})
+        send_playback_started(websocket, 1)
         wait_until(
             lambda: sessions[0].generations[1].latency.first_browser_playback_ack is not None
         )
@@ -1448,7 +1639,7 @@ def measure_commit_to_playback_latency(
             websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "llm.history")
         wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
-        websocket.send_json({"type": "playback.started", "generation_id": 1})
+        send_playback_started(websocket, 1)
         wait_until(
             lambda: (
                 sessions[0].predictive_metrics.report().commit_to_first_played_audio_p50_ms
@@ -1509,6 +1700,112 @@ def send_turn(websocket: WebSocketTestSession) -> None:
     websocket.send_bytes(SPEECH_CHUNK)
     websocket.send_bytes(SILENCE_CHUNK)
     websocket.send_bytes(SILENCE_CHUNK)
+
+
+def send_playback_started(
+    websocket: WebSocketTestSession,
+    generation_id: int,
+) -> None:
+    websocket.send_text(
+        PlaybackStartedEvent(
+            generation_id=generation_id,
+            browser_monotonic_time_ns=time.perf_counter_ns(),
+            rendered_output_sample_position=1,
+            source_sample_position=1,
+            output_sample_rate=48_000,
+        ).model_dump_json()
+    )
+
+
+def send_playback_complete(
+    websocket: WebSocketTestSession,
+    generation_id: int,
+) -> None:
+    websocket.send_text(
+        PlaybackCompleteEvent(
+            generation_id=generation_id,
+            browser_monotonic_time_ns=time.perf_counter_ns(),
+            rendered_output_sample_position=1_000,
+            source_sample_position=500,
+            output_sample_rate=48_000,
+        ).model_dump_json()
+    )
+
+
+def send_playback_progress(
+    websocket: WebSocketTestSession,
+    generation_id: int,
+    text_offset: int,
+    boundary_start_sample: int,
+    played_sample_count: int,
+) -> None:
+    websocket.send_text(
+        PlaybackProgressEvent(
+            generation_id=generation_id,
+            text_offset=text_offset,
+            boundary_start_sample=boundary_start_sample,
+            played_sample_count=played_sample_count,
+            browser_monotonic_time_ns=time.perf_counter_ns(),
+            rendered_output_sample_position=played_sample_count * 2,
+            output_sample_rate=48_000,
+        ).model_dump_json()
+    )
+
+
+def send_playback_stopped(
+    websocket: WebSocketTestSession,
+    generation_id: int,
+    text_offset: int,
+    played_sample_count: int,
+) -> None:
+    websocket.send_text(
+        PlaybackStoppedEvent(
+            generation_id=generation_id,
+            text_offset=text_offset,
+            played_sample_count=played_sample_count,
+            browser_monotonic_time_ns=time.perf_counter_ns(),
+            rendered_output_sample_position=played_sample_count * 2,
+            output_sample_rate=48_000,
+        ).model_dump_json()
+    )
+
+
+def receive_playback_command(
+    websocket: WebSocketTestSession,
+) -> PlaybackCommandEvent:
+    events, _ = receive_until(websocket, "playback.command")
+    return PlaybackCommandEvent.model_validate(events[-1])
+
+
+def send_playback_command_acknowledgement(
+    websocket: WebSocketTestSession,
+    command: PlaybackCommandEvent,
+    resulting_state: PlaybackState,
+    pause_result: PlaybackPauseResult,
+    source_sample_position: int,
+) -> None:
+    websocket.send_text(
+        PlaybackCommandAcknowledgementEvent(
+            command_id=command.command_id,
+            generation_id=command.generation_id,
+            action=command.action,
+            stream_epoch=command.stream_epoch,
+            turn_epoch=command.turn_epoch,
+            resulting_state=resulting_state,
+            browser_monotonic_time_ns=time.perf_counter_ns(),
+            rendered_output_sample_position=source_sample_position * 2,
+            source_sample_position=source_sample_position,
+            output_sample_rate=48_000,
+            pause_result=pause_result,
+            current_gain=0.1258925,
+            gain_ramp_complete=True,
+            queued_source_sample_count=100,
+            discarded_source_sample_count=0,
+            replayed_source_sample_count=0,
+            skipped_source_sample_count=0,
+            resume_rejected=False,
+        ).model_dump_json()
+    )
 
 
 def receive_until(

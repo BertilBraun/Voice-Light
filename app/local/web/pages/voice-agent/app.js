@@ -229,7 +229,7 @@ async function setupCapture(stream) {
 
 async function setupPlayback(inputSampleRate) {
   playbackContext = new AudioContext();
-  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js");
+  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=3");
   playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", {
     outputChannelCount: [1],
     processorOptions: { inputSampleRate },
@@ -244,6 +244,10 @@ async function setupPlayback(inputSampleRate) {
         socket.send(JSON.stringify({
           type: "playback.started",
           generation_id: data.generationId,
+          browser_monotonic_time_ns: data.browserMonotonicTimeNs,
+          rendered_output_sample_position: data.renderedOutputSamplePosition,
+          source_sample_position: data.sourceSamplePosition,
+          output_sample_rate: data.outputSampleRate,
         }));
       }
       return;
@@ -264,6 +268,9 @@ async function setupPlayback(inputSampleRate) {
           generation_id: data.generationId,
           text_offset: data.textOffset,
           played_sample_count: data.playedSampleCount,
+          browser_monotonic_time_ns: data.browserMonotonicTimeNs,
+          rendered_output_sample_position: data.renderedOutputSamplePosition,
+          output_sample_rate: data.outputSampleRate,
         }));
       }
       return;
@@ -278,9 +285,41 @@ async function setupPlayback(inputSampleRate) {
       turn?.setSpokenOffset(completeOffset);
       turn?.acknowledgeOffset(completeOffset);
       turn?.setState("complete");
-      socket.send(JSON.stringify({ type: "playback.complete", generation_id: data.generationId }));
+      socket.send(JSON.stringify({
+        type: "playback.complete",
+        generation_id: data.generationId,
+        browser_monotonic_time_ns: data.browserMonotonicTimeNs,
+        rendered_output_sample_position: data.renderedOutputSamplePosition,
+        source_sample_position: data.sourceSamplePosition,
+        output_sample_rate: data.outputSampleRate,
+      }));
       vadStatus.textContent = "ready";
       playbackStatus.textContent = "waiting";
+      return;
+    }
+    if (data.type === "playback.acknowledgement") {
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify({
+        type: "playback.acknowledgement",
+        command_id: data.commandId,
+        generation_id: data.generationId,
+        action: data.action,
+        stream_epoch: data.streamEpoch,
+        turn_epoch: data.turnEpoch,
+        resulting_state: data.resultingState,
+        browser_monotonic_time_ns: data.browserMonotonicTimeNs,
+        rendered_output_sample_position: data.renderedOutputSamplePosition,
+        source_sample_position: data.sourceSamplePosition,
+        output_sample_rate: data.outputSampleRate,
+        pause_result: data.pauseResult,
+        current_gain: data.currentGain,
+        gain_ramp_complete: data.gainRampComplete,
+        queued_source_sample_count: data.queuedSourceSampleCount,
+        discarded_source_sample_count: data.discardedSourceSampleCount,
+        replayed_source_sample_count: data.replayedSourceSampleCount,
+        skipped_source_sample_count: data.skippedSourceSampleCount,
+        resume_rejected: data.resumeRejected,
+      }));
     }
   };
   playbackNode.connect(playbackContext.destination);
@@ -346,9 +385,38 @@ function handleMessage(event) {
       startSample: message.start_sample,
     });
   }
+  if (message.type === "playback.command") {
+    if (message.action === "cancel") {
+      cancelledGenerationId = Math.max(cancelledGenerationId, message.generation_id);
+      playbackStatus.textContent = "cancelled";
+    } else if (message.action === "duck") {
+      playbackStatus.textContent = "ducking";
+    } else if (message.action === "pause_at_boundary") {
+      playbackStatus.textContent = "pausing";
+    } else if (message.action === "resume") {
+      playbackStatus.textContent = "resuming";
+    }
+    playbackNode.port.postMessage({
+      type: "playback.command",
+      commandId: message.command_id,
+      generationId: message.generation_id,
+      action: message.action,
+      issuedMonotonicTimeNs: message.issued_monotonic_time_ns,
+      causalEventId: message.causal_event_id,
+      causalSource: message.causal_source,
+      streamEpoch: message.stream_epoch,
+      turnEpoch: message.turn_epoch,
+      confidence: message.confidence,
+      requestedBoundarySourceSamplePosition:
+        message.requested_boundary_source_sample_position,
+      renderedOutputSampleDeadline: message.rendered_output_sample_deadline,
+      targetGain: message.target_gain,
+      gainRampDurationMs: message.gain_ramp_duration_ms,
+      maximumPausedAgeMs: message.maximum_paused_age_ms,
+    });
+  }
   if (message.type === "assistant.cancel") {
     cancelledGenerationId = Math.max(cancelledGenerationId, message.generation_id);
-    playbackNode.port.postMessage({ type: "clear", generationId: message.generation_id });
     vadStatus.textContent = "ready";
     playbackStatus.textContent = "cancelled";
   }
@@ -482,6 +550,9 @@ function updateBoundaryProgress(progress) {
       text_offset: progress.textOffset,
       boundary_start_sample: progress.startSample,
       played_sample_count: progress.playedSampleCount,
+      browser_monotonic_time_ns: progress.browserMonotonicTimeNs,
+      rendered_output_sample_position: progress.renderedOutputSamplePosition,
+      output_sample_rate: progress.outputSampleRate,
     }));
   }
 }

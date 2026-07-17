@@ -32,6 +32,19 @@ from app.compute.voice.interfaces import (
     SynthesizedWordBoundary,
     VoxtreamSynthesisFirstAudioMetrics,
 )
+from app.compute.voice.overlap import (
+    OverlapEvidence,
+    OverlapMetrics,
+    OverlapResolutionKind,
+    ProvisionalOverlapDecision,
+    ProvisionalOverlapPolicyConfig,
+    ProvisionalVadTranscriptOverlapPolicy,
+)
+from app.compute.voice.playback import (
+    PlaybackAcknowledgementDisposition,
+    PlaybackController,
+    PlaybackPolicyConfig,
+)
 from app.compute.voice.predictive import (
     CandidateInvalidationReason,
     CandidateLifecycle,
@@ -58,9 +71,10 @@ from app.compute.voice.schemas import (
     InteractionPrediction,
     LlmHistoryEvent,
     LlmHistoryMessage,
+    PlaybackCommandAcknowledgementEvent,
+    PlaybackCommandEvent,
     PlaybackCompleteEvent,
     PlaybackCondition,
-    PlaybackConditionAuthority,
     PlaybackProgressEvent,
     PlaybackStartedEvent,
     PlaybackState,
@@ -223,6 +237,30 @@ class ActiveGeneration:
     lifecycle: CandidateLifecycle = CandidateLifecycle.CREATED
     invalidation_reason: CandidateInvalidationReason | None = None
     followed_invalidation: bool = False
+    continuation_allowed: asyncio.Event = field(default_factory=asyncio.Event)
+    synthesis_budget_available: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass
+class ActiveUserOverlap:
+    overlap_id: str
+    generation_id: int
+    onset_event_id: str
+    onset_input_sample: int
+    onset_monotonic_time_ns: int
+    stream_epoch: int
+    turn_epoch: int
+    duck_command_id: str
+    pause_command_id: str
+    synthesized_source_sample_count_at_onset: int
+    resume_command_id: str | None = None
+    cancel_command_id: str | None = None
+    pause_acknowledged_monotonic_time_ns: int | None = None
+    decision_event_id: str | None = None
+    decision: ProvisionalOverlapDecision | None = None
+    decision_monotonic_time_ns: int | None = None
+    generation_hold_applied: bool = False
+    resolution_metrics_recorded: bool = False
 
 
 class WebSocketPlaybackSink:
@@ -282,6 +320,8 @@ class VoiceSession:
         speech_synthesizer: SpeechSynthesizer,
         policy: SessionPolicy,
         playback_sink: PlaybackSink | None = None,
+        playback_policy: PlaybackPolicyConfig | None = None,
+        overlap_policy: ProvisionalVadTranscriptOverlapPolicy | None = None,
     ) -> None:
         self.websocket = websocket
         self.speech_detector = speech_detector
@@ -289,6 +329,18 @@ class VoiceSession:
         self.language_model = language_model
         self.speech_synthesizer = speech_synthesizer
         self.policy = policy
+        self.playback_controller = PlaybackController(
+            source_sample_rate=speech_synthesizer.sample_rate,
+            config=playback_policy or PlaybackPolicyConfig(),
+        )
+        self.overlap_policy = overlap_policy or ProvisionalVadTranscriptOverlapPolicy(
+            ProvisionalOverlapPolicyConfig(
+                classification_deadline_ms=(
+                    self.playback_controller.config.classification_deadline_ms
+                ),
+                interruption_probability_threshold=policy.floor_taking_overlap_threshold,
+            )
+        )
         self.session_id = str(uuid4())
         self.audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(
             maxsize=AUDIO_QUEUE_MAX_CHUNKS
@@ -312,16 +364,13 @@ class VoiceSession:
         self.turn_had_invalidated_candidate = False
         self.latest_user_speech_input_sample: int | None = None
         self.next_audio_sequence_number = 0
-        now_ns = time.perf_counter_ns()
-        self.playback_condition = PlaybackCondition(
-            event_id=str(uuid4()),
-            generation_id=None,
-            state=PlaybackState.IDLE,
-            assistant_audible=False,
-            latest_output_sample_position=0,
-            monotonic_time_ns=now_ns,
-            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
-        )
+        self.active_user_overlap: ActiveUserOverlap | None = None
+        self.user_overlap_traces: list[ActiveUserOverlap] = []
+        self.overlap_metrics = OverlapMetrics()
+
+    @property
+    def playback_condition(self) -> PlaybackCondition:
+        return self.playback_controller.condition
 
     async def run(self) -> None:
         await self.websocket.accept()
@@ -366,6 +415,16 @@ class VoiceSession:
                 self.session_id,
                 self.predictive_metrics.report(),
             )
+            logger.info(
+                "voice playback metrics: session=%s report=%r",
+                self.session_id,
+                self.playback_controller.metrics.report(),
+            )
+            logger.info(
+                "voice overlap metrics: session=%s report=%r",
+                self.session_id,
+                self.overlap_metrics.report(),
+            )
             logger.info("voice session closed: session=%s", self.session_id)
 
     async def _receive_loop(self) -> None:
@@ -389,13 +448,15 @@ class VoiceSession:
                 case SessionStartEvent():
                     await self._start(event)
                 case PlaybackStartedEvent():
-                    self._record_playback_started(event.generation_id)
+                    self._record_playback_started(event)
                 case PlaybackCompleteEvent():
-                    self._complete_playback(event.generation_id)
+                    self._complete_playback(event)
                 case PlaybackProgressEvent():
                     self._acknowledge_playback(event)
                 case PlaybackStoppedEvent():
                     self._stop_playback(event)
+                case PlaybackCommandAcknowledgementEvent():
+                    await self._acknowledge_playback_command(event)
                 case SessionStopEvent():
                     await self.audio_queue.put(None)
                     return
@@ -442,17 +503,8 @@ class VoiceSession:
                         VoiceOperation.DETECT_SPEECH,
                         str(error),
                     ) from error
-                current_playback_condition = self.playback_condition
-                observed_playback_condition = PlaybackCondition(
-                    event_id=str(uuid4()),
-                    generation_id=current_playback_condition.generation_id,
-                    state=current_playback_condition.state,
-                    assistant_audible=current_playback_condition.assistant_audible,
-                    latest_output_sample_position=(
-                        current_playback_condition.latest_output_sample_position
-                    ),
-                    monotonic_time_ns=observation_time_ns,
-                    authority=current_playback_condition.authority,
+                observed_playback_condition = self.playback_controller.observe_condition(
+                    observation_time_ns
                 )
                 chunk = CapturedAudioChunk(
                     pcm16=pcm_bytes,
@@ -480,7 +532,9 @@ class VoiceSession:
                     previous_chunk_was_speech = True
                     silent_samples = 0
                     vad_speculation_pending = False
-                    await self._request_generation_cancellation(send_event=True)
+                    overlap_started = await self._start_user_overlap(chunk)
+                    if not overlap_started:
+                        await self._request_generation_cancellation(send_event=True)
                     logger.info("speech started: session=%s", self.session_id)
                     await self._send_speech_state(VoiceServerEventType.VAD_STARTED)
                     for pre_roll_chunk in pre_roll_chunks:
@@ -493,6 +547,11 @@ class VoiceSession:
                             await self._handle_prediction(prediction)
                     pre_roll_chunks.clear()
                     pre_roll_samples = 0
+                    await self._evaluate_active_overlap(
+                        speech_understanding,
+                        speech_active_now=True,
+                        current_input_sample=chunk.end_input_sample,
+                    )
                     continue
 
                 vad_endpoint_detected = not is_speech and previous_chunk_was_speech
@@ -533,6 +592,25 @@ class VoiceSession:
                     await self._handle_prediction(prediction)
                     if self.active_generation is not None:
                         vad_speculation_pending = False
+                overlap_resolution = await self._evaluate_active_overlap(
+                    speech_understanding,
+                    speech_active_now=is_speech,
+                    current_input_sample=chunk.end_input_sample,
+                )
+                if overlap_resolution is OverlapResolutionKind.NON_FLOOR_TAKING:
+                    speech_active = False
+                    previous_chunk_was_speech = False
+                    silent_samples = 0
+                    vad_speculation_pending = False
+                    self.latest_transcript_revision = None
+                    self.interaction_prediction_reducer.reset_turn()
+                    self.latest_prediction = None
+                    self.first_endpoint_at = None
+                    self.first_endpoint_input_sample_position = None
+                    self.turn_had_invalidated_candidate = False
+                    self.latest_user_speech_input_sample = None
+                    await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
+                    continue
                 if is_speech:
                     silent_samples = 0
                     vad_speculation_pending = False
@@ -571,6 +649,287 @@ class VoiceSession:
         finally:
             await speech_understanding.close()
 
+    async def _start_user_overlap(self, chunk: CapturedAudioChunk) -> bool:
+        generation = self.active_generation
+        condition = self.playback_condition
+        if (
+            generation is None
+            or generation.speculative
+            or generation.cancelled
+            or condition.generation_id != generation.generation_id
+            or not condition.assistant_audible
+        ):
+            return False
+        onset_event_id = str(uuid4())
+        overlap_id = str(uuid4())
+        next_boundary = min(
+            (
+                boundary_sample
+                for boundary_sample in generation.boundary_samples.values()
+                if boundary_sample > condition.latest_source_sample_position
+            ),
+            default=None,
+        )
+        duck_command = self.playback_controller.issue_duck(
+            generation_id=generation.generation_id,
+            causal_event_id=onset_event_id,
+            causal_source=CausalSource.SILERO_VAD,
+            stream_epoch=chunk.stream_epoch,
+            turn_epoch=chunk.turn_epoch,
+            confidence=1.0,
+        )
+        pause_command = self.playback_controller.issue_pause(
+            generation_id=generation.generation_id,
+            causal_event_id=onset_event_id,
+            causal_source=CausalSource.SILERO_VAD,
+            stream_epoch=chunk.stream_epoch,
+            turn_epoch=chunk.turn_epoch,
+            confidence=1.0,
+            requested_boundary_source_sample_position=next_boundary,
+        )
+        self.active_user_overlap = ActiveUserOverlap(
+            overlap_id=overlap_id,
+            generation_id=generation.generation_id,
+            onset_event_id=onset_event_id,
+            onset_input_sample=chunk.start_input_sample,
+            onset_monotonic_time_ns=chunk.monotonic_observation_time_ns,
+            stream_epoch=chunk.stream_epoch,
+            turn_epoch=chunk.turn_epoch,
+            duck_command_id=duck_command.command_id,
+            pause_command_id=pause_command.command_id,
+            synthesized_source_sample_count_at_onset=generation.tts_sample_count,
+        )
+        assert self.active_user_overlap is not None
+        self.user_overlap_traces.append(self.active_user_overlap)
+        self.overlap_metrics.record_started()
+        await self._send_event(duck_command)
+        await self._send_event(pause_command)
+        logger.info(
+            "user overlap started: session=%s overlap=%s generation=%d input_sample=%d "
+            "duck_command=%s pause_command=%s boundary_sample=%s",
+            self.session_id,
+            overlap_id,
+            generation.generation_id,
+            chunk.start_input_sample,
+            duck_command.command_id,
+            pause_command.command_id,
+            next_boundary,
+        )
+        return True
+
+    async def _evaluate_active_overlap(
+        self,
+        speech_understanding: SpeechUnderstandingSession,
+        speech_active_now: bool,
+        current_input_sample: int,
+    ) -> OverlapResolutionKind | None:
+        overlap = self.active_user_overlap
+        if overlap is None:
+            return None
+        elapsed_ms = (
+            max(current_input_sample - overlap.onset_input_sample, 0) * 1_000 // INPUT_SAMPLE_RATE
+        )
+        generation = self.generations[overlap.generation_id]
+        if (
+            elapsed_ms >= self.playback_controller.config.generation_boundary_hold_ms
+            and not overlap.generation_hold_applied
+        ):
+            overlap.generation_hold_applied = True
+            generation.continuation_allowed.clear()
+            generation.synthesis_budget_available.clear()
+        revision = self.latest_transcript_revision
+        transcript = (
+            ""
+            if revision is None
+            else f"{revision.stable_prefix}{revision.volatile_suffix}".strip()
+        )
+        prediction = self.latest_prediction
+        prediction_is_causal = (
+            prediction is not None
+            and prediction.stamp.input_end_sample >= overlap.onset_input_sample
+        )
+        decision = self.overlap_policy.classify(
+            OverlapEvidence(
+                elapsed_ms=elapsed_ms,
+                speech_active=speech_active_now,
+                transcript=transcript,
+                transcript_event_id=None if revision is None else revision.stamp.event_id,
+                interruption_probability=(
+                    prediction.p_user_interruption if prediction_is_causal else None
+                ),
+                interruption_evidence_event_id=(
+                    prediction.stamp.event_id if prediction_is_causal else None
+                ),
+            )
+        )
+        if decision.kind is OverlapResolutionKind.UNRESOLVED:
+            return decision.kind
+        overlap.decision = decision
+        overlap.decision_event_id = str(uuid4())
+        overlap.decision_monotonic_time_ns = time.perf_counter_ns()
+        if decision.kind is OverlapResolutionKind.NON_FLOOR_TAKING:
+            return await self._finalize_non_floor_taking_overlap(
+                speech_understanding,
+                overlap,
+                decision,
+                elapsed_ms,
+            )
+        self._record_overlap_resolution(overlap, decision, generation)
+        await self._promote_overlap_to_user_turn(overlap, decision, transcript)
+        return decision.kind
+
+    async def _finalize_non_floor_taking_overlap(
+        self,
+        speech_understanding: SpeechUnderstandingSession,
+        overlap: ActiveUserOverlap,
+        provisional_decision: ProvisionalOverlapDecision,
+        elapsed_ms: int,
+    ) -> OverlapResolutionKind:
+        finalization_started_at = time.perf_counter()
+        try:
+            finalized_turn = await speech_understanding.finalize_turn()
+            final_text = finalized_turn.text.strip()
+            for event in speech_understanding.drain_events():
+                if isinstance(event, TranscriptRevision):
+                    self.latest_transcript_revision = event
+                elif isinstance(event, SpeechUnderstandingDegradedEvent):
+                    logger.warning(
+                        "speech understanding degraded during ephemeral overlap finalization: "
+                        "session=%s component=%s reason=%s dropped_observations=%d",
+                        self.session_id,
+                        event.component,
+                        event.reason,
+                        event.dropped_observation_count,
+                    )
+        except Exception as error:
+            raise _component_error(
+                error,
+                component=VoiceComponent.ASR,
+                operation=VoiceOperation.TRANSCRIBE,
+            ) from error
+        final_decision = self.overlap_policy.classify(
+            OverlapEvidence(
+                elapsed_ms=elapsed_ms,
+                speech_active=False,
+                transcript=final_text,
+                transcript_event_id=(
+                    None
+                    if finalized_turn.transcript_revision is None
+                    else finalized_turn.transcript_revision.stamp.event_id
+                ),
+                interruption_probability=None,
+                interruption_evidence_event_id=None,
+            )
+        )
+        if final_decision.kind is not OverlapResolutionKind.NON_FLOOR_TAKING:
+            overlap.decision = final_decision
+            overlap.decision_event_id = str(uuid4())
+            overlap.decision_monotonic_time_ns = time.perf_counter_ns()
+            generation = self.generations[overlap.generation_id]
+            self._record_overlap_resolution(overlap, final_decision, generation)
+            await self._promote_overlap_to_user_turn(overlap, final_decision, final_text)
+            finalized_at = time.perf_counter()
+            await self._commit_finalized_user_turn(
+                final_text=final_text,
+                committed_at=finalization_started_at,
+                finalized_at=finalized_at,
+                finalization_seconds=finalized_at - finalization_started_at,
+            )
+            return OverlapResolutionKind.NON_FLOOR_TAKING
+        generation = self.active_generation
+        decision_event_id = overlap.decision_event_id
+        assert decision_event_id is not None
+        if generation is None or generation.generation_id != overlap.generation_id:
+            self.active_user_overlap = None
+            return OverlapResolutionKind.NON_FLOOR_TAKING
+        self._record_overlap_resolution(overlap, final_decision, generation)
+        generation.continuation_allowed.set()
+        generation.synthesis_budget_available.set()
+        resume_command = self.playback_controller.issue_resume(
+            generation_id=generation.generation_id,
+            causal_event_id=decision_event_id,
+            causal_source=provisional_decision.causal_source,
+            stream_epoch=overlap.stream_epoch,
+            turn_epoch=overlap.turn_epoch,
+            confidence=provisional_decision.confidence,
+        )
+        self.active_user_overlap = None
+        if resume_command is None:
+            cancel_command = await self._request_generation_cancellation(
+                send_event=True,
+                causal_event_id=decision_event_id,
+                causal_source=provisional_decision.causal_source,
+                confidence=provisional_decision.confidence,
+            )
+            overlap.cancel_command_id = (
+                None if cancel_command is None else cancel_command.command_id
+            )
+        else:
+            overlap.resume_command_id = resume_command.command_id
+            await self._send_event(resume_command)
+        logger.info(
+            "ephemeral user overlap resolved: session=%s overlap=%s generation=%d "
+            "duration_ms=%d transcript=%r decision=%s",
+            self.session_id,
+            overlap.overlap_id,
+            overlap.generation_id,
+            elapsed_ms,
+            final_text,
+            provisional_decision.kind,
+        )
+        return OverlapResolutionKind.NON_FLOOR_TAKING
+
+    def _record_overlap_resolution(
+        self,
+        overlap: ActiveUserOverlap,
+        decision: ProvisionalOverlapDecision,
+        generation: ActiveGeneration,
+    ) -> None:
+        if overlap.resolution_metrics_recorded:
+            return
+        decision_time_ns = overlap.decision_monotonic_time_ns
+        assert decision_time_ns is not None
+        overlap.resolution_metrics_recorded = True
+        self.overlap_metrics.record_resolution(
+            kind=decision.kind,
+            onset_monotonic_time_ns=overlap.onset_monotonic_time_ns,
+            decision_monotonic_time_ns=decision_time_ns,
+            generated_source_sample_count=max(
+                generation.tts_sample_count - overlap.synthesized_source_sample_count_at_onset,
+                0,
+            ),
+        )
+
+    async def _promote_overlap_to_user_turn(
+        self,
+        overlap: ActiveUserOverlap,
+        decision: ProvisionalOverlapDecision,
+        transcript: str,
+    ) -> None:
+        decision_event_id = overlap.decision_event_id
+        assert decision_event_id is not None
+        self.active_user_overlap = None
+        if transcript:
+            await self._send_transcript(VoiceServerEventType.TRANSCRIPT_PARTIAL, transcript)
+        cancel_command = await self._request_generation_cancellation(
+            send_event=True,
+            causal_event_id=decision_event_id,
+            causal_source=decision.causal_source,
+            confidence=decision.confidence,
+        )
+        overlap.cancel_command_id = None if cancel_command is None else cancel_command.command_id
+        logger.info(
+            "user overlap promoted: session=%s overlap=%s generation=%d decision=%s "
+            "reason=%s fast_path=%s transcript=%r",
+            self.session_id,
+            overlap.overlap_id,
+            overlap.generation_id,
+            decision.kind,
+            decision.reason,
+            decision.fast_path,
+            transcript,
+        )
+
     async def _add_speech_understanding_audio(
         self,
         speech_understanding: SpeechUnderstandingSession,
@@ -592,10 +951,11 @@ class VoiceSession:
             match event:
                 case TranscriptRevision():
                     self.latest_transcript_revision = event
-                    await self._send_transcript(
-                        VoiceServerEventType.TRANSCRIPT_PARTIAL,
-                        f"{event.stable_prefix}{event.volatile_suffix}".strip(),
-                    )
+                    if self.active_user_overlap is None:
+                        await self._send_transcript(
+                            VoiceServerEventType.TRANSCRIPT_PARTIAL,
+                            f"{event.stable_prefix}{event.volatile_suffix}".strip(),
+                        )
                     await self._validate_candidate_revision(event)
                 case SpeechUnderstandingDegradedEvent():
                     logger.warning(
@@ -827,6 +1187,20 @@ class VoiceSession:
             finalization_seconds,
             len(final_text),
         )
+        await self._commit_finalized_user_turn(
+            final_text=final_text,
+            committed_at=committed_at,
+            finalized_at=finalized_at,
+            finalization_seconds=finalization_seconds,
+        )
+
+    async def _commit_finalized_user_turn(
+        self,
+        final_text: str,
+        committed_at: float,
+        finalized_at: float,
+        finalization_seconds: float,
+    ) -> None:
         await self._send_transcript(VoiceServerEventType.TRANSCRIPT_FINAL, final_text)
         generation = self.active_generation
         if not final_text:
@@ -905,12 +1279,7 @@ class VoiceSession:
             hidden_qwen_tokens=generation.qwen_token_count,
             hidden_tts_samples=generation.release_gate.buffered_pcm_sample_count,
         )
-        self._set_playback_condition(
-            generation_id=generation.generation_id,
-            state=PlaybackState.QUEUED,
-            assistant_audible=False,
-            latest_output_sample_position=generation.tts_sample_count,
-        )
+        self.playback_controller.replace_generation(generation.generation_id)
         if generation.release_gate.first_released_pcm_at is not None:
             generation.latency.first_audio_sent_at = generation.release_gate.first_released_pcm_at
             generation.latency.first_released_pcm = MediaLatencyPoint(
@@ -986,12 +1355,7 @@ class VoiceSession:
         )
         self._transition_generation(generation, CandidateLifecycle.COMMITTED)
         self.active_generation = generation
-        self._set_playback_condition(
-            generation_id=generation.generation_id,
-            state=PlaybackState.QUEUED,
-            assistant_audible=False,
-            latest_output_sample_position=0,
-        )
+        self.playback_controller.replace_generation(generation.generation_id)
         await self._send_event(
             LlmHistoryEvent(
                 generation_id=generation.generation_id,
@@ -1043,6 +1407,8 @@ class VoiceSession:
                 turn_ready_at=turn_ready_at,
             ),
         )
+        generation.continuation_allowed.set()
+        generation.synthesis_budget_available.set()
         self.generations[generation_id] = generation
         return generation
 
@@ -1129,10 +1495,16 @@ class VoiceSession:
                 self.active_generation = None
                 if generation.release_gate.released:
                     self._mark_generation_interrupted(generation)
-                    await self._send_audio_boundary(
-                        VoiceServerEventType.ASSISTANT_CANCEL,
-                        generation.generation_id,
-                    )
+                    if self.playback_controller.active_generation_id == generation.generation_id:
+                        command = self.playback_controller.issue_cancel(
+                            generation_id=generation.generation_id,
+                            causal_event_id=str(uuid4()),
+                            causal_source=CausalSource.USER_COMMAND,
+                            stream_epoch=self.speech_understanding.stream_epoch,
+                            turn_epoch=self.speech_understanding.turn_epoch,
+                            confidence=1.0,
+                        )
+                        await self._send_event(command)
             failure = _component_error(
                 error,
                 component=VoiceComponent.SESSION,
@@ -1261,9 +1633,13 @@ class VoiceSession:
                     text=text_delta,
                 )
             )
+            completed_word = False
             for word in word_stream.add_text(text_delta):
+                completed_word = True
                 self._record_first_qwen_complete_word(generation, word)
                 await self._add_synthesis_word(generation, synthesis, word)
+            if completed_word:
+                await generation.continuation_allowed.wait()
         if not generation.response_text.strip():
             raise VoiceComponentError(
                 VoiceComponent.LANGUAGE_MODEL,
@@ -1351,6 +1727,7 @@ class VoiceSession:
                         )
                     )
                 case SynthesizedAudioChunk():
+                    await self._wait_for_synthesis_overlap_budget(generation, event.start_sample)
                     if len(event.pcm_bytes) % PCM_BYTES_PER_SAMPLE != 0:
                         raise ValueError("TTS PCM16 frames must contain complete samples.")
                     if event.start_sample != expected_start_sample:
@@ -1381,15 +1758,10 @@ class VoiceSession:
                         )
                     )
                     generation.tts_sample_count += _pcm_sample_count(event.pcm_bytes)
-                    if (
-                        generation.release_gate.released
-                        and not self.playback_condition.assistant_audible
-                    ):
-                        self._set_playback_condition(
+                    if generation.release_gate.released:
+                        self.playback_controller.estimate_queued_source_position(
                             generation_id=generation.generation_id,
-                            state=PlaybackState.QUEUED,
-                            assistant_audible=False,
-                            latest_output_sample_position=generation.tts_sample_count,
+                            synthesized_source_sample_count=generation.tts_sample_count,
                         )
                     if sequence_number == 0 and generation.release_gate.released:
                         generation.latency.first_audio_sent_at = (
@@ -1420,6 +1792,27 @@ class VoiceSession:
             ReleasedAudioEnd(generation_id=generation.generation_id)
         )
 
+    async def _wait_for_synthesis_overlap_budget(
+        self,
+        generation: ActiveGeneration,
+        next_source_sample_position: int,
+    ) -> None:
+        overlap = self.active_user_overlap
+        if overlap is None or overlap.generation_id != generation.generation_id:
+            return
+        maximum_ahead_samples = (
+            self.speech_synthesizer.sample_rate
+            * self.playback_controller.config.maximum_synthesized_ahead_ms
+            // 1_000
+        )
+        maximum_source_sample_position = (
+            self.playback_condition.latest_source_sample_position + maximum_ahead_samples
+        )
+        if next_source_sample_position < maximum_source_sample_position:
+            return
+        generation.synthesis_budget_available.clear()
+        await generation.synthesis_budget_available.wait()
+
     def _record_first_released_pcm(self, generation: ActiveGeneration) -> None:
         if generation.first_release_recorded:
             return
@@ -1433,38 +1826,50 @@ class VoiceSession:
         )
         generation.first_release_recorded = True
 
-    async def _request_generation_cancellation(self, send_event: bool) -> None:
+    async def _request_generation_cancellation(
+        self,
+        send_event: bool,
+        causal_event_id: str | None = None,
+        causal_source: CausalSource = CausalSource.USER_COMMAND,
+        confidence: float = 1.0,
+    ) -> PlaybackCommandEvent | None:
         generation = self.active_generation
         if generation is None:
-            return
+            return None
         if generation.speculative:
             await self._invalidate_speculative_candidate(
                 CandidateInvalidationReason.SESSION_CANCELLED
             )
-            return
+            return None
         if generation.lifecycle in (
             CandidateLifecycle.CANCELLATION_REQUESTED,
             CandidateLifecycle.CANCELLED,
         ):
-            return
+            return None
         generation.cancelled = True
         self._transition_generation(generation, CandidateLifecycle.CANCELLATION_REQUESTED)
         self._mark_generation_interrupted(generation)
-        self.active_generation = None
-        self._set_playback_condition(
-            generation_id=generation.generation_id,
-            state=PlaybackState.CANCELLED,
-            assistant_audible=False,
-            latest_output_sample_position=generation.tts_sample_count,
-        )
-        self.pending_generation_teardown = generation
-        if send_event:
-            await self._send_audio_boundary(
-                VoiceServerEventType.ASSISTANT_CANCEL,
-                generation.generation_id,
+        command: PlaybackCommandEvent | None = None
+        if send_event and self.playback_controller.active_generation_id == generation.generation_id:
+            command = self.playback_controller.issue_cancel(
+                generation_id=generation.generation_id,
+                causal_event_id=causal_event_id or str(uuid4()),
+                causal_source=causal_source,
+                stream_epoch=self.speech_understanding.stream_epoch,
+                turn_epoch=self.speech_understanding.turn_epoch,
+                confidence=confidence,
             )
+            await self._send_event(command)
+        elif self.playback_controller.active_generation_id == generation.generation_id:
+            self.playback_controller.estimate_state(
+                generation.generation_id,
+                PlaybackState.CANCELLED,
+            )
+        self.active_generation = None
+        self.pending_generation_teardown = generation
         if generation.task is not None and not generation.task.done():
             generation.task.cancel()
+        return command
 
     async def _invalidate_speculative_candidate(
         self,
@@ -1540,38 +1945,30 @@ class VoiceSession:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    def _complete_playback(self, generation_id: int) -> None:
+    def _complete_playback(self, event: PlaybackCompleteEvent) -> None:
         generation = self.active_generation
-        if generation is None or generation.generation_id != generation_id:
+        if generation is None or generation.generation_id != event.generation_id:
+            return
+        if not self.playback_controller.record_complete(event):
             return
         generation.playback_complete = True
         generation.accepts_playback = False
-        self._set_playback_condition(
-            generation_id=generation.generation_id,
-            state=PlaybackState.COMPLETED,
-            assistant_audible=False,
-            latest_output_sample_position=generation.tts_sample_count,
-        )
         self._commit_assistant_if_complete(generation)
 
-    def _record_playback_started(self, generation_id: int) -> None:
-        generation = self.generations.get(generation_id)
+    def _record_playback_started(self, event: PlaybackStartedEvent) -> None:
+        generation = self.generations.get(event.generation_id)
         if generation is None:
             return
         latency = generation.latency
         if latency.playback_started_at is not None or latency.first_audio_sent_at is None:
             return
+        if not self.playback_controller.record_started(event):
+            return
         latency.playback_started_at = time.perf_counter()
-        self._set_playback_condition(
-            generation_id=generation.generation_id,
-            state=PlaybackState.SPEAKING,
-            assistant_audible=True,
-            latest_output_sample_position=0,
-        )
         latency.first_browser_playback_ack = MediaLatencyPoint(
             monotonic_time_seconds=latency.playback_started_at,
             input_sample_position=self.audio_sample_count,
-            output_sample_position=0,
+            output_sample_position=event.rendered_output_sample_position,
             text_offset=0,
         )
         turn_committed_at = _require_timestamp(
@@ -1606,12 +2003,8 @@ class VoiceSession:
             return
         if event.played_sample_count <= boundary_sample:
             return
-        self._set_playback_condition(
-            generation_id=generation.generation_id,
-            state=PlaybackState.SPEAKING,
-            assistant_audible=True,
-            latest_output_sample_position=event.played_sample_count,
-        )
+        if not self.playback_controller.record_progress(event):
+            return
         if event.text_offset <= generation.acknowledged_offset:
             return
         self._update_assistant_history(generation, event.text_offset)
@@ -1628,13 +2021,108 @@ class VoiceSession:
                 self._update_assistant_history(generation, event.text_offset)
         generation.accepts_playback = False
         generation.playback_stopped.set()
-        self._set_playback_condition(
-            generation_id=generation.generation_id,
-            state=PlaybackState.CANCELLED,
-            assistant_audible=False,
-            latest_output_sample_position=event.played_sample_count,
+        self.playback_controller.estimate_state(
+            generation.generation_id,
+            PlaybackState.CANCELLED,
         )
         self._mark_generation_interrupted(generation)
+
+    async def _acknowledge_playback_command(
+        self,
+        event: PlaybackCommandAcknowledgementEvent,
+    ) -> None:
+        received_monotonic_time_ns = time.perf_counter_ns()
+        disposition = self.playback_controller.acknowledge(
+            event,
+            received_monotonic_time_ns=received_monotonic_time_ns,
+        )
+        if disposition is not PlaybackAcknowledgementDisposition.APPLIED:
+            return
+        self._record_overlap_acknowledgement(
+            event,
+            received_monotonic_time_ns,
+        )
+        generation = self.generations.get(event.generation_id)
+        if generation is None:
+            return
+        if event.resume_rejected and self.active_generation is generation:
+            await self._request_generation_cancellation(
+                send_event=False,
+                causal_event_id=event.command_id,
+                causal_source=CausalSource.PLAYBACK_ENGINE,
+                confidence=1.0,
+            )
+        if event.resulting_state is PlaybackState.CANCELLED:
+            if generation.cancelled and generation.accepts_playback:
+                text_offset = self._played_text_offset(
+                    generation,
+                    event.source_sample_position,
+                )
+                if text_offset > generation.acknowledged_offset:
+                    self._update_assistant_history(generation, text_offset)
+                generation.accepts_playback = False
+                generation.playback_stopped.set()
+                self._mark_generation_interrupted(generation)
+
+    def _record_overlap_acknowledgement(
+        self,
+        event: PlaybackCommandAcknowledgementEvent,
+        received_monotonic_time_ns: int,
+    ) -> None:
+        overlap = next(
+            (
+                trace
+                for trace in reversed(self.user_overlap_traces)
+                if event.command_id
+                in (
+                    trace.duck_command_id,
+                    trace.pause_command_id,
+                    trace.resume_command_id,
+                    trace.cancel_command_id,
+                )
+            ),
+            None,
+        )
+        if overlap is None:
+            return
+        if event.command_id == overlap.duck_command_id:
+            self.overlap_metrics.record_duck(
+                overlap.onset_monotonic_time_ns,
+                received_monotonic_time_ns,
+            )
+        elif event.command_id == overlap.pause_command_id:
+            overlap.pause_acknowledged_monotonic_time_ns = received_monotonic_time_ns
+            self.overlap_metrics.record_pause(
+                overlap.onset_monotonic_time_ns,
+                received_monotonic_time_ns,
+            )
+        elif event.command_id == overlap.resume_command_id:
+            self.overlap_metrics.record_resume(
+                overlap.onset_monotonic_time_ns,
+                received_monotonic_time_ns,
+                overlap.pause_acknowledged_monotonic_time_ns,
+            )
+        elif event.command_id == overlap.cancel_command_id:
+            decision = overlap.decision
+            self.overlap_metrics.record_cancel(
+                overlap.onset_monotonic_time_ns,
+                received_monotonic_time_ns,
+                fast_path=False if decision is None else decision.fast_path,
+            )
+
+    @staticmethod
+    def _played_text_offset(
+        generation: ActiveGeneration,
+        source_sample_position: int,
+    ) -> int:
+        return max(
+            (
+                text_offset
+                for text_offset, boundary_sample in generation.boundary_samples.items()
+                if source_sample_position > boundary_sample
+            ),
+            default=0,
+        )
 
     def _update_assistant_history(
         self,
@@ -1680,23 +2168,6 @@ class VoiceSession:
             self.conversation[generation.history_index] = complete_message
         generation.accepts_playback = False
         self.active_generation = None
-
-    def _set_playback_condition(
-        self,
-        generation_id: int | None,
-        state: PlaybackState,
-        assistant_audible: bool,
-        latest_output_sample_position: int,
-    ) -> None:
-        self.playback_condition = PlaybackCondition(
-            event_id=str(uuid4()),
-            generation_id=generation_id,
-            state=state,
-            assistant_audible=assistant_audible,
-            latest_output_sample_position=latest_output_sample_position,
-            monotonic_time_ns=time.perf_counter_ns(),
-            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
-        )
 
     def _log_first_audio_latency(self, generation: ActiveGeneration) -> None:
         latency = generation.latency

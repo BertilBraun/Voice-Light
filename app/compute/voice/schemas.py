@@ -92,6 +92,8 @@ class PlaybackCondition(FrozenBaseModel):
     state: PlaybackState
     assistant_audible: bool
     latest_output_sample_position: int = Field(ge=0)
+    latest_source_sample_position: int = Field(ge=0)
+    output_sample_rate: int | None = Field(default=None, gt=0)
     monotonic_time_ns: int = Field(ge=0)
     authority: PlaybackConditionAuthority
 
@@ -272,6 +274,7 @@ class VoiceClientEventType(StrEnum):
     PLAYBACK_COMPLETE = "playback.complete"
     PLAYBACK_PROGRESS = "playback.progress"
     PLAYBACK_STOPPED = "playback.stopped"
+    PLAYBACK_ACKNOWLEDGEMENT = "playback.acknowledgement"
 
 
 class SessionStartEvent(FrozenBaseModel):
@@ -286,11 +289,19 @@ class SessionStopEvent(FrozenBaseModel):
 class PlaybackCompleteEvent(FrozenBaseModel):
     type: Literal[VoiceClientEventType.PLAYBACK_COMPLETE] = VoiceClientEventType.PLAYBACK_COMPLETE
     generation_id: int = Field(gt=0)
+    browser_monotonic_time_ns: int = Field(ge=0)
+    rendered_output_sample_position: int = Field(ge=0)
+    source_sample_position: int = Field(ge=0)
+    output_sample_rate: int = Field(gt=0)
 
 
 class PlaybackStartedEvent(FrozenBaseModel):
     type: Literal[VoiceClientEventType.PLAYBACK_STARTED] = VoiceClientEventType.PLAYBACK_STARTED
     generation_id: int = Field(gt=0)
+    browser_monotonic_time_ns: int = Field(ge=0)
+    rendered_output_sample_position: int = Field(ge=0)
+    source_sample_position: int = Field(ge=0)
+    output_sample_rate: int = Field(gt=0)
 
 
 class PlaybackProgressEvent(FrozenBaseModel):
@@ -299,6 +310,9 @@ class PlaybackProgressEvent(FrozenBaseModel):
     text_offset: int = Field(gt=0)
     boundary_start_sample: int = Field(ge=0)
     played_sample_count: int = Field(gt=0)
+    browser_monotonic_time_ns: int = Field(ge=0)
+    rendered_output_sample_position: int = Field(ge=0)
+    output_sample_rate: int = Field(gt=0)
 
 
 class PlaybackStoppedEvent(FrozenBaseModel):
@@ -306,6 +320,46 @@ class PlaybackStoppedEvent(FrozenBaseModel):
     generation_id: int = Field(gt=0)
     text_offset: int = Field(ge=0)
     played_sample_count: int = Field(ge=0)
+    browser_monotonic_time_ns: int = Field(ge=0)
+    rendered_output_sample_position: int = Field(ge=0)
+    output_sample_rate: int = Field(gt=0)
+
+
+class PlaybackCommandAction(StrEnum):
+    DUCK = "duck"
+    PAUSE_AT_BOUNDARY = "pause_at_boundary"
+    RESUME = "resume"
+    CANCEL = "cancel"
+
+
+class PlaybackPauseResult(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    WORD_BOUNDARY = "word_boundary"
+    FORCED_SAMPLE = "forced_sample"
+
+
+class PlaybackCommandAcknowledgementEvent(FrozenBaseModel):
+    type: Literal[VoiceClientEventType.PLAYBACK_ACKNOWLEDGEMENT] = (
+        VoiceClientEventType.PLAYBACK_ACKNOWLEDGEMENT
+    )
+    command_id: str
+    generation_id: int = Field(gt=0)
+    action: PlaybackCommandAction
+    stream_epoch: int = Field(ge=1)
+    turn_epoch: int = Field(ge=1)
+    resulting_state: PlaybackState
+    browser_monotonic_time_ns: int = Field(ge=0)
+    rendered_output_sample_position: int = Field(ge=0)
+    source_sample_position: int = Field(ge=0)
+    output_sample_rate: int = Field(gt=0)
+    pause_result: PlaybackPauseResult
+    current_gain: float = Field(ge=0.0, le=1.0)
+    gain_ramp_complete: bool
+    queued_source_sample_count: int = Field(ge=0)
+    discarded_source_sample_count: int = Field(ge=0)
+    replayed_source_sample_count: int = Field(ge=0)
+    skipped_source_sample_count: int = Field(ge=0)
+    resume_rejected: bool
 
 
 VoiceClientEvent = Annotated[
@@ -314,7 +368,8 @@ VoiceClientEvent = Annotated[
     | PlaybackStartedEvent
     | PlaybackCompleteEvent
     | PlaybackProgressEvent
-    | PlaybackStoppedEvent,
+    | PlaybackStoppedEvent
+    | PlaybackCommandAcknowledgementEvent,
     Field(discriminator="type"),
 ]
 voice_client_event_adapter: TypeAdapter[VoiceClientEvent] = TypeAdapter(VoiceClientEvent)
@@ -333,6 +388,7 @@ class VoiceServerEventType(StrEnum):
     ASSISTANT_AUDIO_END = "assistant.audio.end"
     ASSISTANT_AUDIO_TEXT_BOUNDARY = "assistant.audio.text_boundary"
     ASSISTANT_CANCEL = "assistant.cancel"
+    PLAYBACK_COMMAND = "playback.command"
     ERROR = "error"
 
 
@@ -394,6 +450,46 @@ class AssistantAudioTextBoundaryEvent(FrozenBaseModel):
     start_sample: int = Field(ge=0)
 
 
+class PlaybackCommandEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.PLAYBACK_COMMAND] = VoiceServerEventType.PLAYBACK_COMMAND
+    command_id: str
+    generation_id: int = Field(gt=0)
+    action: PlaybackCommandAction
+    issued_monotonic_time_ns: int = Field(ge=0)
+    causal_event_id: str
+    causal_source: CausalSource
+    stream_epoch: int = Field(ge=1)
+    turn_epoch: int = Field(ge=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+    requested_boundary_source_sample_position: int | None = Field(default=None, ge=0)
+    rendered_output_sample_deadline: int | None = Field(default=None, ge=0)
+    target_gain: float | None = Field(default=None, ge=0.0, le=1.0)
+    gain_ramp_duration_ms: int | None = Field(default=None, gt=0)
+    maximum_paused_age_ms: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_action_parameters(self) -> PlaybackCommandEvent:
+        match self.action:
+            case PlaybackCommandAction.DUCK:
+                if self.target_gain is None or self.gain_ramp_duration_ms is None:
+                    raise ValueError("Duck commands require a target gain and ramp duration.")
+            case PlaybackCommandAction.PAUSE_AT_BOUNDARY:
+                if self.rendered_output_sample_deadline is None:
+                    raise ValueError("Pause commands require a rendered-output sample deadline.")
+            case PlaybackCommandAction.RESUME:
+                if (
+                    self.target_gain is None
+                    or self.gain_ramp_duration_ms is None
+                    or self.maximum_paused_age_ms is None
+                ):
+                    raise ValueError(
+                        "Resume commands require a target gain, ramp duration, and maximum age."
+                    )
+            case PlaybackCommandAction.CANCEL:
+                pass
+        return self
+
+
 class ErrorEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.ERROR] = VoiceServerEventType.ERROR
     component: VoiceComponent
@@ -411,6 +507,7 @@ VoiceServerEvent = Annotated[
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioTextBoundaryEvent
+    | PlaybackCommandEvent
     | ErrorEvent,
     Field(discriminator="type"),
 ]

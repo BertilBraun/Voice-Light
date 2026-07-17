@@ -124,6 +124,8 @@ def update_transcript(
             state=PlaybackState.IDLE,
             assistant_audible=False,
             latest_output_sample_position=0,
+            latest_source_sample_position=0,
+            output_sample_rate=None,
             monotonic_time_ns=sequence_number,
             authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
         ),

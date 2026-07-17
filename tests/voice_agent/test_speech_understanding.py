@@ -415,6 +415,8 @@ def create_chunk(
             state=playback_state,
             assistant_audible=assistant_audible,
             latest_output_sample_position=640,
+            latest_source_sample_position=320,
+            output_sample_rate=48_000,
             monotonic_time_ns=observation_time_ns,
             authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
         ),
