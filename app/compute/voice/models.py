@@ -11,13 +11,33 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Final, Protocol, TextIO
 
-from app.compute.voice.conversation import ConversationMessage
-from app.compute.voice.interfaces import LanguageModelTextDelta
+from app.compute.voice.conversation import (
+    ModelAssistantMessage,
+    ModelMessage,
+    ModelToolMessage,
+    ModelUserMessage,
+)
+from app.compute.voice.interfaces import (
+    LanguageModelCompleted,
+    LanguageModelEvent,
+    LanguageModelFailed,
+    LanguageModelRequest,
+    LanguageModelTextDelta,
+    LanguageModelToolCall,
+    LanguageModelToolCallFailure,
+    LanguageModelToolCallStarted,
+)
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
+    LlmAssistantMessage,
     LlmCancelledEvent,
     LlmEndEvent,
-    LlmTextDeltaEvent,
+    LlmSpokenTextDeltaEvent,
+    LlmToolCallEvent,
+    LlmToolCallFailureEvent,
+    LlmToolCallStartedEvent,
+    LlmToolMessage,
+    LlmUserMessage,
     LlmWorkerCommand,
     LlmWorkerErrorEvent,
     LlmWorkerEvent,
@@ -48,7 +68,7 @@ class QwenWorker(Protocol):
 @dataclass(frozen=True)
 class QwenWorkerLease:
     worker: QwenWorker
-    generation_id: int
+    invocation_id: int
 
 
 class QwenWorkerManager(Protocol):
@@ -128,7 +148,7 @@ class RestartingQwenWorkerManager:
         self.python_path = python_path
         self.worker: QwenWorkerProcess | None = QwenWorkerProcess(python_path)
         self.lock = asyncio.Lock()
-        self.next_generation_id = 1
+        self.next_invocation_id = 1
 
     async def acquire(self) -> QwenWorkerLease:
         await self.lock.acquire()
@@ -137,9 +157,9 @@ class RestartingQwenWorkerManager:
                 self.worker = await asyncio.to_thread(QwenWorkerProcess, self.python_path)
             lease = QwenWorkerLease(
                 worker=self.worker,
-                generation_id=self.next_generation_id,
+                invocation_id=self.next_invocation_id,
             )
-            self.next_generation_id += 1
+            self.next_invocation_id += 1
             return lease
         except BaseException:
             self.lock.release()
@@ -154,7 +174,7 @@ class RestartingQwenWorkerManager:
         if not self.lock.locked():
             raise AssertionError("Cannot replace an unowned Qwen worker.")
         if failed_worker is not self.worker:
-            raise AssertionError("Cannot replace a Qwen worker owned by another generation.")
+            raise AssertionError("Cannot replace a Qwen worker owned by another invocation.")
         logger.error("replacing failed Qwen worker process")
         self.worker = None
         await asyncio.to_thread(failed_worker.terminate)
@@ -172,17 +192,17 @@ class TransformersLanguageModel:
 
     async def stream_response(
         self,
-        conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[LanguageModelTextDelta]:
-        session = QwenGenerationSession(
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        session = QwenInvocationSession(
             worker_manager=self.worker_manager,
-            conversation=conversation,
+            request=request,
             progress_timeout_seconds=QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS,
             cancellation_timeout_seconds=QWEN_CANCELLATION_TIMEOUT_SECONDS,
         )
         try:
-            async for text_delta in session.stream_text():
-                yield text_delta
+            async for event in session.stream_events():
+                yield event
         finally:
             await session.cancel()
 
@@ -190,41 +210,40 @@ class TransformersLanguageModel:
         self.worker_manager.close()
 
 
-class _GenerationMarker(Enum):
-    END = auto()
+class _InvocationMarker(Enum):
     CANCELLED = auto()
 
 
 @dataclass(frozen=True)
-class _GenerationFailure:
+class _InvocationFailure:
     error: Exception
 
 
-_GenerationOutput = LanguageModelTextDelta | _GenerationFailure | _GenerationMarker
+_InvocationOutput = LanguageModelEvent | _InvocationFailure | _InvocationMarker
 
 
-class QwenGenerationSession:
+class QwenInvocationSession:
     def __init__(
         self,
         worker_manager: QwenWorkerManager,
-        conversation: tuple[ConversationMessage, ...],
+        request: LanguageModelRequest,
         progress_timeout_seconds: float,
         cancellation_timeout_seconds: float,
     ) -> None:
         self.worker_manager = worker_manager
-        self.conversation = conversation
+        self.request = request
         self.progress_timeout_seconds = progress_timeout_seconds
         self.cancellation_timeout_seconds = cancellation_timeout_seconds
         self.worker: QwenWorker | None = None
-        self.generation_id: int | None = None
-        self.output_queue: asyncio.Queue[_GenerationOutput] = asyncio.Queue()
+        self.invocation_id: int | None = None
+        self.output_queue: asyncio.Queue[_InvocationOutput] = asyncio.Queue()
         self.output_task: asyncio.Task[None] | None = None
         self.start_lock = asyncio.Lock()
         self.finalization_lock = asyncio.Lock()
         self.reader_error: Exception | None = None
         self.worker_finalized = False
 
-    async def stream_text(self) -> AsyncIterator[LanguageModelTextDelta]:
+    async def stream_events(self) -> AsyncIterator[LanguageModelEvent]:
         await self._ensure_started()
         while True:
             try:
@@ -232,27 +251,46 @@ class QwenGenerationSession:
                     self.output_queue.get(),
                     timeout=self.progress_timeout_seconds,
                 )
-            except TimeoutError as error:
-                failure = RuntimeError("Qwen generation stopped making progress.")
+            except TimeoutError:
+                failure = RuntimeError("Qwen invocation stopped making progress.")
                 await self._fail_worker(failure)
                 await self._stop_output_task()
-                raise failure from error
+                yield LanguageModelFailed(
+                    invocation_id=self._require_invocation_id(),
+                    message=str(failure),
+                )
+                return
             match item:
-                case _GenerationMarker.END:
+                case _InvocationMarker.CANCELLED:
+                    failure = RuntimeError("Qwen invocation was cancelled unexpectedly.")
                     await self._finalize_worker(replace=False)
                     await self._stop_output_task()
+                    yield LanguageModelFailed(
+                        invocation_id=self._require_invocation_id(),
+                        message=str(failure),
+                    )
                     return
-                case _GenerationMarker.CANCELLED:
-                    failure = RuntimeError("Qwen generation was cancelled unexpectedly.")
-                    await self._finalize_worker(replace=False)
-                    await self._stop_output_task()
-                    raise failure
-                case _GenerationFailure(error=error):
+                case _InvocationFailure(error=error):
                     await self._fail_worker(error)
                     await self._stop_output_task()
-                    raise error
-                case LanguageModelTextDelta():
+                    yield LanguageModelFailed(
+                        invocation_id=self._require_invocation_id(),
+                        message=str(error),
+                    )
+                    return
+                case (
+                    LanguageModelTextDelta()
+                    | LanguageModelToolCallStarted()
+                    | LanguageModelToolCall()
+                    | LanguageModelToolCallFailure()
+                    | LanguageModelCompleted()
+                    | LanguageModelFailed()
+                ):
                     yield item
+                    if isinstance(item, LanguageModelCompleted):
+                        await self._finalize_worker(replace=False)
+                        await self._stop_output_task()
+                        return
 
     async def cancel(self) -> None:
         if self.worker is None or self.worker_finalized:
@@ -267,20 +305,20 @@ class QwenGenerationSession:
             await self._finalize_worker(replace=False)
             return
         worker = self._require_worker()
-        generation_id = self._require_generation_id()
+        invocation_id = self._require_invocation_id()
         try:
-            worker.send(CancelLlmCommand(generation_id=generation_id))
+            worker.send(CancelLlmCommand(invocation_id=invocation_id))
         except Exception as error:
             await self._fail_worker(error)
             await self._stop_output_task()
-            raise RuntimeError("Failed to cancel Qwen generation.") from error
+            raise RuntimeError("Failed to cancel Qwen invocation.") from error
         try:
             await asyncio.wait_for(
                 asyncio.shield(output_task),
                 timeout=self.cancellation_timeout_seconds,
             )
         except TimeoutError as error:
-            failure = RuntimeError("Qwen generation cancellation timed out.")
+            failure = RuntimeError("Qwen invocation cancellation timed out.")
             await self._fail_worker(failure)
             await self._stop_output_task()
             raise failure from error
@@ -297,23 +335,24 @@ class QwenGenerationSession:
             if self.worker is not None:
                 return
             if self.worker_finalized:
-                raise RuntimeError("The Qwen generation session has already ended.")
+                raise RuntimeError("The Qwen invocation session has already ended.")
             lease = await self.worker_manager.acquire()
             self.worker = lease.worker
-            self.generation_id = lease.generation_id
+            self.invocation_id = lease.invocation_id
             try:
                 self.worker.send(
                     StartLlmCommand(
-                        generation_id=lease.generation_id,
+                        invocation_id=lease.invocation_id,
+                        assistant_generation_id=self.request.assistant_generation_id,
                         messages=tuple(
-                            LlmWorkerMessage(role=message.role, content=message.content)
-                            for message in self.conversation
+                            _worker_message(message) for message in self.request.messages
                         ),
+                        tools=self.request.tools,
                     )
                 )
             except Exception as error:
                 await self._fail_worker(error)
-                raise RuntimeError("Failed to start Qwen generation.") from error
+                raise RuntimeError("Failed to start Qwen invocation.") from error
             self.output_task = asyncio.create_task(self._read_output())
 
     async def _read_output(self) -> None:
@@ -323,30 +362,63 @@ class QwenGenerationSession:
                 match event:
                     case LlmWorkerReadyEvent():
                         raise RuntimeError("The Qwen worker sent an unexpected ready event.")
-                    case LlmTextDeltaEvent():
-                        self._validate_generation_id(event.generation_id)
+                    case LlmSpokenTextDeltaEvent():
+                        self._validate_invocation_id(event.invocation_id)
                         await self.output_queue.put(
                             LanguageModelTextDelta(
+                                invocation_id=event.invocation_id,
                                 text=event.text,
                                 cumulative_token_count=event.cumulative_token_count,
                             )
                         )
+                    case LlmToolCallStartedEvent():
+                        self._validate_invocation_id(event.invocation_id)
+                        await self.output_queue.put(
+                            LanguageModelToolCallStarted(
+                                invocation_id=event.invocation_id,
+                                call_id=event.call_id,
+                                cumulative_token_count=event.cumulative_token_count,
+                            )
+                        )
+                    case LlmToolCallEvent():
+                        self._validate_invocation_id(event.invocation_id)
+                        await self.output_queue.put(
+                            LanguageModelToolCall(
+                                invocation_id=event.invocation_id,
+                                request=event.request,
+                                cumulative_token_count=event.cumulative_token_count,
+                            )
+                        )
+                    case LlmToolCallFailureEvent():
+                        self._validate_invocation_id(event.invocation_id)
+                        await self.output_queue.put(
+                            LanguageModelToolCallFailure(
+                                invocation_id=event.invocation_id,
+                                failure=event.failure,
+                                cumulative_token_count=event.cumulative_token_count,
+                            )
+                        )
                     case LlmEndEvent():
-                        self._validate_generation_id(event.generation_id)
-                        await self.output_queue.put(_GenerationMarker.END)
+                        self._validate_invocation_id(event.invocation_id)
+                        await self.output_queue.put(
+                            LanguageModelCompleted(
+                                invocation_id=event.invocation_id,
+                                cumulative_token_count=event.cumulative_token_count,
+                            )
+                        )
                         return
                     case LlmCancelledEvent():
-                        self._validate_generation_id(event.generation_id)
-                        await self.output_queue.put(_GenerationMarker.CANCELLED)
+                        self._validate_invocation_id(event.invocation_id)
+                        await self.output_queue.put(_InvocationMarker.CANCELLED)
                         return
                     case LlmWorkerErrorEvent():
-                        self._validate_generation_id(event.generation_id)
+                        self._validate_invocation_id(event.invocation_id)
                         raise RuntimeError(f"Qwen worker failed: {event.message}")
         except asyncio.CancelledError:
             raise
         except Exception as error:
             self.reader_error = error
-            await self.output_queue.put(_GenerationFailure(error))
+            await self.output_queue.put(_InvocationFailure(error))
 
     async def _fail_worker(self, error: Exception) -> None:
         self.reader_error = error
@@ -373,16 +445,32 @@ class QwenGenerationSession:
         with contextlib.suppress(asyncio.CancelledError):
             await output_task
 
-    def _validate_generation_id(self, generation_id: int) -> None:
-        if generation_id != self._require_generation_id():
-            raise RuntimeError("The Qwen worker returned an event for another generation.")
+    def _validate_invocation_id(self, invocation_id: int) -> None:
+        if invocation_id != self._require_invocation_id():
+            raise RuntimeError("The Qwen worker returned an event for another invocation.")
 
     def _require_worker(self) -> QwenWorker:
         if self.worker is None:
-            raise AssertionError("The Qwen generation session does not own a worker.")
+            raise AssertionError("The Qwen invocation session does not own a worker.")
         return self.worker
 
-    def _require_generation_id(self) -> int:
-        if self.generation_id is None:
-            raise AssertionError("The Qwen generation session has no generation ID.")
-        return self.generation_id
+    def _require_invocation_id(self) -> int:
+        if self.invocation_id is None:
+            raise AssertionError("The Qwen invocation session has no invocation ID.")
+        return self.invocation_id
+
+
+def _worker_message(message: ModelMessage) -> LlmWorkerMessage:
+    match message:
+        case ModelUserMessage():
+            return LlmUserMessage(content=message.content)
+        case ModelAssistantMessage():
+            return LlmAssistantMessage(
+                content=message.content,
+                tool_calls=message.tool_calls,
+            )
+        case ModelToolMessage():
+            return LlmToolMessage(
+                tool_call_id=message.tool_call_id,
+                content=message.outcome,
+            )

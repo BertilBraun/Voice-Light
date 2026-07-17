@@ -14,12 +14,25 @@ from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.compute.voice.conversation import ConversationMessage, ConversationRole
+from app.compute.voice.conversation import (
+    ConversationMessage,
+    ConversationRole,
+    ModelAssistantMessage,
+    ModelMessage,
+    ModelToolMessage,
+    model_message_from_conversation,
+)
 from app.compute.voice.errors import VoiceComponent, VoiceComponentError, VoiceOperation
 from app.compute.voice.interfaces import (
     KyutaiSynthesisFirstAudioMetrics,
     LanguageModel,
+    LanguageModelCompleted,
+    LanguageModelFailed,
+    LanguageModelRequest,
     LanguageModelTextDelta,
+    LanguageModelToolCall,
+    LanguageModelToolCallFailure,
+    LanguageModelToolCallStarted,
     SpeechDetector,
     SpeechSynthesisSession,
     SpeechSynthesizer,
@@ -93,6 +106,18 @@ from app.compute.voice.schemas import (
     voice_client_event_adapter,
 )
 from app.compute.voice.speech_understanding import InteractionPredictionReducer
+from app.compute.voice.tools import (
+    SerializedToolCall,
+    ToolCall,
+    ToolCallFailure,
+    ToolCallFailureReason,
+    ToolExecutionFailure,
+    ToolExecutionFailureReason,
+    ToolExecutor,
+    ToolLifecycle,
+    ToolSpecification,
+    ToolSuccess,
+)
 from app.compute.voice.word_stream import CompleteWordStream
 
 INPUT_SAMPLE_RATE = 16_000
@@ -117,6 +142,8 @@ class SessionPolicy:
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
     maximum_prediction_lag_ms: int = 80
+    tool_timeout_seconds: float = 5.0
+    tool_cancellation_timeout_seconds: float = 0.25
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> Self:
@@ -141,9 +168,27 @@ class SessionPolicy:
                 raise ValueError(
                     "VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS must be an integer."
                 ) from error
+        tool_timeout_value = environment.get("VOICE_LIGHT_TOOL_TIMEOUT_SECONDS")
+        tool_timeout_seconds = 5.0
+        if tool_timeout_value is not None:
+            try:
+                tool_timeout_seconds = float(tool_timeout_value)
+            except ValueError as error:
+                raise ValueError("VOICE_LIGHT_TOOL_TIMEOUT_SECONDS must be numeric.") from error
+        tool_cancellation_value = environment.get("VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS")
+        tool_cancellation_timeout_seconds = 0.25
+        if tool_cancellation_value is not None:
+            try:
+                tool_cancellation_timeout_seconds = float(tool_cancellation_value)
+            except ValueError as error:
+                raise ValueError(
+                    "VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS must be numeric."
+                ) from error
         return cls(
             vad_speculation_enabled=vad_speculation_enabled,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
+            tool_timeout_seconds=tool_timeout_seconds,
+            tool_cancellation_timeout_seconds=tool_cancellation_timeout_seconds,
         )
 
     def __post_init__(self) -> None:
@@ -164,6 +209,10 @@ class SessionPolicy:
             raise ValueError("The VAD speculation debounce cannot be negative.")
         if self.maximum_prediction_lag_ms < 0:
             raise ValueError("The maximum prediction lag cannot be negative.")
+        if self.tool_timeout_seconds <= 0.0:
+            raise ValueError("The tool timeout must be positive.")
+        if self.tool_cancellation_timeout_seconds <= 0.0:
+            raise ValueError("The tool cancellation timeout must be positive.")
 
 
 class SessionLifecycle(StrEnum):
@@ -203,6 +252,40 @@ class GenerationLatency:
     candidate_resolution: MediaLatencyPoint | None = None
     first_released_pcm: MediaLatencyPoint | None = None
     first_browser_playback_ack: MediaLatencyPoint | None = None
+    first_bridge_text: MediaLatencyPoint | None = None
+    first_bridge_pcm: MediaLatencyPoint | None = None
+    tool_call_started_at: float | None = None
+    tool_call_completed_at: float | None = None
+    tool_execution_started_at: float | None = None
+    tool_execution_completed_at: float | None = None
+    tool_result_committed_at: float | None = None
+    second_invocation_started_at: float | None = None
+    first_final_answer_text: MediaLatencyPoint | None = None
+    first_final_answer_pcm: MediaLatencyPoint | None = None
+    cancelled_or_invalidated_at: float | None = None
+
+
+@dataclass
+class ActiveToolExecution:
+    assistant_generation_id: int
+    user_turn_id: int
+    transcript_revision_id: int | None
+    lifecycle: ToolLifecycle = ToolLifecycle.NOT_REQUESTED
+    first_invocation_id: int | None = None
+    call_id: str | None = None
+    request: SerializedToolCall | None = None
+    call: ToolCall | None = None
+    outcome: ToolSuccess | ToolExecutionFailure | None = None
+    task: asyncio.Task[ToolSuccess | ToolExecutionFailure] | None = None
+    cancellation_observer: asyncio.Task[None] | None = None
+    wasted: bool = False
+
+
+@dataclass(frozen=True)
+class ModelInvocationResult:
+    invocation_id: int
+    tool_request: SerializedToolCall | None
+    tool_failure: ToolCallFailure | None
 
 
 @dataclass
@@ -218,12 +301,16 @@ class ActiveGeneration:
     causal_prediction: InteractionPrediction | None
     prediction_confidence: float | None
     prompt_messages: tuple[ConversationMessage, ...]
+    model_messages: tuple[ModelMessage, ...]
+    user_turn_id: int
     release_gate: CandidateReleaseGate
     speculative: bool
     latency: GenerationLatency
     task: asyncio.Task[None] | None = None
     response_text: str = ""
     qwen_token_count: int = 0
+    invocation_token_counts: dict[int, int] = field(default_factory=dict)
+    invocation_ids: list[int] = field(default_factory=list)
     tts_sample_count: int = 0
     acknowledged_offset: int = 0
     history_index: int | None = None
@@ -239,6 +326,9 @@ class ActiveGeneration:
     followed_invalidation: bool = False
     continuation_allowed: asyncio.Event = field(default_factory=asyncio.Event)
     synthesis_budget_available: asyncio.Event = field(default_factory=asyncio.Event)
+    tool: ActiveToolExecution | None = None
+    final_answer_text_start: int | None = None
+    final_answer_first_sample: int | None = None
 
 
 @dataclass
@@ -322,6 +412,7 @@ class VoiceSession:
         language_model: LanguageModel,
         speech_synthesizer: SpeechSynthesizer,
         policy: SessionPolicy,
+        tool_executor: ToolExecutor,
         playback_sink: PlaybackSink | None = None,
         playback_policy: PlaybackPolicyConfig | None = None,
         overlap_policy: ProvisionalVadTranscriptOverlapPolicy | None = None,
@@ -332,6 +423,7 @@ class VoiceSession:
         self.language_model = language_model
         self.speech_synthesizer = speech_synthesizer
         self.policy = policy
+        self.tool_executor = tool_executor
         self.playback_controller = PlaybackController(
             source_sample_rate=speech_synthesizer.sample_rate,
             config=playback_policy or PlaybackPolicyConfig(),
@@ -354,6 +446,7 @@ class VoiceSession:
         self.generations: dict[int, ActiveGeneration] = {}
         self.active_generation: ActiveGeneration | None = None
         self.next_generation_id = 1
+        self.next_user_turn_id = 1
         self.audio_sample_count = 0
         self.started = False
         self.lifecycle = SessionLifecycle.CREATED
@@ -1261,6 +1354,7 @@ class VoiceSession:
                 text_offset=len(final_text),
             )
             await self._promote_candidate(generation)
+            self.next_user_turn_id += 1
             return
         await self._await_generation_teardown()
         await self._start_authoritative_generation(
@@ -1269,6 +1363,7 @@ class VoiceSession:
             committed_at=committed_at,
             finalized_at=finalized_at,
         )
+        self.next_user_turn_id += 1
 
     async def _promote_candidate(self, generation: ActiveGeneration) -> None:
         assert self.active_generation is generation
@@ -1419,6 +1514,10 @@ class VoiceSession:
             causal_prediction=causal_prediction,
             prediction_confidence=prediction_confidence,
             prompt_messages=prompt_messages,
+            model_messages=tuple(
+                model_message_from_conversation(message) for message in prompt_messages
+            ),
+            user_turn_id=self.next_user_turn_id,
             release_gate=CandidateReleaseGate(
                 sink=self.playback_sink,
                 released=not speculative,
@@ -1428,6 +1527,11 @@ class VoiceSession:
                 asr_finalization_seconds=asr_finalization_seconds,
                 turn_ready_at=turn_ready_at,
             ),
+        )
+        generation.tool = ActiveToolExecution(
+            assistant_generation_id=generation_id,
+            user_turn_id=generation.user_turn_id,
+            transcript_revision_id=transcript_revision_id,
         )
         generation.continuation_allowed.set()
         generation.synthesis_budget_available.set()
@@ -1514,6 +1618,7 @@ class VoiceSession:
                 self.turn_had_invalidated_candidate = True
             if self.active_generation is generation:
                 generation.cancelled = True
+                self._invalidate_tool_execution(generation, invalidated=True)
                 self.active_generation = None
                 if generation.release_gate.released:
                     self._mark_generation_interrupted(generation)
@@ -1604,10 +1709,158 @@ class VoiceSession:
         generation: ActiveGeneration,
         synthesis: SpeechSynthesisSession,
     ) -> None:
-        language_stream = self.language_model.stream_response(generation.prompt_messages)
+        word_stream = CompleteWordStream()
+        model_messages = list(generation.model_messages)
+        first_result = await self._run_model_invocation(
+            generation=generation,
+            synthesis=synthesis,
+            word_stream=word_stream,
+            messages=tuple(model_messages),
+            tools=self.tool_executor.specifications,
+            final_answer=False,
+        )
+        if first_result.tool_request is None and first_result.tool_failure is None:
+            await self._flush_synthesis_words(generation, synthesis, word_stream)
+            if not generation.response_text.strip():
+                raise VoiceComponentError(
+                    VoiceComponent.LANGUAGE_MODEL,
+                    VoiceOperation.GENERATE_TEXT,
+                    "The language model returned an empty response.",
+                )
+            await self._finish_synthesis_input(synthesis)
+            return
+        await self._flush_synthesis_words(generation, synthesis, word_stream)
+        bridge_text = generation.response_text.strip()
+        tool_call: ToolCall | None = None
+        if first_result.tool_failure is not None:
+            tool_outcome = self._tool_failure_outcome(first_result.tool_failure)
+        else:
+            request = first_result.tool_request
+            assert request is not None
+            validated_call = self.tool_executor.validate(request)
+            if isinstance(validated_call, ToolCallFailure):
+                tool_outcome = self._tool_failure_outcome(validated_call)
+            else:
+                tool_call = validated_call
+                tool_outcome = await self._execute_tool_call(
+                    generation,
+                    first_result.invocation_id,
+                    validated_call,
+                )
+        tool = self._require_tool_execution(generation)
+        tool.outcome = tool_outcome
+        if isinstance(tool_outcome, ToolExecutionFailure):
+            tool.lifecycle = ToolLifecycle.FAILED
+        if not self._tool_anchors_are_current(generation, first_result.invocation_id):
+            return
+        await generation.continuation_allowed.wait()
+        if not self._tool_anchors_are_current(generation, first_result.invocation_id):
+            return
+        assistant_message = ModelAssistantMessage(
+            content=bridge_text,
+            tool_calls=() if tool_call is None else (tool_call,),
+        )
+        tool_message = ModelToolMessage(
+            tool_call_id=tool_outcome.call_id,
+            outcome=tool_outcome,
+        )
+        model_messages.extend((assistant_message, tool_message))
+        generation.model_messages = tuple(model_messages)
+        generation.latency.tool_result_committed_at = time.perf_counter()
+        if generation.response_text and not generation.response_text[-1].isspace():
+            await self._publish_spoken_text(generation, synthesis, word_stream, " ")
+        generation.final_answer_text_start = len(generation.response_text)
+        generation.latency.second_invocation_started_at = time.perf_counter()
+        second_result = await self._run_model_invocation(
+            generation=generation,
+            synthesis=synthesis,
+            word_stream=word_stream,
+            messages=generation.model_messages,
+            tools=(),
+            final_answer=True,
+        )
+        if second_result.tool_request is not None or second_result.tool_failure is not None:
+            raise VoiceComponentError(
+                VoiceComponent.LANGUAGE_MODEL,
+                VoiceOperation.GENERATE_TEXT,
+                "Qwen attempted another tool call after the one-call milestone limit.",
+            )
+        await self._flush_synthesis_words(generation, synthesis, word_stream)
+        if generation.final_answer_text_start == len(generation.response_text):
+            raise VoiceComponentError(
+                VoiceComponent.LANGUAGE_MODEL,
+                VoiceOperation.GENERATE_TEXT,
+                "Qwen returned no spoken recovery or final answer after the tool result.",
+            )
+        await self._finish_synthesis_input(synthesis)
+
+    async def _run_model_invocation(
+        self,
+        generation: ActiveGeneration,
+        synthesis: SpeechSynthesisSession,
+        word_stream: CompleteWordStream,
+        messages: tuple[ModelMessage, ...],
+        tools: tuple[ToolSpecification, ...],
+        final_answer: bool,
+    ) -> ModelInvocationResult:
+        language_stream = self.language_model.stream_response(
+            LanguageModelRequest(
+                assistant_generation_id=generation.generation_id,
+                messages=messages,
+                tools=tools,
+            )
+        )
+        invocation_id: int | None = None
+        tool_request: SerializedToolCall | None = None
+        tool_failure: ToolCallFailure | None = None
+        completed = False
         try:
             async with contextlib.aclosing(language_stream):
-                await self._consume_response_text(generation, synthesis, language_stream)
+                async for event in language_stream:
+                    if invocation_id is None:
+                        invocation_id = event.invocation_id
+                        self._record_invocation_id(generation, invocation_id)
+                    elif event.invocation_id != invocation_id:
+                        raise ValueError("A Qwen stream changed invocation identity.")
+                    match event:
+                        case LanguageModelTextDelta():
+                            self._update_invocation_tokens(generation, event)
+                            if final_answer:
+                                self._record_first_final_answer_text(generation)
+                            await self._publish_spoken_text(
+                                generation,
+                                synthesis,
+                                word_stream,
+                                event.text,
+                            )
+                        case LanguageModelToolCallStarted():
+                            self._update_invocation_tokens(generation, event)
+                            if final_answer:
+                                tool_failure = ToolCallFailure(
+                                    call_id=event.call_id,
+                                    reason=ToolCallFailureReason.MULTIPLE_CALLS,
+                                    message="A second tool round is not allowed.",
+                                    attempted_tool_name=None,
+                                )
+                                continue
+                            self._record_tool_call_started(generation, event)
+                        case LanguageModelToolCall():
+                            self._update_invocation_tokens(generation, event)
+                            tool_request = event.request
+                            self._record_tool_call_completed(generation, event)
+                        case LanguageModelToolCallFailure():
+                            self._update_invocation_tokens(generation, event)
+                            tool_failure = event.failure
+                            self._record_tool_call_failure(generation, event)
+                        case LanguageModelCompleted():
+                            self._update_invocation_tokens(generation, event)
+                            completed = True
+                        case LanguageModelFailed():
+                            raise VoiceComponentError(
+                                VoiceComponent.LANGUAGE_MODEL,
+                                VoiceOperation.GENERATE_TEXT,
+                                event.message,
+                            )
         except VoiceComponentError:
             raise
         except Exception as error:
@@ -1616,59 +1869,68 @@ class VoiceSession:
                 VoiceOperation.GENERATE_TEXT,
                 str(error),
             ) from error
+        if invocation_id is None:
+            raise VoiceComponentError(
+                VoiceComponent.LANGUAGE_MODEL,
+                VoiceOperation.GENERATE_TEXT,
+                "Qwen returned no typed invocation events.",
+            )
+        if not completed:
+            logger.warning(
+                "language model stream ended without an explicit completion event: "
+                "session=%s generation=%d invocation=%d",
+                self.session_id,
+                generation.generation_id,
+                invocation_id,
+            )
+        return ModelInvocationResult(
+            invocation_id=invocation_id,
+            tool_request=tool_request,
+            tool_failure=tool_failure,
+        )
 
-    async def _consume_response_text(
+    async def _publish_spoken_text(
         self,
         generation: ActiveGeneration,
         synthesis: SpeechSynthesisSession,
-        language_stream: AsyncIterator[LanguageModelTextDelta],
+        word_stream: CompleteWordStream,
+        text_delta: str,
     ) -> None:
-        word_stream = CompleteWordStream()
-        while True:
-            try:
-                delta = await anext(language_stream)
-            except StopAsyncIteration:
-                break
-            except Exception as error:
-                raise VoiceComponentError(
-                    VoiceComponent.LANGUAGE_MODEL,
-                    VoiceOperation.GENERATE_TEXT,
-                    str(error),
-                ) from error
-            if delta.cumulative_token_count < generation.qwen_token_count:
-                raise ValueError("Qwen cumulative token counts must be monotonic.")
-            generation.qwen_token_count = delta.cumulative_token_count
-            text_delta = delta.text
-            if text_delta and not generation.response_text:
-                generation.latency.first_language_delta_at = time.perf_counter()
-                if generation.lifecycle is CandidateLifecycle.PREFILLING:
-                    self._transition_generation(generation, CandidateLifecycle.STREAMING)
-                logger.info(
-                    "language model first delta: session=%s generation=%d",
-                    self.session_id,
-                    generation.generation_id,
-                )
-            generation.response_text += text_delta
+        if text_delta and not generation.response_text:
+            generation.latency.first_language_delta_at = time.perf_counter()
+            if generation.lifecycle is CandidateLifecycle.PREFILLING:
+                self._transition_generation(generation, CandidateLifecycle.STREAMING)
+            logger.info(
+                "language model first delta: session=%s generation=%d",
+                self.session_id,
+                generation.generation_id,
+            )
+        generation.response_text += text_delta
+        if text_delta:
             await generation.release_gate.publish(
                 ReleasedTextDelta(
                     generation_id=generation.generation_id,
                     text=text_delta,
                 )
             )
-            for word in word_stream.add_text(text_delta):
-                self._record_first_qwen_complete_word(generation, word)
-                await self._add_synthesis_word(generation, synthesis, word)
-                if not generation.continuation_allowed.is_set():
-                    await generation.continuation_allowed.wait()
-        if not generation.response_text.strip():
-            raise VoiceComponentError(
-                VoiceComponent.LANGUAGE_MODEL,
-                VoiceOperation.GENERATE_TEXT,
-                "The language model returned an empty response.",
-            )
+        for word in word_stream.add_text(text_delta):
+            self._record_first_qwen_complete_word(generation, word)
+            await self._add_synthesis_word(generation, synthesis, word)
+            if not generation.continuation_allowed.is_set():
+                await generation.continuation_allowed.wait()
+
+    async def _flush_synthesis_words(
+        self,
+        generation: ActiveGeneration,
+        synthesis: SpeechSynthesisSession,
+        word_stream: CompleteWordStream,
+    ) -> None:
         for word in word_stream.finish():
             self._record_first_qwen_complete_word(generation, word)
             await self._add_synthesis_word(generation, synthesis, word)
+
+    @staticmethod
+    async def _finish_synthesis_input(synthesis: SpeechSynthesisSession) -> None:
         try:
             await synthesis.finish_input()
         except Exception as error:
@@ -1677,6 +1939,203 @@ class VoiceSession:
                 VoiceOperation.STREAM_SYNTHESIS,
                 str(error),
             ) from error
+
+    async def _execute_tool_call(
+        self,
+        generation: ActiveGeneration,
+        first_invocation_id: int,
+        call: ToolCall,
+    ) -> ToolSuccess | ToolExecutionFailure:
+        tool = self._require_tool_execution(generation)
+        tool.first_invocation_id = first_invocation_id
+        tool.call_id = call.id
+        tool.call = call
+        tool.lifecycle = ToolLifecycle.RUNNING
+        generation.latency.tool_execution_started_at = time.perf_counter()
+        task = asyncio.create_task(self.tool_executor.execute(call))
+        task.add_done_callback(_consume_tool_task_result)
+        tool.task = task
+        try:
+            outcome = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=self.policy.tool_timeout_seconds,
+            )
+        except TimeoutError:
+            task.cancel()
+            self._observe_tool_cancellation(generation, tool, task)
+            outcome = ToolExecutionFailure(
+                call_id=call.id,
+                tool_name=call.function.name,
+                reason=ToolExecutionFailureReason.TIMEOUT,
+                message="The weather lookup timed out.",
+            )
+        except asyncio.CancelledError:
+            self._invalidate_tool_execution(generation, invalidated=False)
+            raise
+        generation.latency.tool_execution_completed_at = time.perf_counter()
+        tool.outcome = outcome
+        if isinstance(outcome, ToolSuccess):
+            tool.lifecycle = ToolLifecycle.SUCCEEDED
+        else:
+            tool.lifecycle = ToolLifecycle.FAILED
+        return outcome
+
+    def _tool_failure_outcome(self, failure: ToolCallFailure) -> ToolExecutionFailure:
+        return ToolExecutionFailure(
+            call_id=failure.call_id,
+            tool_name=None,
+            reason=failure.reason,
+            message=failure.message,
+        )
+
+    def _record_invocation_id(
+        self,
+        generation: ActiveGeneration,
+        invocation_id: int,
+    ) -> None:
+        if generation.invocation_ids and invocation_id <= generation.invocation_ids[-1]:
+            raise ValueError("Qwen invocation IDs must be globally monotonic.")
+        generation.invocation_ids.append(invocation_id)
+
+    @staticmethod
+    def _update_invocation_tokens(
+        generation: ActiveGeneration,
+        event: (
+            LanguageModelTextDelta
+            | LanguageModelToolCallStarted
+            | LanguageModelToolCall
+            | LanguageModelToolCallFailure
+            | LanguageModelCompleted
+        ),
+    ) -> None:
+        previous_count = generation.invocation_token_counts.get(event.invocation_id, 0)
+        if event.cumulative_token_count < previous_count:
+            raise ValueError("Qwen cumulative token counts must be monotonic per invocation.")
+        generation.invocation_token_counts[event.invocation_id] = event.cumulative_token_count
+        generation.qwen_token_count = sum(generation.invocation_token_counts.values())
+
+    def _record_tool_call_started(
+        self,
+        generation: ActiveGeneration,
+        event: LanguageModelToolCallStarted,
+    ) -> None:
+        tool = self._require_tool_execution(generation)
+        if tool.lifecycle is not ToolLifecycle.NOT_REQUESTED:
+            return
+        tool.lifecycle = ToolLifecycle.CALL_BUFFERING
+        tool.first_invocation_id = event.invocation_id
+        tool.call_id = event.call_id
+        generation.latency.tool_call_started_at = time.perf_counter()
+        first_delta_at = generation.latency.first_language_delta_at
+        if first_delta_at is not None:
+            generation.latency.first_bridge_text = MediaLatencyPoint(
+                monotonic_time_seconds=first_delta_at,
+                input_sample_position=generation.input_audio_sample_position,
+                output_sample_position=None,
+                text_offset=0,
+            )
+
+    def _record_tool_call_completed(
+        self,
+        generation: ActiveGeneration,
+        event: LanguageModelToolCall,
+    ) -> None:
+        tool = self._require_tool_execution(generation)
+        tool.lifecycle = ToolLifecycle.READY
+        tool.first_invocation_id = event.invocation_id
+        tool.call_id = event.request.id
+        tool.request = event.request
+        generation.latency.tool_call_completed_at = time.perf_counter()
+
+    def _record_tool_call_failure(
+        self,
+        generation: ActiveGeneration,
+        event: LanguageModelToolCallFailure,
+    ) -> None:
+        tool = self._require_tool_execution(generation)
+        tool.lifecycle = ToolLifecycle.FAILED
+        tool.first_invocation_id = event.invocation_id
+        tool.call_id = event.failure.call_id
+        generation.latency.tool_call_completed_at = time.perf_counter()
+
+    @staticmethod
+    def _record_first_final_answer_text(generation: ActiveGeneration) -> None:
+        if generation.latency.first_final_answer_text is not None:
+            return
+        generation.latency.first_final_answer_text = MediaLatencyPoint(
+            monotonic_time_seconds=time.perf_counter(),
+            input_sample_position=generation.input_audio_sample_position,
+            output_sample_position=None,
+            text_offset=len(generation.response_text),
+        )
+
+    def _tool_anchors_are_current(
+        self,
+        generation: ActiveGeneration,
+        first_invocation_id: int,
+    ) -> bool:
+        tool = self._require_tool_execution(generation)
+        return (
+            self.active_generation is generation
+            and not generation.cancelled
+            and tool.assistant_generation_id == generation.generation_id
+            and tool.user_turn_id == generation.user_turn_id
+            and tool.transcript_revision_id == generation.transcript_revision_id
+            and tool.first_invocation_id == first_invocation_id
+        )
+
+    def _invalidate_tool_execution(
+        self,
+        generation: ActiveGeneration,
+        invalidated: bool,
+    ) -> None:
+        tool = self._require_tool_execution(generation)
+        if tool.lifecycle in (
+            ToolLifecycle.NOT_REQUESTED,
+            ToolLifecycle.CANCELLED,
+            ToolLifecycle.INVALIDATED,
+        ):
+            return
+        tool.lifecycle = ToolLifecycle.INVALIDATED if invalidated else ToolLifecycle.CANCELLED
+        tool.wasted = tool.task is not None
+        generation.latency.cancelled_or_invalidated_at = time.perf_counter()
+        task = tool.task
+        if task is not None and not task.done():
+            task.cancel()
+            self._observe_tool_cancellation(generation, tool, task)
+
+    def _observe_tool_cancellation(
+        self,
+        generation: ActiveGeneration,
+        tool: ActiveToolExecution,
+        task: asyncio.Task[ToolSuccess | ToolExecutionFailure],
+    ) -> None:
+        if tool.cancellation_observer is not None:
+            return
+
+        async def observe() -> None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=self.policy.tool_cancellation_timeout_seconds,
+                )
+            except (TimeoutError, asyncio.CancelledError):
+                tool.wasted = True
+            except Exception:
+                logger.debug(
+                    "cancelled tool task finished with an error: session=%s generation=%d",
+                    self.session_id,
+                    generation.generation_id,
+                    exc_info=True,
+                )
+
+        tool.cancellation_observer = asyncio.create_task(observe())
+
+    @staticmethod
+    def _require_tool_execution(generation: ActiveGeneration) -> ActiveToolExecution:
+        if generation.tool is None:
+            raise AssertionError("The generation has no tool lifecycle.")
+        return generation.tool
 
     async def _add_synthesis_word(
         self,
@@ -1739,6 +2198,12 @@ class VoiceSession:
                     if event.text_offset > len(generation.response_text):
                         raise ValueError("TTS returned a text boundary beyond generated text.")
                     generation.boundary_samples[event.text_offset] = event.start_sample
+                    if (
+                        generation.final_answer_text_start is not None
+                        and event.text_offset > generation.final_answer_text_start
+                        and generation.final_answer_first_sample is None
+                    ):
+                        generation.final_answer_first_sample = event.start_sample
                     await generation.release_gate.publish(
                         ReleasedWordBoundary(
                             generation_id=generation.generation_id,
@@ -1755,6 +2220,33 @@ class VoiceSession:
                     )
                     if event.start_sample != expected_start_sample:
                         raise ValueError("TTS audio chunks must have contiguous sample offsets.")
+                    event_end_sample = event.start_sample + _pcm_sample_count(event.pcm_bytes)
+                    tool = self._require_tool_execution(generation)
+                    if (
+                        tool.lifecycle is not ToolLifecycle.NOT_REQUESTED
+                        and generation.latency.first_bridge_pcm is None
+                        and (
+                            generation.final_answer_first_sample is None
+                            or event.start_sample < generation.final_answer_first_sample
+                        )
+                    ):
+                        generation.latency.first_bridge_pcm = MediaLatencyPoint(
+                            monotonic_time_seconds=time.perf_counter(),
+                            input_sample_position=generation.input_audio_sample_position,
+                            output_sample_position=event.start_sample,
+                            text_offset=None,
+                        )
+                    if (
+                        generation.final_answer_first_sample is not None
+                        and generation.latency.first_final_answer_pcm is None
+                        and event_end_sample > generation.final_answer_first_sample
+                    ):
+                        generation.latency.first_final_answer_pcm = MediaLatencyPoint(
+                            monotonic_time_seconds=time.perf_counter(),
+                            input_sample_position=generation.input_audio_sample_position,
+                            output_sample_position=generation.final_answer_first_sample,
+                            text_offset=generation.final_answer_text_start,
+                        )
                     if not started:
                         started = True
                         generation.latency.first_audio_at = time.perf_counter()
@@ -1870,6 +2362,7 @@ class VoiceSession:
         ):
             return None
         generation.cancelled = True
+        self._invalidate_tool_execution(generation, invalidated=False)
         self._transition_generation(generation, CandidateLifecycle.CANCELLATION_REQUESTED)
         self._mark_generation_interrupted(generation)
         command: PlaybackCommandEvent | None = None
@@ -1908,6 +2401,7 @@ class VoiceSession:
         ):
             return
         generation.cancelled = True
+        self._invalidate_tool_execution(generation, invalidated=True)
         generation.invalidation_reason = reason
         generation.latency.candidate_invalidated_at = time.perf_counter()
         generation.latency.candidate_resolution = MediaLatencyPoint(
@@ -2420,6 +2914,15 @@ class VoiceSession:
 
 def _pcm_sample_count(pcm_bytes: bytes) -> int:
     return len(pcm_bytes) // PCM_BYTES_PER_SAMPLE
+
+
+def _consume_tool_task_result(
+    task: asyncio.Task[ToolSuccess | ToolExecutionFailure],
+) -> None:
+    if task.cancelled():
+        return
+    with contextlib.suppress(Exception):
+        task.exception()
 
 
 def _milliseconds_to_samples(duration_ms: int) -> int:
