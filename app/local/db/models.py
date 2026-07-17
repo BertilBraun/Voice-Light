@@ -23,6 +23,7 @@ class TrackSide(StrEnum):
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    WAITING_FOR_ASR = "waiting_for_asr"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -126,6 +127,10 @@ class QualityResultRecord(FrozenBaseModel):
     duration_mismatch_seconds: float | None
     track_correlation: float | None
     energy_envelope_correlation: float | None
+    speaker1_full_asr_transcript_id: UUID | None
+    speaker2_full_asr_transcript_id: UUID | None
+    speaker2_shift_seconds: float | None
+    synchronization_alignment_origin: str | None
     flags: tuple[str, ...]
     payload: dict[str, object]
     created_at: datetime

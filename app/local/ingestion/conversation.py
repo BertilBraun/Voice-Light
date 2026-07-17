@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
-from app.local.analyses.asr.models import AsrModelMode
-from app.local.analyses.asr.service import analyze_asr
+from app.local.analyses.asr.crosstalk import (
+    CrosstalkFilterConfig,
+    CrosstalkFramePower,
+    filter_crosstalk_words,
+    frame_power,
+)
+from app.local.analyses.asr.service import word_from_timestamped_word
 from app.local.analyses.end_of_turn.conversation_scoring import (
     ConversationScoringConfig,
     ScoredConversation,
@@ -13,7 +15,6 @@ from app.local.analyses.end_of_turn.conversation_scoring import (
 from app.local.analyses.end_of_turn.detectors.asr_two_speaker_annotation import (
     SPEECH_SEGMENT_GAP_SECONDS,
     merged_asr_turns,
-    remote_asr_client,
 )
 from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     OTHER_SPEAKER,
@@ -21,10 +22,9 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     TranscriptTurn,
 )
 from app.local.analyses.end_of_turn.service import SpeechSegment
-from app.local.asr.repository import AsrTranscriptRepository
-from app.local.asr.transcript import SpeakerTrack
-from app.shared.audio import load_audio
-from app.shared.audio.transport import prepare_analysis_audio
+from app.local.asr.full_recording_models import FullRecordingAsrTranscriptPair
+from app.local.ingestion.alignment import SynchronizationAlignment, shift_words
+from app.shared.audio import AudioTrack
 from app.shared.quality import (
     AnnotationEvidenceSource,
     AnnotationPoint,
@@ -41,87 +41,77 @@ from app.shared.quality_analysis.vad import (
     speech_mask_for_samples,
     speech_segments_for_mask,
 )
-from app.shared.storage.local import LocalStorageBackend
 
-ANNOTATION_VERSION = "asr-two-speaker-annotation-v1"
-ASR_MODEL_MODE = AsrModelMode.PARAKEET_CANARY_CROSSTALK_FILTERED
+ANNOTATION_VERSION = "asr-full-parakeet-two-speaker-annotation-v2"
 SCORING_CONFIG = ConversationScoringConfig()
+CROSSTALK_FILTER_CONFIG = CrosstalkFilterConfig()
 
 
 def analyze_conversation(
-    sample_id: str,
-    speaker1_path: Path,
-    speaker2_path: Path,
-    database_url: str,
+    speaker1_audio: AudioTrack,
+    speaker2_audio: AudioTrack,
+    transcript_pair: FullRecordingAsrTranscriptPair,
+    alignment: SynchronizationAlignment,
 ) -> ConversationAnnotation:
-    with tempfile.TemporaryDirectory(prefix=f"voice-light-{sample_id}-") as directory:
-        prepared_directory = Path(directory)
-        prepared_speaker1_path = prepared_directory / f"{sample_id}_speaker1.flac"
-        prepared_speaker2_path = prepared_directory / f"{sample_id}_speaker2.flac"
-        prepare_analysis_audio(speaker1_path, prepared_speaker1_path)
-        prepare_analysis_audio(speaker2_path, prepared_speaker2_path)
-        cache = AsrTranscriptRepository(database_url=database_url)
-        speaker1_response = analyze_asr(
-            session_id=sample_id,
-            speaker_track=SpeakerTrack.SPEAKER1,
-            selected_models=(ASR_MODEL_MODE,),
-            reference_words=(),
-            cache=cache,
-            remote_client_factory=remote_asr_client,
-            source_audio_path=prepared_speaker1_path,
-            other_audio_path=prepared_speaker2_path,
-            prepared_audio_path=prepared_speaker1_path,
-        )
-        speaker2_response = analyze_asr(
-            session_id=sample_id,
-            speaker_track=SpeakerTrack.SPEAKER2,
-            selected_models=(ASR_MODEL_MODE,),
-            reference_words=(),
-            cache=cache,
-            remote_client_factory=remote_asr_client,
-            source_audio_path=prepared_speaker2_path,
-            other_audio_path=prepared_speaker1_path,
-            prepared_audio_path=prepared_speaker2_path,
-        )
-        if len(speaker1_response.runs) != 1 or len(speaker2_response.runs) != 1:
-            raise ValueError("Conversation annotation requires one ASR result per speaker.")
-        turns = merged_asr_turns(
-            speaker1_words=speaker1_response.runs[0].transcription.words,
-            speaker2_words=speaker2_response.runs[0].transcription.words,
-            turn_gap_seconds=SPEECH_SEGMENT_GAP_SECONDS,
-        )
-        duration_seconds = min(
-            speaker1_response.analyzed_duration_seconds,
-            speaker2_response.analyzed_duration_seconds,
-        )
-        speaker1_activity = audio_activity_segments(prepared_speaker1_path)
-        speaker2_activity = audio_activity_segments(prepared_speaker2_path)
-        speaker1_scored = score_conversation(
-            turns=turns,
-            audio_activity_segments=speaker1_activity,
-            target_speaker=TARGET_SPEAKER,
-            other_speaker=OTHER_SPEAKER,
-            analysis_end_seconds=duration_seconds,
-            config=SCORING_CONFIG,
-        )
-        speaker2_scored = score_conversation(
-            turns=turns,
-            audio_activity_segments=speaker2_activity,
-            target_speaker=OTHER_SPEAKER,
-            other_speaker=TARGET_SPEAKER,
-            analysis_end_seconds=duration_seconds,
-            config=SCORING_CONFIG,
-        )
-        return conversation_annotation(
-            turns=turns,
-            duration_seconds=duration_seconds,
-            speaker1=speaker_annotation(SpeakerSide.SPEAKER1, speaker1_scored),
-            speaker2=speaker_annotation(SpeakerSide.SPEAKER2, speaker2_scored),
-        )
+    if speaker1_audio.metadata.sample_rate != speaker2_audio.metadata.sample_rate:
+        raise ValueError("Full conversation annotation requires matching sample rates.")
+    if len(speaker1_audio.samples) != len(speaker2_audio.samples):
+        raise ValueError("Full conversation annotation requires a shared audio timeline.")
+    duration_seconds = speaker1_audio.metadata.duration_seconds
+    speaker1_words = shift_words(
+        words=tuple(word_from_timestamped_word(word) for word in transcript_pair.speaker1.words),
+        shift_seconds=0.0,
+        timeline_duration_seconds=duration_seconds,
+    )
+    speaker2_words = shift_words(
+        words=tuple(word_from_timestamped_word(word) for word in transcript_pair.speaker2.words),
+        shift_seconds=alignment.speaker2_shift_seconds,
+        timeline_duration_seconds=duration_seconds,
+    )
+    speaker1_power, speaker2_power = crosstalk_frame_power(
+        speaker1_audio=speaker1_audio,
+        speaker2_audio=speaker2_audio,
+    )
+    filtered_speaker1_words = filter_crosstalk_words(
+        words=speaker1_words,
+        frame_power_pair=speaker1_power,
+        config=CROSSTALK_FILTER_CONFIG,
+    )
+    filtered_speaker2_words = filter_crosstalk_words(
+        words=speaker2_words,
+        frame_power_pair=speaker2_power,
+        config=CROSSTALK_FILTER_CONFIG,
+    )
+    turns = merged_asr_turns(
+        speaker1_words=filtered_speaker1_words,
+        speaker2_words=filtered_speaker2_words,
+        turn_gap_seconds=SPEECH_SEGMENT_GAP_SECONDS,
+    )
+    speaker1_scored = score_conversation(
+        turns=turns,
+        audio_activity_segments=audio_activity_segments(speaker1_audio),
+        target_speaker=TARGET_SPEAKER,
+        other_speaker=OTHER_SPEAKER,
+        analysis_end_seconds=duration_seconds,
+        config=SCORING_CONFIG,
+    )
+    speaker2_scored = score_conversation(
+        turns=turns,
+        audio_activity_segments=audio_activity_segments(speaker2_audio),
+        target_speaker=OTHER_SPEAKER,
+        other_speaker=TARGET_SPEAKER,
+        analysis_end_seconds=duration_seconds,
+        config=SCORING_CONFIG,
+    )
+    return conversation_annotation(
+        turns=turns,
+        duration_seconds=duration_seconds,
+        speaker1=speaker_annotation(SpeakerSide.SPEAKER1, speaker1_scored),
+        speaker2=speaker_annotation(SpeakerSide.SPEAKER2, speaker2_scored),
+    )
 
 
-def audio_activity_segments(audio_path: Path) -> list[SpeechSegment]:
-    audio = load_audio(LocalStorageBackend(), audio_path.as_posix())
+def audio_activity_segments(audio: AudioTrack) -> list[SpeechSegment]:
     mono_samples = audio.samples[:, 0]
     config = VadConfig(relative_dominance_db=0.0)
     mask = speech_mask_for_samples(mono_samples, audio.metadata.sample_rate, config)
@@ -133,6 +123,32 @@ def audio_activity_segments(audio_path: Path) -> list[SpeechSegment]:
         )
         for segment in segments
     ]
+
+
+def crosstalk_frame_power(
+    speaker1_audio: AudioTrack,
+    speaker2_audio: AudioTrack,
+) -> tuple[CrosstalkFramePower, CrosstalkFramePower]:
+    frame_size = max(
+        1,
+        round(CROSSTALK_FILTER_CONFIG.frame_duration_seconds * speaker1_audio.metadata.sample_rate),
+    )
+    speaker1_power = frame_power(samples=speaker1_audio.samples[:, 0], frame_size=frame_size)
+    speaker2_power = frame_power(samples=speaker2_audio.samples[:, 0], frame_size=frame_size)
+    shared_frame_count = min(len(speaker1_power), len(speaker2_power))
+    frame_duration_seconds = frame_size / speaker1_audio.metadata.sample_rate
+    return (
+        CrosstalkFramePower(
+            target=speaker1_power[:shared_frame_count],
+            other=speaker2_power[:shared_frame_count],
+            frame_duration_seconds=frame_duration_seconds,
+        ),
+        CrosstalkFramePower(
+            target=speaker2_power[:shared_frame_count],
+            other=speaker1_power[:shared_frame_count],
+            frame_duration_seconds=frame_duration_seconds,
+        ),
+    )
 
 
 def speaker_annotation(

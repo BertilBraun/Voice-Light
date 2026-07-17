@@ -91,6 +91,10 @@ class QualityResultInput:
     duration_mismatch_seconds: float | None
     track_correlation: float | None
     energy_envelope_correlation: float | None
+    speaker1_full_asr_transcript_id: UUID | None
+    speaker2_full_asr_transcript_id: UUID | None
+    speaker2_shift_seconds: float | None
+    synchronization_alignment_origin: str | None
     flags: tuple[str, ...]
     payload: dict[str, object]
 
@@ -223,7 +227,9 @@ class Repository:
                     error = COALESCE(%s, error),
                     updated_at = now(),
                     finished_at = CASE
-                      WHEN %s IN ('completed', 'failed', 'canceled') THEN now()
+                      WHEN %s IN (
+                        'completed', 'failed', 'canceled', 'waiting_for_asr'
+                      ) THEN now()
                       ELSE finished_at
                     END
                 WHERE id = %s
@@ -286,6 +292,18 @@ class Repository:
                 (dataset_id, metric_version),
             ).fetchall()
         return {str(row["external_id"]) for row in rows}
+
+    def reviewed_speaker2_shift(self, sample_id: UUID) -> float | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT speaker2_shift_seconds
+                FROM synchronization_reviews
+                WHERE sample_id = %s
+                """,
+                (sample_id,),
+            ).fetchone()
+        return float(row["speaker2_shift_seconds"]) if row is not None else None
 
     def update_sample_duration(self, sample_id: UUID, duration_seconds: float) -> SampleRecord:
         with self.connection() as connection:
@@ -384,13 +402,15 @@ class Repository:
                   estimated_usable_event_count,
                   conversation_events_per_hour, speech_ratio, silence_ratio, overlap_ratio,
                   duration_mismatch_seconds, track_correlation, energy_envelope_correlation,
+                  speaker1_full_asr_transcript_id, speaker2_full_asr_transcript_id,
+                  speaker2_shift_seconds, synchronization_alignment_origin,
                   flags, payload
                 )
                 VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING *
                 """,
@@ -429,6 +449,10 @@ class Repository:
                     quality_result.duration_mismatch_seconds,
                     quality_result.track_correlation,
                     quality_result.energy_envelope_correlation,
+                    quality_result.speaker1_full_asr_transcript_id,
+                    quality_result.speaker2_full_asr_transcript_id,
+                    quality_result.speaker2_shift_seconds,
+                    quality_result.synchronization_alignment_origin,
                     list(quality_result.flags),
                     Jsonb(quality_result.payload),
                 ),

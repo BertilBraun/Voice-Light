@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import wave
-from pathlib import Path
-
 import pytest
 
 from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
@@ -13,15 +10,16 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
 from app.local.db.models import JobStatus, SampleListFilter
 from app.local.db.repository import dashboard_filter_sql
 from app.local.ingestion.conversation import conversation_annotation
-from app.local.ingestion.discovery import DiscoveredSample
-from app.local.ingestion.service import ingestion_summary, process_local_sample
+from app.local.ingestion.service import (
+    ingestion_summary,
+    ingestion_summary_with_prerequisites,
+)
 from app.shared.quality import (
     AnnotationPoint,
     AnnotationSpan,
     SpeakerConversationAnnotation,
     SpeakerSide,
 )
-from app.shared.storage.local import LocalStorageBackend
 
 
 def test_dashboard_summary_filter_reuses_sample_filters() -> None:
@@ -67,31 +65,18 @@ def test_ingestion_summary_completes_without_failures() -> None:
     assert summary.error is None
 
 
-def test_duration_mismatch_is_invalid_without_running_asr(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    speaker1_path = tmp_path / "sample_speaker1.wav"
-    speaker2_path = tmp_path / "sample_speaker2.wav"
-    write_silent_wave(speaker1_path, duration_seconds=100.0)
-    write_silent_wave(speaker2_path, duration_seconds=90.0)
-
-    def fail_analysis(*args: object, **kwargs: object) -> None:
-        raise AssertionError("ASR annotation must not run for invalid track durations")
-
-    monkeypatch.setattr("app.local.ingestion.service.analyze_conversation", fail_analysis)
-    processed = process_local_sample(
-        storage=LocalStorageBackend(),
-        discovered=DiscoveredSample(
-            external_id="sample",
-            speaker1_path=str(speaker1_path),
-            speaker2_path=str(speaker2_path),
-        ),
-        database_url="unused",
+def test_ingestion_waits_for_missing_full_asr_without_failing() -> None:
+    summary = ingestion_summary_with_prerequisites(
+        processed_samples=3,
+        failed_samples=0,
+        waiting_for_asr=2,
+        deferred_samples=2,
+        sample_errors=(),
     )
 
-    assert processed.quality_result.status.value == "invalid"
-    assert "duration_mismatch_invalid" in processed.quality_result.quality_flags
+    assert summary.status is JobStatus.WAITING_FOR_ASR
+    assert summary.message == "Processed 3 samples; 2 wait for full ASR"
+    assert summary.error is None
 
 
 def test_conversation_annotation_counts_speaker_transitions_and_events() -> None:
@@ -178,12 +163,3 @@ def transcript_turn(speaker: str, start_seconds: float, end_seconds: float) -> T
         end_seconds=end_seconds,
         words=[],
     )
-
-
-def write_silent_wave(path: Path, duration_seconds: float) -> None:
-    sample_rate = 100
-    with wave.open(str(path), "wb") as wave_writer:
-        wave_writer.setnchannels(1)
-        wave_writer.setsampwidth(2)
-        wave_writer.setframerate(sample_rate)
-        wave_writer.writeframes(b"\x00\x00" * round(duration_seconds * sample_rate))

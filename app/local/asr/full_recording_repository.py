@@ -16,12 +16,14 @@ from app.local.asr.full_recording_models import (
     FullRecordingAsrBatchStatus,
     FullRecordingAsrItemStatus,
     FullRecordingAsrSampleScope,
+    FullRecordingAsrTranscriptPair,
     FullRecordingAsrTranscriptRecord,
 )
 from app.local.db.models import TrackSide
 from app.shared.asr import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TimestampedWord
 
 RECENT_ERROR_LIMIT = 10
+INGESTION_BATCH_KEY_PREFIX = "ingestion-full-asr-v1"
 
 
 class FullRecordingAsrRepository:
@@ -105,6 +107,112 @@ class FullRecordingAsrRepository:
         if row is None:
             raise ValueError(f"Full-recording ASR batch not found: {batch_id}")
         return batch_record(row)
+
+    def ensure_ingestion_batch_items(
+        self,
+        dataset_id: UUID,
+        sample_track_ids: Sequence[UUID],
+        model_ids: Sequence[AsrModelId],
+    ) -> FullRecordingAsrBatchRecord:
+        unique_track_ids = tuple(sorted(set(sample_track_ids), key=str))
+        if not unique_track_ids:
+            raise ValueError("At least one sample track is required for ingestion ASR.")
+        models = unique_models(model_ids)
+        if not models:
+            raise ValueError("At least one ASR model is required for ingestion ASR.")
+        request = FullRecordingAsrBatchRequest(
+            idempotency_key=f"{INGESTION_BATCH_KEY_PREFIX}-{dataset_id}",
+            dataset_id=dataset_id,
+            sample_scope=FullRecordingAsrSampleScope.ALL_DATASET_SAMPLES,
+            models=models,
+        )
+        with self.connection() as connection:
+            dataset_row = connection.execute(
+                "SELECT id FROM datasets WHERE id = %s",
+                (dataset_id,),
+            ).fetchone()
+            if dataset_row is None:
+                raise ValueError(f"Dataset not found: {dataset_id}")
+            batch_row = connection.execute(
+                """
+                INSERT INTO full_recording_asr_batches (
+                  idempotency_key, dataset_id, sample_scope, model_ids, status
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING *
+                """,
+                (
+                    request.idempotency_key,
+                    request.dataset_id,
+                    request.sample_scope.value,
+                    [model.value for model in models],
+                    FullRecordingAsrBatchStatus.QUEUED.value,
+                ),
+            ).fetchone()
+            if batch_row is None:
+                existing_row = connection.execute(
+                    "SELECT * FROM full_recording_asr_batches WHERE idempotency_key = %s",
+                    (request.idempotency_key,),
+                ).fetchone()
+                assert existing_row is not None
+                self._validate_idempotent_request(
+                    row=existing_row,
+                    request=request,
+                    models=models,
+                )
+                batch_id = uuid_from_row(existing_row["id"])
+            else:
+                batch_id = uuid_from_row(batch_row["id"])
+            matching_tracks = connection.execute(
+                """
+                SELECT COUNT(*)::integer AS track_count
+                FROM sample_tracks
+                JOIN samples ON samples.id = sample_tracks.sample_id
+                WHERE samples.dataset_id = %s
+                  AND sample_tracks.id = ANY(%s)
+                """,
+                (dataset_id, list(unique_track_ids)),
+            ).fetchone()
+            assert matching_tracks is not None
+            if int_from_row(matching_tracks["track_count"]) != len(unique_track_ids):
+                raise ValueError("Ingestion ASR tracks must all belong to the requested dataset.")
+            inserted = connection.execute(
+                """
+                INSERT INTO full_recording_asr_batch_items (
+                  batch_id, sample_track_id, status
+                )
+                SELECT %s, sample_tracks.id, %s
+                FROM sample_tracks
+                WHERE sample_tracks.id = ANY(%s)
+                ORDER BY sample_tracks.id
+                ON CONFLICT (batch_id, sample_track_id) DO NOTHING
+                """,
+                (
+                    batch_id,
+                    FullRecordingAsrItemStatus.PENDING.value,
+                    list(unique_track_ids),
+                ),
+            )
+            if inserted.rowcount > 0:
+                connection.execute(
+                    """
+                    UPDATE full_recording_asr_batches
+                    SET status = CASE
+                          WHEN status = %s THEN status
+                          ELSE %s
+                        END,
+                        updated_at = now(),
+                        finished_at = NULL
+                    WHERE id = %s
+                    """,
+                    (
+                        FullRecordingAsrBatchStatus.RUNNING.value,
+                        FullRecordingAsrBatchStatus.QUEUED.value,
+                        batch_id,
+                    ),
+                )
+        return self.get_batch(batch_id)
 
     def recover_running_items(self, batch_id: UUID) -> int:
         with self.connection() as connection:
@@ -277,6 +385,45 @@ class FullRecordingAsrRepository:
                 ),
             ).fetchall()
         return tuple(transcript_record(row) for row in rows)
+
+    def get_exact_transcript_pair(
+        self,
+        sample_id: UUID,
+        speaker1_track_id: UUID,
+        speaker1_source_audio_sha256: str,
+        speaker2_track_id: UUID,
+        speaker2_source_audio_sha256: str,
+        model_id: AsrModelId,
+    ) -> FullRecordingAsrTranscriptPair | None:
+        speaker1 = self.get_cached_transcripts(
+            sample_track_id=speaker1_track_id,
+            source_audio_sha256=speaker1_source_audio_sha256,
+            model_ids=(model_id,),
+        )
+        speaker2 = self.get_cached_transcripts(
+            sample_track_id=speaker2_track_id,
+            source_audio_sha256=speaker2_source_audio_sha256,
+            model_ids=(model_id,),
+        )
+        if len(speaker1) != 1 or len(speaker2) != 1:
+            return None
+        if speaker1[0].error is not None or speaker2[0].error is not None:
+            return None
+        if speaker1[0].sample_id != sample_id or speaker2[0].sample_id != sample_id:
+            raise ValueError("Full-recording transcript pair belongs to a different sample.")
+        if speaker1[0].side is not TrackSide.SPEAKER1:
+            raise ValueError("Speaker 1 transcript is linked to the wrong track side.")
+        if speaker2[0].side is not TrackSide.SPEAKER2:
+            raise ValueError("Speaker 2 transcript is linked to the wrong track side.")
+        if speaker1[0].sample_external_id != speaker2[0].sample_external_id:
+            raise ValueError("Full-recording transcript pair has inconsistent sample identifiers.")
+        return FullRecordingAsrTranscriptPair(
+            sample_id=sample_id,
+            sample_external_id=speaker1[0].sample_external_id,
+            model_id=model_id,
+            speaker1=speaker1[0],
+            speaker2=speaker2[0],
+        )
 
     def upsert_transcript(
         self,

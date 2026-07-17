@@ -3,17 +3,33 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import urlparse
 from uuid import UUID
 
+from app.local.asr.full_recording_models import FullRecordingAsrTranscriptPair
+from app.local.asr.full_recording_repository import FullRecordingAsrRepository
+from app.local.asr.full_recording_service import sha256_file
 from app.local.config import COMPUTE_TOKEN, REMOTE_QUALITY_ENDPOINT_URL
-from app.local.db.models import DatasetCreate, DatasetStorageKind, JobStatus, TrackSide
+from app.local.db.models import (
+    DatasetCreate,
+    DatasetStorageKind,
+    JobStatus,
+    SampleTrackRecord,
+    TrackSide,
+)
 from app.local.db.repository import (
     AudioMetadataInput,
     QualityResultInput,
     Repository,
     SampleTrackInput,
+)
+from app.local.ingestion.alignment import (
+    SynchronizationAlignment,
+    SynchronizationAlignmentOrigin,
+    align_audio_tracks,
 )
 from app.local.ingestion.conversation import analyze_conversation
 from app.local.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
@@ -24,13 +40,12 @@ from app.local.quality.remote_models import (
     RemoteQualityRequest,
     UriAudioSource,
 )
+from app.shared.asr import AsrModelId
 from app.shared.audio import load_audio, probe_local_audio_metadata
 from app.shared.quality import (
     METRIC_VERSION,
     AudioMetadata,
-    ProcessingStatus,
     QualityResult,
-    RunConfig,
 )
 from app.shared.quality_analysis.service import score_two_track_sample
 from app.shared.storage.base import StorageBackend
@@ -45,6 +60,65 @@ class ProcessedSample:
     speaker1_metadata: AudioMetadata
     speaker2_metadata: AudioMetadata
     quality_result: QualityResult
+
+
+@dataclass(frozen=True)
+class RegisteredSample:
+    discovered: DiscoveredSample
+    sample_id: UUID
+    speaker1_track_id: UUID
+    speaker2_track_id: UUID
+    speaker1_metadata: AudioMetadata
+    speaker2_metadata: AudioMetadata
+    speaker1_source_audio_sha256: str
+    speaker2_source_audio_sha256: str
+
+
+@dataclass(frozen=True)
+class ReadySample:
+    registered: RegisteredSample
+    transcript_pair: FullRecordingAsrTranscriptPair
+    alignment: SynchronizationAlignment
+
+
+@dataclass(frozen=True)
+class ProcessedReadySample:
+    ready: ReadySample
+    quality_result: QualityResult
+
+
+@dataclass(frozen=True)
+class QualityResultProvenance:
+    speaker1_full_asr_transcript_id: UUID
+    speaker2_full_asr_transcript_id: UUID
+    speaker2_shift_seconds: float
+    synchronization_alignment_origin: SynchronizationAlignmentOrigin
+
+
+class MissingPrerequisite(StrEnum):
+    FULL_RECORDING_ASR = "full_recording_asr"
+
+
+@dataclass(frozen=True)
+class SampleReadiness:
+    ready: ReadySample | None
+    missing: tuple[MissingPrerequisite, ...]
+
+
+class AlignmentRepository(Protocol):
+    def reviewed_speaker2_shift(self, sample_id: UUID) -> float | None: ...
+
+
+class FullTranscriptPairRepository(Protocol):
+    def get_exact_transcript_pair(
+        self,
+        sample_id: UUID,
+        speaker1_track_id: UUID,
+        speaker1_source_audio_sha256: str,
+        speaker2_track_id: UUID,
+        speaker2_source_audio_sha256: str,
+        model_id: AsrModelId,
+    ) -> FullRecordingAsrTranscriptPair | None: ...
 
 
 @dataclass(frozen=True)
@@ -132,32 +206,80 @@ class IngestionService:
             processed_samples = 0
             failed_samples = 0
             sample_errors: list[str] = []
+            waiting_for_asr = 0
+            deferred_samples = 0
+            ready_samples: list[ReadySample] = []
+            missing_asr_track_ids: list[UUID] = []
+            full_asr_repository = FullRecordingAsrRepository(
+                database_url=self.repository.database_url
+            )
+            for discovered_sample in selected_samples:
+                try:
+                    registered = register_sample(
+                        repository=self.repository,
+                        dataset_id=dataset.id,
+                        storage=storage,
+                        discovered=discovered_sample,
+                    )
+                    readiness = sample_readiness(
+                        repository=self.repository,
+                        full_asr_repository=full_asr_repository,
+                        registered=registered,
+                    )
+                    if readiness.ready is not None:
+                        ready_samples.append(readiness.ready)
+                    else:
+                        deferred_samples += 1
+                    if MissingPrerequisite.FULL_RECORDING_ASR in readiness.missing:
+                        waiting_for_asr += 1
+                        missing_asr_track_ids.extend(
+                            (
+                                registered.speaker1_track_id,
+                                registered.speaker2_track_id,
+                            )
+                        )
+                except Exception as error:
+                    failed_samples += 1
+                    sample_errors.append(
+                        f"{discovered_sample.external_id}: {type(error).__name__}: {error}"
+                    )
+                    logger.exception(
+                        "ingestion sample registration failed: %s",
+                        discovered_sample.external_id,
+                    )
+            if missing_asr_track_ids:
+                full_asr_repository.ensure_ingestion_batch_items(
+                    dataset_id=dataset.id,
+                    sample_track_ids=missing_asr_track_ids,
+                    model_ids=(AsrModelId.PARAKEET_TDT,),
+                )
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(
-                        process_local_sample,
+                        process_ready_sample,
                         storage,
-                        discovered_sample,
-                        self.repository.database_url,
-                    ): discovered_sample
-                    for discovered_sample in selected_samples
+                        ready_sample,
+                    ): ready_sample
+                    for ready_sample in ready_samples
                 }
                 for future in as_completed(futures):
-                    discovered_sample = futures[future]
+                    ready_sample = futures[future]
                     try:
-                        persist_processed_sample(
-                            self.repository, dataset.id, storage, future.result()
+                        persist_processed_ready_sample(
+                            repository=self.repository,
+                            processed=future.result(),
                         )
                         processed_samples += 1
                     except Exception as error:
                         failed_samples += 1
                         sample_error = (
-                            f"{discovered_sample.external_id}: {type(error).__name__}: {error}"
+                            f"{ready_sample.registered.discovered.external_id}: "
+                            f"{type(error).__name__}: {error}"
                         )
                         sample_errors.append(sample_error)
                         logger.exception(
                             "ingestion sample failed: %s",
-                            discovered_sample.external_id,
+                            ready_sample.registered.discovered.external_id,
                         )
                     self.repository.update_ingestion_job(
                         job.id,
@@ -169,9 +291,11 @@ class IngestionService:
                         processed_samples=processed_samples,
                         failed_samples=failed_samples,
                     )
-            summary = ingestion_summary(
+            summary = ingestion_summary_with_prerequisites(
                 processed_samples=processed_samples,
                 failed_samples=failed_samples,
+                waiting_for_asr=waiting_for_asr,
+                deferred_samples=deferred_samples,
                 sample_errors=tuple(sample_errors),
             )
             self.repository.update_ingestion_job(
@@ -205,6 +329,41 @@ def ingestion_summary(
             status=JobStatus.FAILED,
             message=f"Ingestion failed for {failed_samples} of {total_samples} samples",
             error="\n".join(sample_errors),
+        )
+    return IngestionSummary(
+        status=JobStatus.COMPLETED,
+        message="Ingestion completed",
+        error=None,
+    )
+
+
+def ingestion_summary_with_prerequisites(
+    processed_samples: int,
+    failed_samples: int,
+    waiting_for_asr: int,
+    deferred_samples: int,
+    sample_errors: tuple[str, ...],
+) -> IngestionSummary:
+    assert processed_samples >= 0
+    assert failed_samples >= 0
+    assert waiting_for_asr >= 0
+    assert deferred_samples >= 0
+    assert len(sample_errors) == failed_samples
+    total_samples = processed_samples + failed_samples + deferred_samples
+    if failed_samples:
+        return IngestionSummary(
+            status=JobStatus.FAILED,
+            message=(
+                f"Ingestion failed for {failed_samples} of {total_samples} samples; "
+                f"{waiting_for_asr} wait for full ASR"
+            ),
+            error="\n".join(sample_errors),
+        )
+    if deferred_samples:
+        return IngestionSummary(
+            status=JobStatus.WAITING_FOR_ASR,
+            message=(f"Processed {processed_samples} samples; {waiting_for_asr} wait for full ASR"),
+            error=None,
         )
     return IngestionSummary(
         status=JobStatus.COMPLETED,
@@ -249,59 +408,155 @@ def select_duration_limited_samples(
     return selected_samples
 
 
-def process_local_sample(
+def register_sample(
+    repository: Repository,
+    dataset_id: UUID,
     storage: StorageBackend,
     discovered: DiscoveredSample,
-    database_url: str,
-) -> ProcessedSample:
+) -> RegisteredSample:
     speaker1_path = local_storage_path(storage, discovered.speaker1_path)
     speaker2_path = local_storage_path(storage, discovered.speaker2_path)
     speaker1_metadata = probe_local_audio_metadata(speaker1_path)
     speaker2_metadata = probe_local_audio_metadata(speaker2_path)
-    duration_gap_seconds = abs(
-        speaker1_metadata.duration_seconds - speaker2_metadata.duration_seconds
+    sample = repository.upsert_sample(dataset_id, discovered.external_id)
+    repository.update_sample_duration(
+        sample.id,
+        max(speaker1_metadata.duration_seconds, speaker2_metadata.duration_seconds),
     )
-    maximum_duration_seconds = max(
-        speaker1_metadata.duration_seconds, speaker2_metadata.duration_seconds
+    speaker1_track = register_track(
+        repository=repository,
+        sample_id=sample.id,
+        storage=storage,
+        side=TrackSide.SPEAKER1,
+        speaker_index=1,
+        path=discovered.speaker1_path,
+        metadata=speaker1_metadata,
     )
-    duration_gap_ratio = (
-        duration_gap_seconds / maximum_duration_seconds if maximum_duration_seconds > 0.0 else 0.0
+    speaker2_track = register_track(
+        repository=repository,
+        sample_id=sample.id,
+        storage=storage,
+        side=TrackSide.SPEAKER2,
+        speaker_index=2,
+        path=discovered.speaker2_path,
+        metadata=speaker2_metadata,
     )
-    if duration_gap_ratio > 0.01:
-        return ProcessedSample(
-            discovered=discovered,
-            speaker1_metadata=speaker1_metadata,
-            speaker2_metadata=speaker2_metadata,
-            quality_result=invalid_duration_quality_result(
-                discovered=discovered,
-                duration_seconds=min(
-                    speaker1_metadata.duration_seconds,
-                    speaker2_metadata.duration_seconds,
-                ),
-                duration_gap_seconds=duration_gap_seconds,
-                duration_gap_ratio=duration_gap_ratio,
-            ),
+    return RegisteredSample(
+        discovered=discovered,
+        sample_id=sample.id,
+        speaker1_track_id=speaker1_track.id,
+        speaker2_track_id=speaker2_track.id,
+        speaker1_metadata=speaker1_metadata,
+        speaker2_metadata=speaker2_metadata,
+        speaker1_source_audio_sha256=sha256_file(speaker1_path),
+        speaker2_source_audio_sha256=sha256_file(speaker2_path),
+    )
+
+
+def register_track(
+    repository: Repository,
+    sample_id: UUID,
+    storage: StorageBackend,
+    side: TrackSide,
+    speaker_index: int,
+    path: str,
+    metadata: AudioMetadata,
+) -> SampleTrackRecord:
+    track = repository.upsert_sample_track(
+        sample_id,
+        SampleTrackInput(
+            side=side,
+            speaker_index=speaker_index,
+            storage_uri=path,
+            access_uri=storage.access_uri(path),
+            duration_seconds=metadata.duration_seconds,
+            sample_rate=metadata.sample_rate,
+            channels=metadata.channels,
+            sample_count=metadata.sample_count,
+        ),
+    )
+    repository.upsert_audio_metadata(
+        AudioMetadataInput(
+            sample_track_id=track.id,
+            duration_seconds=metadata.duration_seconds,
+            sample_rate=metadata.sample_rate,
+            channels=metadata.channels,
+            sample_count=metadata.sample_count,
+            payload=metadata.model_dump(),
         )
-    annotation = analyze_conversation(
-        sample_id=discovered.external_id,
-        speaker1_path=speaker1_path,
-        speaker2_path=speaker2_path,
-        database_url=database_url,
     )
+    return track
+
+
+def sample_readiness(
+    repository: AlignmentRepository,
+    full_asr_repository: FullTranscriptPairRepository,
+    registered: RegisteredSample,
+) -> SampleReadiness:
+    transcript_pair = full_asr_repository.get_exact_transcript_pair(
+        sample_id=registered.sample_id,
+        speaker1_track_id=registered.speaker1_track_id,
+        speaker1_source_audio_sha256=registered.speaker1_source_audio_sha256,
+        speaker2_track_id=registered.speaker2_track_id,
+        speaker2_source_audio_sha256=registered.speaker2_source_audio_sha256,
+        model_id=AsrModelId.PARAKEET_TDT,
+    )
+    speaker2_shift_seconds = repository.reviewed_speaker2_shift(sample_id=registered.sample_id)
+    missing: list[MissingPrerequisite] = []
+    if transcript_pair is None:
+        missing.append(MissingPrerequisite.FULL_RECORDING_ASR)
+    if missing:
+        return SampleReadiness(ready=None, missing=tuple(missing))
+    assert transcript_pair is not None
+    alignment = (
+        SynchronizationAlignment(
+            speaker2_shift_seconds=speaker2_shift_seconds,
+            origin=SynchronizationAlignmentOrigin.REVIEWED,
+        )
+        if speaker2_shift_seconds is not None
+        else SynchronizationAlignment(
+            speaker2_shift_seconds=0.0,
+            origin=SynchronizationAlignmentOrigin.UNREVIEWED_ZERO,
+        )
+    )
+    return SampleReadiness(
+        ready=ReadySample(
+            registered=registered,
+            transcript_pair=transcript_pair,
+            alignment=alignment,
+        ),
+        missing=(),
+    )
+
+
+def process_ready_sample(
+    storage: StorageBackend,
+    ready: ReadySample,
+) -> ProcessedReadySample:
+    discovered = ready.registered.discovered
     speaker1_audio = load_audio(storage, discovered.speaker1_path, target_sample_rate=16_000)
     speaker2_audio = load_audio(storage, discovered.speaker2_path, target_sample_rate=16_000)
+    aligned = align_audio_tracks(
+        speaker1=speaker1_audio,
+        speaker2=speaker2_audio,
+        speaker2_shift_seconds=ready.alignment.speaker2_shift_seconds,
+    )
+    annotation = analyze_conversation(
+        speaker1_audio=aligned.speaker1,
+        speaker2_audio=aligned.speaker2,
+        transcript_pair=ready.transcript_pair,
+        alignment=ready.alignment,
+    )
     quality_result = score_two_track_sample(
         sample_id=discovered.external_id,
-        speaker1_audio=speaker1_audio,
-        speaker2_audio=speaker2_audio,
+        speaker1_audio=aligned.speaker1,
+        speaker2_audio=aligned.speaker2,
         speaker1_uri=storage.access_uri(discovered.speaker1_path),
         speaker2_uri=storage.access_uri(discovered.speaker2_path),
         conversation_annotation=annotation,
     )
-    return ProcessedSample(
-        discovered=discovered,
-        speaker1_metadata=speaker1_metadata,
-        speaker2_metadata=speaker2_metadata,
+    return ProcessedReadySample(
+        ready=ready,
         quality_result=quality_result,
     )
 
@@ -314,36 +569,6 @@ def local_storage_path(storage: StorageBackend, path: str) -> Path:
     if urlparse(access_uri).scheme in {"http", "https", "s3", "gs"}:
         raise ValueError("Local quality analysis requires locally materialized audio files.")
     raise ValueError(f"Audio file not found: {source_path}")
-
-
-def invalid_duration_quality_result(
-    discovered: DiscoveredSample,
-    duration_seconds: float,
-    duration_gap_seconds: float,
-    duration_gap_ratio: float,
-) -> QualityResult:
-    return QualityResult(
-        metric_version=RunConfig().metric_version,
-        sample_id=discovered.external_id,
-        status=ProcessingStatus.INVALID,
-        speaker1_uri=discovered.speaker1_path,
-        speaker2_uri=discovered.speaker2_path,
-        duration_seconds=duration_seconds,
-        interaction_density=None,
-        timing_reliability=None,
-        audio_quality=None,
-        conversation_annotation=None,
-        conversation_count_estimate=None,
-        event_candidates=(),
-        raw_quality_score=0.0,
-        quality_flags=(
-            "duration_mismatch_invalid",
-            f"duration_gap_seconds:{duration_gap_seconds:.3f}",
-            f"duration_gap_ratio:{duration_gap_ratio:.6f}",
-        ),
-        total_quality_score=0.0,
-        error=None,
-    )
 
 
 def process_sample(
@@ -418,10 +643,39 @@ def persist_processed_sample(
                 payload=metadata.model_dump(),
             )
         )
-    repository.insert_quality_result(quality_result_input(sample.id, processed.quality_result))
+    repository.insert_quality_result(
+        quality_result_input(
+            sample_id=sample.id,
+            quality_result=processed.quality_result,
+            provenance=None,
+        )
+    )
 
 
-def quality_result_input(sample_id: UUID, quality_result: QualityResult) -> QualityResultInput:
+def persist_processed_ready_sample(
+    repository: Repository,
+    processed: ProcessedReadySample,
+) -> None:
+    ready = processed.ready
+    repository.insert_quality_result(
+        quality_result_input(
+            sample_id=ready.registered.sample_id,
+            quality_result=processed.quality_result,
+            provenance=QualityResultProvenance(
+                speaker1_full_asr_transcript_id=ready.transcript_pair.speaker1.id,
+                speaker2_full_asr_transcript_id=ready.transcript_pair.speaker2.id,
+                speaker2_shift_seconds=ready.alignment.speaker2_shift_seconds,
+                synchronization_alignment_origin=ready.alignment.origin,
+            ),
+        )
+    )
+
+
+def quality_result_input(
+    sample_id: UUID,
+    quality_result: QualityResult,
+    provenance: QualityResultProvenance | None,
+) -> QualityResultInput:
     audio_quality = quality_result.audio_quality
     interaction_density = quality_result.interaction_density
     timing_reliability = quality_result.timing_reliability
@@ -517,6 +771,18 @@ def quality_result_input(sample_id: UUID, quality_result: QualityResult) -> Qual
         track_correlation=audio_quality.track_correlation if audio_quality is not None else None,
         energy_envelope_correlation=audio_quality.energy_envelope_correlation
         if audio_quality is not None
+        else None,
+        speaker1_full_asr_transcript_id=provenance.speaker1_full_asr_transcript_id
+        if provenance is not None
+        else None,
+        speaker2_full_asr_transcript_id=provenance.speaker2_full_asr_transcript_id
+        if provenance is not None
+        else None,
+        speaker2_shift_seconds=provenance.speaker2_shift_seconds
+        if provenance is not None
+        else None,
+        synchronization_alignment_origin=provenance.synchronization_alignment_origin.value
+        if provenance is not None
         else None,
         flags=tuple(flags),
         payload=quality_result.model_dump(mode="json"),

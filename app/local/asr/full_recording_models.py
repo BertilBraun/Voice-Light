@@ -86,3 +86,11 @@ class FullRecordingAsrTranscriptRecord(FrozenBaseModel):
     error: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class FullRecordingAsrTranscriptPair(FrozenBaseModel):
+    sample_id: UUID
+    sample_external_id: str
+    model_id: AsrModelId
+    speaker1: FullRecordingAsrTranscriptRecord
+    speaker2: FullRecordingAsrTranscriptRecord

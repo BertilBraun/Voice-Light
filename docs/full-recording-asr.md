@@ -44,3 +44,18 @@ service as a binary multipart upload. The compute service verifies the encoded f
 decodes it to canonical mono 16 kHz FLAC before model inference. The legacy JSON/base64 endpoint
 remains available temporarily for workers started before this transport was introduced. Source
 and prepared hashes, durations, channel count, and sample rate are validated before persistence.
+
+## Ingestion lifecycle
+
+`quality-conversation-full-parakeet-v5` registers samples and tracks before quality processing.
+Tracks without an exact source-hash Parakeet transcript pair are added idempotently to the
+dataset's ingestion ASR batch, and the ingestion job finishes as `waiting_for_asr`. Re-running
+ingestion resumes from the same quality version and uses the cached transcript rows without
+another GPU call.
+
+Once both transcripts exist, ingestion builds the full-duration annotation and quality result.
+Reviewed speaker-2 offsets are applied to audio and transcript timestamps; samples without a
+review use an explicit zero shift. Each v5 quality row stores both transcript IDs, the applied
+shift, and whether it was reviewed or `unreviewed_zero`. This intentionally mixed v5 timeline is
+the input for full-recording offset estimation. After the remaining offsets are reviewed, v6 can
+reuse the same transcript cache and recompute only alignment-dependent annotations and quality.
