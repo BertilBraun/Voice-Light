@@ -10,7 +10,11 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerEvent,
     StartLlmCommand,
 )
-from app.compute.voice.qwen_worker import QwenRuntime, QwenWorkerController
+from app.compute.voice.qwen_worker import (
+    LANGUAGE_MODEL_SYSTEM_PROMPT,
+    QwenRuntime,
+    QwenWorkerController,
+)
 
 
 class ImmediateQwenRuntime(QwenRuntime):
@@ -36,6 +40,13 @@ class RecordingQwenWorkerController(QwenWorkerController):
 
     def _send_event(self, event: LlmWorkerEvent) -> None:
         self.events.put(event)
+
+
+def test_tool_prompt_requires_spoken_bridge_before_call() -> None:
+    assert "always begin with exactly one short, natural bridge sentence" in (
+        LANGUAGE_MODEL_SYSTEM_PROMPT
+    )
+    assert "never begin with the tool call" in LANGUAGE_MODEL_SYSTEM_PROMPT
 
 
 def test_terminal_event_means_worker_accepts_next_invocation() -> None:
