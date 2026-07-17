@@ -392,6 +392,24 @@ def candidate_final_invalidation_reason(
     return None
 
 
+def candidate_revision_invalidation_reason(
+    source: CausalSource,
+    stable_prefix: str,
+    prompted_text: str,
+    revised_stable_prefix: str,
+    revised_volatile_suffix: str,
+) -> CandidateInvalidationReason | None:
+    match source:
+        case CausalSource.SILERO_VAD:
+            revised_text = f"{revised_stable_prefix}{revised_volatile_suffix}".strip()
+            if revised_text != prompted_text:
+                return CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
+        case _:
+            if not revised_stable_prefix.startswith(stable_prefix):
+                return CandidateInvalidationReason.STABLE_PREFIX_REVISED
+    return None
+
+
 def _stable_common_prefix(previous_text: str, current_text: str) -> str:
     maximum_length = min(len(previous_text), len(current_text))
     common_length = 0

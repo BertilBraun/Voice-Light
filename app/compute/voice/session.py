@@ -49,6 +49,7 @@ from app.compute.voice.predictive import (
     ReleasedWordBoundary,
     TranscriptRevisionTracker,
     candidate_final_invalidation_reason,
+    candidate_revision_invalidation_reason,
 )
 from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
@@ -633,26 +634,17 @@ class VoiceSession:
         generation = self.active_generation
         if generation is None or not generation.speculative:
             return
-        stable_prefix = generation.stable_transcript_prefix
-        if not revision.stable_prefix.startswith(stable_prefix):
-            await self._invalidate_speculative_candidate(
-                CandidateInvalidationReason.STABLE_PREFIX_REVISED
-            )
-            return
         prediction = generation.causal_prediction
-        if (
-            prediction is not None
-            and prediction.stamp.source is CausalSource.SILERO_VAD
-            and candidate_final_invalidation_reason(
-                stable_prefix=stable_prefix,
-                prompted_text=generation.anchored_text,
-                final_text=f"{revision.stable_prefix}{revision.volatile_suffix}",
-            )
-            is not None
-        ):
-            await self._invalidate_speculative_candidate(
-                CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
-            )
+        assert prediction is not None
+        invalidation_reason = candidate_revision_invalidation_reason(
+            source=prediction.stamp.source,
+            stable_prefix=generation.stable_transcript_prefix,
+            prompted_text=generation.anchored_text,
+            revised_stable_prefix=revision.stable_prefix,
+            revised_volatile_suffix=revision.volatile_suffix,
+        )
+        if invalidation_reason is not None:
+            await self._invalidate_speculative_candidate(invalidation_reason)
 
     async def _start_speculative_candidate(
         self,

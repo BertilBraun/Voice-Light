@@ -33,10 +33,13 @@ validated playback offsets enter model history.
   scheduling, rather than 500 ms total.
 - NVIDIA Nemotron Speech Streaming English 0.6B uses its 160 ms lookahead configuration until the
   session finalizes the utterance. Its persistent child process has one strictly owned active ASR
-  stream. Single-session admission makes cross-WebSocket serialization unnecessary. The browser
-  uses a native 16 kHz audio context so its resampler converts microphone
-  audio before PCM16 quantization. Set `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` to `0`, `1`, `6`, or `13` to compare
-  the model's 80, 160, 560, and 1120 ms streaming configurations without changing code.
+  stream. The worker's cumulative text streamer decodes the complete token cache on every update,
+  including a trailing word that Hugging Face's whitespace-oriented `TextIteratorStreamer` would
+  otherwise retain until more text or stream completion. Single-session admission makes
+  cross-WebSocket serialization unnecessary. The browser uses a native 16 kHz audio context so
+  its resampler converts microphone audio before PCM16 quantization. Set
+  `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` to `0`, `1`, `6`, or `13` to compare the model's 80, 160, 560,
+  and 1120 ms streaming configurations without changing code.
 - Qwen3-1.7B runs in a persistent child process. A typed generation-ID protocol streams
   non-thinking text deltas for the complete ordered conversation.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
@@ -52,21 +55,22 @@ validated playback offsets enter model history.
 ### Predictive generation
 
 `VoiceSession` accepts an optional typed `TurnPredictionSource`. No turn-taking checkpoint or
-canned predictor is required. By default, Silero's first inactive decision emits a causal
-`InteractionPrediction` and starts speculation while the existing additional 500 ms silence guard
-continues toward commitment. `SessionPolicy.vad_speculation_enabled` can disable this early start
-to retain the original non-speculative path as a measurable baseline. A trained source can augment
-the VAD signal with continuous typed audio/transcript observations. Predictions must cite the exact
-transcript revision and input sample position they observed.
+canned predictor is required. By default, Silero's first inactive decision arms a causal
+`InteractionPrediction`. After a sample-counted 100 ms debounce, the session starts speculation
+while ASR remains open and the existing additional 500 ms silence guard continues toward
+commitment. The debounce lets Nemotron publish trailing text without blocking audio ingestion and
+is configurable through `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS`.
+`SessionPolicy.vad_speculation_enabled` or `VOICE_LIGHT_VAD_SPECULATION_ENABLED=false` disables
+this early start to retain the original non-speculative path as a measurable baseline.
 
 Incremental ASR snapshots are tracked as a monotonic revision lineage with a stable prefix and
 volatile suffix. Crossing the configurable speculative yield threshold starts at most one Qwen/TTS
 candidate, anchored to the immutable conversation snapshot, revision ID, prediction, input sample
 position, and monotonic creation time. Trained predictions use the stable prefix. The VAD endpoint
-may additionally include the current volatile suffix so it remains useful when ASR has emitted only
-one partial; final validation rejects it if that snapshot changes materially. Speculation does not
-call `finish()`—Nemotron remains open until the high-confidence prediction rule or guarded silence
-commitment fires.
+uses the complete current `stable_prefix + volatile_suffix` text. A later change to how that same
+text is divided between the two fields does not invalidate the VAD candidate; a change to their
+normalized concatenation does. Speculation does not call `finish()`—Nemotron remains open until the
+high-confidence prediction rule or guarded silence commitment fires.
 
 Candidate output passes through a private release gate. Text deltas, word boundaries, PCM bytes,
 and their original offsets are retained in production order but are not sent to the browser and do
@@ -78,10 +82,65 @@ Promotion releases buffered output in order and turns the gate into a pass-throu
 that is still streaming.
 
 Candidates move through explicit created, prefilling, streaming, ready, committed, invalidated,
-cancellation-requested, cancelled, and failed states. Resumed user activity, a revised stable
-prefix, a decisive return to hold/continuation, floor-taking overlap, shutdown, or model failure
-invalidates speculative work. Backchannel probability alone does not invalidate committed output;
-audible pause, duck, and resume behavior remains outside this server milestone.
+cancellation-requested, cancelled, and failed states. Resumed user activity, a changed VAD-anchored
+transcript, a revised trained-predictor stable prefix, a decisive return to hold/continuation,
+floor-taking overlap, shutdown, or model failure invalidates speculative work. Backchannel
+probability alone does not invalidate committed output; audible pause, duck, and resume behavior
+remains outside this server milestone.
+
+### Turn-prediction integration contract
+
+The response orchestrator calls `TurnPredictionSource.predict()` once per active-turn PCM chunk,
+after applying the newest ASR revision. Each immutable `TurnPredictionObservation` contains:
+
+- the current PCM16 chunk and Silero speech decision;
+- the cumulative input sample position and monotonic observation timestamp;
+- the latest `TranscriptRevision`, if Nemotron has emitted text.
+
+The source returns either `None` or one immutable `InteractionPrediction`. Its `TraceStamp` must use
+the observation's exact input sample position and transcript revision ID. When a revision exists,
+its event ID must appear in `parent_event_ids`. A prediction supplies calibrated user-speech,
+yield, backchannel, and interruption probabilities; optional future-activity horizons; the observed
+assistant playback state; overall confidence; and source/model identity. `close()` releases
+source-owned session resources.
+
+The orchestration policy interprets that output as follows:
+
+- sufficient confidence plus `p_user_yield >= speculative_yield_threshold` may create one private
+  Qwen/TTS candidate;
+- sufficient confidence plus `p_user_yield >= commitment_yield_threshold` commits the turn and
+  finalizes ASR;
+- sufficient confidence plus `p_user_speech >= decisive_hold_threshold` blocks silence commitment
+  and invalidates an uncommitted candidate;
+- `p_user_interruption >= floor_taking_overlap_threshold` invalidates an uncommitted candidate.
+
+The source predicts interaction state only. It does not start Qwen, finalize ASR, release output,
+mutate conversation history, or manage playback. The session owns those decisions, enforces the
+single-Qwen teardown barrier, and falls back to the Silero endpoint prediction only when the
+configured source returns `None` for that chunk.
+
+### Initial GPU evaluation
+
+The cumulative streamer was first evaluated with no additional VAD debounce, then with the
+sample-counted 100 ms debounce. Node-local warm trials used three fixed utterances and excluded
+USA-to-browser network latency:
+
+| Utterance | No debounce | 100 ms debounce |
+| --- | ---: | ---: |
+| “What is the capital of France?” | 2/5 promoted | 5/5 promoted |
+| “What is two plus two?” | 0/5 promoted | 5/5 promoted |
+| “Set a timer for ten minutes.” | 5/5 promoted | 5/5 promoted |
+| **Total** | **7/15 (46.7%)** | **15/15 (100%)** |
+
+The capital-question commit-to-first-PCM p50 improved from approximately 968 ms to 191 ms. The
+first promoted arithmetic trace reached PCM in 331 ms; repeated server playback acknowledgements
+had a median of approximately 619 ms, versus approximately 999 ms without a usable candidate. The
+timer p50 moved from approximately 404 ms to 538 ms, reflecting current TTS/CPU variance rather
+than a consistent improvement. Promoted candidates hid approximately 0.48–0.57 seconds and 2–9
+Qwen tokens before commitment. Voxtream had not produced PCM before commitment in these trials, so
+the measured benefit came from hidden Qwen prefill/generation rather than buffered audio. No
+speculative text or PCM escaped before promotion, and the observed stale-candidate escape rate was
+zero. These are small best-case measurements, not a trained turn-detector evaluation.
 
 ## Process and lifecycle boundaries
 

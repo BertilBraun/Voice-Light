@@ -14,7 +14,9 @@ from app.compute.voice.predictive import (
     ReleasedWordBoundary,
     TranscriptRevisionTracker,
     candidate_final_invalidation_reason,
+    candidate_revision_invalidation_reason,
 )
+from app.compute.voice.schemas import CausalSource
 
 
 class InMemoryPlaybackSink:
@@ -113,6 +115,42 @@ def test_final_candidate_validation_is_conservative() -> None:
             final_text="cancel the flight",
         )
         is CandidateInvalidationReason.FINAL_PREFIX_CHANGED
+    )
+
+
+def test_vad_candidate_uses_combined_transcript_across_prefix_resegmentation() -> None:
+    assert (
+        candidate_revision_invalidation_reason(
+            source=CausalSource.SILERO_VAD,
+            stable_prefix="book a",
+            prompted_text="book a table",
+            revised_stable_prefix="book a ",
+            revised_volatile_suffix="table",
+        )
+        is None
+    )
+    assert (
+        candidate_revision_invalidation_reason(
+            source=CausalSource.SILERO_VAD,
+            stable_prefix="book a",
+            prompted_text="book a table",
+            revised_stable_prefix="book a ",
+            revised_volatile_suffix="train",
+        )
+        is CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
+    )
+
+
+def test_trained_candidate_remains_anchored_to_stable_prefix() -> None:
+    assert (
+        candidate_revision_invalidation_reason(
+            source=CausalSource.TURN_ADAPTER,
+            stable_prefix="book a ",
+            prompted_text="book a",
+            revised_stable_prefix="book ",
+            revised_volatile_suffix="a table",
+        )
+        is CandidateInvalidationReason.STABLE_PREFIX_REVISED
     )
 
 
