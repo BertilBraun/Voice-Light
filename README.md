@@ -166,7 +166,8 @@ bash deployment/compute/install-service.sh
 ```
 
 `bootstrap.sh` installs Linux audio/compiler packages, installs uv, synchronizes the locked Python
-3.12 environment with the `compute` dependency extra, validates the RTX 4090/CUDA runtime, caches
+3.12 environment with the `compute` dependency extra, validates the NVIDIA/CUDA runtime and at
+least 10 GiB of GPU memory, caches
 required voice models, and performs a streaming TTS smoke test. Moshi, NeMo, librosa, and
 faster-whisper are compute-only dependencies and are not installed for the local app. The script
 creates an ignored `.env.compute` containing a new bearer token and

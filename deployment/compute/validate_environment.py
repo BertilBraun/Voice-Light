@@ -26,6 +26,7 @@ from app.compute.voice.tts_selection import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+MINIMUM_GPU_MEMORY_BYTES = 10 * 1024**3
 
 
 def main(arguments: Sequence[str] | None = None) -> None:
@@ -49,14 +50,24 @@ def validate_nvidia_gpu() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("PyTorch cannot access CUDA.")
     device_name = torch.cuda.get_device_name(0)
-    if "RTX 4090" not in device_name:
-        raise RuntimeError(f"Expected an RTX 4090, found {device_name}.")
     memory_bytes = torch.cuda.get_device_properties(0).total_memory
-    if memory_bytes < 22 * 1024**3:
-        raise RuntimeError("The GPU exposes less than 22 GiB of VRAM.")
-    if torch.version.cuda is None:
+    cuda_version = torch.version.cuda
+    validate_gpu_properties(device_name, memory_bytes, cuda_version)
+    print(f"CUDA validation passed: {device_name}, PyTorch CUDA {cuda_version}.")
+
+
+def validate_gpu_properties(
+    device_name: str,
+    memory_bytes: int,
+    cuda_version: str | None,
+) -> None:
+    if memory_bytes < MINIMUM_GPU_MEMORY_BYTES:
+        memory_gib = memory_bytes / 1024**3
+        raise RuntimeError(
+            f"{device_name} exposes {memory_gib:.1f} GiB of VRAM; at least 10 GiB is required."
+        )
+    if cuda_version is None:
         raise RuntimeError("The installed PyTorch build has no CUDA runtime.")
-    print(f"CUDA validation passed: {device_name}, PyTorch CUDA {torch.version.cuda}.")
 
 
 def validate_imports() -> None:
