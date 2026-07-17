@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 def create_compute_app(settings: ComputeSettings) -> FastAPI:
     configure_logging(settings.log_directory)
-    runtime = ComputeRuntime(settings.speech_synthesis)
+    runtime = ComputeRuntime(settings.voice_stack)
     authorizer = BearerTokenAuthorizer(settings.token)
 
     @asynccontextmanager
@@ -108,8 +108,13 @@ def create_compute_app(settings: ComputeSettings) -> FastAPI:
 
     @application.websocket("/v1/voice")
     async def voice(websocket: WebSocket) -> None:
-        if not runtime.ready:
-            await websocket.close(code=1013, reason="Compute models are not ready.")
+        if not runtime.voice_ready:
+            reason = (
+                "Voice stack is disabled."
+                if not runtime.voice_enabled
+                else "Compute models are not ready."
+            )
+            await websocket.close(code=1013, reason=reason)
             return
         request_id = websocket.headers.get("x-request-id") or str(uuid4())
         lease = runtime.try_admit_voice_session(request_id)

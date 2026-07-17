@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import ParamSpec, TypeVar
 
 from app.compute.asr.models.registry import AsrModelCache
+from app.compute.config import VoiceStackSettings
 from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessionLease
 from app.compute.voice.interfaces import SpeechSynthesizer, SpeechUnderstandingProvider
 from app.compute.voice.model_constants import (
@@ -18,10 +19,7 @@ from app.compute.voice.models import TransformersLanguageModel
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
 from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingProvider
-from app.compute.voice.tts_selection import (
-    SpeechSynthesisSettings,
-    create_speech_synthesizer,
-)
+from app.compute.voice.tts_selection import create_speech_synthesizer
 from app.shared.compute_api import ModelStage, ModelStageStatus
 
 logger = logging.getLogger(__name__)
@@ -46,8 +44,8 @@ class MutableModelStage:
 
 
 class ComputeRuntime:
-    def __init__(self, speech_synthesis_settings: SpeechSynthesisSettings) -> None:
-        self.speech_synthesis_settings = speech_synthesis_settings
+    def __init__(self, voice_stack_settings: VoiceStackSettings | None) -> None:
+        self.voice_stack_settings = voice_stack_settings
         self.streaming_asr_stage = MutableModelStage("streaming_asr")
         self.speech_detection_stage = MutableModelStage("speech_detection")
         self.language_model_stage = MutableModelStage("language_model")
@@ -62,10 +60,22 @@ class ComputeRuntime:
 
     @property
     def ready(self) -> bool:
-        return all(stage.status is ModelStageStatus.READY for stage in self._stages())
+        return not self.voice_enabled or self.voice_ready
+
+    @property
+    def voice_enabled(self) -> bool:
+        return self.voice_stack_settings is not None
+
+    @property
+    def voice_ready(self) -> bool:
+        return self.voice_enabled and all(
+            stage.status is ModelStageStatus.READY for stage in self._voice_stages()
+        )
 
     def stages(self) -> tuple[ModelStage, ...]:
-        return tuple(stage.snapshot() for stage in self._stages())
+        if self.voice_stack_settings is None:
+            return ()
+        return tuple(stage.snapshot() for stage in self._voice_stages())
 
     def try_admit_voice_session(self, request_id: str) -> VoiceSessionLease | None:
         return self.voice_session_admission.try_acquire(request_id)
@@ -75,6 +85,9 @@ class ComputeRuntime:
 
     def start_loading(self) -> None:
         assert self.loading_task is None
+        if self.voice_stack_settings is None:
+            logger.info("voice stack disabled; batch ASR is ready")
+            return
         self.loading_task = asyncio.create_task(self._load_models())
 
     async def shutdown(self) -> None:
@@ -149,10 +162,11 @@ class ComputeRuntime:
             self.language_model = model
 
     async def _load_speech_synthesizer(self) -> None:
+        assert self.voice_stack_settings is not None
         model = await self._timed_load(
             self.speech_synthesis_stage,
             create_speech_synthesizer,
-            self.speech_synthesis_settings,
+            self.voice_stack_settings.speech_synthesis,
         )
         if model is not None:
             self.speech_synthesizer = model
@@ -183,7 +197,7 @@ class ComputeRuntime:
         )
         return model
 
-    def _stages(self) -> tuple[MutableModelStage, ...]:
+    def _voice_stages(self) -> tuple[MutableModelStage, ...]:
         return (
             self.speech_detection_stage,
             self.streaming_asr_stage,

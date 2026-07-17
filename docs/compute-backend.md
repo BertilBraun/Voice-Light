@@ -32,13 +32,22 @@ Compute HTTP endpoints except liveness require `Authorization: Bearer <token>`. 
 WebSocket is deliberately public for direct use by the browser.
 
 - `GET /health/live`: process liveness; does not imply that models are ready.
-- `GET /health/ready`: ready only after the streaming ASR, LLM, and TTS startup stages complete.
+- `GET /health/ready`: ready after the enabled startup stages complete.
 - `POST /v1/asr:batch`: batch ASR with request-contained base64 audio.
 - `POST /v1/quality:analyze`: two multipart audio uploads plus a sample identifier.
 - `WS /v1/voice`: focused, ephemeral cascaded voice session with binary PCM in both directions.
 
 The compute server never accepts filesystem paths or shell commands from HTTP clients. Quality
 uploads are decoded in request-scoped temporary storage and deleted after the response.
+
+## ASR-only mode
+
+Set `VOICE_LIGHT_VOICE_STACK_ENABLED=false` to run the compute server only for batch ASR and
+quality requests. This skips the Silero speech detector and the streaming ASR, language-model, and
+TTS workers. Readiness succeeds immediately with no model stages, batch ASR models remain
+request-loaded and cached, and `/v1/voice` rejects connections while the mode is active. The setting
+defaults to `true`. Existing deployments can switch modes by editing `.env.compute` and restarting
+the compute service.
 
 ## TTS selection
 

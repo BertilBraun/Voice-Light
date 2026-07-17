@@ -22,6 +22,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
                 "VOICE_LIGHT_COMPUTE_HOST=0.0.0.0",
                 "VOICE_LIGHT_COMPUTE_PORT=8000",
                 "VOICE_LIGHT_COMPUTE_LOG_DIR=logs/compute",
+                "VOICE_LIGHT_VOICE_STACK_ENABLED=true",
                 "VOICE_LIGHT_TTS_BACKEND=kyutai",
                 f"HF_HOME={repository_root / '.cache/compute/huggingface'}",
                 f"HF_HUB_CACHE={repository_root / '.cache/compute/huggingface/hub'}",
