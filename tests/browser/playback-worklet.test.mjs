@@ -276,6 +276,43 @@ test("pause racing with end-of-stream completes terminally", () => {
   );
 });
 
+test("one generation accepts final-answer audio after a drained tool gap", () => {
+  const harness = new PlaybackHarness();
+  harness.boundary(1, 4, 0);
+  harness.boundary(1, 9, 2);
+  harness.enqueue(1, 0, [1, 2, 3, 4]);
+  const rendered = harness.process(4);
+
+  assert.equal(harness.processor.generationId, 1);
+  assert.notEqual(harness.processor.state, "completed");
+  assert.equal(
+    harness.messages.filter((message) => message.type === "playback.complete").length,
+    0,
+  );
+
+  harness.boundary(1, 15, 4);
+  harness.boundary(1, 20, 6);
+  harness.enqueue(1, 4, [5, 6, 7, 8]);
+  harness.send({ type: "end", generationId: 1 });
+  rendered.push(...harness.process(4));
+
+  assert.deepEqual(rendered, [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(harness.processor.sourceSamplePosition, 8);
+  assert.equal(harness.processor.state, "completed");
+  assert.equal(
+    harness.messages.filter((message) => message.type === "playback.started").length,
+    1,
+  );
+  assert.equal(
+    harness.messages.filter((message) => message.type === "playback.complete").length,
+    1,
+  );
+  const textOffsets = harness.messages
+    .filter((message) => message.type === "boundary.progress")
+    .map((message) => message.textOffset);
+  assert.deepEqual(textOffsets, [...textOffsets].sort((left, right) => left - right));
+});
+
 test("resume is rejected and playback is cancelled after the resumable age", () => {
   const harness = new PlaybackHarness(1_000);
   harness.enqueue(1, 0, [1, 2, 3, 4]);

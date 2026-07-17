@@ -138,6 +138,30 @@ def test_session_policy_rejects_negative_prediction_lag() -> None:
         SessionPolicy(maximum_prediction_lag_ms=-1)
 
 
+def test_session_policy_reads_tool_timeouts() -> None:
+    policy = SessionPolicy.from_environment(
+        {
+            "VOICE_LIGHT_TOOL_TIMEOUT_SECONDS": "3.5",
+            "VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS": "0.4",
+        }
+    )
+
+    assert policy.tool_timeout_seconds == 3.5
+    assert policy.tool_cancellation_timeout_seconds == 0.4
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    (
+        "VOICE_LIGHT_TOOL_TIMEOUT_SECONDS",
+        "VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS",
+    ),
+)
+def test_session_policy_rejects_nonpositive_tool_timeouts(environment_name: str) -> None:
+    with pytest.raises(ValueError, match="tool .*timeout"):
+        SessionPolicy.from_environment({environment_name: "0"})
+
+
 class FakeSpeechDetector:
     def process_audio(self, pcm_bytes: bytes) -> bool:
         return any(pcm_bytes)
@@ -468,6 +492,51 @@ class GenerationAwareToolLanguageModel:
                 invocation_id=invocation_id,
                 cumulative_token_count=4,
             )
+            return
+        yield LanguageModelTextDelta(
+            invocation_id=invocation_id,
+            text="Replacement answer.",
+            cumulative_token_count=3,
+        )
+        yield LanguageModelCompleted(
+            invocation_id=invocation_id,
+            cumulative_token_count=3,
+        )
+
+
+class PartialToolCallLanguageModel:
+    def __init__(self) -> None:
+        self.requests: list[LanguageModelRequest] = []
+        self.partial_call_started = threading.Event()
+        self.partial_call_cancelled = threading.Event()
+        self.release = threading.Event()
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        invocation_id = len(self.requests)
+        if request.assistant_generation_id == 1:
+            try:
+                yield LanguageModelTextDelta(
+                    invocation_id=invocation_id,
+                    text="Let me check that.",
+                    cumulative_token_count=5,
+                )
+                yield LanguageModelToolCallStarted(
+                    invocation_id=invocation_id,
+                    call_id=f"qwen-{invocation_id}-tool-1",
+                    cumulative_token_count=6,
+                )
+                self.partial_call_started.set()
+                await asyncio.to_thread(self.release.wait)
+                yield LanguageModelCompleted(
+                    invocation_id=invocation_id,
+                    cumulative_token_count=6,
+                )
+            finally:
+                self.partial_call_cancelled.set()
             return
         yield LanguageModelTextDelta(
             invocation_id=invocation_id,
@@ -1140,6 +1209,44 @@ def test_user_cancellation_while_tool_runs_discards_late_result() -> None:
         websocket.send_json({"type": "session.stop"})
 
 
+def test_user_cancellation_while_call_is_buffering_never_starts_tool() -> None:
+    language_model = PartialToolCallLanguageModel()
+    weather_handler = ControlledWeatherHandler()
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert language_model.partial_call_started.wait(timeout=1)
+        wait_until(lambda: released_text(sink) == "Let me check that.")
+
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert language_model.partial_call_cancelled.wait(timeout=1)
+        wait_until(
+            lambda: any(request.assistant_generation_id == 2 for request in language_model.requests)
+        )
+        language_model.release.set()
+        assert not weather_handler.started.is_set()
+        first_generation_text = "".join(
+            output.text
+            for output in sink.outputs
+            if isinstance(output, ReleasedTextDelta) and output.generation_id == 1
+        )
+        assert first_generation_text == "Let me check that."
+        assert "<tool" not in released_text(sink)
+        websocket.send_json({"type": "session.stop"})
+
+
 def test_words_are_forwarded_on_whitespace_and_trailing_word_is_flushed() -> None:
     synthesizer = RecordingSpeechSynthesizer()
     web_app = create_test_app(
@@ -1312,6 +1419,76 @@ def test_non_floor_taking_overlap_resumes_existing_generation_without_history(
     assert transcriber.sessions[1].finish_count == 1
 
 
+def test_backchannel_during_tool_wait_preserves_tool_and_resumes_same_generation() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("weather", None, None), ("mm-hm", None)),
+        final_texts=("weather in London", "mm-hm"),
+    )
+    language_model = ScriptedWeatherLanguageModel()
+    weather_handler = ControlledWeatherHandler()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        assert weather_handler.started.wait(timeout=1)
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        duck = receive_playback_command(websocket)
+        pause = receive_playback_command(websocket)
+        send_playback_command_acknowledgement(
+            websocket,
+            duck,
+            resulting_state=PlaybackState.DUCKING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        paused_source_position = pause.requested_boundary_source_sample_position or 1
+        send_playback_command_acknowledgement(
+            websocket,
+            pause,
+            resulting_state=PlaybackState.PAUSED_BUFFERED,
+            pause_result=(
+                PlaybackPauseResult.WORD_BOUNDARY
+                if pause.requested_boundary_source_sample_position is not None
+                else PlaybackPauseResult.FORCED_SAMPLE
+            ),
+            source_sample_position=paused_source_position,
+        )
+        websocket.send_bytes(SILENCE_CHUNK)
+        resume = receive_playback_command(websocket)
+        assert resume.action is PlaybackCommandAction.RESUME
+        assert resume.generation_id == 1
+        send_playback_command_acknowledgement(
+            websocket,
+            resume,
+            resulting_state=PlaybackState.RESUMING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=paused_source_position,
+        )
+
+        weather_handler.release.set()
+        receive_until(websocket, "assistant.audio.end")
+        assert len(language_model.requests) == 2
+        assert {request.assistant_generation_id for request in language_model.requests} == {1}
+        tool = sessions[0].generations[1].tool
+        assert tool is not None
+        assert tool.lifecycle is ToolLifecycle.SUCCEEDED
+        assert all(message.content != "mm-hm" for message in sessions[0].conversation)
+        websocket.send_json({"type": "session.stop"})
+
+
 @pytest.mark.parametrize("interruption_text", ["How?", "No, wait", "Yeah, but this is wrong"])
 def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
     interruption_text: str,
@@ -1365,6 +1542,59 @@ def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
         content=interruption_text,
     )
     assert transcriber.sessions[1].audio[0] == SPEECH_CHUNK
+
+
+def test_response_requiring_overlap_cancels_running_tool() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("weather", None, None), ("How?", None, None)),
+        final_texts=("weather in London", "How?"),
+    )
+    language_model = GenerationAwareToolLanguageModel()
+    weather_handler = CancellationResistantWeatherHandler()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        assert weather_handler.started.wait(timeout=1)
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        cancel = receive_playback_command(websocket)
+        assert cancel.action is PlaybackCommandAction.CANCEL
+        send_playback_command_acknowledgement(
+            websocket,
+            cancel,
+            resulting_state=PlaybackState.CANCELLED,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        assert weather_handler.cancelled.wait(timeout=1)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
+        assert events[-1]["generation_id"] == 2
+
+        weather_handler.release.set()
+        assert weather_handler.finished.wait(timeout=1)
+        receive_until(websocket, "assistant.audio.end")
+        assert not language_model.old_continuation_started.is_set()
+        first_tool = sessions[0].generations[1].tool
+        assert first_tool is not None
+        assert first_tool.lifecycle is ToolLifecycle.CANCELLED
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_final_lexical_interruption_never_resumes_provisional_backchannel() -> None:

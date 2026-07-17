@@ -61,6 +61,9 @@ validated playback offsets enter model history.
   developer console for prompt inspection.
 - Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
   final trailing word is flushed when Qwen finishes.
+- A response may contain one asynchronous `get_weather` call. The response keeps one assistant
+  playback generation and one TTS session open across the spoken bridge, tool wait, and final
+  answer. The two Qwen invocations have separate globally monotonic invocation IDs.
 - A new authoritative server speech-start still immediately cancels private or inaudible queued
   work. When browser-authoritative state says a committed response is audibly speaking, the start
   instead opens unresolved overlap: the server sends an immediate duck and boundary-pause command
@@ -68,6 +71,114 @@ validated playback offsets enter model history.
   response-requiring or floor-taking resolution invokes the existing Qwen/TTS teardown barrier.
   Before starting a successor generation, the session still awaits that barrier, so old and new
   Qwen/TTS work never overlap accidentally.
+
+### Asynchronous Qwen tool calling
+
+The first tool milestone follows Qwen3's official Hermes function-calling protocol. The worker
+passes the typed message sequence and typed JSON-schema tool definition to
+`tokenizer.apply_chat_template(..., tools=..., enable_thinking=False)` using pinned
+`Qwen/Qwen3-1.7B` revision `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e`. It does not use a
+stopword or ReAct protocol. The primary protocol reference is
+<https://qwen.readthedocs.io/en/stable/framework/function_call.html>.
+
+The deterministic end-to-end fixture records this raw first pass:
+
+```text
+Let me check that.<tool_call>{"name":"get_weather","arguments":{"location":"London"}}</tool_call>
+```
+
+The Qwen worker's incremental parser normalizes that private byte stream into:
+
+```text
+spoken_text_delta(invocation=1, text="Let me check that.")
+tool_call_started(invocation=1, call="qwen-1-tool-1")
+tool_call(invocation=1, name="get_weather", location="London")
+completed(invocation=1)
+```
+
+The parser retains every ambiguous prefix of `<tool_call>` and `</tool_call>` until it can prove
+whether that text is syntax. Delimiters and JSON may be split at any character boundary. An
+unfinished delimiter, malformed envelope, unknown name, invalid typed arguments, duplicate call,
+second call, or content after a call becomes an explicit typed failure. VoiceSession never parses
+Hermes XML and never receives raw tool syntax as spoken text.
+
+After the first invocation ends, VoiceSession validates the buffered call through the injected
+typed registry and runs its async handler. Waiting until invocation completion prevents a later
+duplicate or malformed tail from racing into execution. For a valid London call, the private model
+context becomes:
+
+```text
+user("What's the weather like in London?")
+assistant(content="Let me check that.", tool_call(id="qwen-1-tool-1",
+          name="get_weather", arguments=GetWeatherArguments(location="London")))
+tool(tool_call_id="qwen-1-tool-1",
+     outcome=WeatherResult(location="London", temperature_celsius=12,
+                           conditions="lightly cloudy"))
+```
+
+The second, tool-disabled Qwen invocation then produces the recorded fixture answer:
+
+```text
+It is 12 degrees and lightly cloudy in London.
+```
+
+Tool description, parsing, validation, execution, orchestration, speech, and durable history are
+separate. `get_weather` is the only registered tool. Its production demonstration handler waits
+approximately one second and returns frozen deterministic results for London, Berlin, and San
+Francisco. Other locations use the documented deterministic fallback of 20 degrees Celsius and
+`clear (deterministic fallback)`. It does not use a network API or randomness. The registry is
+injected into VoiceSession, so VoiceSession contains no city or weather-specific branch.
+
+The tool lifecycle is orthogonal to candidate/playback state:
+
+```text
+NOT_REQUESTED -> CALL_BUFFERING -> READY -> RUNNING -> SUCCEEDED
+                                                \-> FAILED
+                         \-> CANCELLED / INVALIDATED
+```
+
+Each tool trace is anchored to assistant generation ID, originating user-turn ID, transcript
+revision ID, first invocation ID, and call ID. A result can enter the second prompt only while all
+anchors still identify the active non-cancelled generation. A non-floor-taking overlap keeps the
+tool task and resumes the same generation. A genuine interruption marks the tool cancelled or
+invalidated, cancels it independently of the Qwen/TTS teardown barrier, and prevents a late result
+from starting another invocation or changing history. `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS` controls
+execution timeout (default 5 seconds) and
+`VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS` bounds cancellation observation (default 250 ms).
+Handler error, validation error, or timeout is appended as a typed private tool failure so the
+second invocation can speak a short recovery; the application never fabricates weather.
+
+One `CompleteWordStream`, TTS session, synthesis output task, browser generation, audio sequence,
+text-offset space, and source-sample space span both Qwen invocations. The bridge's trailing word is
+flushed at the tool boundary without finishing TTS input. Final words continue at larger text
+offsets, and TTS PCM must continue at the next exact sample. Only the final invocation calls
+`finish_input`, so the browser receives one audio start and one audio end.
+
+Generation-scoped monotonic instrumentation now records first bridge text/PCM, tool-call start and
+completion, execution start and completion, result commit, second-invocation start, first final
+text/PCM, cancellation/invalidation, and whether tool work was wasted. The deterministic gate-based
+test asserts the causal ordering instead of using sleeps:
+
+```text
+first bridge text/PCM < handler release
+tool call complete <= execution start < execution complete
+result commit <= second invocation start <= first final text/PCM
+```
+
+These phases do not change existing first-response or predictive latency origins; tool wait is not
+reported as first-response latency.
+
+The browser-facing `llm.history` remains an audible-only user/assistant snapshot. Private structured
+model context is generation-local and is never sent as a WebSocket event. `response_text` contains
+only the bridge plus final spoken continuation, so browser text, TTS input, playback boundaries, and
+durable assistant history cannot contain tool tags, JSON, call IDs, control tokens, or results.
+Assistant history still advances only through browser-proven word boundaries or complete playback.
+
+Current limitations are deliberate: one deterministic tool, one call and one tool round per
+assistant turn, no parallel/dependent calls, no network weather, no arbitrary execution, no MCP,
+and no native duplex model. During a drained tool gap the current worklet keeps the not-yet-ended
+generation active; this enables the existing duck/pause backchannel policy but can conservatively
+classify speech during the silent gap as overlap with an active assistant turn.
 
 ### Natural user overlap and reversible playback
 
