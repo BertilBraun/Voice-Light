@@ -103,9 +103,19 @@ second call, or content after a call becomes an explicit typed failure. VoiceSes
 Hermes XML and never receives raw tool syntax as spoken text.
 
 After the first invocation ends, VoiceSession validates the buffered call through the injected
-typed registry and runs its async handler. Waiting until invocation completion prevents a later
-duplicate or malformed tail from racing into execution. For a valid London call, the private model
-context becomes:
+typed registry. Waiting until invocation completion prevents a later duplicate or malformed tail
+from racing into execution. VoiceSession then stages the complete typed assistant message
+immediately before creating the handler task. Staging is generation-local and is not returned by a
+committed private-context snapshot. A staged call therefore cannot become a dangling assistant
+call in a later prompt.
+
+After the handler reaches terminal success, handler failure, or timeout, VoiceSession revalidates
+the generation, user-turn, transcript-revision, and first-invocation anchors. If they are still
+current, it atomically replaces the stage with the assistant call and its exact call-ID-matched
+tool result. For an authoritative generation this is `session_committed`. A speculative
+generation first becomes `generation_local_committed`; promotion upgrades it to
+`session_committed`, while invalidation discards the entire generation-local exchange. For a valid
+London call, the private model context becomes:
 
 ```text
 user("What's the weather like in London?")
@@ -137,16 +147,45 @@ NOT_REQUESTED -> CALL_BUFFERING -> READY -> RUNNING -> SUCCEEDED
                          \-> CANCELLED / INVALIDATED
 ```
 
-Each tool trace is anchored to assistant generation ID, originating user-turn ID, transcript
-revision ID, first invocation ID, and call ID. A result can enter the second prompt only while all
-anchors still identify the active non-cancelled generation. A non-floor-taking overlap keeps the
-tool task and resumes the same generation. A genuine interruption marks the tool cancelled or
-invalidated, cancels it independently of the Qwen/TTS teardown barrier, and prevents a late result
-from starting another invocation or changing history. `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS` controls
-execution timeout (default 5 seconds) and
+Three records are deliberately separate:
+
+- `PrivateModelContext` is a typed, turn-ordered model transcript. A turn owns its user message,
+  optional assistant-call/tool-result exchange, and any later assistant continuation confirmed
+  audible. It is the source for subsequent Qwen requests and is never sent to the browser.
+- `conversation` is audible durable history. It contains only user turns and assistant text proven
+  played by browser word-boundary or completion acknowledgements. The bridge and final answer share
+  one browser generation, text-offset space, and assistant history entry.
+- `tool_execution_journal` is the audit record. Its entries retain typed identity, parsed request,
+  validated call, terminal discriminated outcome, lifecycle, stage/result-commit status, timing,
+  first and continuation invocation IDs, invalidation reason, and whether cancellation-resistant
+  work was wasted. Journal entries are never TTS or browser input.
+
+Each model turn and tool trace is anchored to assistant generation ID, originating user-turn ID,
+transcript revision ID, first invocation ID, and call ID. Generation IDs and user-turn IDs increase
+within the session. Qwen invocation IDs are globally monotonic at the worker manager; the bridge
+and continuation therefore have distinct invocation IDs while retaining one assistant generation
+and playback ID. A result can enter the second prompt only while all anchors still identify the
+active non-cancelled generation. A non-floor-taking overlap keeps the tool task, staged or
+committed private context, and playback turn, then resumes that same generation. A genuine
+interruption cancels the active continuation and TTS/playback work. If the call is only staged, the
+stage is discarded and the audit outcome becomes typed `cancelled` or `invalidated`; a late handler
+result cannot start inference, speech, or history mutation. If call and result were already
+session-committed, they remain a complete non-dangling pair while any confirmed continuation
+prefix is retained through the normal audible-history boundary.
+
+Parser or argument-validation failures have no valid assistant call to commit. Their typed failure
+is supplied only to the immediate recovery invocation; later private context receives the recovery
+as ordinary assistant speech only if browser playback confirms it. Handler failure and timeout are
+different: they follow a valid staged call, so the valid call and typed terminal error commit as a
+pair before one concise recovery continuation.
+
+Tool cancellation is independent of the Qwen/TTS teardown barrier, and its observation timeout
+cannot block successor generation. `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS` controls execution timeout
+(default 5 seconds) and
 `VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS` bounds cancellation observation (default 250 ms).
-Handler error, validation error, or timeout is appended as a typed private tool failure so the
-second invocation can speak a short recovery; the application never fabricates weather.
+Handler error or timeout is committed as a typed private tool failure; a parser or validation
+failure remains transient recovery context. Either path lets the second invocation speak a short
+recovery, and the application never fabricates weather.
 
 One `CompleteWordStream`, TTS session, synthesis output task, browser generation, audio sequence,
 text-offset space, and source-sample space span both Qwen invocations. The bridge's trailing word is
@@ -169,16 +208,42 @@ These phases do not change existing first-response or predictive latency origins
 reported as first-response latency.
 
 The browser-facing `llm.history` remains an audible-only user/assistant snapshot. Private structured
-model context is generation-local and is never sent as a WebSocket event. `response_text` contains
-only the bridge plus final spoken continuation, so browser text, TTS input, playback boundaries, and
-durable assistant history cannot contain tool tags, JSON, call IDs, control tokens, or results.
-Assistant history still advances only through browser-proven word boundaries or complete playback.
+model context is never sent as a WebSocket event. `response_text` contains only the bridge plus
+final spoken continuation, so browser text, TTS input, playback boundaries, and durable assistant
+history cannot contain tool tags, JSON, call IDs, control tokens, or results. Assistant history
+still advances only through browser-proven word boundaries or complete playback. Private context
+uses that same confirmed text to add or update the post-tool assistant continuation; unreleased and
+released-but-unplayed continuation text is not carried into a later user turn.
+
+Across later turns, the canonical Qwen message order is:
+
+```text
+system + tool definitions at invocation time
+user
+assistant(content=audible bridge, tool_call(id=...))
+tool(tool_call_id=the same id, typed terminal outcome)
+assistant(content=confirmed final continuation)
+user
+```
+
+The Qwen integration layer alone converts those typed messages to the pinned tokenizer's Hermes
+representation. Every invocation uses the official
+`tokenizer.apply_chat_template(..., tools=..., enable_thinking=False)` path. The first invocation
+and a later user turn receive the registered tool definitions; the immediate one-call continuation
+receives an empty tool list. VoiceSession neither parses nor stores Hermes XML.
 
 Current limitations are deliberate: one deterministic tool, one call and one tool round per
 assistant turn, no parallel/dependent calls, no network weather, no arbitrary execution, no MCP,
 and no native duplex model. During a drained tool gap the current worklet keeps the not-yet-ended
 generation active; this enables the existing duck/pause backchannel policy but can conservatively
 classify speech during the silent gap as overlap with an active assistant turn.
+
+Sequential multi-call research would need a bounded tuple of typed exchanges per model turn, a
+round index in the causal identity and audit entry, repeated stage/execute/commit validation, and a
+configured maximum round/call budget. It would also need template tests for multiple ordered
+assistant-call/tool-result pairs and cancellation tests at every round boundary. The current
+execution loop intentionally rejects a second call and does not provide parallel or dependent
+execution.
 
 ### Natural user overlap and reversible playback
 
