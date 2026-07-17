@@ -4,9 +4,11 @@ import numpy as np
 
 from app.compute.asr.chunking import (
     PARAKEET_CHUNK_DURATION_SECONDS,
+    PARAKEET_INFERENCE_BATCH_SIZE,
     ParakeetAudioChunk,
     global_chunk_words,
     parakeet_audio_chunks,
+    parakeet_chunk_batches,
 )
 from app.shared.asr import TimestampedWord
 
@@ -44,3 +46,16 @@ def test_global_chunk_words_offsets_and_excludes_overlap_duplicates() -> None:
     )
 
     assert words == (TimestampedWord(text="kept", start_seconds=29.6, end_seconds=29.8),)
+
+
+def test_parakeet_chunks_are_grouped_into_bounded_inference_batches() -> None:
+    sample_rate = 10
+    audio = np.zeros(round(300.0 * sample_rate), dtype=np.float32)
+    chunks = parakeet_audio_chunks(audio=audio, sample_rate=sample_rate)
+
+    batches = parakeet_chunk_batches(chunks)
+
+    assert len(batches) == 2
+    assert len(batches[0]) == PARAKEET_INFERENCE_BATCH_SIZE
+    assert len(batches[1]) == len(chunks) - PARAKEET_INFERENCE_BATCH_SIZE
+    assert tuple(chunk for batch in batches for chunk in batch) == chunks
