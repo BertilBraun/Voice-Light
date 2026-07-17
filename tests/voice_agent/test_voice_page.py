@@ -40,7 +40,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'type: "playback.acknowledgement"' in script_response.text
     assert "turn-unspoken" in script_response.text
     assert "textOffset: message.text_offset" in script_response.text
-    assert "this.sourceSamplePosition > this.boundaries[0].startSample" in worklet_response.text
+    assert "this.sourceSamplePosition >= this.boundaries[0].startSample" in worklet_response.text
     assert 'type: "playback.started"' in worklet_response.text
     assert 'case "playback.command":' in worklet_response.text
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text

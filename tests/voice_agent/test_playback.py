@@ -9,6 +9,7 @@ from app.compute.voice.schemas import (
     CausalSource,
     PlaybackCommandAcknowledgementEvent,
     PlaybackPauseResult,
+    PlaybackProgressEvent,
     PlaybackStartedEvent,
     PlaybackState,
 )
@@ -140,3 +141,81 @@ def test_duplicate_and_stale_acknowledgements_do_not_rewrite_playback_truth() ->
         is PlaybackAcknowledgementDisposition.STALE
     )
     assert controller.condition == stale_condition
+
+
+def test_server_rejects_resume_after_maximum_paused_age() -> None:
+    controller = PlaybackController(24_000, PlaybackPolicyConfig())
+    controller.replace_generation(1)
+    controller.record_started(_started_event(1))
+    pause = controller.issue_pause(
+        generation_id=1,
+        causal_event_id="silero-1",
+        causal_source=CausalSource.SILERO_VAD,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=1.0,
+        requested_boundary_source_sample_position=100,
+    )
+    pause_acknowledgement = _acknowledgement(
+        pause.command_id,
+        pause.action,
+        PlaybackState.PAUSED_BUFFERED,
+        rendered_output_sample_position=200,
+        source_sample_position=100,
+    )
+    paused_at_ns = 10**18
+    controller.acknowledge(
+        pause_acknowledgement,
+        received_monotonic_time_ns=paused_at_ns,
+    )
+
+    assert (
+        controller.issue_resume(
+            generation_id=1,
+            causal_event_id="decision-1",
+            causal_source=CausalSource.FLOOR_POLICY,
+            stream_epoch=1,
+            turn_epoch=1,
+            confidence=1.0,
+            now_monotonic_time_ns=paused_at_ns + 801_000_000,
+        )
+        is None
+    )
+
+
+def test_boundary_progress_after_pause_does_not_reactivate_playback() -> None:
+    controller = PlaybackController(24_000, PlaybackPolicyConfig())
+    controller.replace_generation(1)
+    controller.record_started(_started_event(1))
+    pause = controller.issue_pause(
+        generation_id=1,
+        causal_event_id="silero-1",
+        causal_source=CausalSource.SILERO_VAD,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=1.0,
+        requested_boundary_source_sample_position=100,
+    )
+    controller.acknowledge(
+        _acknowledgement(
+            pause.command_id,
+            pause.action,
+            PlaybackState.PAUSED_BUFFERED,
+            rendered_output_sample_position=200,
+            source_sample_position=100,
+        ),
+        received_monotonic_time_ns=10**18,
+    )
+
+    assert controller.record_progress(
+        PlaybackProgressEvent(
+            generation_id=1,
+            text_offset=3,
+            boundary_start_sample=0,
+            played_sample_count=100,
+            browser_monotonic_time_ns=3,
+            rendered_output_sample_position=200,
+            output_sample_rate=48_000,
+        )
+    )
+    assert controller.condition.state is PlaybackState.PAUSED_BUFFERED

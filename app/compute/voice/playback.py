@@ -208,21 +208,13 @@ class PlaybackController:
             authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
         )
 
-    def estimate_queued_source_position(
+    def validate_synthesized_source_position(
         self,
         generation_id: int,
         synthesized_source_sample_count: int,
     ) -> None:
         if generation_id != self.active_generation_id:
             return
-        self._set_condition(
-            generation_id=generation_id,
-            state=self.condition.state,
-            rendered_output_sample_position=self.condition.latest_output_sample_position,
-            source_sample_position=self.condition.latest_source_sample_position,
-            output_sample_rate=self.condition.output_sample_rate,
-            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
-        )
         if synthesized_source_sample_count < self.condition.latest_source_sample_position:
             raise AssertionError("Synthesized audio cannot trail browser playback.")
 
@@ -253,9 +245,16 @@ class PlaybackController:
     def record_progress(self, event: PlaybackProgressEvent) -> bool:
         if event.generation_id != self.active_generation_id:
             return False
+        if self.condition.state in (PlaybackState.CANCELLED, PlaybackState.COMPLETED):
+            return False
+        state = (
+            PlaybackState.SPEAKING
+            if self.condition.state in (PlaybackState.QUEUED, PlaybackState.SPEAKING)
+            else self.condition.state
+        )
         self._set_condition_from_browser(
             generation_id=event.generation_id,
-            state=PlaybackState.SPEAKING,
+            state=state,
             rendered_output_sample_position=event.rendered_output_sample_position,
             source_sample_position=event.played_sample_count,
             output_sample_rate=event.output_sample_rate,

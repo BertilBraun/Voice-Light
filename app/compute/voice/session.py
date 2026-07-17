@@ -259,6 +259,9 @@ class ActiveUserOverlap:
     decision_event_id: str | None = None
     decision: ProvisionalOverlapDecision | None = None
     decision_monotonic_time_ns: int | None = None
+    decision_input_sample_position: int | None = None
+    decision_rendered_output_sample_position: int | None = None
+    decision_source_sample_position: int | None = None
     generation_hold_applied: bool = False
     resolution_metrics_recorded: bool = False
 
@@ -767,6 +770,13 @@ class VoiceSession:
         overlap.decision = decision
         overlap.decision_event_id = str(uuid4())
         overlap.decision_monotonic_time_ns = time.perf_counter_ns()
+        overlap.decision_input_sample_position = current_input_sample
+        overlap.decision_rendered_output_sample_position = (
+            self.playback_condition.latest_output_sample_position
+        )
+        overlap.decision_source_sample_position = (
+            self.playback_condition.latest_source_sample_position
+        )
         if decision.kind is OverlapResolutionKind.NON_FLOOR_TAKING:
             return await self._finalize_non_floor_taking_overlap(
                 speech_understanding,
@@ -785,6 +795,35 @@ class VoiceSession:
         provisional_decision: ProvisionalOverlapDecision,
         elapsed_ms: int,
     ) -> OverlapResolutionKind:
+        generation = self.active_generation
+        decision_event_id = overlap.decision_event_id
+        assert decision_event_id is not None
+        if generation is None or generation.generation_id != overlap.generation_id:
+            self.active_user_overlap = None
+            return OverlapResolutionKind.NON_FLOOR_TAKING
+        generation.continuation_allowed.set()
+        generation.synthesis_budget_available.set()
+        resume_command = self.playback_controller.issue_resume(
+            generation_id=generation.generation_id,
+            causal_event_id=decision_event_id,
+            causal_source=provisional_decision.causal_source,
+            stream_epoch=overlap.stream_epoch,
+            turn_epoch=overlap.turn_epoch,
+            confidence=provisional_decision.confidence,
+        )
+        if resume_command is None:
+            cancel_command = await self._request_generation_cancellation(
+                send_event=True,
+                causal_event_id=decision_event_id,
+                causal_source=provisional_decision.causal_source,
+                confidence=provisional_decision.confidence,
+            )
+            overlap.cancel_command_id = (
+                None if cancel_command is None else cancel_command.command_id
+            )
+        else:
+            overlap.resume_command_id = resume_command.command_id
+            await self._send_event(resume_command)
         finalization_started_at = time.perf_counter()
         try:
             finalized_turn = await speech_understanding.finalize_turn()
@@ -836,37 +875,8 @@ class VoiceSession:
                 finalization_seconds=finalized_at - finalization_started_at,
             )
             return OverlapResolutionKind.NON_FLOOR_TAKING
-        generation = self.active_generation
-        decision_event_id = overlap.decision_event_id
-        assert decision_event_id is not None
-        if generation is None or generation.generation_id != overlap.generation_id:
-            self.active_user_overlap = None
-            return OverlapResolutionKind.NON_FLOOR_TAKING
         self._record_overlap_resolution(overlap, final_decision, generation)
-        generation.continuation_allowed.set()
-        generation.synthesis_budget_available.set()
-        resume_command = self.playback_controller.issue_resume(
-            generation_id=generation.generation_id,
-            causal_event_id=decision_event_id,
-            causal_source=provisional_decision.causal_source,
-            stream_epoch=overlap.stream_epoch,
-            turn_epoch=overlap.turn_epoch,
-            confidence=provisional_decision.confidence,
-        )
         self.active_user_overlap = None
-        if resume_command is None:
-            cancel_command = await self._request_generation_cancellation(
-                send_event=True,
-                causal_event_id=decision_event_id,
-                causal_source=provisional_decision.causal_source,
-                confidence=provisional_decision.confidence,
-            )
-            overlap.cancel_command_id = (
-                None if cancel_command is None else cancel_command.command_id
-            )
-        else:
-            overlap.resume_command_id = resume_command.command_id
-            await self._send_event(resume_command)
         logger.info(
             "ephemeral user overlap resolved: session=%s overlap=%s generation=%d "
             "duration_ms=%d transcript=%r decision=%s",
@@ -1633,13 +1643,11 @@ class VoiceSession:
                     text=text_delta,
                 )
             )
-            completed_word = False
             for word in word_stream.add_text(text_delta):
-                completed_word = True
                 self._record_first_qwen_complete_word(generation, word)
                 await self._add_synthesis_word(generation, synthesis, word)
-            if completed_word:
-                await generation.continuation_allowed.wait()
+                if not generation.continuation_allowed.is_set():
+                    await generation.continuation_allowed.wait()
         if not generation.response_text.strip():
             raise VoiceComponentError(
                 VoiceComponent.LANGUAGE_MODEL,
@@ -1727,9 +1735,12 @@ class VoiceSession:
                         )
                     )
                 case SynthesizedAudioChunk():
-                    await self._wait_for_synthesis_overlap_budget(generation, event.start_sample)
                     if len(event.pcm_bytes) % PCM_BYTES_PER_SAMPLE != 0:
                         raise ValueError("TTS PCM16 frames must contain complete samples.")
+                    await self._wait_for_synthesis_overlap_budget(
+                        generation,
+                        event.start_sample + _pcm_sample_count(event.pcm_bytes),
+                    )
                     if event.start_sample != expected_start_sample:
                         raise ValueError("TTS audio chunks must have contiguous sample offsets.")
                     if not started:
@@ -1759,7 +1770,7 @@ class VoiceSession:
                     )
                     generation.tts_sample_count += _pcm_sample_count(event.pcm_bytes)
                     if generation.release_gate.released:
-                        self.playback_controller.estimate_queued_source_position(
+                        self.playback_controller.validate_synthesized_source_position(
                             generation_id=generation.generation_id,
                             synthesized_source_sample_count=generation.tts_sample_count,
                         )
@@ -1808,7 +1819,7 @@ class VoiceSession:
         maximum_source_sample_position = (
             self.playback_condition.latest_source_sample_position + maximum_ahead_samples
         )
-        if next_source_sample_position < maximum_source_sample_position:
+        if next_source_sample_position <= maximum_source_sample_position:
             return
         generation.synthesis_budget_available.clear()
         await generation.synthesis_budget_available.wait()
@@ -2001,7 +2012,11 @@ class VoiceSession:
         boundary_sample = generation.boundary_samples.get(event.text_offset)
         if boundary_sample != event.boundary_start_sample:
             return
-        if event.played_sample_count <= boundary_sample:
+        if not self._text_boundary_is_fully_played(
+            generation,
+            event.text_offset,
+            event.played_sample_count,
+        ):
             return
         if not self.playback_controller.record_progress(event):
             return
@@ -2015,7 +2030,11 @@ class VoiceSession:
             return
         if event.text_offset > 0:
             boundary_sample = generation.boundary_samples.get(event.text_offset)
-            if boundary_sample is None or event.played_sample_count <= boundary_sample:
+            if boundary_sample is None or not self._text_boundary_is_fully_played(
+                generation,
+                event.text_offset,
+                event.played_sample_count,
+            ):
                 return
             if event.text_offset > generation.acknowledged_offset:
                 self._update_assistant_history(generation, event.text_offset)
@@ -2085,18 +2104,29 @@ class VoiceSession:
         )
         if overlap is None:
             return
-        if event.command_id == overlap.duck_command_id:
+        if (
+            event.command_id == overlap.duck_command_id
+            and event.gain_ramp_complete
+            and event.resulting_state is not PlaybackState.CANCELLED
+        ):
             self.overlap_metrics.record_duck(
                 overlap.onset_monotonic_time_ns,
                 received_monotonic_time_ns,
             )
-        elif event.command_id == overlap.pause_command_id:
+        elif (
+            event.command_id == overlap.pause_command_id
+            and event.resulting_state is PlaybackState.PAUSED_BUFFERED
+        ):
             overlap.pause_acknowledged_monotonic_time_ns = received_monotonic_time_ns
             self.overlap_metrics.record_pause(
                 overlap.onset_monotonic_time_ns,
                 received_monotonic_time_ns,
             )
-        elif event.command_id == overlap.resume_command_id:
+        elif (
+            event.command_id == overlap.resume_command_id
+            and not event.resume_rejected
+            and event.resulting_state in (PlaybackState.RESUMING, PlaybackState.SPEAKING)
+        ):
             self.overlap_metrics.record_resume(
                 overlap.onset_monotonic_time_ns,
                 received_monotonic_time_ns,
@@ -2111,15 +2141,40 @@ class VoiceSession:
             )
 
     @staticmethod
+    def _text_boundary_is_fully_played(
+        generation: ActiveGeneration,
+        text_offset: int,
+        source_sample_position: int,
+    ) -> bool:
+        boundary_sample = generation.boundary_samples[text_offset]
+        next_boundary_sample = min(
+            (
+                candidate_sample
+                for candidate_sample in generation.boundary_samples.values()
+                if candidate_sample > boundary_sample
+            ),
+            default=None,
+        )
+        return next_boundary_sample is not None and source_sample_position >= next_boundary_sample
+
+    @staticmethod
     def _played_text_offset(
         generation: ActiveGeneration,
         source_sample_position: int,
     ) -> int:
+        ordered_boundaries = sorted(
+            generation.boundary_samples.items(),
+            key=lambda boundary: boundary[1],
+        )
         return max(
             (
                 text_offset
-                for text_offset, boundary_sample in generation.boundary_samples.items()
-                if source_sample_position > boundary_sample
+                for (text_offset, _), (_, next_boundary_sample) in zip(
+                    ordered_boundaries,
+                    ordered_boundaries[1:],
+                    strict=False,
+                )
+                if source_sample_position >= next_boundary_sample
             ),
             default=0,
         )

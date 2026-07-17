@@ -48,6 +48,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.renderedOutputSamplePosition = 0;
     this.acknowledgedTextOffset = 0;
     this.boundaries = [];
+    this.startedBoundary = undefined;
     this.generationId = generationId;
     this.endedGenerationId = -1;
     this.playbackStarted = false;
@@ -424,23 +425,26 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
   reportCrossedBoundaries() {
     while (
       this.boundaries.length > 0 &&
-      this.sourceSamplePosition > this.boundaries[0].startSample
+      this.sourceSamplePosition >= this.boundaries[0].startSample
     ) {
       const boundary = this.boundaries.shift();
-      this.acknowledgedTextOffset = Math.max(
-        this.acknowledgedTextOffset,
-        boundary.textOffset,
-      );
-      this.port.postMessage({
-        type: "boundary.progress",
-        generationId: this.generationId,
-        textOffset: boundary.textOffset,
-        startSample: boundary.startSample,
-        playedSampleCount: this.sourceSamplePosition,
-        browserMonotonicTimeNs: this.browserMonotonicTimeNs(),
-        renderedOutputSamplePosition: this.renderedOutputSamplePosition,
-        outputSampleRate: this.outputSampleRate,
-      });
+      if (this.startedBoundary) {
+        this.acknowledgedTextOffset = Math.max(
+          this.acknowledgedTextOffset,
+          this.startedBoundary.textOffset,
+        );
+        this.port.postMessage({
+          type: "boundary.progress",
+          generationId: this.generationId,
+          textOffset: this.startedBoundary.textOffset,
+          startSample: this.startedBoundary.startSample,
+          playedSampleCount: this.sourceSamplePosition,
+          browserMonotonicTimeNs: this.browserMonotonicTimeNs(),
+          renderedOutputSamplePosition: this.renderedOutputSamplePosition,
+          outputSampleRate: this.outputSampleRate,
+        });
+      }
+      this.startedBoundary = boundary;
     }
   }
 

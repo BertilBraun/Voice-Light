@@ -61,10 +61,78 @@ validated playback offsets enter model history.
   developer console for prompt inspection.
 - Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
   final trailing word is flushed when Qwen finishes.
-- A new authoritative server speech-start immediately requests Qwen/TTS cancellation and tells the
-  browser to discard that generation's queued audio. VAD and ASR continue processing the new
-  utterance while teardown runs. Before starting the successor Qwen generation, the session awaits
-  a teardown barrier, so old and new Qwen/TTS work never overlap accidentally.
+- A new authoritative server speech-start still immediately cancels private or inaudible queued
+  work. When browser-authoritative state says a committed response is audibly speaking, the start
+  instead opens unresolved overlap: the server sends an immediate duck and boundary-pause command
+  while the same ASR turn receives preserved pre-roll and subsequent user audio. Only a
+  response-requiring or floor-taking resolution invokes the existing Qwen/TTS teardown barrier.
+  Before starting a successor generation, the session still awaits that barrier, so old and new
+  Qwen/TTS work never overlap accidentally.
+
+### Natural user overlap and reversible playback
+
+Playback, generation, speech understanding, and durable history remain separate:
+
+- Speech understanding continues to receive immutable `CapturedAudioChunk` observations with the
+  playback condition known at capture time. ASR remains mandatory. Optional detector degradation
+  leaves ASR, Silero, and the fallback overlap policy active.
+- `ProvisionalVadTranscriptOverlapPolicy` is the temporary replaceable classifier. Its focused
+  configuration owns acknowledgement, laughter, question, stop/repair, and continuation
+  vocabulary plus the 500 ms deadline. `VoiceSession` supplies timestamped VAD, transcript, and
+  optional interruption evidence; it does not embed the vocabulary.
+- `PlaybackController` creates typed generation-scoped commands, maintains causal server estimates,
+  reconciles browser acknowledgements, rejects duplicate or stale acknowledgements, and records
+  command latency and rendered-position estimate error.
+- The AudioWorklet owns rendered output position, source-sample position, queued PCM, word
+  boundaries, gain ramps, pause/resume state, completion, cancellation, and command idempotency.
+- Generation retains Qwen/TTS ownership and its cancellation barrier. At 350 ms unresolved overlap
+  it stops at the next complete generated word. TTS cannot advance more than 500 ms of source audio
+  beyond the latest playback position. Resume releases both holds; cancellation uses the existing
+  task and private-release barriers.
+- Conversation history receives no user entry for non-floor-taking feedback. A promoted
+  interruption retains the original ASR turn, pre-roll, transcript revision lineage, and onset
+  sample. Assistant history advances only for words proven complete by reaching the next word
+  boundary, or for a fully completed generation.
+
+The temporary policy behaves as follows:
+
+- the first positive Silero observation during audible playback issues a 25 ms ramp to -18 dB and a
+  pause request for the next known word boundary, capped by a rendered-output deadline 120 ms after
+  the latest browser checkpoint;
+- a transcript-free burst, configured closed acknowledgement, or short laughter that has ended is
+  ephemeral and resumes the exact first unplayed sample;
+- `how`, `what`, explicit stop/repetition language, `no`, `wait`, `actually`, and other meaningful
+  non-acknowledgement lexical material take the response-required fast path;
+- an acknowledgement followed by more material, including `yeah, but`, takes the floor;
+- speech still active at 500 ms takes the floor even without transcript evidence.
+
+The browser states are `IDLE`, `QUEUED`, `SPEAKING`, `DUCKING`, `PAUSED_BUFFERED`, `RESUMING`,
+`DRAINING_TO_BOUNDARY`, `CANCELLED`, and `COMPLETED`. A paused generation does not advance either
+playback cursor. Resume preserves the resampler fraction and begins at the exact first unplayed
+source sample. Cancellation clears queued PCM and permanently raises the rejected-generation
+watermark. Terminal generations cannot reactivate, older-generation commands cannot affect a
+replacement, and repeated command IDs return the cached acknowledgement without applying the
+operation again.
+
+The initial budgets are 500 ms target paused-buffer age, 800 ms absolute resume age, 500 ms maximum
+synthesized-ahead audio, a generation hold at 350 ms, and mandatory resume or cancellation at
+500 ms. A resume rejected by either the server or worklet becomes cancellation.
+
+Deterministic validation on 2026-07-17 produced the following development measurements:
+
+| Scenario | Controller/transport observation | Sample engine observation |
+| --- | ---: | --- |
+| `mm-hm` resume | onset-to-duck acknowledgement 6.36 ms; onset-to-pause 7.85 ms; onset-to-resume 10.58 ms | no duplicated or skipped source samples |
+| `How?` fast repair | onset-to-cancel acknowledgement 5.76 ms | cancellation stops before the next render quantum |
+| Forced pause | command deadline reached at the exact requested rendered sample | partial word remains unacknowledged and resumes exactly |
+| Gain duck | command-to-acknowledgement 7.67 ms in the in-process trace | configured ramp consumes exactly 20 ms in the harness; product default is 25 ms |
+
+Each in-process value above came from a deterministic single-scenario trace, so it is not a
+statistical production p95. The harness excludes a real browser event loop, device scheduling, and
+network latency. The server now records those complete live paths from the original Silero
+observation; production p95 acceptance for 50 ms duck, 120 ms pause, and 120 ms explicit stop
+therefore requires a browser/GPU deployment run. The implementation does not shift the timing
+origin to hide that unmeasured path.
 
 ### Predictive generation
 
@@ -101,8 +169,8 @@ Candidates move through explicit created, prefilling, streaming, ready, committe
 cancellation-requested, cancelled, and failed states. Resumed user activity, a changed VAD-anchored
 transcript, a revised trained-predictor stable prefix, a decisive return to hold/continuation,
 floor-taking overlap, shutdown, or model failure invalidates speculative work. Backchannel
-probability alone does not invalidate committed output; audible pause, duck, and resume behavior
-remains outside this server milestone.
+probability alone does not invalidate committed output. The overlap controller now owns audible
+duck, pause, resume, and yield behavior without moving those decisions into model inference.
 
 ### Speech-understanding integration contract
 
@@ -112,12 +180,12 @@ sequence number and observation timestamp, `stream_epoch`, `turn_epoch`, the cur
 evidence, and the current `PlaybackCondition`.
 
 `PlaybackCondition` is a causal input, not a detector output. It contains its own event ID, optional
-generation ID, `PlaybackState`, whether the assistant is believed audible, the latest output sample
-position, its monotonic observation time, and an authority value. The current implementation
-constructs a causal server-side estimate from generation creation, private-candidate promotion, PCM
-release, playback-start/progress/stop/completion messages, and cancellation. It is not authoritative
-playback state. Browser acknowledgements must first report what was actually queued, played,
-paused, and stopped before the authority can move to `BROWSER_AUTHORITATIVE`. The compatibility
+generation ID, `PlaybackState`, whether the assistant is believed audible, the latest rendered
+output and source sample positions, the browser output rate when known, its monotonic observation
+time, and an authority value. Commands immediately create causal `SERVER_ESTIMATED` state.
+Playback start/progress/completion messages and matching command acknowledgements move the latest
+condition to `BROWSER_AUTHORITATIVE`. Later server actions return it to an estimate until the next
+acknowledgement. Past audio observations retain their original condition. The compatibility
 `InteractionPrediction.assistant_playback_state` field is deprecated and, where still populated,
 mirrors this input instead of being hardcoded to `IDLE`.
 
@@ -245,13 +313,15 @@ rate into a generation-relative PCM sample offset and sends the boundary to the 
 Kyutai's delayed zero-code frames are decoded to prime Mimi but omitted from the transmitted PCM,
 so playback sample zero begins after the model's built-in text/audio delay instead of adding 1.28
 seconds of client-side silence.
-When playback consumes the first sample at or after a word start, the page highlights and
-acknowledges the entire original word, including attached punctuation. The server validates the
-generation ID, text offset, boundary sample, played sample count, and monotonicity. Interrupted
-entries retain that optimistic whole-word prefix with a trailing `...`; generated but unplayed text
-remains visible and muted but does not enter model history. Completely drained playback commits the
-full response without an ellipsis. The step/sample conversion follows Kyutai's documented frame
-rate and still requires codec-priming calibration on the target GPU deployment.
+When playback reaches the start of the next word, the page highlights and acknowledges the previous
+original word, including attached punctuation. This proves the previous word completed. A forced
+mid-word pause records `forced_sample` and does not durably acknowledge that partial word. The
+server validates generation ID, text offset, boundary sample, played source position, command
+identity, and monotonicity. Interrupted entries retain only the proven word prefix with a trailing
+`...`; generated but unplayed text remains visible and muted but does not enter model history.
+Completely drained playback commits the full response without an ellipsis. The step/sample
+conversion follows Kyutai's documented frame rate and still requires codec-priming calibration on
+the target GPU deployment.
 
 ## Protocol
 
@@ -259,9 +329,12 @@ Browser-to-server JSON events:
 
 - `session.start` with `input_sample_rate` (currently exactly 16000)
 - `playback.progress` with `generation_id`, `text_offset`, `boundary_start_sample`, and
-  `played_sample_count`
-- `playback.stopped` with the final generation ID, text offset, and played sample count after cancel
-- `playback.complete` with `generation_id`
+  `played_sample_count`, browser monotonic time, rendered output position, and output rate
+- `playback.acknowledgement` with command/generation/epoch identity, requested action, resulting
+  state, browser monotonic time, rendered and source positions, output rate, boundary versus forced
+  pause result, gain-ramp state, buffered/discarded/replayed/skipped samples, and resume rejection
+- compatibility `playback.stopped` with final positions for older clients
+- `playback.complete` with generation ID and final browser positions
 - `session.stop`
 
 All microphone audio uses unwrapped binary PCM16 messages. A bounded server queue decouples socket
@@ -269,7 +342,10 @@ ingestion from recognition and applies backpressure if the single ASR worker can
 
 Server-to-browser JSON events include `session.ready`, VAD boundaries, partial/final transcripts,
 turn commitment, the exact `llm.history` snapshot, assistant text deltas, word-start audio
-metadata, generation audio boundaries, cancellation, and errors. `assistant.audio.text_boundary`
+metadata, generation audio boundaries, typed `playback.command` controls, and errors. Each playback
+command carries a unique command ID, generation ID, action, server issue time, causal evidence
+ID/source, stream and turn epochs, confidence, and action-specific sample, gain, or age limits.
+`assistant.audio.text_boundary`
 maps an original generated-text offset to a generation-relative PCM start sample. Assistant binary
 frames begin with three little-endian unsigned 32-bit integers: generation ID, sequence number, and
 the chunk's generation-relative start sample. Remaining bytes are mono
@@ -297,3 +373,9 @@ when annotations are supplied, hidden pre-commit work, wasted Qwen output tokens
 baseline latency without a candidate, and latency after invalidation. Qwen token accounting uses
 the worker tokenizer's cumulative tokenization of decoded response text rather than word or
 character estimates.
+
+Overlap summaries additionally report onset-to-duck, onset-to-pause, explicit-stop,
+onset-to-resume, cooperative and competitive overlap duration, paused-buffer age, synthesized,
+buffered, discarded, replayed, and skipped samples, command-to-acknowledgement latency, and
+rendered-position estimate error. All latency origins remain the causal Silero observation or
+server command issue time rather than a later acknowledgement.

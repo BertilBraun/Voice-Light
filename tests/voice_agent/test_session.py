@@ -166,9 +166,10 @@ class ScriptedTranscriptionSession:
         self.next_partial_index = 0
         self.finish_count = 0
         self.closed = False
+        self.audio: list[bytes] = []
 
     async def add_audio(self, pcm_bytes: bytes) -> str | None:
-        del pcm_bytes
+        self.audio.append(pcm_bytes)
         if self.next_partial_index >= len(self.partials):
             return None
         partial = self.partials[self.next_partial_index]
@@ -363,6 +364,22 @@ class DelayedTurnPredictionSource:
     async def close(self) -> None:
         self.closed = True
         self.release.set()
+
+
+class FailingTurnPredictionSource:
+    def __init__(self) -> None:
+        self.failure_count = 0
+
+    async def predict(
+        self,
+        observation: TurnPredictionObservation,
+    ) -> InteractionPrediction | None:
+        del observation
+        self.failure_count += 1
+        raise RuntimeError("synthetic optional interaction-policy failure")
+
+    async def close(self) -> None:
+        return
 
 
 def create_test_prediction(
@@ -740,6 +757,11 @@ def test_non_floor_taking_overlap_resumes_existing_generation_without_history(
         )
         assert len(language_model.conversations) == 1
         assert all(message.content != final_text for message in sessions[0].conversation)
+        metrics = sessions[0].overlap_metrics.report()
+        assert metrics.cooperative_overlap_count == 1
+        assert metrics.user_onset_to_duck_p95_ms is not None
+        assert metrics.user_onset_to_pause_p95_ms is not None
+        assert metrics.user_onset_to_resume_p95_ms is not None
         websocket.send_json({"type": "session.stop"})
 
     assert transcriber.sessions[1].finish_count == 1
@@ -782,6 +804,7 @@ def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
             pause_result=PlaybackPauseResult.NOT_REQUESTED,
             source_sample_position=1,
         )
+        assert sessions[0].overlap_metrics.report().explicit_stop_p95_ms is not None
         websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
@@ -796,6 +819,7 @@ def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
         role=ConversationRole.USER,
         content=interruption_text,
     )
+    assert transcriber.sessions[1].audio[0] == SPEECH_CHUNK
 
 
 def test_sustained_transcript_free_overlap_yields_at_500_milliseconds() -> None:
@@ -832,6 +856,7 @@ def test_sustained_transcript_free_overlap_yields_at_500_milliseconds() -> None:
             pause_result=PlaybackPauseResult.NOT_REQUESTED,
             source_sample_position=1,
         )
+        assert sessions[0].overlap_metrics.report().competitive_overlap_count == 1
         websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
@@ -872,6 +897,39 @@ def test_overlap_pause_command_marks_missing_word_boundary_for_forced_pause() ->
         assert pause.requested_boundary_source_sample_position is None
         assert pause.rendered_output_sample_deadline is not None
         websocket.send_json({"type": "session.stop"})
+
+
+def test_optional_interaction_failure_keeps_fallback_playback_cancellation() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), tuple(None for _ in range(30))),
+        final_texts=("hello agent", "continued request"),
+    )
+    prediction_source = FailingTurnPredictionSource()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        SlowLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+        for _ in range(25):
+            websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.CANCEL
+        websocket.send_json({"type": "session.stop"})
+
+    assert prediction_source.failure_count == 1
+    assert transcriber.sessions[1].audio
 
 
 def test_language_model_failure_reaches_client_with_component_context() -> None:
@@ -1003,7 +1061,7 @@ def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
 
         websocket.send_bytes(SPEECH_CHUNK)
         receive_until(websocket, "playback.command")
-        send_playback_stopped(websocket, 1, text_offset=7, played_sample_count=3)
+        send_playback_stopped(websocket, 1, text_offset=3, played_sample_count=3)
         websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
@@ -1011,7 +1069,7 @@ def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
 
     assert events[-1]["messages"] == [
         {"role": "user", "content": "hello agent"},
-        {"role": "assistant", "content": "One two..."},
+        {"role": "assistant", "content": "One..."},
         {"role": "user", "content": "hello agent"},
     ]
 

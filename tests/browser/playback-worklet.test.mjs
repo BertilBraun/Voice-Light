@@ -129,6 +129,33 @@ test("force-pauses at the exact rendered output sample deadline", () => {
   assert.equal(harness.acknowledgement("pause").pauseResult, "forced_sample");
 });
 
+test("forced mid-word pause does not acknowledge the partial word", () => {
+  const harness = new PlaybackHarness();
+  harness.enqueue(1, 0, [1, 2, 3, 4, 5, 6]);
+  harness.boundary(1, 3, 0);
+  harness.boundary(1, 7, 4);
+  harness.command("pause", 1, "pause_at_boundary", {
+    requestedBoundarySourceSamplePosition: null,
+    renderedOutputSampleDeadline: 3,
+  });
+  harness.process(4);
+  assert.equal(
+    harness.messages.filter((message) => message.type === "boundary.progress").length,
+    0,
+  );
+  harness.command("resume", 1, "resume", {
+    targetGain: 1,
+    gainRampDurationMs: 1,
+    maximumPausedAgeMs: 800,
+  });
+  harness.process(1);
+  const progress = harness.messages.find(
+    (message) => message.type === "boundary.progress",
+  );
+  assert.equal(progress.textOffset, 3);
+  assert.equal(progress.playedSampleCount, 4);
+});
+
 test("a boundary registered while draining can satisfy the pause", () => {
   const harness = new PlaybackHarness();
   harness.enqueue(1, 0, [1, 2, 3, 4, 5, 6]);
