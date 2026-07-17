@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from app.compute.voice.tools import ToolCall, ToolExecutionFailure, ToolSuccess
@@ -56,11 +56,17 @@ class ModelTurnIdentity:
 class StagedAssistantToolCall:
     identity: ModelTurnIdentity
     invocation_id: int
+    audible_text_start: int
+    audible_text_end: int
     message: ModelAssistantMessage
 
     def __post_init__(self) -> None:
         if self.invocation_id <= 0:
             raise ValueError("The model invocation ID must be positive.")
+        if self.audible_text_start < 0:
+            raise ValueError("The audible text start cannot be negative.")
+        if self.audible_text_end < self.audible_text_start:
+            raise ValueError("The audible text end cannot precede its start.")
         if len(self.message.tool_calls) != 1:
             raise ValueError("A staged assistant tool call must contain exactly one call.")
 
@@ -69,12 +75,18 @@ class StagedAssistantToolCall:
 class CommittedToolExchange:
     identity: ModelTurnIdentity
     invocation_id: int
+    audible_text_start: int
+    audible_text_end: int
     assistant_message: ModelAssistantMessage
     tool_message: ModelToolMessage
 
     def __post_init__(self) -> None:
         if self.invocation_id <= 0:
             raise ValueError("The model invocation ID must be positive.")
+        if self.audible_text_start < 0:
+            raise ValueError("The audible text start cannot be negative.")
+        if self.audible_text_end < self.audible_text_start:
+            raise ValueError("The audible text end cannot precede its start.")
         if len(self.assistant_message.tool_calls) != 1:
             raise ValueError("A committed tool exchange must contain exactly one call.")
         call = self.assistant_message.tool_calls[0]
@@ -90,18 +102,28 @@ class ModelConversationTurn:
     user_message: ModelUserMessage
     audible_assistant_content: str = ""
     staged_tool_call: StagedAssistantToolCall | None = None
-    committed_tool_exchange: CommittedToolExchange | None = None
+    committed_tool_exchanges: list[CommittedToolExchange] = field(default_factory=list)
 
     def stage_tool_call(
         self,
         invocation_id: int,
+        audible_text_start: int,
+        audible_text_end: int,
         message: ModelAssistantMessage,
     ) -> StagedAssistantToolCall:
-        if self.staged_tool_call is not None or self.committed_tool_exchange is not None:
-            raise ValueError("The model turn already has a staged or committed tool exchange.")
+        if self.staged_tool_call is not None:
+            raise ValueError("The model turn already has a staged tool call.")
+        if self.committed_tool_exchanges:
+            previous_exchange = self.committed_tool_exchanges[-1]
+            if invocation_id <= previous_exchange.invocation_id:
+                raise ValueError("Tool invocation IDs must increase within a model turn.")
+            if audible_text_start < previous_exchange.audible_text_end:
+                raise ValueError("Tool exchange text offsets must increase monotonically.")
         stage = StagedAssistantToolCall(
             identity=self.identity,
             invocation_id=invocation_id,
+            audible_text_start=audible_text_start,
+            audible_text_end=audible_text_end,
             message=message,
         )
         self.staged_tool_call = stage
@@ -117,6 +139,8 @@ class ModelConversationTurn:
         exchange = CommittedToolExchange(
             identity=self.identity,
             invocation_id=stage.invocation_id,
+            audible_text_start=stage.audible_text_start,
+            audible_text_end=stage.audible_text_end,
             assistant_message=stage.message,
             tool_message=ModelToolMessage(
                 tool_call_id=outcome.call_id,
@@ -124,15 +148,15 @@ class ModelConversationTurn:
             ),
         )
         self.staged_tool_call = None
-        self.committed_tool_exchange = exchange
+        self.committed_tool_exchanges.append(exchange)
         return exchange
 
     def discard_staged_tool_call(self) -> None:
         self.staged_tool_call = None
 
-    def discard_tool_exchange(self) -> None:
+    def discard_tool_exchanges(self) -> None:
         self.staged_tool_call = None
-        self.committed_tool_exchange = None
+        self.committed_tool_exchanges.clear()
 
     def update_audible_assistant_content(self, content: str) -> None:
         if not content:
@@ -140,30 +164,23 @@ class ModelConversationTurn:
         self.audible_assistant_content = content
 
     def messages(self) -> tuple[ModelMessage, ...]:
-        exchange = self.committed_tool_exchange
-        if exchange is None:
+        if not self.committed_tool_exchanges:
             if not self.audible_assistant_content:
                 return (self.user_message,)
             return (
                 self.user_message,
                 ModelAssistantMessage(content=self.audible_assistant_content),
             )
+        messages: list[ModelMessage] = [self.user_message]
+        for exchange in self.committed_tool_exchanges:
+            messages.extend((exchange.assistant_message, exchange.tool_message))
         continuation = _audible_tool_continuation(
             audible_content=self.audible_assistant_content,
-            bridge_content=exchange.assistant_message.content,
+            continuation_start=self.committed_tool_exchanges[-1].audible_text_end,
         )
-        if not continuation:
-            return (
-                self.user_message,
-                exchange.assistant_message,
-                exchange.tool_message,
-            )
-        return (
-            self.user_message,
-            exchange.assistant_message,
-            exchange.tool_message,
-            ModelAssistantMessage(content=continuation),
-        )
+        if continuation:
+            messages.append(ModelAssistantMessage(content=continuation))
+        return tuple(messages)
 
 
 class PrivateModelContext:
@@ -196,8 +213,8 @@ def model_message_from_conversation(message: ConversationMessage) -> ModelMessag
 
 def _audible_tool_continuation(
     audible_content: str,
-    bridge_content: str,
+    continuation_start: int,
 ) -> str:
-    if not audible_content.startswith(bridge_content):
+    if len(audible_content) <= continuation_start:
         return ""
-    return audible_content[len(bridge_content) :].strip()
+    return audible_content[continuation_start:].strip()

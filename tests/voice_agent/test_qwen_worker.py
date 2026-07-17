@@ -88,9 +88,10 @@ def test_tool_prompt_requires_spoken_bridge_before_call() -> None:
         LANGUAGE_MODEL_SYSTEM_PROMPT
     )
     assert "never begin with the tool call" in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert "another provided tool call is genuinely needed" in LANGUAGE_MODEL_SYSTEM_PROMPT
 
 
-def test_qwen_template_preserves_tool_exchange_before_later_user_turn() -> None:
+def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_turn() -> None:
     tool_call = ToolCall(
         id="qwen-41-tool-1",
         function=ToolCallFunction(
@@ -107,6 +108,22 @@ def test_qwen_template_preserves_tool_exchange_before_later_user_turn() -> None:
             conditions="lightly cloudy",
         ),
     )
+    second_tool_call = ToolCall(
+        id="qwen-42-tool-1",
+        function=ToolCallFunction(
+            name=ToolName.GET_WEATHER,
+            arguments=GetWeatherArguments(location="Berlin"),
+        ),
+    )
+    second_tool_outcome = ToolSuccess(
+        call_id=second_tool_call.id,
+        tool_name=ToolName.GET_WEATHER,
+        result=WeatherResult(
+            location="Berlin",
+            temperature_celsius=18,
+            conditions="clear",
+        ),
+    )
     command = StartLlmCommand(
         invocation_id=43,
         assistant_generation_id=12,
@@ -120,7 +137,15 @@ def test_qwen_template_preserves_tool_exchange_before_later_user_turn() -> None:
                 tool_call_id=tool_call.id,
                 content=tool_outcome,
             ),
-            LlmAssistantMessage(content="It is 12 degrees and lightly cloudy in London."),
+            LlmAssistantMessage(
+                content="London is cool; I will compare Berlin.",
+                tool_calls=(second_tool_call,),
+            ),
+            LlmToolMessage(
+                tool_call_id=second_tool_call.id,
+                content=second_tool_outcome,
+            ),
+            LlmAssistantMessage(content="Berlin is warmer at 18 degrees."),
             LlmUserMessage(content="Should I take a coat?"),
         ),
         tools=create_demo_tool_registry().specifications,
@@ -154,7 +179,26 @@ def test_qwen_template_preserves_tool_exchange_before_later_user_turn() -> None:
         },
         {
             "role": "assistant",
-            "content": "It is 12 degrees and lightly cloudy in London.",
+            "content": "London is cool; I will compare Berlin.",
+            "tool_calls": [
+                {
+                    "id": "qwen-42-tool-1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"location":"Berlin"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": second_tool_outcome.model_dump_json(),
+            "tool_call_id": "qwen-42-tool-1",
+        },
+        {
+            "role": "assistant",
+            "content": "Berlin is warmer at 18 degrees.",
         },
         {"role": "user", "content": "Should I take a coat?"},
     ]

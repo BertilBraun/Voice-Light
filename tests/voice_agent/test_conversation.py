@@ -24,6 +24,8 @@ def test_private_context_stages_call_without_exposing_dangling_message() -> None
 
     stage = turn.stage_tool_call(
         invocation_id=41,
+        audible_text_start=0,
+        audible_text_end=len("Let me check that."),
         message=_assistant_call(),
     )
 
@@ -37,6 +39,8 @@ def test_private_context_atomically_commits_call_and_exact_result() -> None:
     context.commit_turn(turn)
     turn.stage_tool_call(
         invocation_id=41,
+        audible_text_start=0,
+        audible_text_end=len("Let me check that."),
         message=_assistant_call(),
     )
     outcome = _weather_outcome()
@@ -58,6 +62,8 @@ def test_later_turn_keeps_tool_exchange_and_audible_continuation_in_order() -> N
     context.commit_turn(weather_turn)
     weather_turn.stage_tool_call(
         invocation_id=41,
+        audible_text_start=0,
+        audible_text_end=len("Let me check that."),
         message=_assistant_call(),
     )
     exchange = weather_turn.commit_tool_result(_weather_outcome())
@@ -89,6 +95,8 @@ def test_discarded_staged_call_leaves_only_confirmed_audible_bridge() -> None:
     context.commit_turn(turn)
     turn.stage_tool_call(
         invocation_id=41,
+        audible_text_start=0,
+        audible_text_end=len("Let me check that."),
         message=_assistant_call(),
     )
     turn.update_audible_assistant_content("Let me check...")
@@ -98,6 +106,65 @@ def test_discarded_staged_call_leaves_only_confirmed_audible_bridge() -> None:
     assert context.snapshot() == (
         ModelUserMessage(content="What is the weather in London?"),
         ModelAssistantMessage(content="Let me check..."),
+    )
+
+
+def test_multiple_tool_exchanges_preserve_exact_chronological_positions() -> None:
+    context = PrivateModelContext()
+    turn = _weather_turn()
+    context.commit_turn(turn)
+    first_bridge = "Let me check London."
+    second_bridge = "I have London; now Berlin."
+    audible_content = f"{first_bridge} {second_bridge} London is cooler, so take the heavier coat."
+    first_call = _assistant_call()
+    second_call = ModelAssistantMessage(
+        content=second_bridge,
+        tool_calls=(
+            ToolCall(
+                id="qwen-42-tool-1",
+                function=ToolCallFunction(
+                    name=ToolName.GET_WEATHER,
+                    arguments=GetWeatherArguments(location="Berlin"),
+                ),
+            ),
+        ),
+    )
+    turn.stage_tool_call(
+        invocation_id=41,
+        audible_text_start=0,
+        audible_text_end=len(first_bridge),
+        message=ModelAssistantMessage(
+            content=first_bridge,
+            tool_calls=first_call.tool_calls,
+        ),
+    )
+    first_exchange = turn.commit_tool_result(_weather_outcome())
+    second_start = len(first_bridge) + 1
+    turn.stage_tool_call(
+        invocation_id=42,
+        audible_text_start=second_start,
+        audible_text_end=second_start + len(second_bridge),
+        message=second_call,
+    )
+    second_outcome = ToolSuccess(
+        call_id="qwen-42-tool-1",
+        tool_name=ToolName.GET_WEATHER,
+        result=WeatherResult(
+            location="Berlin",
+            temperature_celsius=18,
+            conditions="clear",
+        ),
+    )
+    second_exchange = turn.commit_tool_result(second_outcome)
+    turn.update_audible_assistant_content(audible_content)
+
+    assert context.snapshot() == (
+        turn.user_message,
+        first_exchange.assistant_message,
+        first_exchange.tool_message,
+        second_call,
+        second_exchange.tool_message,
+        ModelAssistantMessage(content="London is cooler, so take the heavier coat."),
     )
 
 

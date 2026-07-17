@@ -152,6 +152,18 @@ def test_session_policy_reads_tool_timeouts() -> None:
     assert policy.tool_cancellation_timeout_seconds == 0.4
 
 
+def test_session_policy_reads_maximum_tool_rounds() -> None:
+    policy = SessionPolicy.from_environment({"VOICE_LIGHT_MAXIMUM_TOOL_ROUNDS": "3"})
+
+    assert policy.maximum_tool_rounds == 3
+
+
+@pytest.mark.parametrize("value", ("many", "0"))
+def test_session_policy_rejects_invalid_maximum_tool_rounds(value: str) -> None:
+    with pytest.raises(ValueError, match="maximum tool round|MAXIMUM_TOOL_ROUNDS"):
+        SessionPolicy.from_environment({"VOICE_LIGHT_MAXIMUM_TOOL_ROUNDS": value})
+
+
 @pytest.mark.parametrize(
     "environment_name",
     (
@@ -373,6 +385,71 @@ class ScriptedWeatherLanguageModel:
         )
 
 
+class SequentialWeatherLanguageModel:
+    def __init__(self) -> None:
+        self.requests: list[LanguageModelRequest] = []
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        invocation_id = len(self.requests)
+        if request.assistant_generation_id != 1:
+            yield LanguageModelTextDelta(
+                invocation_id=invocation_id,
+                text="Take the heavier coat.",
+                cumulative_token_count=5,
+            )
+            yield LanguageModelCompleted(
+                invocation_id=invocation_id,
+                cumulative_token_count=5,
+            )
+            return
+        if invocation_id == 1:
+            audible_content = "I will check London first."
+            call_id = "qwen-1-tool-1"
+            location = "London"
+        elif invocation_id == 2:
+            audible_content = "London is cool; I will compare Berlin."
+            call_id = "qwen-2-tool-1"
+            location = "Berlin"
+        else:
+            yield LanguageModelTextDelta(
+                invocation_id=invocation_id,
+                text="Berlin is warmer at 18 degrees.",
+                cumulative_token_count=7,
+            )
+            yield LanguageModelCompleted(
+                invocation_id=invocation_id,
+                cumulative_token_count=7,
+            )
+            return
+        yield LanguageModelTextDelta(
+            invocation_id=invocation_id,
+            text=audible_content,
+            cumulative_token_count=6,
+        )
+        yield LanguageModelToolCallStarted(
+            invocation_id=invocation_id,
+            call_id=call_id,
+            cumulative_token_count=7,
+        )
+        yield LanguageModelToolCall(
+            invocation_id=invocation_id,
+            request=SerializedToolCall(
+                id=call_id,
+                name="get_weather",
+                arguments_json=f'{{"location":"{location}"}}',
+            ),
+            cumulative_token_count=16,
+        )
+        yield LanguageModelCompleted(
+            invocation_id=invocation_id,
+            cumulative_token_count=17,
+        )
+
+
 class InvalidToolCallLanguageModel:
     def __init__(self, failure: ToolCallFailure) -> None:
         self.failure = failure
@@ -425,6 +502,42 @@ class ControlledWeatherHandler:
             temperature_celsius=12,
             conditions="lightly cloudy",
         )
+
+
+class SecondRoundControlledWeatherHandler:
+    def __init__(self) -> None:
+        self.second_started = threading.Event()
+        self.second_cancelled = threading.Event()
+        self.arguments: list[GetWeatherArguments] = []
+        self.event_loop: asyncio.AbstractEventLoop | None = None
+        self.release_event: asyncio.Event | None = None
+
+    async def __call__(self, arguments: GetWeatherArguments) -> WeatherResult:
+        self.arguments.append(arguments)
+        if arguments.location == "London":
+            return WeatherResult(
+                location="London",
+                temperature_celsius=12,
+                conditions="lightly cloudy",
+            )
+        self.event_loop = asyncio.get_running_loop()
+        self.release_event = asyncio.Event()
+        self.second_started.set()
+        try:
+            await self.release_event.wait()
+        except asyncio.CancelledError:
+            self.second_cancelled.set()
+            raise
+        return WeatherResult(
+            location="Berlin",
+            temperature_celsius=18,
+            conditions="clear",
+        )
+
+    def release_second(self) -> None:
+        if self.event_loop is None or self.release_event is None:
+            raise AssertionError("The second weather round has not started.")
+        self.event_loop.call_soon_threadsafe(self.release_event.set)
 
 
 class CancellationResistantWeatherHandler:
@@ -978,16 +1091,16 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         assert released_text(sink) == "Let me check that."
         assert all("<tool_call>" not in word.text for word in synthesizer.words)
         staged_generation = sessions[0].generations[1]
-        staged_tool = staged_generation.tool
-        assert staged_tool is not None
+        staged_tool = staged_generation.tool_executions[0]
         assert staged_tool.identity.assistant_generation_id == 1
         assert staged_tool.identity.user_turn_id == 1
         assert staged_tool.identity.transcript_revision_id is not None
-        assert staged_tool.first_invocation_id == 1
+        assert staged_tool.round_index == 1
+        assert staged_tool.invocation_id == 1
         assert staged_tool.call_id == "qwen-1-tool-1"
         assert staged_tool.result_commit_status is ToolResultCommitStatus.STAGED
         assert staged_generation.model_context_turn.staged_tool_call is not None
-        assert staged_generation.model_context_turn.committed_tool_exchange is None
+        assert staged_generation.model_context_turn.committed_tool_exchanges == []
 
         weather_handler.release.set()
         wait_until(
@@ -996,11 +1109,10 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
                 and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
             )
         )
-        committed_tool = sessions[0].generations[1].tool
-        assert committed_tool is not None
+        committed_tool = sessions[0].generations[1].tool_executions[0]
         assert committed_tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED
         assert committed_tool.result_committed_at is not None
-        assert sessions[0].generations[1].model_context_turn.committed_tool_exchange is not None
+        assert len(sessions[0].generations[1].model_context_turn.committed_tool_exchanges) == 1
         bridge_boundary = next(
             output
             for output in sink.outputs
@@ -1052,7 +1164,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         assert tool_message.tool_call_id == "qwen-1-tool-1"
         assert isinstance(tool_message.outcome, ToolSuccess)
         assert tool_message.outcome.result.temperature_celsius == 12
-        assert second_request.tools == ()
+        assert second_request.tools == WeatherToolRegistry(weather_handler).specifications
         assert len(synthesizer.sessions) == 1
         assert synthesizer.sessions[0].finished
 
@@ -1088,7 +1200,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
 
         generation = sessions[0].generations[1]
         assert generation.invocation_ids == [1, 2]
-        assert committed_tool.second_invocation_id == 2
+        assert committed_tool.continuation_invocation_id == 2
         assert generation.latency.first_bridge_text is not None
         assert generation.latency.first_bridge_pcm is not None
         assert generation.latency.tool_call_started_at is not None
@@ -1122,6 +1234,186 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         cumulative_token_count=5,
     )
     assert language_model.second_pass_answer.endswith("in London.")
+
+
+def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn() -> None:
+    language_model = SequentialWeatherLanguageModel()
+    weather_handler = SecondRoundControlledWeatherHandler()
+    synthesizer = RecordingSpeechSynthesizer()
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    tool_executor = WeatherToolRegistry(weather_handler)
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        synthesizer,
+        playback_sink=sink,
+        created_sessions=sessions,
+        tool_executor=tool_executor,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert weather_handler.second_started.wait(timeout=1)
+        generation = sessions[0].generations[1]
+        wait_until(lambda: len(generation.tool_executions) == 2)
+
+        first_tool, second_tool = generation.tool_executions
+        assert first_tool.round_index == 1
+        assert first_tool.invocation_id == 1
+        assert first_tool.continuation_invocation_id == 2
+        assert first_tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED
+        assert second_tool.round_index == 2
+        assert second_tool.invocation_id == 2
+        assert second_tool.result_commit_status is ToolResultCommitStatus.STAGED
+        assert len(generation.model_context_turn.committed_tool_exchanges) == 1
+        assert generation.model_context_turn.staged_tool_call is not None
+        assert released_text(sink) == (
+            "I will check London first. London is cool; I will compare Berlin."
+        )
+
+        weather_handler.release_second()
+        wait_until(lambda: len(language_model.requests) == 3)
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        assert first_tool.continuation_invocation_id == 2
+        assert second_tool.continuation_invocation_id == 3
+        assert second_tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED
+        assert generation.invocation_ids == [1, 2, 3]
+        assert len(generation.model_context_turn.committed_tool_exchanges) == 2
+        first_exchange, second_exchange = generation.model_context_turn.committed_tool_exchanges
+        assert (first_exchange.audible_text_start, first_exchange.audible_text_end) == (
+            0,
+            len("I will check London first."),
+        )
+        assert second_exchange.audible_text_start == first_exchange.audible_text_end + 1
+        assert second_exchange.audible_text_end == len(
+            "I will check London first. London is cool; I will compare Berlin."
+        )
+
+        first_continuation_request = language_model.requests[1]
+        assert first_continuation_request.tools == tool_executor.specifications
+        assert first_continuation_request.messages == (
+            ModelUserMessage(content="hello agent"),
+            generation.model_context_turn.committed_tool_exchanges[0].assistant_message,
+            generation.model_context_turn.committed_tool_exchanges[0].tool_message,
+        )
+        second_continuation_request = language_model.requests[2]
+        assert second_continuation_request.tools == tool_executor.specifications
+        assert second_continuation_request.messages == (
+            ModelUserMessage(content="hello agent"),
+            generation.model_context_turn.committed_tool_exchanges[0].assistant_message,
+            generation.model_context_turn.committed_tool_exchanges[0].tool_message,
+            generation.model_context_turn.committed_tool_exchanges[1].assistant_message,
+            generation.model_context_turn.committed_tool_exchanges[1].tool_message,
+        )
+
+        send_playback_complete(websocket, generation_id=1)
+        wait_until(lambda: sessions[0].active_generation is None)
+        assert sessions[0].conversation[-1] == ConversationMessage(
+            role=ConversationRole.ASSISTANT,
+            content=(
+                "I will check London first. London is cool; I will compare Berlin. "
+                "Berlin is warmer at 18 degrees."
+            ),
+        )
+        first_generation_outputs = tuple(
+            output for output in sink.outputs if output.generation_id == 1
+        )
+        assert (
+            sum(isinstance(output, ReleasedAudioStart) for output in first_generation_outputs) == 1
+        )
+        assert sum(isinstance(output, ReleasedAudioEnd) for output in first_generation_outputs) == 1
+        boundaries = [
+            output
+            for output in first_generation_outputs
+            if isinstance(output, ReleasedWordBoundary)
+        ]
+        assert [boundary.text_offset for boundary in boundaries] == sorted(
+            boundary.text_offset for boundary in boundaries
+        )
+        assert [boundary.start_sample for boundary in boundaries] == sorted(
+            boundary.start_sample for boundary in boundaries
+        )
+        assert len(synthesizer.sessions) == 1
+        assert synthesizer.sessions[0].finished
+
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: len(language_model.requests) == 4)
+        later_request = language_model.requests[3]
+        wait_until(
+            lambda: any(
+                isinstance(output, ReleasedAudioEnd) and output.generation_id == 2
+                for output in sink.outputs
+            )
+        )
+        send_playback_complete(websocket, generation_id=2)
+        wait_until(lambda: sessions[0].active_generation is None)
+        websocket.send_json({"type": "session.stop"})
+
+    first_exchange, second_exchange = generation.model_context_turn.committed_tool_exchanges
+    assert later_request.messages == (
+        ModelUserMessage(content="hello agent"),
+        first_exchange.assistant_message,
+        first_exchange.tool_message,
+        second_exchange.assistant_message,
+        second_exchange.tool_message,
+        ModelAssistantMessage(content="Berlin is warmer at 18 degrees."),
+        ModelUserMessage(content="hello agent"),
+    )
+    assert later_request.tools == tool_executor.specifications
+    assert weather_handler.arguments == [
+        GetWeatherArguments(location="London"),
+        GetWeatherArguments(location="Berlin"),
+    ]
+    public_text = released_text(sink)
+    durable_text = " ".join(message.content for message in sessions[0].conversation)
+    for private_fragment in ("<tool_call>", "</tool_call>", '"location"', "qwen-1-tool-1"):
+        assert private_fragment not in public_text
+        assert private_fragment not in durable_text
+        assert all(private_fragment not in word.text for word in synthesizer.words)
+
+
+def test_tool_round_limit_disables_tools_without_dropping_committed_exchanges() -> None:
+    language_model = SequentialWeatherLanguageModel()
+    weather_handler = SecondRoundControlledWeatherHandler()
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        policy=SessionPolicy(
+            silence_duration_ms=40,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=False,
+            maximum_tool_rounds=2,
+        ),
+        playback_sink=sink,
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert weather_handler.second_started.wait(timeout=1)
+        weather_handler.release_second()
+        wait_until(lambda: len(language_model.requests) == 3)
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        generation = sessions[0].generations[1]
+
+        assert language_model.requests[2].tools == ()
+        assert len(generation.tool_executions) == 2
+        assert len(generation.model_context_turn.committed_tool_exchanges) == 2
+        send_playback_complete(websocket, generation_id=1)
+        wait_until(lambda: sessions[0].active_generation is None)
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_later_user_turn_receives_prior_structured_tool_exchange() -> None:
@@ -1319,20 +1611,69 @@ def test_user_cancellation_while_tool_runs_discards_late_result() -> None:
             )
             for message in sessions[0].conversation
         )
-        first_tool = sessions[0].generations[1].tool
-        assert first_tool is not None
+        first_tool = sessions[0].generations[1].tool_executions[0]
         assert first_tool.lifecycle is ToolLifecycle.CANCELLED
         assert first_tool.result_commit_status is ToolResultCommitStatus.DISCARDED
         assert first_tool.invalidation_reason is ToolInvalidationReason.USER_ACTIVITY
         assert isinstance(first_tool.outcome, ToolExecutionFailure)
         assert first_tool.outcome.reason is ToolExecutionFailureReason.CANCELLED
         assert sessions[0].generations[1].model_context_turn.staged_tool_call is None
-        assert sessions[0].generations[1].model_context_turn.committed_tool_exchange is None
+        assert sessions[0].generations[1].model_context_turn.committed_tool_exchanges == []
         assert all(
             not (isinstance(message, ModelToolMessage) and message.tool_call_id == "qwen-1-tool-1")
             for message in sessions[0].model_context.snapshot()
         )
         assert first_tool.wasted
+        websocket.send_json({"type": "session.stop"})
+
+
+def test_cancellation_during_later_tool_round_keeps_earlier_committed_exchange() -> None:
+    language_model = SequentialWeatherLanguageModel()
+    weather_handler = SecondRoundControlledWeatherHandler()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert weather_handler.second_started.wait(timeout=1)
+        generation = sessions[0].generations[1]
+        wait_until(lambda: len(generation.tool_executions) == 2)
+
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        assert weather_handler.second_cancelled.wait(timeout=1)
+        weather_handler.release_second()
+        wait_until(
+            lambda: any(request.assistant_generation_id == 2 for request in language_model.requests)
+        )
+
+        first_tool, second_tool = generation.tool_executions
+        assert first_tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED
+        assert first_tool.lifecycle is ToolLifecycle.SUCCEEDED
+        assert second_tool.result_commit_status is ToolResultCommitStatus.DISCARDED
+        assert second_tool.lifecycle is ToolLifecycle.CANCELLED
+        assert second_tool.invalidation_reason is ToolInvalidationReason.USER_ACTIVITY
+        assert isinstance(second_tool.outcome, ToolExecutionFailure)
+        assert second_tool.outcome.reason is ToolExecutionFailureReason.CANCELLED
+        assert generation.model_context_turn.staged_tool_call is None
+        assert len(generation.model_context_turn.committed_tool_exchanges) == 1
+        first_exchange = generation.model_context_turn.committed_tool_exchanges[0]
+        private_messages = sessions[0].model_context.snapshot()
+        assert first_exchange.assistant_message in private_messages
+        assert first_exchange.tool_message in private_messages
+        assert all(
+            not (isinstance(message, ModelToolMessage) and message.tool_call_id == "qwen-2-tool-1")
+            for message in private_messages
+        )
         websocket.send_json({"type": "session.stop"})
 
 
@@ -1620,8 +1961,7 @@ def test_backchannel_during_tool_wait_preserves_tool_and_resumes_same_generation
         receive_until(websocket, "assistant.audio.end")
         assert len(language_model.requests) == 2
         assert {request.assistant_generation_id for request in language_model.requests} == {1}
-        tool = sessions[0].generations[1].tool
-        assert tool is not None
+        tool = sessions[0].generations[1].tool_executions[0]
         assert tool.lifecycle is ToolLifecycle.SUCCEEDED
         assert all(message.content != "mm-hm" for message in sessions[0].conversation)
         websocket.send_json({"type": "session.stop"})
@@ -1729,8 +2069,7 @@ def test_response_requiring_overlap_cancels_running_tool() -> None:
         assert weather_handler.finished.wait(timeout=1)
         receive_until(websocket, "assistant.audio.end")
         assert not language_model.old_continuation_started.is_set()
-        first_tool = sessions[0].generations[1].tool
-        assert first_tool is not None
+        first_tool = sessions[0].generations[1].tool_executions[0]
         assert first_tool.lifecycle is ToolLifecycle.CANCELLED
         assert first_tool.result_commit_status is ToolResultCommitStatus.DISCARDED
         assert first_tool.invalidation_reason is ToolInvalidationReason.RESPONSE_REQUIRING_OVERLAP
@@ -2488,8 +2827,8 @@ def test_speculative_tool_exchange_is_not_session_committed_after_revision() -> 
         assert language_model.old_continuation_started.wait(timeout=1)
         wait_until(
             lambda: (
-                sessions[0].generations[1].tool is not None
-                and sessions[0].generations[1].tool.result_commit_status
+                sessions[0].generations[1].tool_executions
+                and sessions[0].generations[1].tool_executions[0].result_commit_status
                 is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED
             )
         )
@@ -2499,13 +2838,12 @@ def test_speculative_tool_exchange_is_not_session_committed_after_revision() -> 
         websocket.send_bytes(SPEECH_CHUNK)
         wait_until(
             lambda: (
-                sessions[0].generations[1].tool is not None
-                and sessions[0].generations[1].tool.result_commit_status
+                sessions[0].generations[1].tool_executions
+                and sessions[0].generations[1].tool_executions[0].result_commit_status
                 is ToolResultCommitStatus.DISCARDED
             )
         )
-        journal_entry = sessions[0].generations[1].tool
-        assert journal_entry is not None
+        journal_entry = sessions[0].generations[1].tool_executions[0]
         assert journal_entry.lifecycle is ToolLifecycle.INVALIDATED
         assert journal_entry.invalidation_reason is ToolInvalidationReason.SPECULATIVE_INVALIDATION
         assert (

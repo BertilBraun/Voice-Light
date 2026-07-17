@@ -61,9 +61,9 @@ validated playback offsets enter model history.
   developer console for prompt inspection.
 - Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
   final trailing word is flushed when Qwen finishes.
-- A response may contain one asynchronous `get_weather` call. The response keeps one assistant
-  playback generation and one TTS session open across the spoken bridge, tool wait, and final
-  answer. The two Qwen invocations have separate globally monotonic invocation IDs.
+- A response may contain multiple sequential asynchronous `get_weather` calls. The response keeps
+  one assistant playback generation and one TTS session open across every spoken segment, tool
+  wait, and final answer. Each Qwen invocation has a separate globally monotonic invocation ID.
 - A new authoritative server speech-start still immediately cancels private or inaudible queued
   work. When browser-authoritative state says a committed response is audibly speaking, the start
   instead opens unresolved overlap: the server sends an immediate duck and boundary-pause command
@@ -72,9 +72,9 @@ validated playback offsets enter model history.
   Before starting a successor generation, the session still awaits that barrier, so old and new
   Qwen/TTS work never overlap accidentally.
 
-### Asynchronous Qwen tool calling
+### Asynchronous sequential Qwen tool calling
 
-The first tool milestone follows Qwen3's official Hermes function-calling protocol. The worker
+Tool execution follows Qwen3's official Hermes function-calling protocol. The worker
 passes the typed message sequence and typed JSON-schema tool definition to
 `tokenizer.apply_chat_template(..., tools=..., enable_thinking=False)` using pinned
 `Qwen/Qwen3-1.7B` revision `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e`. It does not use a
@@ -99,23 +99,25 @@ completed(invocation=1)
 The parser retains every ambiguous prefix of `<tool_call>` and `</tool_call>` until it can prove
 whether that text is syntax. Delimiters and JSON may be split at any character boundary. An
 unfinished delimiter, malformed envelope, unknown name, invalid typed arguments, duplicate call,
-second call, or content after a call becomes an explicit typed failure. VoiceSession never parses
-Hermes XML and never receives raw tool syntax as spoken text.
+second call within the same invocation, or content after a call becomes an explicit typed failure.
+Sequential calls use separate invocations. VoiceSession never parses Hermes XML and never receives
+raw tool syntax as spoken text.
 
-After the first invocation ends, VoiceSession validates the buffered call through the injected
-typed registry. Waiting until invocation completion prevents a later duplicate or malformed tail
-from racing into execution. VoiceSession then stages the complete typed assistant message
-immediately before creating the handler task. Staging is generation-local and is not returned by a
-committed private-context snapshot. A staged call therefore cannot become a dangling assistant
-call in a later prompt.
+After any tool-producing invocation ends, VoiceSession validates the buffered call through the
+injected typed registry. Waiting until invocation completion prevents a later duplicate or
+malformed tail from racing into execution. VoiceSession then stages the complete typed assistant
+message, its spoken-segment offsets, call ID, invocation ID, and turn identity immediately before
+creating the handler task. Staging is generation-local and is not returned by a committed
+private-context snapshot. A staged call therefore cannot become a dangling assistant call in a
+later prompt.
 
 After the handler reaches terminal success, handler failure, or timeout, VoiceSession revalidates
-the generation, user-turn, transcript-revision, and first-invocation anchors. If they are still
+the generation, user-turn, transcript-revision, and invocation anchors. If they are still
 current, it atomically replaces the stage with the assistant call and its exact call-ID-matched
 tool result. For an authoritative generation this is `session_committed`. A speculative
 generation first becomes `generation_local_committed`; promotion upgrades it to
-`session_committed`, while invalidation discards the entire generation-local exchange. For a valid
-London call, the private model context becomes:
+`session_committed`, while invalidation discards every generation-local exchange from that
+candidate. After valid London and Berlin calls, the private model context becomes:
 
 ```text
 user("What's the weather like in London?")
@@ -124,12 +126,18 @@ assistant(content="Let me check that.", tool_call(id="qwen-1-tool-1",
 tool(tool_call_id="qwen-1-tool-1",
      outcome=WeatherResult(location="London", temperature_celsius=12,
                            conditions="lightly cloudy"))
+assistant(content="London is cool; I will compare Berlin.",
+          tool_call(id="qwen-2-tool-1", name="get_weather",
+                    arguments=GetWeatherArguments(location="Berlin")))
+tool(tool_call_id="qwen-2-tool-1",
+     outcome=WeatherResult(location="Berlin", temperature_celsius=18,
+                           conditions="clear"))
 ```
 
-The second, tool-disabled Qwen invocation then produces the recorded fixture answer:
+The next tool-enabled Qwen invocation may make another call or produce the final answer:
 
 ```text
-It is 12 degrees and lightly cloudy in London.
+Berlin is warmer at 18 degrees.
 ```
 
 Tool description, parsing, validation, execution, orchestration, speech, and durable history are
@@ -149,29 +157,31 @@ NOT_REQUESTED -> CALL_BUFFERING -> READY -> RUNNING -> SUCCEEDED
 
 Three records are deliberately separate:
 
-- `PrivateModelContext` is a typed, turn-ordered model transcript. A turn owns its user message,
-  optional assistant-call/tool-result exchange, and any later assistant continuation confirmed
-  audible. It is the source for subsequent Qwen requests and is never sent to the browser.
+- `PrivateModelContext` is a typed, turn-ordered model transcript. A turn owns its user message, an
+  ordered sequence of assistant-call/tool-result exchanges, and any later assistant continuation
+  confirmed audible. Each exchange records its exact interval in the one audible text-offset
+  space. It is the source for subsequent Qwen requests and is never sent to the browser.
 - `conversation` is audible durable history. It contains only user turns and assistant text proven
   played by browser word-boundary or completion acknowledgements. The bridge and final answer share
   one browser generation, text-offset space, and assistant history entry.
 - `tool_execution_journal` is the audit record. Its entries retain typed identity, parsed request,
   validated call, terminal discriminated outcome, lifecycle, stage/result-commit status, timing,
-  first and continuation invocation IDs, invalidation reason, and whether cancellation-resistant
-  work was wasted. Journal entries are never TTS or browser input.
+  round index, call and continuation invocation IDs, invalidation reason, and whether
+  cancellation-resistant work was wasted. Every call has its own journal entry. Journal entries
+  are never TTS or browser input.
 
 Each model turn and tool trace is anchored to assistant generation ID, originating user-turn ID,
-transcript revision ID, first invocation ID, and call ID. Generation IDs and user-turn IDs increase
-within the session. Qwen invocation IDs are globally monotonic at the worker manager; the bridge
-and continuation therefore have distinct invocation IDs while retaining one assistant generation
-and playback ID. A result can enter the second prompt only while all anchors still identify the
-active non-cancelled generation. A non-floor-taking overlap keeps the tool task, staged or
-committed private context, and playback turn, then resumes that same generation. A genuine
-interruption cancels the active continuation and TTS/playback work. If the call is only staged, the
-stage is discarded and the audit outcome becomes typed `cancelled` or `invalidated`; a late handler
-result cannot start inference, speech, or history mutation. If call and result were already
-session-committed, they remain a complete non-dangling pair while any confirmed continuation
-prefix is retained through the normal audible-history boundary.
+transcript revision ID, positive round index, invocation ID, and call ID. Generation IDs and
+user-turn IDs increase within the session. Qwen invocation IDs are globally monotonic at the
+worker manager; all spoken segments and calls retain one assistant generation and playback ID. A
+result can enter the next prompt only while all anchors still identify the active non-cancelled
+generation. A non-floor-taking overlap keeps the tool task, staged or committed private context,
+and playback turn, then resumes that same generation. A genuine interruption cancels the active
+continuation and TTS/playback work. If the current call is only staged, that stage is discarded and
+its audit outcome becomes typed `cancelled` or `invalidated`; a late handler result cannot start
+inference, speech, or history mutation. Earlier session-committed call/result pairs remain complete
+and ordered, while any confirmed audible continuation prefix is retained through the normal
+audible-history boundary.
 
 Parser or argument-validation failures have no valid assistant call to commit. Their typed failure
 is supplied only to the immediate recovery invocation; later private context receives the recovery
@@ -184,19 +194,21 @@ cannot block successor generation. `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS` controls e
 (default 5 seconds) and
 `VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS` bounds cancellation observation (default 250 ms).
 Handler error or timeout is committed as a typed private tool failure; a parser or validation
-failure remains transient recovery context. Either path lets the second invocation speak a short
-recovery, and the application never fabricates weather.
+failure remains transient recovery context. Either path lets the next invocation speak a short
+recovery, and the application never fabricates weather. `VOICE_LIGHT_MAXIMUM_TOOL_ROUNDS` bounds
+sequential calls in one assistant generation (default 8); after the bound, the final invocation is
+tool-disabled and any attempted call fails the generation rather than executing.
 
 One `CompleteWordStream`, TTS session, synthesis output task, browser generation, audio sequence,
-text-offset space, and source-sample space span both Qwen invocations. The bridge's trailing word is
-flushed at the tool boundary without finishing TTS input. Final words continue at larger text
-offsets, and TTS PCM must continue at the next exact sample. Only the final invocation calls
+text-offset space, and source-sample space span all Qwen invocations. Each spoken segment's trailing
+word is flushed at its tool boundary without finishing TTS input. Later segments continue at larger
+text offsets, and TTS PCM must continue at the next exact sample. Only the final invocation calls
 `finish_input`, so the browser receives one audio start and one audio end.
 
-Generation-scoped monotonic instrumentation now records first bridge text/PCM, tool-call start and
-completion, execution start and completion, result commit, second-invocation start, first final
-text/PCM, cancellation/invalidation, and whether tool work was wasted. The deterministic gate-based
-test asserts the causal ordering instead of using sleeps:
+Each journal entry records its call, execution, result-commit, cancellation, and invalidation
+timing. Generation-scoped monotonic instrumentation retains first-round bridge and first
+post-result continuation latency for the existing dashboards. Deterministic gate-based tests assert
+the causal ordering instead of using sleeps:
 
 ```text
 first bridge text/PCM < handler release
@@ -208,11 +220,11 @@ These phases do not change existing first-response or predictive latency origins
 reported as first-response latency.
 
 The browser-facing `llm.history` remains an audible-only user/assistant snapshot. Private structured
-model context is never sent as a WebSocket event. `response_text` contains only the bridge plus
-final spoken continuation, so browser text, TTS input, playback boundaries, and durable assistant
-history cannot contain tool tags, JSON, call IDs, control tokens, or results. Assistant history
-still advances only through browser-proven word boundaries or complete playback. Private context
-uses that same confirmed text to add or update the post-tool assistant continuation; unreleased and
+model context is never sent as a WebSocket event. `response_text` contains only the spoken segments,
+so browser text, TTS input, playback boundaries, and durable assistant history cannot contain tool
+tags, JSON, call IDs, control tokens, or results. Assistant history still advances only through
+browser-proven word boundaries or complete playback. Private context uses that same confirmed text
+to add or update the assistant continuation after the final committed exchange; unreleased and
 released-but-unplayed continuation text is not carried into a later user turn.
 
 Across later turns, the canonical Qwen message order is:
@@ -222,28 +234,31 @@ system + tool definitions at invocation time
 user
 assistant(content=audible bridge, tool_call(id=...))
 tool(tool_call_id=the same id, typed terminal outcome)
+assistant(content=next audible bridge, tool_call(id=...))
+tool(tool_call_id=the same id, typed terminal outcome)
 assistant(content=confirmed final continuation)
 user
 ```
 
 The Qwen integration layer alone converts those typed messages to the pinned tokenizer's Hermes
 representation. Every invocation uses the official
-`tokenizer.apply_chat_template(..., tools=..., enable_thinking=False)` path. The first invocation
-and a later user turn receive the registered tool definitions; the immediate one-call continuation
-receives an empty tool list. VoiceSession neither parses nor stores Hermes XML.
+`tokenizer.apply_chat_template(..., tools=..., enable_thinking=False)` path. The first invocation,
+each continuation below the round bound, and a later user turn receive the registered tool
+definitions. A round-limited or parser/validation-recovery invocation receives an empty tool list.
+VoiceSession neither parses nor stores Hermes XML.
 
-Current limitations are deliberate: one deterministic tool, one call and one tool round per
-assistant turn, no parallel/dependent calls, no network weather, no arbitrary execution, no MCP,
-and no native duplex model. During a drained tool gap the current worklet keeps the not-yet-ended
-generation active; this enables the existing duck/pause backchannel policy but can conservatively
-classify speech during the silent gap as overlap with an active assistant turn.
+Current limitations are deliberate: one deterministic registered tool, one call per Qwen
+invocation, at most eight sequential calls by default, no parallel calls, no network weather, no
+arbitrary execution, no MCP, and no native duplex model. Sequential calls may depend on earlier
+typed results. During a drained tool gap the current worklet keeps the not-yet-ended generation
+active; this enables the existing duck/pause backchannel policy but can conservatively classify
+speech during the silent gap as overlap with an active assistant turn.
 
-Sequential multi-call research would need a bounded tuple of typed exchanges per model turn, a
-round index in the causal identity and audit entry, repeated stage/execute/commit validation, and a
-configured maximum round/call budget. It would also need template tests for multiple ordered
-assistant-call/tool-result pairs and cancellation tests at every round boundary. The current
-execution loop intentionally rejects a second call and does not provide parallel or dependent
-execution.
+Research beyond this milestone would need multiple registered tool schemas and handlers, policy
+for parallel calls, a typed join/result ordering model, per-tool authorization and timeout policy,
+and training examples covering those new states. It must preserve the existing ordered
+stage/execute/commit checkpoints and audible-only playback ledger rather than flattening calls in
+front of or behind their spoken segments.
 
 ### Natural user overlap and reversible playback
 

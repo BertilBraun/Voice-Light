@@ -149,6 +149,7 @@ class SessionPolicy:
     maximum_prediction_lag_ms: int = 80
     tool_timeout_seconds: float = 5.0
     tool_cancellation_timeout_seconds: float = 0.25
+    maximum_tool_rounds: int = 8
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> Self:
@@ -189,11 +190,19 @@ class SessionPolicy:
                 raise ValueError(
                     "VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS must be numeric."
                 ) from error
+        maximum_tool_rounds_value = environment.get("VOICE_LIGHT_MAXIMUM_TOOL_ROUNDS")
+        maximum_tool_rounds = 8
+        if maximum_tool_rounds_value is not None:
+            try:
+                maximum_tool_rounds = int(maximum_tool_rounds_value)
+            except ValueError as error:
+                raise ValueError("VOICE_LIGHT_MAXIMUM_TOOL_ROUNDS must be an integer.") from error
         return cls(
             vad_speculation_enabled=vad_speculation_enabled,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
             tool_timeout_seconds=tool_timeout_seconds,
             tool_cancellation_timeout_seconds=tool_cancellation_timeout_seconds,
+            maximum_tool_rounds=maximum_tool_rounds,
         )
 
     def __post_init__(self) -> None:
@@ -218,6 +227,8 @@ class SessionPolicy:
             raise ValueError("The tool timeout must be positive.")
         if self.tool_cancellation_timeout_seconds <= 0.0:
             raise ValueError("The tool cancellation timeout must be positive.")
+        if self.maximum_tool_rounds <= 0:
+            raise ValueError("The maximum tool round count must be positive.")
 
 
 class SessionLifecycle(StrEnum):
@@ -273,12 +284,13 @@ class GenerationLatency:
 @dataclass
 class ToolExecutionJournalEntry:
     identity: ModelTurnIdentity
+    round_index: int
+    invocation_id: int
+    call_id: str
     created_at: float
     lifecycle: ToolLifecycle = ToolLifecycle.NOT_REQUESTED
     result_commit_status: ToolResultCommitStatus = ToolResultCommitStatus.NOT_STAGED
-    first_invocation_id: int | None = None
-    second_invocation_id: int | None = None
-    call_id: str | None = None
+    continuation_invocation_id: int | None = None
     request: SerializedToolCall | None = None
     call: ToolCall | None = None
     outcome: ToolSuccess | ToolExecutionFailure | None = None
@@ -293,6 +305,14 @@ class ToolExecutionJournalEntry:
     task: asyncio.Task[ToolSuccess | ToolExecutionFailure] | None = None
     cancellation_observer: asyncio.Task[None] | None = None
     wasted: bool = False
+
+    def __post_init__(self) -> None:
+        if self.round_index <= 0:
+            raise ValueError("The tool round index must be positive.")
+        if self.invocation_id <= 0:
+            raise ValueError("The tool invocation ID must be positive.")
+        if not self.call_id:
+            raise ValueError("The tool call ID cannot be empty.")
 
 
 @dataclass(frozen=True)
@@ -342,7 +362,7 @@ class ActiveGeneration:
     followed_invalidation: bool = False
     continuation_allowed: asyncio.Event = field(default_factory=asyncio.Event)
     synthesis_budget_available: asyncio.Event = field(default_factory=asyncio.Event)
-    tool: ToolExecutionJournalEntry | None = None
+    tool_executions: list[ToolExecutionJournalEntry] = field(default_factory=list)
     final_answer_text_start: int | None = None
     final_answer_first_sample: int | None = None
 
@@ -1397,9 +1417,9 @@ class VoiceSession:
         promoted_at = time.perf_counter()
         generation.speculative = False
         self.model_context.commit_turn(generation.model_context_turn)
-        tool = self._require_tool_execution(generation)
-        if tool.result_commit_status is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED:
-            tool.result_commit_status = ToolResultCommitStatus.SESSION_COMMITTED
+        for tool in generation.tool_executions:
+            if tool.result_commit_status is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED:
+                tool.result_commit_status = ToolResultCommitStatus.SESSION_COMMITTED
         generation.latency.candidate_promoted_at = promoted_at
         generation.latency.candidate_resolution = MediaLatencyPoint(
             monotonic_time_seconds=promoted_at,
@@ -1570,11 +1590,6 @@ class VoiceSession:
                 turn_ready_at=turn_ready_at,
             ),
         )
-        generation.tool = ToolExecutionJournalEntry(
-            identity=identity,
-            created_at=created_at,
-        )
-        self.tool_execution_journal.append(generation.tool)
         generation.continuation_allowed.set()
         generation.synthesis_budget_available.set()
         self.generations[generation_id] = generation
@@ -1757,116 +1772,125 @@ class VoiceSession:
     ) -> None:
         word_stream = CompleteWordStream()
         model_messages = list(generation.model_messages)
-        first_result = await self._run_model_invocation(
-            generation=generation,
-            synthesis=synthesis,
-            word_stream=word_stream,
-            messages=tuple(model_messages),
-            tools=self.tool_executor.specifications,
-            final_answer=False,
-        )
-        if first_result.tool_request is None and first_result.tool_failure is None:
+        audible_text_start = 0
+        preceding_tool: ToolExecutionJournalEntry | None = None
+        recovery_only = False
+        while True:
+            tool_calls_allowed = (
+                not recovery_only
+                and len(generation.model_context_turn.committed_tool_exchanges)
+                < self.policy.maximum_tool_rounds
+            )
+            result = await self._run_model_invocation(
+                generation=generation,
+                synthesis=synthesis,
+                word_stream=word_stream,
+                messages=tuple(model_messages),
+                tools=self.tool_executor.specifications if tool_calls_allowed else (),
+                tool_calls_allowed=tool_calls_allowed,
+                post_tool_continuation=preceding_tool is not None,
+            )
+            if preceding_tool is not None:
+                preceding_tool.continuation_invocation_id = result.invocation_id
             await self._flush_synthesis_words(generation, synthesis, word_stream)
-            if not generation.response_text.strip():
+            audible_text_end = len(generation.response_text)
+            if result.tool_request is None and result.tool_failure is None:
+                if not generation.response_text.strip():
+                    raise VoiceComponentError(
+                        VoiceComponent.LANGUAGE_MODEL,
+                        VoiceOperation.GENERATE_TEXT,
+                        "The language model returned an empty response.",
+                    )
+                if preceding_tool is not None and audible_text_start == audible_text_end:
+                    raise VoiceComponentError(
+                        VoiceComponent.LANGUAGE_MODEL,
+                        VoiceOperation.GENERATE_TEXT,
+                        "Qwen returned no spoken continuation after the tool result.",
+                    )
+                await self._finish_synthesis_input(synthesis)
+                return
+            if not tool_calls_allowed:
                 raise VoiceComponentError(
                     VoiceComponent.LANGUAGE_MODEL,
                     VoiceOperation.GENERATE_TEXT,
-                    "The language model returned an empty response.",
+                    "Qwen attempted a tool call after the configured round limit.",
                 )
-            await self._finish_synthesis_input(synthesis)
-            return
-        await self._flush_synthesis_words(generation, synthesis, word_stream)
-        bridge_text = generation.response_text.strip()
-        tool_call: ToolCall | None = None
-        assistant_message: ModelAssistantMessage
-        if first_result.tool_failure is not None:
-            tool_outcome = self._tool_failure_outcome(first_result.tool_failure)
-            assistant_message = ModelAssistantMessage(content=bridge_text)
-        else:
-            request = first_result.tool_request
-            assert request is not None
-            validated_call = self.tool_executor.validate(request)
-            if isinstance(validated_call, ToolCallFailure):
-                tool_outcome = self._tool_failure_outcome(validated_call)
-                assistant_message = ModelAssistantMessage(content=bridge_text)
+            audible_content = generation.response_text[audible_text_start:audible_text_end].strip()
+            tool_call: ToolCall | None = None
+            assistant_message: ModelAssistantMessage
+            if result.tool_failure is not None:
+                tool_outcome = self._tool_failure_outcome(result.tool_failure)
+                assistant_message = ModelAssistantMessage(content=audible_content)
             else:
-                tool_call = validated_call
-                assistant_message = ModelAssistantMessage(
-                    content=bridge_text,
-                    tool_calls=(tool_call,),
+                request = result.tool_request
+                assert request is not None
+                validated_call = self.tool_executor.validate(request)
+                if isinstance(validated_call, ToolCallFailure):
+                    tool_outcome = self._tool_failure_outcome(validated_call)
+                    assistant_message = ModelAssistantMessage(content=audible_content)
+                else:
+                    tool_call = validated_call
+                    assistant_message = ModelAssistantMessage(
+                        content=audible_content,
+                        tool_calls=(tool_call,),
+                    )
+                    if not self._tool_anchors_are_current(generation, result.invocation_id):
+                        return
+                    self._stage_assistant_tool_call(
+                        generation,
+                        result.invocation_id,
+                        audible_text_start,
+                        audible_text_end,
+                        assistant_message,
+                    )
+                    tool_outcome = await self._execute_tool_call(
+                        generation,
+                        result.invocation_id,
+                        validated_call,
+                    )
+            tool = self._require_tool_execution(generation, result.invocation_id)
+            tool.outcome = tool_outcome
+            if isinstance(tool_outcome, ToolExecutionFailure):
+                tool.lifecycle = ToolLifecycle.FAILED
+            if not self._tool_anchors_are_current(generation, result.invocation_id):
+                return
+            if tool_call is None:
+                model_messages.extend(
+                    (
+                        assistant_message,
+                        ModelToolMessage(
+                            tool_call_id=tool_outcome.call_id,
+                            outcome=tool_outcome,
+                        ),
+                    )
                 )
-                if not self._tool_anchors_are_current(
-                    generation,
-                    first_result.invocation_id,
-                ):
-                    return
-                self._stage_assistant_tool_call(
-                    generation,
-                    first_result.invocation_id,
-                    assistant_message,
+                recovery_only = True
+            else:
+                generation.model_context_turn.commit_tool_result(tool_outcome)
+                tool.result_commit_status = (
+                    ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED
+                    if generation.speculative
+                    else ToolResultCommitStatus.SESSION_COMMITTED
                 )
-                tool_outcome = await self._execute_tool_call(
-                    generation,
-                    first_result.invocation_id,
-                    validated_call,
-                )
-        tool = self._require_tool_execution(generation)
-        tool.outcome = tool_outcome
-        if isinstance(tool_outcome, ToolExecutionFailure):
-            tool.lifecycle = ToolLifecycle.FAILED
-        if not self._tool_anchors_are_current(generation, first_result.invocation_id):
-            return
-        if tool_call is not None:
-            generation.model_context_turn.commit_tool_result(tool_outcome)
-            tool.result_commit_status = (
-                ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED
-                if generation.speculative
-                else ToolResultCommitStatus.SESSION_COMMITTED
-            )
-            committed_at = time.perf_counter()
-            tool.result_committed_at = committed_at
-            generation.latency.tool_result_committed_at = committed_at
-            model_messages = [
-                *generation.model_context_prefix,
-                *generation.model_context_turn.messages(),
-            ]
-        else:
-            tool_message = ModelToolMessage(
-                tool_call_id=tool_outcome.call_id,
-                outcome=tool_outcome,
-            )
-            model_messages.extend((assistant_message, tool_message))
-        generation.model_messages = tuple(model_messages)
-        await generation.continuation_allowed.wait()
-        if not self._tool_anchors_are_current(generation, first_result.invocation_id):
-            return
-        if generation.response_text and not generation.response_text[-1].isspace():
-            await self._publish_spoken_text(generation, synthesis, word_stream, " ")
-        generation.final_answer_text_start = len(generation.response_text)
-        generation.latency.second_invocation_started_at = time.perf_counter()
-        second_result = await self._run_model_invocation(
-            generation=generation,
-            synthesis=synthesis,
-            word_stream=word_stream,
-            messages=generation.model_messages,
-            tools=(),
-            final_answer=True,
-        )
-        tool.second_invocation_id = second_result.invocation_id
-        if second_result.tool_request is not None or second_result.tool_failure is not None:
-            raise VoiceComponentError(
-                VoiceComponent.LANGUAGE_MODEL,
-                VoiceOperation.GENERATE_TEXT,
-                "Qwen attempted another tool call after the one-call milestone limit.",
-            )
-        await self._flush_synthesis_words(generation, synthesis, word_stream)
-        if generation.final_answer_text_start == len(generation.response_text):
-            raise VoiceComponentError(
-                VoiceComponent.LANGUAGE_MODEL,
-                VoiceOperation.GENERATE_TEXT,
-                "Qwen returned no spoken recovery or final answer after the tool result.",
-            )
-        await self._finish_synthesis_input(synthesis)
+                committed_at = time.perf_counter()
+                tool.result_committed_at = committed_at
+                if generation.latency.tool_result_committed_at is None:
+                    generation.latency.tool_result_committed_at = committed_at
+                model_messages = [
+                    *generation.model_context_prefix,
+                    *generation.model_context_turn.messages(),
+                ]
+            generation.model_messages = tuple(model_messages)
+            await generation.continuation_allowed.wait()
+            if not self._tool_anchors_are_current(generation, result.invocation_id):
+                return
+            if generation.response_text and not generation.response_text[-1].isspace():
+                await self._publish_spoken_text(generation, synthesis, word_stream, " ")
+            audible_text_start = len(generation.response_text)
+            if generation.final_answer_text_start is None:
+                generation.final_answer_text_start = audible_text_start
+                generation.latency.second_invocation_started_at = time.perf_counter()
+            preceding_tool = tool
 
     async def _run_model_invocation(
         self,
@@ -1875,7 +1899,8 @@ class VoiceSession:
         word_stream: CompleteWordStream,
         messages: tuple[ModelMessage, ...],
         tools: tuple[ToolSpecification, ...],
-        final_answer: bool,
+        tool_calls_allowed: bool,
+        post_tool_continuation: bool,
     ) -> ModelInvocationResult:
         language_stream = self.language_model.stream_response(
             LanguageModelRequest(
@@ -1899,7 +1924,7 @@ class VoiceSession:
                     match event:
                         case LanguageModelTextDelta():
                             self._update_invocation_tokens(generation, event)
-                            if final_answer:
+                            if post_tool_continuation:
                                 self._record_first_final_answer_text(generation)
                             await self._publish_spoken_text(
                                 generation,
@@ -1909,23 +1934,32 @@ class VoiceSession:
                             )
                         case LanguageModelToolCallStarted():
                             self._update_invocation_tokens(generation, event)
-                            if final_answer:
+                            if not tool_calls_allowed:
                                 tool_failure = ToolCallFailure(
                                     call_id=event.call_id,
                                     reason=ToolCallFailureReason.MULTIPLE_CALLS,
-                                    message="A second tool round is not allowed.",
+                                    message="The configured tool round limit was reached.",
                                     attempted_tool_name=None,
                                 )
                                 continue
                             self._record_tool_call_started(generation, event)
                         case LanguageModelToolCall():
                             self._update_invocation_tokens(generation, event)
+                            if not tool_calls_allowed:
+                                tool_failure = ToolCallFailure(
+                                    call_id=event.request.id,
+                                    reason=ToolCallFailureReason.MULTIPLE_CALLS,
+                                    message="The configured tool round limit was reached.",
+                                    attempted_tool_name=event.request.name,
+                                )
+                                continue
                             tool_request = event.request
                             self._record_tool_call_completed(generation, event)
                         case LanguageModelToolCallFailure():
                             self._update_invocation_tokens(generation, event)
                             tool_failure = event.failure
-                            self._record_tool_call_failure(generation, event)
+                            if tool_calls_allowed:
+                                self._record_tool_call_failure(generation, event)
                         case LanguageModelCompleted():
                             self._update_invocation_tokens(generation, event)
                             completed = True
@@ -2017,17 +2051,17 @@ class VoiceSession:
     async def _execute_tool_call(
         self,
         generation: ActiveGeneration,
-        first_invocation_id: int,
+        invocation_id: int,
         call: ToolCall,
     ) -> ToolSuccess | ToolExecutionFailure:
-        tool = self._require_tool_execution(generation)
-        tool.first_invocation_id = first_invocation_id
+        tool = self._require_tool_execution(generation, invocation_id)
         tool.call_id = call.id
         tool.call = call
         tool.lifecycle = ToolLifecycle.RUNNING
         execution_started_at = time.perf_counter()
         tool.execution_started_at = execution_started_at
-        generation.latency.tool_execution_started_at = execution_started_at
+        if generation.latency.tool_execution_started_at is None:
+            generation.latency.tool_execution_started_at = execution_started_at
         task = asyncio.create_task(self.tool_executor.execute(call))
         task.add_done_callback(_consume_tool_task_result)
         tool.task = task
@@ -2049,7 +2083,8 @@ class VoiceSession:
             raise
         execution_completed_at = time.perf_counter()
         tool.execution_completed_at = execution_completed_at
-        generation.latency.tool_execution_completed_at = execution_completed_at
+        if generation.latency.tool_execution_completed_at is None:
+            generation.latency.tool_execution_completed_at = execution_completed_at
         tool.outcome = outcome
         if isinstance(outcome, ToolSuccess):
             tool.lifecycle = ToolLifecycle.SUCCEEDED
@@ -2068,17 +2103,21 @@ class VoiceSession:
     def _stage_assistant_tool_call(
         self,
         generation: ActiveGeneration,
-        first_invocation_id: int,
+        invocation_id: int,
+        audible_text_start: int,
+        audible_text_end: int,
         assistant_message: ModelAssistantMessage,
     ) -> None:
-        tool = self._require_tool_execution(generation)
+        tool = self._require_tool_execution(generation, invocation_id)
         if tool.result_commit_status is not ToolResultCommitStatus.NOT_STAGED:
             raise ValueError("The tool call has already been staged.")
         call = assistant_message.tool_calls[0]
-        if tool.call_id != call.id or tool.first_invocation_id != first_invocation_id:
+        if tool.call_id != call.id:
             raise ValueError("The validated tool call does not match the parsed call envelope.")
         generation.model_context_turn.stage_tool_call(
-            invocation_id=first_invocation_id,
+            invocation_id=invocation_id,
+            audible_text_start=audible_text_start,
+            audible_text_end=audible_text_end,
             message=assistant_message,
         )
         tool.call = call
@@ -2115,15 +2154,23 @@ class VoiceSession:
         generation: ActiveGeneration,
         event: LanguageModelToolCallStarted,
     ) -> None:
-        tool = self._require_tool_execution(generation)
+        tool = self._find_tool_execution(generation, event.invocation_id)
+        if tool is None:
+            tool = self._create_tool_execution(
+                generation,
+                event.invocation_id,
+                event.call_id,
+            )
+        elif tool.call_id != event.call_id:
+            raise ValueError("A tool invocation changed call identity while buffering.")
         if tool.lifecycle is not ToolLifecycle.NOT_REQUESTED:
             return
         tool.lifecycle = ToolLifecycle.CALL_BUFFERING
-        tool.first_invocation_id = event.invocation_id
         tool.call_id = event.call_id
         call_started_at = time.perf_counter()
         tool.call_started_at = call_started_at
-        generation.latency.tool_call_started_at = call_started_at
+        if generation.latency.tool_call_started_at is None:
+            generation.latency.tool_call_started_at = call_started_at
         first_delta_at = generation.latency.first_language_delta_at
         if first_delta_at is not None:
             generation.latency.first_bridge_text = MediaLatencyPoint(
@@ -2133,32 +2180,81 @@ class VoiceSession:
                 text_offset=0,
             )
 
+    def _create_tool_execution(
+        self,
+        generation: ActiveGeneration,
+        invocation_id: int,
+        call_id: str,
+    ) -> ToolExecutionJournalEntry:
+        if self._find_tool_execution(generation, invocation_id) is not None:
+            raise ValueError("A tool journal entry already exists for the invocation.")
+        tool = ToolExecutionJournalEntry(
+            identity=generation.model_context_turn.identity,
+            round_index=len(generation.tool_executions) + 1,
+            invocation_id=invocation_id,
+            created_at=time.perf_counter(),
+            call_id=call_id,
+        )
+        generation.tool_executions.append(tool)
+        self.tool_execution_journal.append(tool)
+        return tool
+
+    @staticmethod
+    def _find_tool_execution(
+        generation: ActiveGeneration,
+        invocation_id: int,
+    ) -> ToolExecutionJournalEntry | None:
+        return next(
+            (
+                tool
+                for tool in reversed(generation.tool_executions)
+                if tool.invocation_id == invocation_id
+            ),
+            None,
+        )
+
     def _record_tool_call_completed(
         self,
         generation: ActiveGeneration,
         event: LanguageModelToolCall,
     ) -> None:
-        tool = self._require_tool_execution(generation)
+        tool = self._find_tool_execution(generation, event.invocation_id)
+        if tool is None:
+            tool = self._create_tool_execution(
+                generation,
+                event.invocation_id,
+                event.request.id,
+            )
+        elif tool.call_id != event.request.id:
+            raise ValueError("A completed tool call does not match its buffered call ID.")
         tool.lifecycle = ToolLifecycle.READY
-        tool.first_invocation_id = event.invocation_id
         tool.call_id = event.request.id
         tool.request = event.request
         call_completed_at = time.perf_counter()
         tool.call_completed_at = call_completed_at
-        generation.latency.tool_call_completed_at = call_completed_at
+        if generation.latency.tool_call_completed_at is None:
+            generation.latency.tool_call_completed_at = call_completed_at
 
     def _record_tool_call_failure(
         self,
         generation: ActiveGeneration,
         event: LanguageModelToolCallFailure,
     ) -> None:
-        tool = self._require_tool_execution(generation)
+        tool = self._find_tool_execution(generation, event.invocation_id)
+        if tool is None:
+            tool = self._create_tool_execution(
+                generation,
+                event.invocation_id,
+                event.failure.call_id,
+            )
+        elif tool.call_id != event.failure.call_id:
+            raise ValueError("A failed tool call does not match its buffered call ID.")
         tool.lifecycle = ToolLifecycle.FAILED
-        tool.first_invocation_id = event.invocation_id
         tool.call_id = event.failure.call_id
         call_completed_at = time.perf_counter()
         tool.call_completed_at = call_completed_at
-        generation.latency.tool_call_completed_at = call_completed_at
+        if generation.latency.tool_call_completed_at is None:
+            generation.latency.tool_call_completed_at = call_completed_at
 
     @staticmethod
     def _record_first_final_answer_text(generation: ActiveGeneration) -> None:
@@ -2174,9 +2270,9 @@ class VoiceSession:
     def _tool_anchors_are_current(
         self,
         generation: ActiveGeneration,
-        first_invocation_id: int,
+        invocation_id: int,
     ) -> bool:
-        tool = self._require_tool_execution(generation)
+        tool = self._require_tool_execution(generation, invocation_id)
         return (
             self.active_generation is generation
             and not generation.cancelled
@@ -2184,7 +2280,7 @@ class VoiceSession:
             and tool.identity.assistant_generation_id == generation.generation_id
             and tool.identity.user_turn_id == generation.user_turn_id
             and tool.identity.transcript_revision_id == generation.transcript_revision_id
-            and tool.first_invocation_id == first_invocation_id
+            and tool.invocation_id == invocation_id
         )
 
     def _invalidate_tool_execution(
@@ -2193,38 +2289,48 @@ class VoiceSession:
         reason: ToolInvalidationReason,
         candidate_reason: CandidateInvalidationReason | None,
     ) -> None:
-        tool = self._require_tool_execution(generation)
-        if tool.lifecycle is ToolLifecycle.NOT_REQUESTED:
+        if not generation.tool_executions:
             return
         invalidated = reason in (
             ToolInvalidationReason.SPECULATIVE_INVALIDATION,
             ToolInvalidationReason.GENERATION_FAILURE,
         )
-        tool.invalidated_at = time.perf_counter()
-        tool.invalidation_reason = reason
-        tool.candidate_invalidation_reason = candidate_reason
-        generation.latency.cancelled_or_invalidated_at = tool.invalidated_at
-        if tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED:
-            return
-        if tool.result_commit_status is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED:
-            generation.model_context_turn.discard_tool_exchange()
-            tool.result_commit_status = ToolResultCommitStatus.DISCARDED
-            tool.lifecycle = ToolLifecycle.INVALIDATED if invalidated else ToolLifecycle.CANCELLED
-            tool.wasted = True
-            return
-        if (
-            tool.result_commit_status is ToolResultCommitStatus.NOT_STAGED
-            and tool.lifecycle is ToolLifecycle.FAILED
-            and tool.outcome is not None
+        invalidated_at = time.perf_counter()
+        generation.latency.cancelled_or_invalidated_at = invalidated_at
+        if any(
+            tool.result_commit_status is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED
+            for tool in generation.tool_executions
         ):
-            return
-        if tool.lifecycle in (ToolLifecycle.CANCELLED, ToolLifecycle.INVALIDATED):
-            return
-        tool.lifecycle = ToolLifecycle.INVALIDATED if invalidated else ToolLifecycle.CANCELLED
-        if tool.result_commit_status is ToolResultCommitStatus.STAGED:
+            generation.model_context_turn.discard_tool_exchanges()
+        elif any(
+            tool.result_commit_status is ToolResultCommitStatus.STAGED
+            for tool in generation.tool_executions
+        ):
             generation.model_context_turn.discard_staged_tool_call()
-            tool.result_commit_status = ToolResultCommitStatus.DISCARDED
-        if tool.call_id is not None:
+        for tool in generation.tool_executions:
+            tool.invalidated_at = invalidated_at
+            tool.invalidation_reason = reason
+            tool.candidate_invalidation_reason = candidate_reason
+            if tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED:
+                continue
+            if tool.result_commit_status is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED:
+                tool.result_commit_status = ToolResultCommitStatus.DISCARDED
+                tool.lifecycle = (
+                    ToolLifecycle.INVALIDATED if invalidated else ToolLifecycle.CANCELLED
+                )
+                tool.wasted = True
+                continue
+            if (
+                tool.result_commit_status is ToolResultCommitStatus.NOT_STAGED
+                and tool.lifecycle is ToolLifecycle.FAILED
+                and tool.outcome is not None
+            ):
+                continue
+            if tool.lifecycle in (ToolLifecycle.CANCELLED, ToolLifecycle.INVALIDATED):
+                continue
+            tool.lifecycle = ToolLifecycle.INVALIDATED if invalidated else ToolLifecycle.CANCELLED
+            if tool.result_commit_status is ToolResultCommitStatus.STAGED:
+                tool.result_commit_status = ToolResultCommitStatus.DISCARDED
             tool.outcome = ToolExecutionFailure(
                 call_id=tool.call_id,
                 tool_name=None if tool.call is None else tool.call.function.name,
@@ -2235,11 +2341,11 @@ class VoiceSession:
                 ),
                 message=f"Tool execution ended because the generation was {reason.value}.",
             )
-        tool.wasted = tool.task is not None
-        task = tool.task
-        if task is not None and not task.done():
-            task.cancel()
-            self._observe_tool_cancellation(generation, tool, task)
+            tool.wasted = tool.task is not None
+            task = tool.task
+            if task is not None and not task.done():
+                task.cancel()
+                self._observe_tool_cancellation(generation, tool, task)
 
     def _observe_tool_cancellation(
         self,
@@ -2271,10 +2377,12 @@ class VoiceSession:
     @staticmethod
     def _require_tool_execution(
         generation: ActiveGeneration,
+        invocation_id: int,
     ) -> ToolExecutionJournalEntry:
-        if generation.tool is None:
-            raise AssertionError("The generation has no tool lifecycle.")
-        return generation.tool
+        tool = VoiceSession._find_tool_execution(generation, invocation_id)
+        if tool is None:
+            raise AssertionError("The invocation has no tool lifecycle.")
+        return tool
 
     async def _add_synthesis_word(
         self,
@@ -2360,9 +2468,8 @@ class VoiceSession:
                     if event.start_sample != expected_start_sample:
                         raise ValueError("TTS audio chunks must have contiguous sample offsets.")
                     event_end_sample = event.start_sample + _pcm_sample_count(event.pcm_bytes)
-                    tool = self._require_tool_execution(generation)
                     if (
-                        tool.lifecycle is not ToolLifecycle.NOT_REQUESTED
+                        generation.tool_executions
                         and generation.latency.first_bridge_pcm is None
                         and (
                             generation.final_answer_first_sample is None
