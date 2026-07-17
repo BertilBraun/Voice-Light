@@ -6,9 +6,10 @@ import logging
 import struct
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Self
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -97,6 +98,18 @@ class SessionPolicy:
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
 
+    @classmethod
+    def from_environment(cls, environment: Mapping[str, str]) -> Self:
+        value = environment.get("VOICE_LIGHT_VAD_SPECULATION_ENABLED")
+        if value is None:
+            return cls()
+        normalized_value = value.strip().casefold()
+        if normalized_value == "true":
+            return cls(vad_speculation_enabled=True)
+        if normalized_value == "false":
+            return cls(vad_speculation_enabled=False)
+        raise ValueError("VOICE_LIGHT_VAD_SPECULATION_ENABLED must be either 'true' or 'false'.")
+
     def __post_init__(self) -> None:
         thresholds = (
             self.speculative_yield_threshold,
@@ -177,6 +190,7 @@ class ActiveGeneration:
     generation_finished: bool = False
     playback_complete: bool = False
     cancelled: bool = False
+    first_release_recorded: bool = False
     accepts_playback: bool = True
     playback_stopped: asyncio.Event = field(default_factory=asyncio.Event)
     lifecycle: CandidateLifecycle = CandidateLifecycle.CREATED
@@ -779,6 +793,7 @@ class VoiceSession:
                 output_sample_position=(generation.release_gate.first_released_pcm_start_sample),
                 text_offset=None,
             )
+            self._record_first_released_pcm(generation)
             self._log_first_audio_latency(generation)
         logger.info(
             "speculative candidate promoted: session=%s generation=%d hidden_work_ms=%.1f "
@@ -1246,6 +1261,7 @@ class VoiceSession:
                             ),
                             text_offset=None,
                         )
+                        self._record_first_released_pcm(generation)
                         self._log_first_audio_latency(generation)
                     sequence_number += 1
                     expected_start_sample += _pcm_sample_count(event.pcm_bytes)
@@ -1258,6 +1274,19 @@ class VoiceSession:
         await generation.release_gate.publish(
             ReleasedAudioEnd(generation_id=generation.generation_id)
         )
+
+    def _record_first_released_pcm(self, generation: ActiveGeneration) -> None:
+        if generation.first_release_recorded:
+            return
+        commit_at = generation.latency.turn_committed_at
+        release_at = generation.release_gate.first_released_pcm_at
+        assert commit_at is not None
+        assert release_at is not None
+        self.predictive_metrics.record_first_release(
+            commit_at=commit_at,
+            release_at=release_at,
+        )
+        generation.first_release_recorded = True
 
     async def _request_generation_cancellation(self, send_event: bool) -> None:
         generation = self.active_generation

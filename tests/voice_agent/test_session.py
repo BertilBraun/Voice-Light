@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
@@ -52,6 +53,29 @@ DEFAULT_TEST_POLICY = SessionPolicy(
     pre_roll_duration_ms=20,
     vad_speculation_enabled=False,
 )
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    (
+        ({}, True),
+        ({"VOICE_LIGHT_VAD_SPECULATION_ENABLED": "true"}, True),
+        ({"VOICE_LIGHT_VAD_SPECULATION_ENABLED": " FALSE "}, False),
+    ),
+)
+def test_session_policy_reads_vad_speculation_switch(
+    environment: dict[str, str],
+    expected: bool,
+) -> None:
+    assert SessionPolicy.from_environment(environment).vad_speculation_enabled is expected
+
+
+def test_session_policy_rejects_invalid_vad_speculation_switch() -> None:
+    with pytest.raises(
+        ValueError,
+        match="VOICE_LIGHT_VAD_SPECULATION_ENABLED",
+    ):
+        SessionPolicy.from_environment({"VOICE_LIGHT_VAD_SPECULATION_ENABLED": "sometimes"})
 
 
 class FakeSpeechDetector:

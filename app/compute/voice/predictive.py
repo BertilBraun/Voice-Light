@@ -235,6 +235,9 @@ class PredictiveMetricsReport:
     commit_to_first_played_audio_p50_ms: float | None
     commit_to_first_played_audio_p90_ms: float | None
     commit_to_first_played_audio_p95_ms: float | None
+    commit_to_first_released_pcm_p50_ms: float | None
+    commit_to_first_released_pcm_p90_ms: float | None
+    commit_to_first_released_pcm_p95_ms: float | None
     true_end_to_first_played_audio_p50_ms: float | None
     true_end_to_first_played_audio_p90_ms: float | None
     true_end_to_first_played_audio_p95_ms: float | None
@@ -254,6 +257,7 @@ class PredictiveMetrics:
         self.stale_escape_count = 0
         self.invalidations: Counter[CandidateInvalidationReason] = Counter()
         self.commit_to_played_ms: list[float] = []
+        self.commit_to_released_pcm_ms: list[float] = []
         self.true_end_to_played_ms: list[float] = []
         self.no_candidate_latency_ms: list[float] = []
         self.post_invalidation_latency_ms: list[float] = []
@@ -304,6 +308,9 @@ class PredictiveMetrics:
         if followed_invalidation:
             self.post_invalidation_latency_ms.append(latency_ms)
 
+    def record_first_release(self, commit_at: float, release_at: float) -> None:
+        self.commit_to_released_pcm_ms.append(_milliseconds_between(commit_at, release_at))
+
     def report(self) -> PredictiveMetricsReport:
         invalidated_count = sum(self.invalidations.values())
         return PredictiveMetricsReport(
@@ -331,6 +338,18 @@ class PredictiveMetrics:
             ),
             commit_to_first_played_audio_p95_ms=_percentile(
                 self.commit_to_played_ms,
+                0.95,
+            ),
+            commit_to_first_released_pcm_p50_ms=_percentile(
+                self.commit_to_released_pcm_ms,
+                0.50,
+            ),
+            commit_to_first_released_pcm_p90_ms=_percentile(
+                self.commit_to_released_pcm_ms,
+                0.90,
+            ),
+            commit_to_first_released_pcm_p95_ms=_percentile(
+                self.commit_to_released_pcm_ms,
                 0.95,
             ),
             true_end_to_first_played_audio_p50_ms=_percentile(

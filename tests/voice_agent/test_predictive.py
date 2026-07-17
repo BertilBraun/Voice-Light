@@ -131,6 +131,7 @@ def test_predictive_metrics_report_hits_waste_and_latency_buckets() -> None:
         had_candidate=False,
         followed_invalidation=True,
     )
+    metrics.record_first_release(commit_at=1.0, release_at=1.15)
 
     report = metrics.report()
 
@@ -139,5 +140,8 @@ def test_predictive_metrics_report_hits_waste_and_latency_buckets() -> None:
     assert report.wasted_qwen_tokens == 4
     assert report.wasted_tts_samples == 480
     assert report.commit_to_first_played_audio_p50_ms == pytest.approx(200.0)
+    assert report.commit_to_first_released_pcm_p50_ms == pytest.approx(150.0)
+    assert report.commit_to_first_released_pcm_p90_ms == pytest.approx(150.0)
+    assert report.commit_to_first_released_pcm_p95_ms == pytest.approx(150.0)
     assert report.no_candidate_latency_p50_ms == pytest.approx(200.0)
     assert report.post_invalidation_latency_p50_ms == pytest.approx(200.0)
