@@ -153,6 +153,14 @@ async def run_trial(
                         case TranscriptEvent(type=VoiceServerEventType.TURN_COMMITTED):
                             observations.committed_at = now
                             observations.recognized_text = event.text
+                        case TranscriptEvent(
+                            type=VoiceServerEventType.TRANSCRIPT_FINAL,
+                            text="",
+                        ):
+                            await websocket.send(SessionStopEvent().model_dump_json())
+                            raise RuntimeError(
+                                "The benchmark utterance produced an empty final transcript."
+                            )
                         case AssistantTextDeltaEvent():
                             if observations.committed_at is None:
                                 observations.speculative_output_before_commit = True
