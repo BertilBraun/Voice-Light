@@ -73,6 +73,7 @@ def test_partial_closing_delimiter_never_escapes_to_spoken_text(prefix_length: i
         "[]",
         '{"name":"get_weather"}',
         '{"arguments":{"location":"London"}}',
+        '{"name":"get_weather","arguments":{"location":"London"},"extra":true}',
     ),
 )
 def test_malformed_hermes_payload_is_a_typed_failure(payload: str) -> None:

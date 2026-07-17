@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import JsonValue, ValidationError
+from pydantic import ConfigDict, JsonValue, ValidationError
 
 from app.compute.voice.tools import (
     SerializedToolCall,
@@ -51,6 +51,8 @@ HermesParserEvent = (
 
 
 class _RawHermesToolCall(FrozenBaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     name: str
     arguments: JsonValue
 
