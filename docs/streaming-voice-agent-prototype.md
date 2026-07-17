@@ -81,6 +81,11 @@ passes the typed message sequence and typed JSON-schema tool definition to
 stopword or ReAct protocol. The primary protocol reference is
 <https://qwen.readthedocs.io/en/stable/framework/function_call.html>.
 
+For tool-enabled invocations, the Qwen integration masks the Hermes `<tool_call>` opener until
+Qwen has generated a model-authored spoken sentence ending in `.`, `!`, or `?`. This decoding
+constraint guarantees that a latency-bearing call cannot begin before its short spoken bridge
+without hardcoding the bridge text or changing the official Hermes envelope.
+
 The deterministic end-to-end fixture records this raw first pass:
 
 ```text
