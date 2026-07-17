@@ -119,6 +119,19 @@ def test_uploaded_opus_is_hash_verified_and_decoded_to_canonical_flac(
     assert call.audio_metadata.sample_rate == 16_000
     assert call.audio_metadata.channels == 1
     assert call.audio_metadata.duration_seconds == pytest.approx(1.0, abs=0.01)
+    assert response.request_stats is not None
+    assert response.request_stats.upload_stream_time_seconds >= 0.0
+    assert response.request_stats.upload_validation_time_seconds >= 0.0
+    assert response.request_stats.audio_preparation_time_seconds >= 0.0
+    assert response.request_stats.transcription_time_seconds >= 0.0
+    assert response.request_stats.request_time_seconds >= sum(
+        (
+            response.request_stats.upload_stream_time_seconds,
+            response.request_stats.upload_validation_time_seconds,
+            response.request_stats.audio_preparation_time_seconds,
+            response.request_stats.transcription_time_seconds,
+        )
+    )
 
 
 def test_uploaded_asr_rejects_sha256_mismatch(tmp_path: Path) -> None:

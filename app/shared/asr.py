@@ -35,6 +35,17 @@ class AsrRuntimeStats(FrozenBaseModel):
     processing_time_seconds: float
     model_loading_time_seconds: float | None = None
     inference_time_seconds: float | None = None
+    inference_queue_time_seconds: float | None = None
+    audio_loading_time_seconds: float | None = None
+    model_execution_time_seconds: float | None = None
+    client_audio_preparation_time_seconds: float | None = None
+    client_request_time_seconds: float | None = None
+    server_upload_stream_time_seconds: float | None = None
+    server_upload_validation_time_seconds: float | None = None
+    server_audio_preparation_time_seconds: float | None = None
+    server_transcription_time_seconds: float | None = None
+    server_request_time_seconds: float | None = None
+    uploaded_audio_size_bytes: int | None = None
     real_time_factor: float | None = None
     peak_gpu_memory_mb: float | None = None
     package_versions: dict[str, str] = Field(default_factory=dict)
@@ -66,8 +77,17 @@ class RemoteAsrRequest(FrozenBaseModel):
     models: tuple[AsrModelId, ...] = Field(min_length=1)
 
 
+class AsrRequestStats(FrozenBaseModel):
+    upload_stream_time_seconds: float
+    upload_validation_time_seconds: float
+    audio_preparation_time_seconds: float
+    transcription_time_seconds: float
+    request_time_seconds: float
+
+
 class RemoteAsrResponse(FrozenBaseModel):
     results: tuple[AsrTranscriptResult, ...]
+    request_stats: AsrRequestStats | None = None
 
 
 class RemoteAsrUploadRequest(FrozenBaseModel):

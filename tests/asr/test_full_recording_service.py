@@ -26,6 +26,8 @@ from app.local.asr.full_recording_service import (
 from app.local.db.models import TrackSide
 from app.shared.asr import (
     AsrModelId,
+    AsrRequestStats,
+    AsrRuntimeStats,
     AsrTranscriptResult,
     RemoteAsrResponse,
     RemoteAsrUploadRequest,
@@ -153,8 +155,20 @@ def test_full_recording_item_transcodes_calls_remote_and_persists(tmp_path: Path
                     model_id=AsrModelId.PARAKEET_TDT,
                     text="hello",
                     words=(TimestampedWord(text="hello", start_seconds=0.1, end_seconds=0.4),),
+                    processing_time_seconds=0.25,
+                    runtime=AsrRuntimeStats(
+                        processing_time_seconds=0.25,
+                        inference_time_seconds=0.25,
+                    ),
                 ),
-            )
+            ),
+            request_stats=AsrRequestStats(
+                upload_stream_time_seconds=0.01,
+                upload_validation_time_seconds=0.02,
+                audio_preparation_time_seconds=0.03,
+                transcription_time_seconds=0.25,
+                request_time_seconds=0.32,
+            ),
         )
     )
 
@@ -171,6 +185,12 @@ def test_full_recording_item_transcodes_calls_remote_and_persists(tmp_path: Path
     assert remote.requests[0].audio.encoded_filename.endswith(".ogg")
     assert remote.requests[0].models == (AsrModelId.PARAKEET_TDT,)
     assert remote.uploaded_audio[0].startswith(b"OggS")
+    assert results[0].runtime is not None
+    assert results[0].runtime.client_audio_preparation_time_seconds is not None
+    assert results[0].runtime.client_request_time_seconds is not None
+    assert results[0].runtime.uploaded_audio_size_bytes == len(remote.uploaded_audio[0])
+    assert results[0].runtime.server_audio_preparation_time_seconds == 0.03
+    assert results[0].runtime.server_request_time_seconds == 0.32
 
 
 def test_cached_full_recording_transcript_prevents_remote_call(tmp_path: Path) -> None:

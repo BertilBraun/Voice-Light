@@ -6,6 +6,7 @@ import binascii
 import hashlib
 import importlib.metadata
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -17,6 +18,7 @@ from pydantic import ValidationError
 from app.compute.asr.models.base import TimedTranscription
 from app.shared.asr import (
     AsrModelId,
+    AsrRequestStats,
     AsrRuntimeStats,
     AsrTranscriptResult,
     RemoteAsrRequest,
@@ -81,6 +83,7 @@ async def transcribe_uploaded_request(
     request_json: str,
     audio: UploadFile,
 ) -> RemoteAsrResponse:
+    request_start = time.perf_counter()
     try:
         request = RemoteAsrUploadRequest.model_validate_json(request_json)
     except ValidationError as error:
@@ -94,13 +97,18 @@ async def transcribe_uploaded_request(
     with tempfile.TemporaryDirectory(prefix="voice-light-asr-upload-") as directory_name:
         directory = Path(directory_name)
         upload_path = directory / f"transport{suffix}"
+        upload_stream_start = time.perf_counter()
         upload_stats = await write_uploaded_audio(upload=audio, path=upload_path)
+        upload_stream_time_seconds = time.perf_counter() - upload_stream_start
+        upload_validation_start = time.perf_counter()
         validate_uploaded_audio(
             path=upload_path,
             declared=request.audio,
             uploaded=upload_stats,
         )
+        upload_validation_time_seconds = time.perf_counter() - upload_validation_start
         canonical_path = directory / "canonical.flac"
+        audio_preparation_start = time.perf_counter()
         canonical_metadata = await asyncio.to_thread(
             prepare_audio_transport,
             source_path=upload_path,
@@ -111,6 +119,8 @@ async def transcribe_uploaded_request(
             declared_duration_seconds=request.audio.duration_seconds,
             canonical_duration_seconds=canonical_metadata.duration_seconds,
         )
+        audio_preparation_time_seconds = time.perf_counter() - audio_preparation_start
+        transcription_start = time.perf_counter()
         results = await asyncio.to_thread(
             transcribe_requested_models,
             model_cache=model_cache,
@@ -118,7 +128,17 @@ async def transcribe_uploaded_request(
             audio_path=canonical_path,
             audio_duration_seconds=canonical_metadata.duration_seconds,
         )
-        return RemoteAsrResponse(results=results)
+        transcription_time_seconds = time.perf_counter() - transcription_start
+        return RemoteAsrResponse(
+            results=results,
+            request_stats=AsrRequestStats(
+                upload_stream_time_seconds=upload_stream_time_seconds,
+                upload_validation_time_seconds=upload_validation_time_seconds,
+                audio_preparation_time_seconds=audio_preparation_time_seconds,
+                transcription_time_seconds=transcription_time_seconds,
+                request_time_seconds=time.perf_counter() - request_start,
+            ),
+        )
 
 
 async def write_uploaded_audio(upload: UploadFile, path: Path) -> UploadedAudioStats:
@@ -232,6 +252,9 @@ def transcript_result_from_model_output(
             processing_time_seconds=processing_time_seconds,
             model_loading_time_seconds=transcription.model_loading_time_seconds,
             inference_time_seconds=transcription.inference_time_seconds,
+            inference_queue_time_seconds=transcription.inference_queue_time_seconds,
+            audio_loading_time_seconds=transcription.audio_loading_time_seconds,
+            model_execution_time_seconds=transcription.model_execution_time_seconds,
             real_time_factor=real_time_factor(
                 processing_time_seconds=processing_time_seconds,
                 audio_duration_seconds=audio_duration_seconds,

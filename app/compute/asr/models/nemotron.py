@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from threading import Lock
 
@@ -7,7 +8,7 @@ import librosa
 from torch import Tensor
 from transformers import AutoModelForRNNT, AutoProcessor
 
-from app.compute.asr.models.base import cuda_device, load_time_seconds
+from app.compute.asr.models.base import ModelTranscription, cuda_device, load_time_seconds
 from app.shared.asr import (
     NEMOTRON_3_5_IDENTIFIER,
     NEMOTRON_3_5_REVISION,
@@ -38,9 +39,14 @@ class NemotronAsrModel:
         self.model.to(self.device)
         self.sample_rate = int(self.processor.feature_extractor.sampling_rate)
 
-    def transcribe(self, audio_path: Path) -> tuple[TimestampedWord, ...]:
+    def transcribe(self, audio_path: Path) -> ModelTranscription:
+        queue_start = time.perf_counter()
         with self.inference_lock:
+            inference_queue_time_seconds = time.perf_counter() - queue_start
+            audio_loading_start = time.perf_counter()
             audio, _sample_rate = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
+            audio_loading_time_seconds = time.perf_counter() - audio_loading_start
+            model_execution_start = time.perf_counter()
             inputs = self.processor(
                 audio,
                 sampling_rate=self.sample_rate,
@@ -51,14 +57,23 @@ class NemotronAsrModel:
             output = self.model.generate(**inputs, return_dict_in_generate=True)
             decoded_text = self.decoded_text(output.sequences)
             duration_seconds = float(librosa.get_duration(path=str(audio_path)))
-        if not decoded_text.strip():
-            return ()
-        return (
-            TimestampedWord(
-                text=decoded_text.strip(),
-                start_seconds=0.0,
-                end_seconds=duration_seconds,
-            ),
+            model_execution_time_seconds = time.perf_counter() - model_execution_start
+        words = (
+            ()
+            if not decoded_text.strip()
+            else (
+                TimestampedWord(
+                    text=decoded_text.strip(),
+                    start_seconds=0.0,
+                    end_seconds=duration_seconds,
+                ),
+            )
+        )
+        return ModelTranscription(
+            words=words,
+            inference_queue_time_seconds=inference_queue_time_seconds,
+            audio_loading_time_seconds=audio_loading_time_seconds,
+            model_execution_time_seconds=model_execution_time_seconds,
         )
 
     def decoded_text(self, sequences: Tensor) -> str:

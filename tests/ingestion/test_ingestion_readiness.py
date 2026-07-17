@@ -14,9 +14,8 @@ from app.local.ingestion.alignment import SynchronizationAlignment, Synchronizat
 from app.local.ingestion.conversation import ANNOTATION_VERSION, analyze_conversation
 from app.local.ingestion.discovery import DiscoveredSample
 from app.local.ingestion.service import (
-    MissingPrerequisite,
     RegisteredSample,
-    sample_readiness,
+    ready_sample,
 )
 from app.shared.asr import AsrModelId, TimestampedWord
 from app.shared.audio import AudioTrack
@@ -57,56 +56,31 @@ class ReadinessFullAsrRepository:
         return self.pair
 
 
-def test_readiness_requires_exact_two_track_full_asr_pair() -> None:
-    registered = registered_sample()
-    full_repository = ReadinessFullAsrRepository(pair=None)
-
-    readiness = sample_readiness(
-        repository=ReadinessRepository(reviewed_shift_seconds=-2.5),
-        full_asr_repository=full_repository,
-        registered=registered,
-    )
-
-    assert readiness.ready is None
-    assert readiness.missing == (MissingPrerequisite.FULL_RECORDING_ASR,)
-    assert full_repository.request == (
-        registered.sample_id,
-        registered.speaker1_track_id,
-        registered.speaker1_source_audio_sha256,
-        registered.speaker2_track_id,
-        registered.speaker2_source_audio_sha256,
-        AsrModelId.PARAKEET_TDT,
-    )
-
-
 def test_unreviewed_sample_uses_explicit_auditable_zero_alignment() -> None:
     registered = registered_sample()
     pair = transcript_pair(registered=registered)
 
-    readiness = sample_readiness(
+    ready = ready_sample(
         repository=ReadinessRepository(reviewed_shift_seconds=None),
         full_asr_repository=ReadinessFullAsrRepository(pair=pair),
         registered=registered,
     )
 
-    assert readiness.missing == ()
-    assert readiness.ready is not None
-    assert readiness.ready.alignment.speaker2_shift_seconds == 0.0
-    assert readiness.ready.alignment.origin is SynchronizationAlignmentOrigin.UNREVIEWED_ZERO
+    assert ready.alignment.speaker2_shift_seconds == 0.0
+    assert ready.alignment.origin is SynchronizationAlignmentOrigin.UNREVIEWED_ZERO
 
 
 def test_reviewed_sample_uses_stored_offset() -> None:
     registered = registered_sample()
 
-    readiness = sample_readiness(
+    ready = ready_sample(
         repository=ReadinessRepository(reviewed_shift_seconds=-2.5),
         full_asr_repository=ReadinessFullAsrRepository(pair=transcript_pair(registered=registered)),
         registered=registered,
     )
 
-    assert readiness.ready is not None
-    assert readiness.ready.alignment.speaker2_shift_seconds == -2.5
-    assert readiness.ready.alignment.origin is SynchronizationAlignmentOrigin.REVIEWED
+    assert ready.alignment.speaker2_shift_seconds == -2.5
+    assert ready.alignment.origin is SynchronizationAlignmentOrigin.REVIEWED
 
 
 def test_full_conversation_annotation_uses_words_beyond_three_minutes() -> None:

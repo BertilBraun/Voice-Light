@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,12 @@ from app.local.asr.full_recording_models import (
     FullRecordingAsrTranscriptRecord,
 )
 from app.local.asr.service import RemoteAsrClient
-from app.shared.asr import AsrModelId, AsrTranscriptResult, RemoteAsrUploadRequest
+from app.shared.asr import (
+    AsrModelId,
+    AsrRequestStats,
+    AsrTranscriptResult,
+    RemoteAsrUploadRequest,
+)
 from app.shared.audio import probe_local_audio_metadata
 from app.shared.audio.transport import (
     ASR_AUDIO_TRANSPORT_SPEC,
@@ -36,21 +42,22 @@ class PreparedFullRecordingAudio:
     prepared_duration_seconds: float
 
 
-class FullRecordingAsrStore(Protocol):
-    def get_batch(self, batch_id: UUID) -> FullRecordingAsrBatchRecord: ...
+@dataclass(frozen=True)
+class FullRecordingAsrTrack:
+    sample_track_id: UUID
+    access_uri: str
+    models: tuple[AsrModelId, ...]
+    source_audio_sha256: str | None = None
 
-    def recover_running_items(self, batch_id: UUID) -> int: ...
 
-    def retry_failed_items(self, batch_id: UUID) -> int: ...
+@dataclass(frozen=True)
+class FullRecordingAsrClientStats:
+    audio_preparation_time_seconds: float
+    request_time_seconds: float
+    uploaded_audio_size_bytes: int
 
-    def claim_next_item(self, batch_id: UUID) -> FullRecordingAsrBatchItem | None: ...
 
-    def complete_item(self, item_id: UUID) -> None: ...
-
-    def fail_item(self, item_id: UUID, error: str) -> None: ...
-
-    def finalize_batch(self, batch_id: UUID) -> FullRecordingAsrBatchRecord: ...
-
+class FullRecordingTranscriptStore(Protocol):
     def get_cached_transcripts(
         self,
         sample_track_id: UUID,
@@ -68,6 +75,22 @@ class FullRecordingAsrStore(Protocol):
         prepared_duration_seconds: float,
         transcript: AsrTranscriptResult,
     ) -> FullRecordingAsrTranscriptRecord: ...
+
+
+class FullRecordingAsrStore(FullRecordingTranscriptStore, Protocol):
+    def get_batch(self, batch_id: UUID) -> FullRecordingAsrBatchRecord: ...
+
+    def recover_running_items(self, batch_id: UUID) -> int: ...
+
+    def retry_failed_items(self, batch_id: UUID) -> int: ...
+
+    def claim_next_item(self, batch_id: UUID) -> FullRecordingAsrBatchItem | None: ...
+
+    def complete_item(self, item_id: UUID) -> None: ...
+
+    def fail_item(self, item_id: UUID, error: str) -> None: ...
+
+    def finalize_batch(self, batch_id: UUID) -> FullRecordingAsrBatchRecord: ...
 
 
 RemoteAsrClientFactory = Callable[[], RemoteAsrClient]
@@ -109,25 +132,44 @@ def run_full_recording_asr_batch(
 
 def transcribe_full_recording_item(
     item: FullRecordingAsrBatchItem,
-    store: FullRecordingAsrStore,
+    store: FullRecordingTranscriptStore,
     remote_client_factory: RemoteAsrClientFactory,
 ) -> tuple[FullRecordingAsrTranscriptRecord, ...]:
-    source_path = local_audio_path(item.access_uri)
-    source_audio_sha256 = sha256_file(source_path)
-    cached = store.get_cached_transcripts(
-        sample_track_id=item.sample_track_id,
-        source_audio_sha256=source_audio_sha256,
-        model_ids=item.models,
+    return transcribe_full_recording_track(
+        track=FullRecordingAsrTrack(
+            sample_track_id=item.sample_track_id,
+            access_uri=item.access_uri,
+            models=item.models,
+        ),
+        store=store,
+        remote_client_factory=remote_client_factory,
     )
-    missing_models = missing_model_ids(requested=item.models, transcripts=cached)
+
+
+def transcribe_full_recording_track(
+    track: FullRecordingAsrTrack,
+    store: FullRecordingTranscriptStore,
+    remote_client_factory: RemoteAsrClientFactory,
+) -> tuple[FullRecordingAsrTranscriptRecord, ...]:
+    source_path = local_audio_path(track.access_uri)
+    source_audio_sha256 = track.source_audio_sha256 or sha256_file(source_path)
+    cached = store.get_cached_transcripts(
+        sample_track_id=track.sample_track_id,
+        source_audio_sha256=source_audio_sha256,
+        model_ids=track.models,
+    )
+    missing_models = missing_model_ids(requested=track.models, transcripts=cached)
     if not missing_models:
         return cached
 
+    audio_preparation_start = time.perf_counter()
     prepared = prepare_full_recording_audio(
         source_path=source_path,
         source_audio_sha256=source_audio_sha256,
     )
+    audio_preparation_time_seconds = time.perf_counter() - audio_preparation_start
     try:
+        request_start = time.perf_counter()
         response = remote_client_factory().transcribe_upload(
             request=RemoteAsrUploadRequest(
                 audio=prepared.transport_metadata,
@@ -135,14 +177,25 @@ def transcribe_full_recording_item(
             ),
             audio_path=prepared.path,
         )
+        request_time_seconds = time.perf_counter() - request_start
+        client_stats = FullRecordingAsrClientStats(
+            audio_preparation_time_seconds=audio_preparation_time_seconds,
+            request_time_seconds=request_time_seconds,
+            uploaded_audio_size_bytes=prepared.transport_metadata.size_bytes,
+        )
         results = requested_results(requested=missing_models, results=response.results)
         for result in results:
+            result = transcript_with_pipeline_stats(
+                transcript=result,
+                client_stats=client_stats,
+                server_stats=response.request_stats,
+            )
             validate_transcript_timestamps(
                 transcript=result,
                 duration_seconds=prepared.prepared_duration_seconds,
             )
             store.upsert_transcript(
-                sample_track_id=item.sample_track_id,
+                sample_track_id=track.sample_track_id,
                 source_audio_sha256=prepared.source_audio_sha256,
                 prepared_audio_sha256=prepared.prepared_audio_sha256,
                 audio_filename=source_path.name,
@@ -154,15 +207,48 @@ def transcribe_full_recording_item(
         prepared.path.unlink(missing_ok=True)
 
     final = store.get_cached_transcripts(
-        sample_track_id=item.sample_track_id,
+        sample_track_id=track.sample_track_id,
         source_audio_sha256=source_audio_sha256,
-        model_ids=item.models,
+        model_ids=track.models,
     )
-    remaining_models = missing_model_ids(requested=item.models, transcripts=final)
+    remaining_models = missing_model_ids(requested=track.models, transcripts=final)
     if remaining_models:
         labels = ", ".join(model.value for model in remaining_models)
         raise ValueError(f"Full-recording ASR persistence is missing models: {labels}")
     return final
+
+
+def transcript_with_pipeline_stats(
+    transcript: AsrTranscriptResult,
+    client_stats: FullRecordingAsrClientStats,
+    server_stats: AsrRequestStats | None,
+) -> AsrTranscriptResult:
+    if transcript.runtime is None:
+        return transcript
+    runtime_update: dict[str, float | int] = {
+        "client_audio_preparation_time_seconds": client_stats.audio_preparation_time_seconds,
+        "client_request_time_seconds": client_stats.request_time_seconds,
+        "uploaded_audio_size_bytes": client_stats.uploaded_audio_size_bytes,
+    }
+    if server_stats is not None:
+        runtime_update.update(
+            {
+                "server_upload_stream_time_seconds": (server_stats.upload_stream_time_seconds),
+                "server_upload_validation_time_seconds": (
+                    server_stats.upload_validation_time_seconds
+                ),
+                "server_audio_preparation_time_seconds": (
+                    server_stats.audio_preparation_time_seconds
+                ),
+                "server_transcription_time_seconds": (server_stats.transcription_time_seconds),
+                "server_request_time_seconds": server_stats.request_time_seconds,
+            }
+        )
+    return transcript.model_copy(
+        update={
+            "runtime": transcript.runtime.model_copy(update=runtime_update),
+        }
+    )
 
 
 def prepare_full_recording_audio(

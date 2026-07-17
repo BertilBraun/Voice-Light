@@ -3,16 +3,25 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
 from uuid import UUID
 
+from app.local.asr.client import HttpRemoteAsrClient
 from app.local.asr.full_recording_models import FullRecordingAsrTranscriptPair
 from app.local.asr.full_recording_repository import FullRecordingAsrRepository
-from app.local.asr.full_recording_service import sha256_file
-from app.local.config import COMPUTE_TOKEN, REMOTE_QUALITY_ENDPOINT_URL
+from app.local.asr.full_recording_service import (
+    FullRecordingAsrTrack,
+    RemoteAsrClientFactory,
+    sha256_file,
+    transcribe_full_recording_track,
+)
+from app.local.config import (
+    COMPUTE_TOKEN,
+    REMOTE_ASR_ENDPOINT_URL,
+    REMOTE_QUALITY_ENDPOINT_URL,
+)
 from app.local.db.models import (
     DatasetCreate,
     DatasetStorageKind,
@@ -95,16 +104,6 @@ class QualityResultProvenance:
     synchronization_alignment_origin: SynchronizationAlignmentOrigin
 
 
-class MissingPrerequisite(StrEnum):
-    FULL_RECORDING_ASR = "full_recording_asr"
-
-
-@dataclass(frozen=True)
-class SampleReadiness:
-    ready: ReadySample | None
-    missing: tuple[MissingPrerequisite, ...]
-
-
 class AlignmentRepository(Protocol):
     def reviewed_speaker2_shift(self, sample_id: UUID) -> float | None: ...
 
@@ -133,11 +132,15 @@ class IngestionService:
         self,
         repository: Repository,
         remote_quality_client: RemoteQualityClient | None = None,
+        remote_asr_client_factory: RemoteAsrClientFactory | None = None,
     ) -> None:
         self.repository = repository
         self.remote_quality_client = remote_quality_client or HttpRemoteQualityClient(
             REMOTE_QUALITY_ENDPOINT_URL,
             COMPUTE_TOKEN,
+        )
+        self.remote_asr_client_factory = (
+            remote_asr_client_factory or default_remote_asr_client_factory
         )
 
     def ingest_local_dataset(
@@ -206,80 +209,36 @@ class IngestionService:
             processed_samples = 0
             failed_samples = 0
             sample_errors: list[str] = []
-            waiting_for_asr = 0
-            deferred_samples = 0
-            ready_samples: list[ReadySample] = []
-            missing_asr_track_ids: list[UUID] = []
             full_asr_repository = FullRecordingAsrRepository(
                 database_url=self.repository.database_url
             )
-            for discovered_sample in selected_samples:
-                try:
-                    registered = register_sample(
-                        repository=self.repository,
-                        dataset_id=dataset.id,
-                        storage=storage,
-                        discovered=discovered_sample,
-                    )
-                    readiness = sample_readiness(
-                        repository=self.repository,
-                        full_asr_repository=full_asr_repository,
-                        registered=registered,
-                    )
-                    if readiness.ready is not None:
-                        ready_samples.append(readiness.ready)
-                    else:
-                        deferred_samples += 1
-                    if MissingPrerequisite.FULL_RECORDING_ASR in readiness.missing:
-                        waiting_for_asr += 1
-                        missing_asr_track_ids.extend(
-                            (
-                                registered.speaker1_track_id,
-                                registered.speaker2_track_id,
-                            )
-                        )
-                except Exception as error:
-                    failed_samples += 1
-                    sample_errors.append(
-                        f"{discovered_sample.external_id}: {type(error).__name__}: {error}"
-                    )
-                    logger.exception(
-                        "ingestion sample registration failed: %s",
-                        discovered_sample.external_id,
-                    )
-            if missing_asr_track_ids:
-                full_asr_repository.ensure_ingestion_batch_items(
-                    dataset_id=dataset.id,
-                    sample_track_ids=missing_asr_track_ids,
-                    model_ids=(AsrModelId.PARAKEET_TDT,),
-                )
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(
-                        process_ready_sample,
+                        process_ingestion_sample,
+                        self.repository,
+                        full_asr_repository,
+                        dataset.id,
                         storage,
-                        ready_sample,
-                    ): ready_sample
-                    for ready_sample in ready_samples
+                        discovered_sample,
+                        self.remote_asr_client_factory,
+                    ): discovered_sample
+                    for discovered_sample in selected_samples
                 }
                 for future in as_completed(futures):
-                    ready_sample = futures[future]
+                    discovered_sample = futures[future]
                     try:
-                        persist_processed_ready_sample(
-                            repository=self.repository,
-                            processed=future.result(),
-                        )
+                        future.result()
                         processed_samples += 1
                     except Exception as error:
                         failed_samples += 1
                         sample_error = (
-                            f"{ready_sample.registered.discovered.external_id}: "
-                            f"{type(error).__name__}: {error}"
+                            f"{discovered_sample.external_id}: {type(error).__name__}: {error}"
                         )
                         sample_errors.append(sample_error)
                         logger.exception(
                             "ingestion sample failed: %s",
-                            ready_sample.registered.discovered.external_id,
+                            discovered_sample.external_id,
                         )
                     self.repository.update_ingestion_job(
                         job.id,
@@ -291,11 +250,9 @@ class IngestionService:
                         processed_samples=processed_samples,
                         failed_samples=failed_samples,
                     )
-            summary = ingestion_summary_with_prerequisites(
+            summary = ingestion_summary(
                 processed_samples=processed_samples,
                 failed_samples=failed_samples,
-                waiting_for_asr=waiting_for_asr,
-                deferred_samples=deferred_samples,
                 sample_errors=tuple(sample_errors),
             )
             self.repository.update_ingestion_job(
@@ -329,41 +286,6 @@ def ingestion_summary(
             status=JobStatus.FAILED,
             message=f"Ingestion failed for {failed_samples} of {total_samples} samples",
             error="\n".join(sample_errors),
-        )
-    return IngestionSummary(
-        status=JobStatus.COMPLETED,
-        message="Ingestion completed",
-        error=None,
-    )
-
-
-def ingestion_summary_with_prerequisites(
-    processed_samples: int,
-    failed_samples: int,
-    waiting_for_asr: int,
-    deferred_samples: int,
-    sample_errors: tuple[str, ...],
-) -> IngestionSummary:
-    assert processed_samples >= 0
-    assert failed_samples >= 0
-    assert waiting_for_asr >= 0
-    assert deferred_samples >= 0
-    assert len(sample_errors) == failed_samples
-    total_samples = processed_samples + failed_samples + deferred_samples
-    if failed_samples:
-        return IngestionSummary(
-            status=JobStatus.FAILED,
-            message=(
-                f"Ingestion failed for {failed_samples} of {total_samples} samples; "
-                f"{waiting_for_asr} wait for full ASR"
-            ),
-            error="\n".join(sample_errors),
-        )
-    if deferred_samples:
-        return IngestionSummary(
-            status=JobStatus.WAITING_FOR_ASR,
-            message=(f"Processed {processed_samples} samples; {waiting_for_asr} wait for full ASR"),
-            error=None,
         )
     return IngestionSummary(
         status=JobStatus.COMPLETED,
@@ -488,11 +410,11 @@ def register_track(
     return track
 
 
-def sample_readiness(
+def ready_sample(
     repository: AlignmentRepository,
     full_asr_repository: FullTranscriptPairRepository,
     registered: RegisteredSample,
-) -> SampleReadiness:
+) -> ReadySample:
     transcript_pair = full_asr_repository.get_exact_transcript_pair(
         sample_id=registered.sample_id,
         speaker1_track_id=registered.speaker1_track_id,
@@ -502,11 +424,6 @@ def sample_readiness(
         model_id=AsrModelId.PARAKEET_TDT,
     )
     speaker2_shift_seconds = repository.reviewed_speaker2_shift(sample_id=registered.sample_id)
-    missing: list[MissingPrerequisite] = []
-    if transcript_pair is None:
-        missing.append(MissingPrerequisite.FULL_RECORDING_ASR)
-    if missing:
-        return SampleReadiness(ready=None, missing=tuple(missing))
     assert transcript_pair is not None
     alignment = (
         SynchronizationAlignment(
@@ -519,13 +436,61 @@ def sample_readiness(
             origin=SynchronizationAlignmentOrigin.UNREVIEWED_ZERO,
         )
     )
-    return SampleReadiness(
-        ready=ReadySample(
-            registered=registered,
-            transcript_pair=transcript_pair,
-            alignment=alignment,
+    return ReadySample(
+        registered=registered,
+        transcript_pair=transcript_pair,
+        alignment=alignment,
+    )
+
+
+def process_ingestion_sample(
+    repository: Repository,
+    full_asr_repository: FullRecordingAsrRepository,
+    dataset_id: UUID,
+    storage: StorageBackend,
+    discovered: DiscoveredSample,
+    remote_asr_client_factory: RemoteAsrClientFactory,
+) -> None:
+    registered = register_sample(
+        repository=repository,
+        dataset_id=dataset_id,
+        storage=storage,
+        discovered=discovered,
+    )
+    for track in (
+        FullRecordingAsrTrack(
+            sample_track_id=registered.speaker1_track_id,
+            access_uri=storage.access_uri(discovered.speaker1_path),
+            models=(AsrModelId.PARAKEET_TDT,),
+            source_audio_sha256=registered.speaker1_source_audio_sha256,
         ),
-        missing=(),
+        FullRecordingAsrTrack(
+            sample_track_id=registered.speaker2_track_id,
+            access_uri=storage.access_uri(discovered.speaker2_path),
+            models=(AsrModelId.PARAKEET_TDT,),
+            source_audio_sha256=registered.speaker2_source_audio_sha256,
+        ),
+    ):
+        transcribe_full_recording_track(
+            track=track,
+            store=full_asr_repository,
+            remote_client_factory=remote_asr_client_factory,
+        )
+    ready = ready_sample(
+        repository=repository,
+        full_asr_repository=full_asr_repository,
+        registered=registered,
+    )
+    persist_processed_ready_sample(
+        repository=repository,
+        processed=process_ready_sample(storage=storage, ready=ready),
+    )
+
+
+def default_remote_asr_client_factory() -> HttpRemoteAsrClient:
+    return HttpRemoteAsrClient(
+        endpoint_url=REMOTE_ASR_ENDPOINT_URL,
+        api_key=COMPUTE_TOKEN,
     )
 
 

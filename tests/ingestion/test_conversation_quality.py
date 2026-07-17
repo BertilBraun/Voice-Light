@@ -12,7 +12,6 @@ from app.local.db.repository import dashboard_filter_sql
 from app.local.ingestion.conversation import conversation_annotation
 from app.local.ingestion.service import (
     ingestion_summary,
-    ingestion_summary_with_prerequisites,
 )
 from app.shared.quality import (
     AnnotationPoint,
@@ -62,20 +61,6 @@ def test_ingestion_summary_completes_without_failures() -> None:
 
     assert summary.status is JobStatus.COMPLETED
     assert summary.message == "Ingestion completed"
-    assert summary.error is None
-
-
-def test_ingestion_waits_for_missing_full_asr_without_failing() -> None:
-    summary = ingestion_summary_with_prerequisites(
-        processed_samples=3,
-        failed_samples=0,
-        waiting_for_asr=2,
-        deferred_samples=2,
-        sample_errors=(),
-    )
-
-    assert summary.status is JobStatus.WAITING_FOR_ASR
-    assert summary.message == "Processed 3 samples; 2 wait for full ASR"
     assert summary.error is None
 
 
