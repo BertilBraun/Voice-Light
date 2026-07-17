@@ -11,14 +11,28 @@ The compute runtime admits exactly one live voice WebSocket. A second connection
 retryable WebSocket code `1013` until the active session releases its lease. Admission is released
 in the route's `finally` block on normal stop, disconnect, or failure.
 
-The admitted WebSocket creates one ephemeral `VoiceSession`. That object owns the per-session
-Silero iterator,
-pre-roll buffer, Nemotron decoder session, turn policy, ordered conversation, Qwen generation,
-Kyutai TTS generation, generation identifiers, and cancellation. Closing the WebSocket destroys all of
-that state. The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron,
-Qwen, and Kyutai subprocesses own their respective CUDA models and outlive a connection. The
-loaded Silero model also outlives a connection, while a fresh iterator carries each session's VAD
-state. There is no persistence, session re-entry, or reconnection protocol.
+The admitted WebSocket creates one ephemeral `VoiceSession` and one conversation-scoped
+`SpeechUnderstandingSession`. `VoiceSession` owns the per-session Silero iterator, pre-roll buffer,
+turn policy, ordered conversation, Qwen generation, Kyutai TTS generation, generation identifiers,
+playback estimate, and cancellation. It does not own a Nemotron decoder process or a provisional
+turn detector directly. The speech-understanding session owns streaming epochs, logical-turn
+epochs, transcript-revision state, the current transcription lease, optional-detector queues, and
+the normalized evidence stream. Closing the WebSocket destroys both conversation-scoped objects.
+
+The application-scoped `SpeechUnderstandingProvider` owns the persistent backend resources.
+Today `CompositeSpeechUnderstandingProvider` owns the existing `NemotronStreamingTranscriber`,
+whose `RestartingNemotronWorkerManager` owns the persistent Nemotron subprocess. An optional
+application-scoped `TurnPredictionProvider` may similarly create a standalone detector source for
+each conversation. Provider shutdown, not WebSocket shutdown, closes those managers and their
+processes. A speech-understanding session lazily acquires the provider-owned Nemotron worker lease
+when audio first reaches a logical turn, releases it when that turn is finalized or the session
+fails, and uses the same manager for the next logical turn. Models are never spawned or reloaded per
+WebSocket or per turn.
+
+The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron, Qwen, and
+Kyutai subprocesses own their respective CUDA models and outlive a connection. The loaded Silero
+model also outlives a connection, while a fresh iterator carries each session's VAD state. There is
+no persistence, session re-entry, or reconnection protocol.
 
 The browser captures microphone PCM, renders server events, plays server PCM, and reports playback
 progress. The server remains authoritative for VAD, turn boundaries, cancellation, and which
@@ -54,8 +68,10 @@ validated playback offsets enter model history.
 
 ### Predictive generation
 
-`VoiceSession` accepts an optional typed `TurnPredictionSource`. No turn-taking checkpoint or
-canned predictor is required. By default, Silero's first inactive decision arms a causal
+`VoiceSession` accepts a stable `SpeechUnderstandingProvider`. It consumes normalized transcript
+and interaction-evidence events and does not know whether they came from separate processes or one
+integrated inference step. No turn-taking checkpoint or canned predictor is required. By default,
+Silero's first inactive decision arms a causal
 `InteractionPrediction`. After a sample-counted 100 ms debounce, the session starts speculation
 while ASR remains open and the existing additional 500 ms silence guard continues toward
 commitment. The debounce lets Nemotron publish trailing text without blocking audio ingestion and
@@ -88,21 +104,44 @@ floor-taking overlap, shutdown, or model failure invalidates speculative work. B
 probability alone does not invalidate committed output; audible pause, duck, and resume behavior
 remains outside this server milestone.
 
-### Turn-prediction integration contract
+### Speech-understanding integration contract
 
-The response orchestrator calls `TurnPredictionSource.predict()` once per active-turn PCM chunk,
-after applying the newest ASR revision. Each immutable `TurnPredictionObservation` contains:
+`SpeechUnderstandingSession.add_audio()` accepts one immutable `CapturedAudioChunk`. Its PCM16
+payload must exactly match `[start_input_sample, end_input_sample)`. It also carries a monotonic
+sequence number and observation timestamp, `stream_epoch`, `turn_epoch`, the current typed Silero
+evidence, and the current `PlaybackCondition`.
 
-- the current PCM16 chunk and Silero speech decision;
-- the cumulative input sample position and monotonic observation timestamp;
-- the latest `TranscriptRevision`, if Nemotron has emitted text.
+`PlaybackCondition` is a causal input, not a detector output. It contains its own event ID, optional
+generation ID, `PlaybackState`, whether the assistant is believed audible, the latest output sample
+position, its monotonic observation time, and an authority value. The current implementation
+constructs the best server estimate from generation creation, private-candidate promotion, PCM
+release, playback-start/progress/stop/completion messages, and cancellation. Browser-authoritative
+playback acknowledgements remain a later milestone. The compatibility
+`InteractionPrediction.assistant_playback_state` field is deprecated and, where still populated,
+mirrors this input instead of being hardcoded to `IDLE`.
 
-The source returns either `None` or one immutable `InteractionPrediction`. Its `TraceStamp` must use
-the observation's exact input sample position and transcript revision ID. When a revision exists,
-its event ID must appear in `parent_event_ids`. A prediction supplies calibrated user-speech,
-yield, backchannel, and interruption probabilities; optional future-activity horizons; the observed
-assistant playback state; overall confidence; and source/model identity. `close()` releases
-source-owned session resources.
+The session exposes an asynchronous `SpeechUnderstandingEvent` stream. `TranscriptRevision`,
+`YieldEvidence`, `FutureActivityEvidence`, `TurnEventEvidence`, and
+`OverlapDispositionEvidence` are sibling events. Status, degraded, and abstained results are
+explicit events. Evidence models are partial by design: a backend emits only the probability types
+it supports. The current policy-side `InteractionPredictionReducer` creates the legacy convenient
+snapshot only when the provisional standalone source supplied all fields required by the existing
+threshold policy. Product thresholds are unchanged.
+
+Every event stamp records stream and turn epochs, an inference step, an observation ID, exact input
+sample bounds, optional encoder-frame bounds, the input sample observed through including
+lookahead, observation and emission monotonic times, source/model revision, optional conditioned
+transcript revision, and optional conditioned playback event. A transcript parent is required only
+when a standalone lexical detector actually consumed that revision. Merely having a latest
+revision does not create a causal parent. This permits integrated ASR and turn-head outputs from one
+encoder step to be siblings. A speculative candidate separately records the prediction-evidence
+event ID and the transcript revision used to build its prompt.
+
+The existing `TurnPredictionSource` survives only as a provisional internal adapter behind
+`CompositeSpeechUnderstandingSession`. It receives the captured chunk plus the latest available
+transcript revision. Its legacy full prediction is normalized into sibling evidence events. The
+first speech-bearing pre-roll observation remains ASR-only to preserve the validated predictive
+generation timing from the earlier direct integration.
 
 The orchestration policy interprets that output as follows:
 
@@ -114,10 +153,24 @@ The orchestration policy interprets that output as follows:
   and invalidates an uncommitted candidate;
 - `p_user_interruption >= floor_taking_overlap_threshold` invalidates an uncommitted candidate.
 
-The source predicts interaction state only. It does not start Qwen, finalize ASR, release output,
-mutate conversation history, or manage playback. The session owns those decisions, enforces the
-single-Qwen teardown barrier, and falls back to the Silero endpoint prediction only when the
-configured source returns `None` for that chunk.
+Speech understanding predicts and transcribes only. It does not start Qwen, release output, mutate
+conversation history, or manage playback. It finalizes the backend's logical speech turn only when
+`VoiceSession` asks it to do so. `VoiceSession` retains policy decisions, the single-Qwen teardown
+barrier, and the Silero endpoint fallback.
+
+### Integrated Nemotron seam
+
+`SpeechUnderstandingProvider`, `SpeechUnderstandingSession`, and their explicit
+`IntegratedNemotronSpeechUnderstandingProvider/Session` protocols are the factory seam for the
+future same-pass backend. No integrated runtime is claimed in this prototype, and no second
+Nemotron encoder pass has been added.
+
+The eventual integrated worker must keep FastConformer attention/convolution caches, RNNT decoder
+state, tapped encoder features, and the turn adapter's recurrent state inside the persistent
+Nemotron process. One cache-aware encoder step will fan out to RNNT decoding and the adapter, then
+emit transcript and interaction siblings with the same inference/observation identity. Process
+ownership, lazy restart after a failed lease, and application shutdown remain provider and worker
+manager responsibilities; conversation and epoch state remain session responsibilities.
 
 ### Initial GPU evaluation
 
@@ -156,6 +209,15 @@ progress timeout, or cancellation timeout terminates the failed child, clears ow
 releases the lease. Replacement is lazy: the next operation constructs and validates a fresh child,
 so cold model loading cannot delay delivery of the original error. Kyutai validates that a lazily
 restarted worker reports the original output sample rate.
+
+Within the composite speech-understanding session, ASR is mandatory and authoritative. Any ASR
+send, stream, or finalization failure remains session-fatal and uses the existing Nemotron
+replacement path. The standalone interaction detector is optional. It runs behind a bounded queue
+and cannot delay ASR ingestion. Queue overflow drops the oldest detector observation and emits a
+degraded event with a cumulative gap count. Detector exceptions disable that source for the
+conversation and emit degradation while ASR plus Silero continue. Finalizing a turn cancels and
+reports any lagging old-turn detector work. Inputs from old stream or turn epochs are rejected, and
+late detector results are discarded before they enter policy state.
 
 The session lifecycle is explicit: `created`, `connected`, `ready`, `failed`, `stopping`, and
 `closed`. A generation moves through `created`, `streaming`, cancellation or stream completion, and
