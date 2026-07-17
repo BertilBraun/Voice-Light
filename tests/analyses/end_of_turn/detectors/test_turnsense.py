@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from app.local.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
+from app.local.analyses.end_of_turn.detectors import turnsense
 from app.local.analyses.end_of_turn.detectors.turnsense import (
     TurnsenseDetector,
     TurnsenseLabel,
@@ -147,7 +151,14 @@ def test_turnsense_detector_clips_trailing_silence_to_analysis_cap(
     assert result.end_of_turn_events == []
 
 
-def test_turnsense_factory_uses_turnsense_mode_when_wired() -> None:
+def test_turnsense_factory_does_not_load_optional_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokenizer_loader = Mock(side_effect=AssertionError("Tokenizer loading must be lazy."))
+    model_downloader = Mock(side_effect=AssertionError("Model loading must be lazy."))
+    monkeypatch.setattr(turnsense.AutoTokenizer, "from_pretrained", tokenizer_loader)
+    monkeypatch.setattr(turnsense, "hf_hub_download", model_downloader)
+
     try:
         detector = turnsense_detector()
     except ValueError as error:
@@ -155,6 +166,8 @@ def test_turnsense_factory_uses_turnsense_mode_when_wired() -> None:
         return
 
     assert detector.info.mode.value == "turnsense"
+    tokenizer_loader.assert_not_called()
+    model_downloader.assert_not_called()
 
 
 @dataclass(frozen=True)

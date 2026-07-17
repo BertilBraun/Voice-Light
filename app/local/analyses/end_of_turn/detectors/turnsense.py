@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from threading import Lock
 from typing import Protocol, TypeAlias, cast
 
 import numpy as np
@@ -73,6 +74,12 @@ class CandidateBoundary:
     silence_seconds: float
 
 
+@dataclass(frozen=True)
+class TurnsenseOnnxRuntime:
+    tokenizer: PreTrainedTokenizerBase
+    session: ort.InferenceSession
+
+
 class TurnsenseOnnxTextClassifier:
     def __init__(
         self,
@@ -80,14 +87,15 @@ class TurnsenseOnnxTextClassifier:
         model_filename: str = TURNSENSE_MODEL_FILENAME,
         max_length: int = TURNSENSE_MAX_LENGTH,
     ) -> None:
-        self._tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(model_id)
-        model_path = hf_hub_download(repo_id=model_id, filename=model_filename)
-        self._session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        self._model_id = model_id
+        self._model_filename = model_filename
         self._max_length = max_length
-        self._validate_session_inputs()
+        self._runtime: TurnsenseOnnxRuntime | None = None
+        self._runtime_lock = Lock()
 
     def predict_end_of_turn(self, text: str) -> TurnsensePrediction:
-        tokenized_inputs = self._tokenizer(
+        runtime = self._get_runtime()
+        tokenized_inputs = runtime.tokenizer(
             f"<|user|> {text}",
             padding="max_length",
             max_length=self._max_length,
@@ -97,7 +105,7 @@ class TurnsenseOnnxTextClassifier:
             "input_ids": tokenized_inputs["input_ids"],
             "attention_mask": tokenized_inputs["attention_mask"],
         }
-        logits = self._session.run(None, ort_inputs)[0]
+        logits = runtime.session.run(None, ort_inputs)[0]
         if logits.shape != (1, 2):
             raise ValueError(f"Unexpected Turnsense logits shape: {logits.shape}.")
 
@@ -113,8 +121,25 @@ class TurnsenseOnnxTextClassifier:
             eou_probability=eou_probability,
         )
 
-    def _validate_session_inputs(self) -> None:
-        input_names = {model_input.name for model_input in self._session.get_inputs()}
+    def _get_runtime(self) -> TurnsenseOnnxRuntime:
+        with self._runtime_lock:
+            if self._runtime is None:
+                tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(self._model_id)
+                model_path = hf_hub_download(
+                    repo_id=self._model_id,
+                    filename=self._model_filename,
+                )
+                session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+                self._validate_session_inputs(session)
+                self._runtime = TurnsenseOnnxRuntime(
+                    tokenizer=tokenizer,
+                    session=session,
+                )
+            return self._runtime
+
+    @staticmethod
+    def _validate_session_inputs(session: ort.InferenceSession) -> None:
+        input_names = {model_input.name for model_input in session.get_inputs()}
         expected_input_names = {"input_ids", "attention_mask"}
         if input_names != expected_input_names:
             raise ValueError(
