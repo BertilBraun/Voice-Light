@@ -2209,6 +2209,7 @@ class VoiceSession:
         if tool.result_commit_status is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED:
             generation.model_context_turn.discard_tool_exchange()
             tool.result_commit_status = ToolResultCommitStatus.DISCARDED
+            tool.lifecycle = ToolLifecycle.INVALIDATED if invalidated else ToolLifecycle.CANCELLED
             tool.wasted = True
             return
         if (

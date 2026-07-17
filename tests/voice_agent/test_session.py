@@ -1328,6 +1328,10 @@ def test_user_cancellation_while_tool_runs_discards_late_result() -> None:
         assert first_tool.outcome.reason is ToolExecutionFailureReason.CANCELLED
         assert sessions[0].generations[1].model_context_turn.staged_tool_call is None
         assert sessions[0].generations[1].model_context_turn.committed_tool_exchange is None
+        assert all(
+            not (isinstance(message, ModelToolMessage) and message.tool_call_id == "qwen-1-tool-1")
+            for message in sessions[0].model_context.snapshot()
+        )
         assert first_tool.wasted
         websocket.send_json({"type": "session.stop"})
 
@@ -2450,6 +2454,67 @@ def test_stable_prefix_revision_rejects_candidate_and_uses_new_generation_id() -
     assert {output.generation_id for output in sink.outputs} == {2}
     invalidations = sessions[0].predictive_metrics.report().invalidations
     assert invalidations[0].reason is CandidateInvalidationReason.STABLE_PREFIX_REVISED
+
+
+def test_speculative_tool_exchange_is_not_session_committed_after_revision() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("weather", "weather", "cancel it"),),
+        final_texts=("cancel it",),
+    )
+    language_model = GenerationAwareToolLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (PredictionDirective(p_user_speech=0.1, p_user_yield=0.7),)
+    )
+    weather_handler = ControlledWeatherHandler()
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+        tool_executor=WeatherToolRegistry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert weather_handler.started.wait(timeout=1)
+        weather_handler.release.set()
+        assert language_model.old_continuation_started.wait(timeout=1)
+        wait_until(
+            lambda: (
+                sessions[0].generations[1].tool is not None
+                and sessions[0].generations[1].tool.result_commit_status
+                is ToolResultCommitStatus.GENERATION_LOCAL_COMMITTED
+            )
+        )
+        assert sessions[0].model_context.snapshot() == ()
+        assert sink.outputs == []
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(
+            lambda: (
+                sessions[0].generations[1].tool is not None
+                and sessions[0].generations[1].tool.result_commit_status
+                is ToolResultCommitStatus.DISCARDED
+            )
+        )
+        journal_entry = sessions[0].generations[1].tool
+        assert journal_entry is not None
+        assert journal_entry.lifecycle is ToolLifecycle.INVALIDATED
+        assert journal_entry.invalidation_reason is ToolInvalidationReason.SPECULATIVE_INVALIDATION
+        assert (
+            journal_entry.candidate_invalidation_reason
+            is CandidateInvalidationReason.STABLE_PREFIX_REVISED
+        )
+        assert sessions[0].model_context.snapshot() == ()
+        assert sink.outputs == []
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_user_resume_cancels_candidate_before_restart_without_qwen_overlap() -> None:
