@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Final, Protocol, TextIO
 
 from app.compute.voice.conversation import ConversationMessage
+from app.compute.voice.interfaces import LanguageModelTextDelta
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
     LlmCancelledEvent,
@@ -172,7 +173,7 @@ class TransformersLanguageModel:
     async def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[LanguageModelTextDelta]:
         session = QwenGenerationSession(
             worker_manager=self.worker_manager,
             conversation=conversation,
@@ -199,7 +200,7 @@ class _GenerationFailure:
     error: Exception
 
 
-_GenerationOutput = str | _GenerationFailure | _GenerationMarker
+_GenerationOutput = LanguageModelTextDelta | _GenerationFailure | _GenerationMarker
 
 
 class QwenGenerationSession:
@@ -223,7 +224,7 @@ class QwenGenerationSession:
         self.reader_error: Exception | None = None
         self.worker_finalized = False
 
-    async def stream_text(self) -> AsyncIterator[str]:
+    async def stream_text(self) -> AsyncIterator[LanguageModelTextDelta]:
         await self._ensure_started()
         while True:
             try:
@@ -250,7 +251,7 @@ class QwenGenerationSession:
                     await self._fail_worker(error)
                     await self._stop_output_task()
                     raise error
-                case str():
+                case LanguageModelTextDelta():
                     yield item
 
     async def cancel(self) -> None:
@@ -324,7 +325,12 @@ class QwenGenerationSession:
                         raise RuntimeError("The Qwen worker sent an unexpected ready event.")
                     case LlmTextDeltaEvent():
                         self._validate_generation_id(event.generation_id)
-                        await self.output_queue.put(event.text)
+                        await self.output_queue.put(
+                            LanguageModelTextDelta(
+                                text=event.text,
+                                cumulative_token_count=event.cumulative_token_count,
+                            )
+                        )
                     case LlmEndEvent():
                         self._validate_generation_id(event.generation_id)
                         await self.output_queue.put(_GenerationMarker.END)

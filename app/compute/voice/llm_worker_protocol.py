@@ -58,6 +58,7 @@ class LlmTextDeltaEvent(FrozenBaseModel):
     type: Literal[LlmWorkerEventType.TEXT_DELTA] = LlmWorkerEventType.TEXT_DELTA
     generation_id: int = Field(gt=0)
     text: str
+    cumulative_token_count: int = Field(ge=0)
 
 
 class LlmEndEvent(FrozenBaseModel):

@@ -25,6 +25,9 @@ class ImmediateQwenRuntime(QwenRuntime):
         del command, cancellation_event
         yield "ready"
 
+    def count_response_tokens(self, text: str) -> int:
+        return len(text)
+
 
 class RecordingQwenWorkerController(QwenWorkerController):
     def __init__(self) -> None:
@@ -42,6 +45,7 @@ def test_terminal_event_means_worker_accepts_next_generation() -> None:
     assert controller.events.get(timeout=1) == LlmTextDeltaEvent(
         generation_id=1,
         text="ready",
+        cumulative_token_count=5,
     )
     assert controller.events.get(timeout=1) == LlmEndEvent(generation_id=1)
 
@@ -49,5 +53,6 @@ def test_terminal_event_means_worker_accepts_next_generation() -> None:
     assert controller.events.get(timeout=1) == LlmTextDeltaEvent(
         generation_id=2,
         text="ready",
+        cumulative_token_count=5,
     )
     assert controller.events.get(timeout=1) == LlmEndEvent(generation_id=2)

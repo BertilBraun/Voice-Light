@@ -9,6 +9,7 @@ import pytest
 
 import app.compute.voice.models as language_models
 from app.compute.voice.conversation import ConversationMessage, ConversationRole
+from app.compute.voice.interfaces import LanguageModelTextDelta
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
     LlmCancelledEvent,
@@ -124,13 +125,22 @@ def test_qwen_no_progress_timeout_replaces_worker() -> None:
 def test_qwen_cancel_timeout_replaces_worker() -> None:
     async def run_generation() -> None:
         worker = FakeQwenWorker(
-            start_events=(LlmTextDeltaEvent(generation_id=1, text="Hello"),),
+            start_events=(
+                LlmTextDeltaEvent(
+                    generation_id=1,
+                    text="Hello",
+                    cumulative_token_count=1,
+                ),
+            ),
             cancel_completes=False,
         )
         worker_manager = FakeQwenWorkerManager(worker)
         session = create_session(worker_manager, cancellation_timeout_seconds=0.01)
         stream = session.stream_text()
-        assert await anext(stream) == "Hello"
+        assert await anext(stream) == LanguageModelTextDelta(
+            text="Hello",
+            cumulative_token_count=1,
+        )
 
         with pytest.raises(RuntimeError, match="cancellation timed out"):
             await session.cancel()
@@ -146,7 +156,11 @@ def test_qwen_worker_is_reused_after_completed_generation() -> None:
     async def run_generations() -> None:
         worker = FakeQwenWorker(
             start_events=(
-                LlmTextDeltaEvent(generation_id=1, text="Hello"),
+                LlmTextDeltaEvent(
+                    generation_id=1,
+                    text="Hello",
+                    cumulative_token_count=1,
+                ),
                 LlmEndEvent(generation_id=1),
             )
         )
@@ -156,7 +170,11 @@ def test_qwen_worker_is_reused_after_completed_generation() -> None:
         assert not worker_manager.lock.locked()
 
         worker.start_events = (
-            LlmTextDeltaEvent(generation_id=2, text="Again"),
+            LlmTextDeltaEvent(
+                generation_id=2,
+                text="Again",
+                cumulative_token_count=1,
+            ),
             LlmEndEvent(generation_id=2),
         )
         second_session = create_session(worker_manager)
@@ -182,7 +200,13 @@ def test_qwen_send_failure_replaces_worker_and_releases_lock(
     async def run_generation() -> None:
         start_events: tuple[LlmWorkerEvent, ...] = ()
         if failing_command_type is LlmWorkerCommandType.CANCEL:
-            start_events = (LlmTextDeltaEvent(generation_id=1, text="Hello"),)
+            start_events = (
+                LlmTextDeltaEvent(
+                    generation_id=1,
+                    text="Hello",
+                    cumulative_token_count=1,
+                ),
+            )
         worker = FakeQwenWorker(
             start_events=start_events,
             failing_command_type=failing_command_type,
@@ -195,7 +219,10 @@ def test_qwen_send_failure_replaces_worker_and_releases_lock(
                 await anext(session.stream_text())
             else:
                 stream = session.stream_text()
-                assert await anext(stream) == "Hello"
+                assert await anext(stream) == LanguageModelTextDelta(
+                    text="Hello",
+                    cumulative_token_count=1,
+                )
                 await session.cancel()
 
         assert worker_manager.replacement_count == 1
@@ -242,5 +269,5 @@ def create_session(
     )
 
 
-async def collect_text(stream: AsyncIterator[str]) -> str:
-    return "".join([text async for text in stream])
+async def collect_text(stream: AsyncIterator[LanguageModelTextDelta]) -> str:
+    return "".join([delta.text async for delta in stream])

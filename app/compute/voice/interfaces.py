@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.compute.voice.conversation import ConversationMessage
+from app.compute.voice.schemas import InteractionPrediction, TranscriptRevision
 
 
 class SpeechDetector(Protocol):
@@ -27,7 +28,31 @@ class LanguageModel(Protocol):
     def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]: ...
+    ) -> AsyncIterator[LanguageModelTextDelta]: ...
+
+
+@dataclass(frozen=True)
+class LanguageModelTextDelta:
+    text: str
+    cumulative_token_count: int
+
+
+@dataclass(frozen=True)
+class TurnPredictionObservation:
+    pcm_bytes: bytes
+    is_speech: bool
+    input_sample_position: int
+    monotonic_time_ns: int
+    transcript_revision: TranscriptRevision | None
+
+
+class TurnPredictionSource(Protocol):
+    async def predict(
+        self,
+        observation: TurnPredictionObservation,
+    ) -> InteractionPrediction | None: ...
+
+    async def close(self) -> None: ...
 
 
 @dataclass(frozen=True)

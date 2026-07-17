@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
-from collections.abc import AsyncIterator
+import threading
+import time
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
+from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
@@ -11,12 +15,33 @@ from starlette.testclient import WebSocketTestSession
 
 from app.compute.voice.conversation import ConversationMessage, ConversationRole
 from app.compute.voice.interfaces import (
+    LanguageModel,
+    LanguageModelTextDelta,
+    SpeechDetector,
     SpeechSynthesisSession,
+    SpeechSynthesizer,
     SynthesisEvent,
     SynthesisWord,
     SynthesizedAudioChunk,
     SynthesizedWordBoundary,
+    Transcriber,
     TranscriptionSession,
+    TurnPredictionObservation,
+    TurnPredictionSource,
+)
+from app.compute.voice.predictive import (
+    CandidateInvalidationReason,
+    CandidateOutput,
+    PlaybackSink,
+    ReleasedAudioChunk,
+    ReleasedAudioEnd,
+    ReleasedTextDelta,
+)
+from app.compute.voice.schemas import (
+    CausalSource,
+    InteractionPrediction,
+    PlaybackState,
+    TraceStamp,
 )
 from app.compute.voice.session import SessionPolicy, VoiceSession
 
@@ -49,6 +74,55 @@ class RecordingTranscriber:
         return session
 
 
+class ScriptedTranscriber:
+    def __init__(
+        self,
+        partials_by_turn: tuple[tuple[str | None, ...], ...],
+        final_texts: tuple[str, ...],
+    ) -> None:
+        self.partials_by_turn = partials_by_turn
+        self.final_texts = final_texts
+        self.sessions: list[ScriptedTranscriptionSession] = []
+
+    def start_session(self) -> TranscriptionSession:
+        session_index = len(self.sessions)
+        partials = (
+            self.partials_by_turn[session_index]
+            if session_index < len(self.partials_by_turn)
+            else ()
+        )
+        final_text = (
+            self.final_texts[session_index] if session_index < len(self.final_texts) else ""
+        )
+        session = ScriptedTranscriptionSession(partials, final_text)
+        self.sessions.append(session)
+        return session
+
+
+class ScriptedTranscriptionSession:
+    def __init__(self, partials: tuple[str | None, ...], final_text: str) -> None:
+        self.partials = partials
+        self.final_text = final_text
+        self.next_partial_index = 0
+        self.finish_count = 0
+        self.closed = False
+
+    async def add_audio(self, pcm_bytes: bytes) -> str | None:
+        del pcm_bytes
+        if self.next_partial_index >= len(self.partials):
+            return None
+        partial = self.partials[self.next_partial_index]
+        self.next_partial_index += 1
+        return partial
+
+    async def finish(self) -> str:
+        self.finish_count += 1
+        return self.final_text
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class FakeTranscriptionSession:
     def __init__(self) -> None:
         self.audio: list[bytes] = []
@@ -72,21 +146,24 @@ class FakeLanguageModel:
     async def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[LanguageModelTextDelta]:
         self.conversations.append(conversation)
-        yield "One two three four "
-        yield "five six seven eight."
+        yield LanguageModelTextDelta(text="One two three four ", cumulative_token_count=4)
+        yield LanguageModelTextDelta(
+            text="five six seven eight.",
+            cumulative_token_count=9,
+        )
 
 
 class SplitWordLanguageModel:
     async def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[LanguageModelTextDelta]:
         del conversation
-        yield "  Hello"
-        yield ", wor"
-        yield "ld! Next"
+        yield LanguageModelTextDelta(text="  Hello", cumulative_token_count=1)
+        yield LanguageModelTextDelta(text=", wor", cumulative_token_count=3)
+        yield LanguageModelTextDelta(text="ld! Next", cumulative_token_count=5)
 
 
 class SlowLanguageModel:
@@ -96,9 +173,9 @@ class SlowLanguageModel:
     async def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[LanguageModelTextDelta]:
         self.conversations.append(conversation)
-        yield "One two three "
+        yield LanguageModelTextDelta(text="One two three ", cumulative_token_count=3)
         await asyncio.sleep(10)
 
 
@@ -110,24 +187,130 @@ class CancellationTrackingLanguageModel:
     async def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[LanguageModelTextDelta]:
         del conversation
         self.active_generation_count += 1
         if self.active_generation_count > 1:
             self.overlapped = True
         try:
-            yield "One two three "
+            yield LanguageModelTextDelta(text="One two three ", cumulative_token_count=3)
             await asyncio.sleep(10)
         finally:
             await asyncio.sleep(0.05)
             self.active_generation_count -= 1
 
 
+class PredictiveTrackingLanguageModel:
+    def __init__(
+        self,
+        block: bool = False,
+        initial_delay_seconds: float = 0.0,
+    ) -> None:
+        self.block = block
+        self.initial_delay_seconds = initial_delay_seconds
+        self.conversations: list[tuple[ConversationMessage, ...]] = []
+        self.active_generation_count = 0
+        self.overlapped = False
+        self.cancelled_count = 0
+        self.completed_count = 0
+        self.generation_started = threading.Event()
+        self.first_delta_produced = threading.Event()
+
+    async def stream_response(
+        self,
+        conversation: tuple[ConversationMessage, ...],
+    ) -> AsyncIterator[LanguageModelTextDelta]:
+        self.conversations.append(conversation)
+        self.active_generation_count += 1
+        self.overlapped = self.overlapped or self.active_generation_count > 1
+        self.generation_started.set()
+        completed = False
+        try:
+            await asyncio.sleep(self.initial_delay_seconds)
+            yield LanguageModelTextDelta(text="Prepared answer ", cumulative_token_count=2)
+            self.first_delta_produced.set()
+            if self.block:
+                await asyncio.sleep(10)
+            yield LanguageModelTextDelta(text="complete.", cumulative_token_count=4)
+            completed = True
+            self.completed_count += 1
+        finally:
+            if not completed:
+                self.cancelled_count += 1
+            try:
+                await asyncio.sleep(0.02)
+            finally:
+                self.active_generation_count -= 1
+
+
+@dataclass(frozen=True)
+class PredictionDirective:
+    p_user_speech: float
+    p_user_yield: float
+    p_user_interruption: float = 0.0
+    confidence: float = 1.0
+
+
+class DeterministicTurnPredictionSource:
+    def __init__(
+        self,
+        directives: tuple[PredictionDirective | None, ...],
+    ) -> None:
+        self.directives = directives
+        self.next_directive_index = 0
+        self.observations: list[TurnPredictionObservation] = []
+        self.closed = False
+
+    async def predict(
+        self,
+        observation: TurnPredictionObservation,
+    ) -> InteractionPrediction | None:
+        self.observations.append(observation)
+        if self.next_directive_index >= len(self.directives):
+            return None
+        directive = self.directives[self.next_directive_index]
+        self.next_directive_index += 1
+        if directive is None:
+            return None
+        revision = observation.transcript_revision
+        return InteractionPrediction(
+            stamp=TraceStamp(
+                event_id=str(uuid4()),
+                parent_event_ids=(() if revision is None else (revision.stamp.event_id,)),
+                monotonic_time_ns=observation.monotonic_time_ns,
+                input_sample_position=observation.input_sample_position,
+                output_sample_position=None,
+                transcript_revision_id=(None if revision is None else revision.revision_id),
+                source=CausalSource.TURN_ADAPTER,
+                model_name="deterministic-test-source",
+                model_revision="1",
+            ),
+            p_user_speech=directive.p_user_speech,
+            p_user_yield=directive.p_user_yield,
+            p_user_backchannel=0.0,
+            p_user_interruption=directive.p_user_interruption,
+            future_user_activity_horizons=(),
+            assistant_playback_state=PlaybackState.IDLE,
+            confidence=directive.confidence,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class InMemoryPlaybackSink:
+    def __init__(self) -> None:
+        self.outputs: list[CandidateOutput] = []
+
+    async def send(self, output: CandidateOutput) -> None:
+        self.outputs.append(output)
+
+
 class FailingLanguageModel:
     async def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[LanguageModelTextDelta]:
         del conversation
         raise RuntimeError("synthetic language failure")
         yield
@@ -137,10 +320,10 @@ class CancellationFailingLanguageModel:
     async def stream_response(
         self,
         conversation: tuple[ConversationMessage, ...],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[LanguageModelTextDelta]:
         del conversation
         try:
-            yield "One two three "
+            yield LanguageModelTextDelta(text="One two three ", cumulative_token_count=3)
             await asyncio.sleep(10)
         finally:
             raise RuntimeError("synthetic language cancellation failure")
@@ -601,21 +784,455 @@ def test_pre_roll_is_bounded_before_speech_start() -> None:
     assert transcriber.sessions[0].audio == [SILENCE_CHUNK, SPEECH_CHUNK]
 
 
+def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent", "hello agent", None),),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(p_user_speech=0.1, p_user_yield=0.7),
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+        )
+    )
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+
+        assert sink.outputs == []
+        assert transcriber.sessions[0].finish_count == 0
+
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, audio_frame = receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "playback.started", "generation_id": 1})
+        wait_until(
+            lambda: sessions[0].generations[1].latency.first_browser_playback_ack is not None
+        )
+        latency = sessions[0].generations[1].latency
+        websocket.send_json({"type": "session.stop"})
+
+    assert audio_frame is None
+    assert all(not event["type"].startswith("assistant.") for event in events)
+    assert [conversation[-1].content for conversation in language_model.conversations] == [
+        "hello agent"
+    ]
+    assert {output.generation_id for output in sink.outputs} == {1}
+    assert any(isinstance(output, ReleasedTextDelta) for output in sink.outputs)
+    assert any(isinstance(output, ReleasedAudioChunk) for output in sink.outputs)
+    report = sessions[0].predictive_metrics.report()
+    assert report.candidate_hit_rate == 1.0
+    assert report.wasted_qwen_tokens == 0
+    assert latency.first_endpoint is not None
+    assert latency.speculation_start is not None
+    assert latency.qwen_start is not None
+    assert latency.qwen_first_complete_word is not None
+    assert latency.tts_first_word is not None
+    assert latency.tts_first_pcm is not None
+    assert latency.turn_commitment is not None
+    assert latency.asr_finalization is not None
+    assert latency.candidate_resolution is not None
+    assert latency.first_released_pcm is not None
+    assert latency.first_browser_playback_ack is not None
+    assert report.commit_to_first_played_audio_p50_ms is not None
+
+
+def test_clear_end_of_turn_can_create_and_commit_candidate_on_same_prediction() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello"),),
+        final_texts=("hello",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),)
+    )
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1]["generation_id"] == 1
+    assert len(language_model.conversations) == 1
+    assert {output.generation_id for output in sink.outputs} == {1}
+
+
+def test_candidate_continues_streaming_after_commit() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent", "hello agent", None),),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel(block=True)
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(p_user_speech=0.1, p_user_yield=0.7),
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+        )
+    )
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert language_model.first_delta_produced.wait(timeout=1)
+        assert sink.outputs == []
+
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioChunk) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert language_model.cancelled_count == 1
+    assert language_model.overlapped is False
+    assert {output.generation_id for output in sink.outputs} == {1}
+
+
+def test_volatile_suffix_revision_does_not_invalidate_stable_candidate() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("book a", "book a", "book a table"),),
+        final_texts=("book a!",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(p_user_speech=0.1, p_user_yield=0.7),
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+        )
+    )
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert len(language_model.conversations) == 1
+    assert language_model.conversations[0][-1].content == "book a"
+    assert {output.generation_id for output in sink.outputs} == {1}
+
+
+def test_stable_prefix_revision_rejects_candidate_and_uses_new_generation_id() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("book a", "book a", "cancel it"),),
+        final_texts=("cancel it",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(p_user_speech=0.1, p_user_yield=0.7),
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+        )
+    )
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert [conversation[-1].content for conversation in language_model.conversations] == [
+        "book a",
+        "cancel it",
+    ]
+    assert {output.generation_id for output in sink.outputs} == {2}
+    invalidations = sessions[0].predictive_metrics.report().invalidations
+    assert invalidations[0].reason is CandidateInvalidationReason.STABLE_PREFIX_REVISED
+
+
+def test_user_resume_cancels_candidate_before_restart_without_qwen_overlap() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello", "hello", None),),
+        final_texts=("hello",),
+    )
+    language_model = PredictiveTrackingLanguageModel(block=True)
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.7),
+            PredictionDirective(p_user_speech=0.9, p_user_yield=0.1),
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+        )
+    )
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        assert language_model.first_delta_produced.wait(timeout=1)
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: language_model.cancelled_count == 1)
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioChunk) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert language_model.overlapped is False
+    assert len(language_model.conversations) == 2
+    assert {output.generation_id for output in sink.outputs} == {2}
+    invalidation_reasons = {
+        item.reason for item in sessions[0].predictive_metrics.report().invalidations
+    }
+    assert CandidateInvalidationReason.USER_ACTIVITY_RESUMED in invalidation_reasons
+
+
+def test_long_continuation_pause_invalidates_then_restarts_at_commit() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello", None, None),),
+        final_texts=("hello",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.7),
+            PredictionDirective(p_user_speech=0.9, p_user_yield=0.1),
+            PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+        )
+    )
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert language_model.overlapped is False
+    assert len(language_model.conversations) == 2
+    assert {output.generation_id for output in sink.outputs} == {2}
+
+
+def test_empty_final_transcript_discards_buffered_candidate() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello"),),
+        final_texts=("",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),)
+    )
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "transcript.final")
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1]["text"] == ""
+    assert sink.outputs == []
+    report = sessions[0].predictive_metrics.report()
+    assert report.invalidations[0].reason is CandidateInvalidationReason.EMPTY_FINAL_TRANSCRIPT
+
+
+def test_session_shutdown_cancels_buffered_candidate_without_release() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello"),),
+        final_texts=("hello",),
+    )
+    language_model = PredictiveTrackingLanguageModel(block=True)
+    prediction_source = DeterministicTurnPredictionSource(
+        (PredictionDirective(p_user_speech=0.0, p_user_yield=0.7),)
+    )
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        assert language_model.first_delta_produced.wait(timeout=1)
+        websocket.send_json({"type": "session.stop"})
+
+    assert sink.outputs == []
+    assert language_model.cancelled_count == 1
+    assert prediction_source.closed is True
+    assert (
+        sessions[0].predictive_metrics.report().invalidations[0].reason
+        is CandidateInvalidationReason.SESSION_CANCELLED
+    )
+
+
+def test_predictive_candidate_measurably_hides_injected_qwen_latency() -> None:
+    baseline_latency_ms = measure_commit_to_playback_latency(
+        language_model=PredictiveTrackingLanguageModel(initial_delay_seconds=0.05),
+        prediction_source=None,
+        speculative=False,
+    )
+    predictive_latency_ms = measure_commit_to_playback_latency(
+        language_model=PredictiveTrackingLanguageModel(initial_delay_seconds=0.05),
+        prediction_source=DeterministicTurnPredictionSource(
+            (
+                PredictionDirective(p_user_speech=0.0, p_user_yield=0.7),
+                PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+            )
+        ),
+        speculative=True,
+    )
+
+    assert baseline_latency_ms - predictive_latency_ms >= 30.0
+
+
+def measure_commit_to_playback_latency(
+    language_model: PredictiveTrackingLanguageModel,
+    prediction_source: TurnPredictionSource | None,
+    speculative: bool,
+) -> float:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello", None),),
+        final_texts=("hello",),
+    )
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK if speculative else SILENCE_CHUNK)
+        if speculative:
+            wait_until(lambda: language_model.completed_count == 1)
+            websocket.send_bytes(SILENCE_CHUNK)
+        else:
+            websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "playback.started", "generation_id": 1})
+        wait_until(
+            lambda: (
+                sessions[0].predictive_metrics.report().commit_to_first_played_audio_p50_ms
+                is not None
+            )
+        )
+        measured_latency_ms = (
+            sessions[0].predictive_metrics.report().commit_to_first_played_audio_p50_ms
+        )
+        websocket.send_json({"type": "session.stop"})
+
+    assert measured_latency_ms is not None
+    return measured_latency_ms
+
+
 def create_test_app(
-    transcriber: RecordingTranscriber,
-    language_model: (
-        FakeLanguageModel
-        | SplitWordLanguageModel
-        | SlowLanguageModel
-        | CancellationTrackingLanguageModel
-        | FailingLanguageModel
-        | CancellationFailingLanguageModel
-    ),
-    speech_synthesizer: (
-        RecordingSpeechSynthesizer | FailingSpeechSynthesizer | CleanupFailingSpeechSynthesizer
-    ),
+    transcriber: Transcriber,
+    language_model: LanguageModel,
+    speech_synthesizer: SpeechSynthesizer,
     policy: SessionPolicy = DEFAULT_TEST_POLICY,
-    speech_detector: FakeSpeechDetector | FailingSpeechDetector = DEFAULT_TEST_SPEECH_DETECTOR,
+    speech_detector: SpeechDetector = DEFAULT_TEST_SPEECH_DETECTOR,
+    turn_prediction_source: TurnPredictionSource | None = None,
+    playback_sink: PlaybackSink | None = None,
+    created_sessions: list[VoiceSession] | None = None,
 ) -> FastAPI:
     web_app = FastAPI()
 
@@ -628,7 +1245,11 @@ def create_test_app(
             language_model=language_model,
             speech_synthesizer=speech_synthesizer,
             policy=policy,
+            turn_prediction_source=turn_prediction_source,
+            playback_sink=playback_sink,
         )
+        if created_sessions is not None:
+            created_sessions.append(session)
         await session.run()
 
     return web_app
@@ -653,3 +1274,12 @@ def receive_until(
         elif message.get("text") is not None:
             events.append(json.loads(message["text"]))
     return events, audio_frame
+
+
+def wait_until(condition: Callable[[], bool], timeout_seconds: float = 1.0) -> None:
+    deadline = time.perf_counter() + timeout_seconds
+    while time.perf_counter() < deadline:
+        if condition():
+            return
+        time.sleep(0.005)
+    raise AssertionError("Timed out waiting for the test condition.")

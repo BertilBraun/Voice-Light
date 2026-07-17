@@ -10,6 +10,72 @@ from app.compute.voice.errors import VoiceComponent, VoiceOperation
 from app.shared.base_model import FrozenBaseModel
 
 
+class CausalSource(StrEnum):
+    ENERGY_VAD = "energy_vad"
+    SILERO_VAD = "silero_vad"
+    NEMOTRON_ASR = "nemotron_asr"
+    TURN_ADAPTER = "turn_adapter"
+    LEXICAL_CLASSIFIER = "lexical_classifier"
+    RESPONSE_RANKER = "response_ranker"
+    FLOOR_POLICY = "floor_policy"
+    PLAYBACK_ENGINE = "playback_engine"
+    USER_COMMAND = "user_command"
+
+
+class TraceStamp(FrozenBaseModel):
+    event_id: str
+    parent_event_ids: tuple[str, ...]
+    monotonic_time_ns: int = Field(ge=0)
+    input_sample_position: int = Field(ge=0)
+    output_sample_position: int | None = Field(default=None, ge=0)
+    transcript_revision_id: int | None = Field(default=None, ge=0)
+    source: CausalSource
+    model_name: str | None
+    model_revision: str | None
+
+
+class ActivityHorizon(FrozenBaseModel):
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    probability: float = Field(ge=0.0, le=1.0)
+
+
+class PlaybackState(StrEnum):
+    IDLE = "idle"
+    QUEUED = "queued"
+    SPEAKING = "speaking"
+    DUCKING = "ducking"
+    PAUSED_BUFFERED = "paused_buffered"
+    RESUMING = "resuming"
+    DRAINING_TO_BOUNDARY = "draining_to_boundary"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+
+
+class InteractionPrediction(FrozenBaseModel):
+    type: Literal["interaction.prediction"] = "interaction.prediction"
+    stamp: TraceStamp
+    p_user_speech: float = Field(ge=0.0, le=1.0)
+    p_user_yield: float = Field(ge=0.0, le=1.0)
+    p_user_backchannel: float = Field(ge=0.0, le=1.0)
+    p_user_interruption: float = Field(ge=0.0, le=1.0)
+    future_user_activity_horizons: tuple[ActivityHorizon, ...]
+    assistant_playback_state: PlaybackState
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class TranscriptRevision(FrozenBaseModel):
+    type: Literal["transcript.revision"] = "transcript.revision"
+    stamp: TraceStamp
+    revision_id: int = Field(ge=0)
+    supersedes_revision_id: int | None = Field(default=None, ge=0)
+    stable_prefix: str
+    volatile_suffix: str
+    audio_sample_position: int = Field(ge=0)
+    stable_prefix_end_sample: int = Field(ge=0)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class VoiceClientEventType(StrEnum):
     SESSION_START = "session.start"
     SESSION_STOP = "session.stop"

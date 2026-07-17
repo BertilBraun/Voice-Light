@@ -140,6 +140,9 @@ class QwenRuntime:
                 cancellation_event.set()
             model_thread.join()
 
+    def count_response_tokens(self, text: str) -> int:
+        return len(self.tokenizer.encode(text, add_special_tokens=False))
+
 
 @dataclass(frozen=True)
 class ActiveWorkerGeneration:
@@ -229,12 +232,15 @@ class QwenWorkerController:
         cancellation_event: threading.Event,
     ) -> None:
         terminal_event: LlmWorkerEvent | None = None
+        response_text = ""
         try:
             for text_delta in self.runtime.stream_text(command, cancellation_event):
+                response_text += text_delta
                 self._send_event(
                     LlmTextDeltaEvent(
                         generation_id=command.generation_id,
                         text=text_delta,
+                        cumulative_token_count=self.runtime.count_response_tokens(response_text),
                     )
                 )
             if cancellation_event.is_set():
