@@ -21,8 +21,11 @@ set +a
 
 uv sync --frozen --python 3.12 --extra compute
 
-if command -v supervisorctl >/dev/null 2>&1 && \
-  supervisorctl status voice-light-compute >/dev/null 2>&1; then
+supervisor_status=""
+if command -v supervisorctl >/dev/null 2>&1; then
+  supervisor_status="$(supervisorctl status voice-light-compute 2>/dev/null || true)"
+fi
+if [[ "$supervisor_status" == voice-light-compute* ]]; then
   supervisorctl restart voice-light-compute
   echo "Compute server restarted under Supervisor."
   exit 0
