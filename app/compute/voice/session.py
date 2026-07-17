@@ -95,20 +95,37 @@ class SessionPolicy:
     decisive_hold_threshold: float = 0.65
     floor_taking_overlap_threshold: float = 0.7
     vad_speculation_enabled: bool = True
+    vad_speculation_debounce_ms: int = 100
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> Self:
-        value = environment.get("VOICE_LIGHT_VAD_SPECULATION_ENABLED")
-        if value is None:
-            return cls()
-        normalized_value = value.strip().casefold()
-        if normalized_value == "true":
-            return cls(vad_speculation_enabled=True)
-        if normalized_value == "false":
-            return cls(vad_speculation_enabled=False)
-        raise ValueError("VOICE_LIGHT_VAD_SPECULATION_ENABLED must be either 'true' or 'false'.")
+        enabled_value = environment.get("VOICE_LIGHT_VAD_SPECULATION_ENABLED")
+        vad_speculation_enabled = True
+        if enabled_value is not None:
+            normalized_value = enabled_value.strip().casefold()
+            if normalized_value == "true":
+                vad_speculation_enabled = True
+            elif normalized_value == "false":
+                vad_speculation_enabled = False
+            else:
+                raise ValueError(
+                    "VOICE_LIGHT_VAD_SPECULATION_ENABLED must be either 'true' or 'false'."
+                )
+        debounce_value = environment.get("VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS")
+        vad_speculation_debounce_ms = 100
+        if debounce_value is not None:
+            try:
+                vad_speculation_debounce_ms = int(debounce_value)
+            except ValueError as error:
+                raise ValueError(
+                    "VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS must be an integer."
+                ) from error
+        return cls(
+            vad_speculation_enabled=vad_speculation_enabled,
+            vad_speculation_debounce_ms=vad_speculation_debounce_ms,
+        )
 
     def __post_init__(self) -> None:
         thresholds = (
@@ -124,6 +141,8 @@ class SessionPolicy:
             raise ValueError("Prediction policy thresholds must be between zero and one.")
         if self.speculative_yield_threshold > self.commitment_yield_threshold:
             raise ValueError("The speculative threshold cannot exceed the commitment threshold.")
+        if self.vad_speculation_debounce_ms < 0:
+            raise ValueError("The VAD speculation debounce cannot be negative.")
 
 
 class SessionLifecycle(StrEnum):
@@ -383,9 +402,13 @@ class VoiceSession:
         speech_active = False
         previous_chunk_was_speech = False
         silent_samples = 0
+        vad_speculation_pending = False
         pre_roll_chunks: deque[bytes] = deque()
         pre_roll_samples = 0
         required_silent_samples = _milliseconds_to_samples(self.policy.silence_duration_ms)
+        required_vad_speculation_debounce_samples = _milliseconds_to_samples(
+            self.policy.vad_speculation_debounce_ms
+        )
         maximum_pre_roll_samples = _milliseconds_to_samples(self.policy.pre_roll_duration_ms)
         try:
             while (pcm_bytes := await self.audio_queue.get()) is not None:
@@ -409,6 +432,7 @@ class VoiceSession:
                     speech_active = True
                     previous_chunk_was_speech = True
                     silent_samples = 0
+                    vad_speculation_pending = False
                     await self._request_generation_cancellation(send_event=True)
                     logger.info("speech started: session=%s", self.session_id)
                     await self._send_speech_state(VoiceServerEventType.VAD_STARTED)
@@ -420,6 +444,7 @@ class VoiceSession:
 
                 vad_endpoint_detected = not is_speech and previous_chunk_was_speech
                 if is_speech and not previous_chunk_was_speech:
+                    vad_speculation_pending = False
                     await self._invalidate_speculative_candidate(
                         CandidateInvalidationReason.USER_ACTIVITY_RESUMED
                     )
@@ -439,17 +464,25 @@ class VoiceSession:
                             text_offset=None,
                         )
                 prediction = await self._predict_turn(pcm_bytes, is_speech)
+                if vad_endpoint_detected and self.policy.vad_speculation_enabled:
+                    vad_speculation_pending = True
+                prospective_silent_samples = silent_samples + sample_count
                 if (
                     prediction is None
-                    and vad_endpoint_detected
-                    and self.policy.vad_speculation_enabled
+                    and vad_speculation_pending
+                    and not is_speech
+                    and prospective_silent_samples >= required_vad_speculation_debounce_samples
                 ):
                     prediction = self._vad_endpoint_prediction()
+                    vad_speculation_pending = False
                 if prediction is not None:
                     self.latest_prediction = prediction
                     await self._handle_prediction(prediction)
+                    if self.active_generation is not None:
+                        vad_speculation_pending = False
                 if is_speech:
                     silent_samples = 0
+                    vad_speculation_pending = False
                     previous_chunk_was_speech = True
                     continue
                 silent_samples += sample_count
@@ -472,6 +505,7 @@ class VoiceSession:
                     continue
                 speech_active = False
                 silent_samples = 0
+                vad_speculation_pending = False
                 await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
                 await self._finalize_turn(transcription)
                 await transcription.close()

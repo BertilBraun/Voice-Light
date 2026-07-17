@@ -70,12 +70,27 @@ def test_session_policy_reads_vad_speculation_switch(
     assert SessionPolicy.from_environment(environment).vad_speculation_enabled is expected
 
 
+def test_session_policy_reads_vad_speculation_debounce() -> None:
+    policy = SessionPolicy.from_environment({"VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS": "75"})
+
+    assert policy.vad_speculation_debounce_ms == 75
+
+
 def test_session_policy_rejects_invalid_vad_speculation_switch() -> None:
     with pytest.raises(
         ValueError,
         match="VOICE_LIGHT_VAD_SPECULATION_ENABLED",
     ):
         SessionPolicy.from_environment({"VOICE_LIGHT_VAD_SPECULATION_ENABLED": "sometimes"})
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("soon", "-1"),
+)
+def test_session_policy_rejects_invalid_vad_speculation_debounce(value: str) -> None:
+    with pytest.raises(ValueError, match="VAD speculation debounce|DEBOUNCE_MS"):
+        SessionPolicy.from_environment({"VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS": value})
 
 
 class FakeSpeechDetector:
@@ -893,9 +908,10 @@ def test_first_vad_endpoint_speculates_during_commitment_silence() -> None:
         language_model,
         RecordingSpeechSynthesizer(),
         policy=SessionPolicy(
-            silence_duration_ms=40,
+            silence_duration_ms=60,
             pre_roll_duration_ms=20,
             vad_speculation_enabled=True,
+            vad_speculation_debounce_ms=40,
         ),
         playback_sink=sink,
         created_sessions=sessions,
@@ -905,6 +921,10 @@ def test_first_vad_endpoint_speculates_during_commitment_silence() -> None:
         websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
         websocket.receive_json()
         websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        assert language_model.completed_count == 0
+        assert transcriber.sessions[0].finish_count == 0
+
         websocket.send_bytes(SILENCE_CHUNK)
         wait_until(lambda: language_model.completed_count == 1)
 
