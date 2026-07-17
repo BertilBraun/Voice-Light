@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -9,25 +7,29 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
-import av
-
 from app.local.asr.full_recording_models import (
     FullRecordingAsrBatchItem,
     FullRecordingAsrBatchRecord,
     FullRecordingAsrTranscriptRecord,
 )
 from app.local.asr.service import RemoteAsrClient
-from app.shared.asr import AsrModelId, AsrTranscriptResult, RemoteAsrRequest
+from app.shared.asr import AsrModelId, AsrTranscriptResult, RemoteAsrUploadRequest
 from app.shared.audio import probe_local_audio_metadata
+from app.shared.audio.transport import (
+    ASR_AUDIO_TRANSPORT_SPEC,
+    AudioTransportMetadata,
+    prepare_audio_transport,
+    sha256_file,
+)
 
-FULL_ASR_SAMPLE_RATE = 16_000
+FULL_ASR_SAMPLE_RATE = ASR_AUDIO_TRANSPORT_SPEC.sample_rate
 DURATION_TOLERANCE_SECONDS = 0.1
-HASH_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
 class PreparedFullRecordingAudio:
     path: Path
+    transport_metadata: AudioTransportMetadata
     source_audio_sha256: str
     prepared_audio_sha256: str
     source_duration_seconds: float
@@ -126,14 +128,12 @@ def transcribe_full_recording_item(
         source_audio_sha256=source_audio_sha256,
     )
     try:
-        prepared_bytes = prepared.path.read_bytes()
-        response = remote_client_factory().transcribe(
-            RemoteAsrRequest(
-                audio_sha256=prepared.prepared_audio_sha256,
-                audio_filename=prepared.path.name,
-                audio_base64=base64.b64encode(prepared_bytes).decode("ascii"),
+        response = remote_client_factory().transcribe_upload(
+            request=RemoteAsrUploadRequest(
+                audio=prepared.transport_metadata,
                 models=missing_models,
-            )
+            ),
+            audio_path=prepared.path,
         )
         results = requested_results(requested=missing_models, results=response.results)
         for result in results:
@@ -176,19 +176,18 @@ def prepare_full_recording_audio(
         raise ValueError(f"Full-recording ASR source has no audio: {source_path}")
     output_file = tempfile.NamedTemporaryFile(
         prefix=f"{source_path.stem}_full_asr_",
-        suffix=".flac",
+        suffix=".ogg",
         delete=False,
     )
     output_path = Path(output_file.name)
     output_file.close()
     try:
-        transcode_mono_flac(source_path=source_path, output_path=output_path)
+        transport_metadata = prepare_audio_transport(
+            source_path=source_path,
+            output_path=output_path,
+            spec=ASR_AUDIO_TRANSPORT_SPEC,
+        )
         prepared_metadata = probe_local_audio_metadata(output_path)
-        if prepared_metadata.sample_rate != FULL_ASR_SAMPLE_RATE:
-            raise ValueError(
-                f"Prepared ASR audio sample rate is {prepared_metadata.sample_rate}, "
-                f"expected {FULL_ASR_SAMPLE_RATE}."
-            )
         if prepared_metadata.channels != 1:
             raise ValueError(
                 f"Prepared ASR audio has {prepared_metadata.channels} channels, expected one."
@@ -199,34 +198,15 @@ def prepare_full_recording_audio(
         )
         return PreparedFullRecordingAudio(
             path=output_path,
+            transport_metadata=transport_metadata,
             source_audio_sha256=source_audio_sha256 or sha256_file(source_path),
-            prepared_audio_sha256=sha256_file(output_path),
+            prepared_audio_sha256=transport_metadata.sha256,
             source_duration_seconds=source_duration_seconds,
-            prepared_duration_seconds=prepared_metadata.duration_seconds,
+            prepared_duration_seconds=transport_metadata.duration_seconds,
         )
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
-
-
-def transcode_mono_flac(source_path: Path, output_path: Path) -> None:
-    with av.open(str(source_path)) as input_container:
-        if not input_container.streams.audio:
-            raise ValueError(f"Audio stream not found: {source_path}")
-        input_stream = input_container.streams.audio[0]
-        resampler = av.AudioResampler(format="s16", layout="mono", rate=FULL_ASR_SAMPLE_RATE)
-        with av.open(str(output_path), mode="w", format="flac") as output_container:
-            output_stream = output_container.add_stream("flac", rate=FULL_ASR_SAMPLE_RATE)
-            output_stream.layout = "mono"
-            for decoded_frame in input_container.decode(input_stream):
-                for resampled_frame in resampler.resample(decoded_frame):
-                    for packet in output_stream.encode(resampled_frame):
-                        output_container.mux(packet)
-            for resampled_frame in resampler.resample(None):
-                for packet in output_stream.encode(resampled_frame):
-                    output_container.mux(packet)
-            for packet in output_stream.encode(None):
-                output_container.mux(packet)
 
 
 def validate_duration_match(
@@ -293,14 +273,6 @@ def missing_model_ids(
 ) -> tuple[AsrModelId, ...]:
     cached_models = {transcript.model_id for transcript in transcripts}
     return tuple(model for model in requested if model not in cached_models)
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source_file:
-        while chunk := source_file.read(HASH_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def local_audio_path(access_uri: str) -> Path:

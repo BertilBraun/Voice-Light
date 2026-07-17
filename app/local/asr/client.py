@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from app.shared.asr import RemoteAsrRequest, RemoteAsrResponse
+import httpx
+
+from app.shared.asr import RemoteAsrRequest, RemoteAsrResponse, RemoteAsrUploadRequest
+from app.shared.audio.transport import AudioTransportCodec
 
 
 class HttpRemoteAsrClient:
@@ -38,3 +42,43 @@ class HttpRemoteAsrClient:
         except URLError as error:
             raise ValueError(f"Remote ASR request failed: {error.reason}") from error
         return RemoteAsrResponse.model_validate_json(payload)
+
+    def transcribe_upload(
+        self,
+        request: RemoteAsrUploadRequest,
+        audio_path: Path,
+    ) -> RemoteAsrResponse:
+        if request.audio.encoded_filename != audio_path.name:
+            raise ValueError("ASR upload filename does not match its transport metadata.")
+        with audio_path.open("rb") as audio_file:
+            response = httpx.post(
+                f"{self.endpoint_url}-upload",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                files=[
+                    ("request_json", (None, request.model_dump_json(), "application/json")),
+                    (
+                        "audio",
+                        (
+                            request.audio.encoded_filename,
+                            audio_file,
+                            content_type_for_codec(request.audio.codec),
+                        ),
+                    ),
+                ],
+                timeout=900.0,
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise ValueError(
+                f"Remote ASR upload failed with HTTP {response.status_code}: {response.text}"
+            ) from error
+        return RemoteAsrResponse.model_validate_json(response.text)
+
+
+def content_type_for_codec(codec: AudioTransportCodec) -> str:
+    match codec:
+        case AudioTransportCodec.FLAC:
+            return "audio/flac"
+        case AudioTransportCodec.OGG_OPUS:
+            return "audio/ogg"

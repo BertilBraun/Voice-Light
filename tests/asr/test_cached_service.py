@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import base64
+import wave
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,8 +11,8 @@ from app.local.asr.service import cached_asr_transcripts
 from app.shared.asr import (
     AsrModelId,
     AsrTranscriptResult,
-    RemoteAsrRequest,
     RemoteAsrResponse,
+    RemoteAsrUploadRequest,
     TimestampedWord,
 )
 
@@ -50,10 +50,16 @@ class MemoryAsrCache:
 @dataclass
 class RecordingRemoteAsrClient:
     response: RemoteAsrResponse
-    requests: list[RemoteAsrRequest] = field(default_factory=list)
+    requests: list[RemoteAsrUploadRequest] = field(default_factory=list)
+    uploaded_audio: list[bytes] = field(default_factory=list)
 
-    def transcribe(self, request: RemoteAsrRequest) -> RemoteAsrResponse:
+    def transcribe_upload(
+        self,
+        request: RemoteAsrUploadRequest,
+        audio_path: Path,
+    ) -> RemoteAsrResponse:
         self.requests.append(request)
+        self.uploaded_audio.append(audio_path.read_bytes())
         return self.response
 
 
@@ -74,8 +80,7 @@ def test_fully_cached_request_does_not_call_remote(tmp_path: Path) -> None:
 
 def test_partial_cache_calls_remote_only_for_missing_models(tmp_path: Path) -> None:
     audio_path = tmp_path / "sample.wav"
-    audio_bytes = b"audio"
-    audio_path.write_bytes(audio_bytes)
+    write_wave(audio_path)
     cache = MemoryAsrCache(stored_results=[transcript_result(AsrModelId.PARAKEET_TDT, "cached")])
     remote_client = RecordingRemoteAsrClient(
         response=RemoteAsrResponse(results=(transcript_result(AsrModelId.WHISPERX, "remote"),))
@@ -90,13 +95,16 @@ def test_partial_cache_calls_remote_only_for_missing_models(tmp_path: Path) -> N
 
     assert len(remote_client.requests) == 1
     assert remote_client.requests[0].models == (AsrModelId.WHISPERX,)
-    assert base64.b64decode(remote_client.requests[0].audio_base64) == audio_bytes
+    assert remote_client.requests[0].audio.codec.value == "ogg_opus"
+    assert remote_client.requests[0].audio.sample_rate == 16_000
+    assert "audio_base64" not in remote_client.requests[0].model_dump()
+    assert remote_client.uploaded_audio[0].startswith(b"OggS")
     assert tuple(result.text for result in response.results) == ("cached", "remote")
 
 
 def test_returned_results_are_read_from_cache_after_remote_persistence(tmp_path: Path) -> None:
     audio_path = tmp_path / "sample.wav"
-    audio_path.write_bytes(b"audio")
+    write_wave(audio_path)
     cache = MemoryAsrCache(upserted_results_are_rewritten=True)
     remote_client = RecordingRemoteAsrClient(
         response=RemoteAsrResponse(results=(transcript_result(AsrModelId.WHISPERX, "remote"),))
@@ -139,7 +147,7 @@ def test_validation_errors(
 
 def test_remote_response_must_include_missing_model_result(tmp_path: Path) -> None:
     audio_path = tmp_path / "sample.wav"
-    audio_path.write_bytes(b"audio")
+    write_wave(audio_path)
     cache = MemoryAsrCache()
     remote_client = RecordingRemoteAsrClient(response=RemoteAsrResponse(results=()))
 
@@ -162,3 +170,11 @@ def transcript_result(model_id: AsrModelId, text: str) -> AsrTranscriptResult:
 
 def remote_factory_that_fails() -> RecordingRemoteAsrClient:
     raise AssertionError("Remote ASR should not be called.")
+
+
+def write_wave(path: Path) -> None:
+    with wave.open(str(path), "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(2)
+        wave_writer.setframerate(16_000)
+        wave_writer.writeframes(b"\x00\x00" * 16_000)

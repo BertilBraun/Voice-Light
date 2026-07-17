@@ -1,32 +1,40 @@
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Sequence
 from pathlib import Path
 
-import pytest
-
-from app.shared.audio.transport import prepare_analysis_audio
+from app.shared.audio.transport import (
+    ASR_AUDIO_TRANSPORT_SPEC,
+    QUALITY_AUDIO_TRANSPORT_SPEC,
+    audio_transport_command,
+)
 from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
 
 
-def test_prepare_analysis_audio_caps_transport_duration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recorded_commands: list[tuple[str, ...]] = []
-
-    def record_command(command: Sequence[str], check: bool) -> subprocess.CompletedProcess[str]:
-        assert check
-        recorded_commands.append(tuple(command))
-        return subprocess.CompletedProcess(command, returncode=0)
-
-    monkeypatch.setattr(subprocess, "run", record_command)
+def test_prepare_analysis_audio_caps_transport_duration(tmp_path: Path) -> None:
     input_path = tmp_path / "input.wav"
     output_path = tmp_path / "output.flac"
 
-    prepare_analysis_audio(input_path, output_path)
-
-    command = recorded_commands[0]
+    command = audio_transport_command(
+        source_path=input_path,
+        output_path=output_path,
+        spec=QUALITY_AUDIO_TRANSPORT_SPEC,
+    )
     duration_index = command.index("-t") + 1
     assert command[duration_index] == str(ANALYSIS_AUDIO_MAX_DURATION_SECONDS)
+    assert command[command.index("-c:a") + 1] == "flac"
+
+
+def test_asr_transport_uses_full_length_mono_16khz_opus_at_32kbps(
+    tmp_path: Path,
+) -> None:
+    command = audio_transport_command(
+        source_path=tmp_path / "input.wav",
+        output_path=tmp_path / "output.ogg",
+        spec=ASR_AUDIO_TRANSPORT_SPEC,
+    )
+
+    assert "-t" not in command
+    assert command[command.index("-ac") + 1] == "1"
+    assert command[command.index("-ar") + 1] == "16000"
+    assert command[command.index("-c:a") + 1] == "libopus"
+    assert command[command.index("-b:a") + 1] == "32000"

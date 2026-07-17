@@ -6,13 +6,14 @@ import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Response, WebSocket
+from fastapi import Depends, FastAPI, File, Form, Response, UploadFile, WebSocket
 from starlette.requests import Request
 from starlette.responses import Response as StarletteResponse
 
-from app.compute.asr.service import transcribe_request
+from app.compute.asr.service import transcribe_request, transcribe_uploaded_request
 from app.compute.auth import BearerTokenAuthorizer
 from app.compute.config import ComputeSettings
 from app.compute.quality.router import analyze_uploaded_quality
@@ -85,6 +86,20 @@ def create_compute_app(settings: ComputeSettings) -> FastAPI:
     )
     async def batch_asr(request: RemoteAsrRequest) -> RemoteAsrResponse:
         return await asyncio.to_thread(transcribe_request, runtime.batch_asr_models, request)
+
+    @application.post(
+        "/v1/asr:batch-upload",
+        dependencies=[Depends(authorizer.authorize_http)],
+    )
+    async def batch_asr_upload(
+        request_json: Annotated[str, Form()],
+        audio: Annotated[UploadFile, File()],
+    ) -> RemoteAsrResponse:
+        return await transcribe_uploaded_request(
+            model_cache=runtime.batch_asr_models,
+            request_json=request_json,
+            audio=audio,
+        )
 
     application.post(
         "/v1/quality:analyze",

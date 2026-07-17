@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
+from app.shared.audio.transport import AudioTransportMetadata
 from app.shared.base_model import FrozenBaseModel
 
 PARAKEET_IDENTIFIER = "nvidia/parakeet-tdt-0.6b-v3"
@@ -67,3 +68,8 @@ class RemoteAsrRequest(FrozenBaseModel):
 
 class RemoteAsrResponse(FrozenBaseModel):
     results: tuple[AsrTranscriptResult, ...]
+
+
+class RemoteAsrUploadRequest(FrozenBaseModel):
+    audio: AudioTransportMetadata
+    models: tuple[AsrModelId, ...] = Field(min_length=1)

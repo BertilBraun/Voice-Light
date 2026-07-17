@@ -39,7 +39,8 @@ recover it explicitly:
 Retry failed tracks explicitly with `--retry-failed`. Use `--maximum-tracks N` for a smoke run.
 The status endpoint is `GET /api/asr/full-recording/batches/BATCH_UUID`.
 
-Each source is streamed into a temporary mono 16 kHz FLAC before upload. The current compute API
-still uses JSON/base64, so the local worker temporarily holds the compressed FLAC and its base64
-representation in memory. It never holds the raw full WAV in memory. Source and prepared hashes,
-durations, channel count, and sample rate are validated before persistence.
+Each source is encoded as temporary mono 16 kHz Ogg Opus at 32 kbps and streamed to the compute
+service as a binary multipart upload. The compute service verifies the encoded file hash and
+decodes it to canonical mono 16 kHz FLAC before model inference. The legacy JSON/base64 endpoint
+remains available temporarily for workers started before this transport was introduced. Source
+and prepared hashes, durations, channel count, and sample rate are validated before persistence.

@@ -27,8 +27,8 @@ from app.local.db.models import TrackSide
 from app.shared.asr import (
     AsrModelId,
     AsrTranscriptResult,
-    RemoteAsrRequest,
     RemoteAsrResponse,
+    RemoteAsrUploadRequest,
     TimestampedWord,
 )
 from app.shared.audio import probe_local_audio_metadata
@@ -108,22 +108,30 @@ class MemoryFullRecordingStore:
 class RecordingRemoteAsrClient:
     def __init__(self, response: RemoteAsrResponse) -> None:
         self.response = response
-        self.requests: list[RemoteAsrRequest] = []
+        self.requests: list[RemoteAsrUploadRequest] = []
+        self.uploaded_audio: list[bytes] = []
 
-    def transcribe(self, request: RemoteAsrRequest) -> RemoteAsrResponse:
+    def transcribe_upload(
+        self,
+        request: RemoteAsrUploadRequest,
+        audio_path: Path,
+    ) -> RemoteAsrResponse:
         self.requests.append(request)
+        self.uploaded_audio.append(audio_path.read_bytes())
         return self.response
 
 
-def test_prepare_full_recording_audio_streams_mono_16khz_flac(tmp_path: Path) -> None:
+def test_prepare_full_recording_audio_streams_mono_16khz_ogg_opus(tmp_path: Path) -> None:
     source_path = tmp_path / "stereo.wav"
     write_wave(source_path=source_path, sample_rate=8_000, channel_count=2, duration_seconds=1.0)
 
     prepared = prepare_full_recording_audio(source_path)
     try:
         metadata = probe_local_audio_metadata(prepared.path)
-        assert prepared.path.suffix == ".flac"
-        assert metadata.sample_rate == FULL_ASR_SAMPLE_RATE
+        assert prepared.path.suffix == ".ogg"
+        assert prepared.transport_metadata.codec.value == "ogg_opus"
+        assert prepared.transport_metadata.sample_rate == FULL_ASR_SAMPLE_RATE
+        assert prepared.transport_metadata.size_bytes == prepared.path.stat().st_size
         assert metadata.channels == 1
         assert metadata.duration_seconds == pytest.approx(1.0, abs=0.01)
         assert prepared.source_duration_seconds == pytest.approx(1.0, abs=0.01)
@@ -160,8 +168,9 @@ def test_full_recording_item_transcodes_calls_remote_and_persists(tmp_path: Path
     assert results[0].sample_track_id == item.sample_track_id
     assert results[0].audio_filename == source_path.name
     assert len(remote.requests) == 1
-    assert remote.requests[0].audio_filename.endswith(".flac")
+    assert remote.requests[0].audio.encoded_filename.endswith(".ogg")
     assert remote.requests[0].models == (AsrModelId.PARAKEET_TDT,)
+    assert remote.uploaded_audio[0].startswith(b"OggS")
 
 
 def test_cached_full_recording_transcript_prevents_remote_call(tmp_path: Path) -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import base64
-import hashlib
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -10,8 +9,13 @@ from app.shared.asr import (
     AsrModelId,
     AsrTranscriptResult,
     CachedAsrResponse,
-    RemoteAsrRequest,
     RemoteAsrResponse,
+    RemoteAsrUploadRequest,
+)
+from app.shared.audio.transport import (
+    ASR_AUDIO_TRANSPORT_SPEC,
+    prepare_audio_transport,
+    sha256_file,
 )
 
 
@@ -31,7 +35,11 @@ class AsrTranscriptCache(Protocol):
 
 
 class RemoteAsrClient(Protocol):
-    def transcribe(self, request: RemoteAsrRequest) -> RemoteAsrResponse: ...
+    def transcribe_upload(
+        self,
+        request: RemoteAsrUploadRequest,
+        audio_path: Path,
+    ) -> RemoteAsrResponse: ...
 
 
 RemoteAsrClientFactory = Callable[[], RemoteAsrClient]
@@ -49,8 +57,7 @@ def cached_asr_transcripts(
     if not audio_path.is_file():
         raise ValueError(f"Audio file not found: {audio_path}")
 
-    audio_bytes = audio_path.read_bytes()
-    audio_sha256 = hashlib.sha256(audio_bytes).hexdigest()
+    audio_sha256 = sha256_file(audio_path)
     cached_results = cache.get_cached_asr_transcripts(audio_sha256, model_ids)
     cached_model_ids = {result.model_id for result in cached_results}
     missing_model_ids = tuple(
@@ -58,14 +65,20 @@ def cached_asr_transcripts(
     )
 
     if missing_model_ids:
-        remote_response = remote_client_factory().transcribe(
-            RemoteAsrRequest(
-                audio_sha256=audio_sha256,
-                audio_filename=audio_path.name,
-                audio_base64=base64.b64encode(audio_bytes).decode("ascii"),
-                models=missing_model_ids,
+        with tempfile.TemporaryDirectory(prefix="voice-light-asr-transport-") as directory_name:
+            transport_path = Path(directory_name) / f"{audio_path.stem}.ogg"
+            transport_metadata = prepare_audio_transport(
+                source_path=audio_path,
+                output_path=transport_path,
+                spec=ASR_AUDIO_TRANSPORT_SPEC,
             )
-        )
+            remote_response = remote_client_factory().transcribe_upload(
+                request=RemoteAsrUploadRequest(
+                    audio=transport_metadata,
+                    models=missing_model_ids,
+                ),
+                audio_path=transport_path,
+            )
         persist_remote_results(
             audio_sha256=audio_sha256,
             audio_filename=audio_path.name,
