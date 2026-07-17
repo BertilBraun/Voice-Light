@@ -1039,6 +1039,8 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
 
         generation = sessions[0].generations[1]
         assert generation.invocation_ids == [1, 2]
+        assert generation.latency.first_bridge_text is not None
+        assert generation.latency.first_bridge_pcm is not None
         assert generation.latency.tool_call_started_at is not None
         assert generation.latency.tool_call_completed_at is not None
         assert generation.latency.tool_execution_started_at is not None
@@ -1047,6 +1049,20 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         assert generation.latency.second_invocation_started_at is not None
         assert generation.latency.first_final_answer_text is not None
         assert generation.latency.first_final_answer_pcm is not None
+        assert (
+            generation.latency.tool_call_started_at
+            <= generation.latency.tool_call_completed_at
+            <= generation.latency.tool_execution_started_at
+            <= generation.latency.tool_execution_completed_at
+            <= generation.latency.tool_result_committed_at
+            <= generation.latency.second_invocation_started_at
+            <= generation.latency.first_final_answer_text.monotonic_time_seconds
+            <= generation.latency.first_final_answer_pcm.monotonic_time_seconds
+        )
+        assert (
+            generation.latency.first_bridge_pcm.monotonic_time_seconds
+            < generation.latency.tool_execution_completed_at
+        )
         websocket.send_json({"type": "session.stop"})
 
     assert language_model.raw_first_pass.startswith("Let me check that.")

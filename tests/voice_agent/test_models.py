@@ -209,6 +209,32 @@ def test_qwen_worker_is_reused_for_monotonic_invocations() -> None:
     asyncio.run(run_invocations())
 
 
+def test_second_qwen_invocation_failure_replaces_worker_and_releases_lock() -> None:
+    async def run_invocations() -> None:
+        worker = FakeQwenWorker(
+            start_events=(LlmEndEvent(invocation_id=1, cumulative_token_count=0),)
+        )
+        worker_manager = FakeQwenWorkerManager(worker)
+        first_session = create_session(worker_manager)
+        assert [event async for event in first_session.stream_events()]
+        assert not worker_manager.lock.locked()
+
+        worker.start_events = (LlmWorkerErrorEvent(invocation_id=2, message="second pass failed"),)
+        second_session = create_session(worker_manager)
+        events = [event async for event in second_session.stream_events()]
+
+        assert events == [
+            LanguageModelFailed(
+                invocation_id=2,
+                message="Qwen worker failed: second pass failed",
+            )
+        ]
+        assert worker_manager.replacement_count == 1
+        assert not worker_manager.lock.locked()
+
+    asyncio.run(run_invocations())
+
+
 @pytest.mark.parametrize(
     "failing_command_type",
     [LlmWorkerCommandType.START, LlmWorkerCommandType.CANCEL],
