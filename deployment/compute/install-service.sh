@@ -20,8 +20,9 @@ install -m 644 \
   "$repository_root/deployment/compute/supervisor/voice-light-compute.conf" \
   /etc/supervisor/conf.d/voice-light-compute.conf
 
+supervisor_status="$(supervisorctl status voice-light-compute 2>/dev/null || true)"
 service_was_installed=false
-if supervisorctl status voice-light-compute >/dev/null 2>&1; then
+if [[ "$supervisor_status" == voice-light-compute* ]]; then
   service_was_installed=true
 fi
 supervisorctl reread
