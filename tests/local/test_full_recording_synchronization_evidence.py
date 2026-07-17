@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
+
+from app.local.asr.full_recording_models import FullRecordingAsrTranscriptRecord
+from app.local.db.models import TrackSide
+from app.local.synchronization_review.evaluation import EvidenceScope
+from app.local.synchronization_review.full_recording_evidence import (
+    full_recording_evidence_records,
+)
+from app.local.synchronization_review.models import SynchronizationEvidenceSource
+from app.shared.asr import AsrModelId, TimestampedWord
+
+
+def test_full_recording_evidence_uses_whole_timeline_and_fixed_windows() -> None:
+    transcripts = tuple(
+        _transcript(
+            model_id=model_id,
+            side=side,
+            shift_seconds=0.0 if side is TrackSide.SPEAKER1 else 8.0,
+        )
+        for model_id in (AsrModelId.PARAKEET_TDT, AsrModelId.CANARY)
+        for side in TrackSide
+    )
+
+    records = full_recording_evidence_records(transcripts=transcripts)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.external_id == "pmt_001"
+    assert record.scope is EvidenceScope.FULL_RECORDING
+    assert {source.source for source in record.sources} == {
+        SynchronizationEvidenceSource.PARAKEET,
+        SynchronizationEvidenceSource.CANARY,
+    }
+    assert all(source.estimated_shift_seconds == pytest.approx(-3.0) for source in record.sources)
+    assert len(record.windows) == 4
+    assert {(window.start_seconds, window.end_seconds) for window in record.windows} == {
+        (0.0, 180.0),
+        (180.0, 360.0),
+    }
+
+
+def test_full_recording_evidence_rejects_incomplete_model_track_coverage() -> None:
+    transcripts = tuple(
+        _transcript(model_id=model_id, side=side, shift_seconds=0.0)
+        for model_id, side in (
+            (AsrModelId.PARAKEET_TDT, TrackSide.SPEAKER1),
+            (AsrModelId.PARAKEET_TDT, TrackSide.SPEAKER2),
+            (AsrModelId.CANARY, TrackSide.SPEAKER1),
+        )
+    )
+
+    with pytest.raises(ValueError, match="Incomplete full-recording ASR model/track coverage"):
+        full_recording_evidence_records(transcripts=transcripts)
+
+
+def test_full_recording_windows_preserve_local_timing_and_expose_changed_lag() -> None:
+    speaker1_spans = (
+        (20.0, 26.0),
+        (42.0, 50.0),
+        (75.0, 80.0),
+        (110.0, 117.0),
+        (151.0, 158.0),
+        (200.0, 207.0),
+        (229.0, 235.0),
+        (267.0, 276.0),
+        (310.0, 315.0),
+        (350.0, 357.0),
+    )
+    speaker2_spans = (
+        (29.0, 45.0),
+        (53.0, 78.0),
+        (83.0, 113.0),
+        (120.0, 154.0),
+        (208.0, 230.0),
+        (236.0, 268.0),
+        (277.0, 311.0),
+        (316.0, 351.0),
+    )
+    speaker1 = _transcript(
+        model_id=AsrModelId.PARAKEET_TDT,
+        side=TrackSide.SPEAKER1,
+        shift_seconds=0.0,
+    ).model_copy(update={"words": _words_from_spans(spans=speaker1_spans)})
+    speaker2 = _transcript(
+        model_id=AsrModelId.PARAKEET_TDT,
+        side=TrackSide.SPEAKER2,
+        shift_seconds=0.0,
+    ).model_copy(update={"words": _words_from_spans(spans=speaker2_spans)})
+
+    records = full_recording_evidence_records(
+        transcripts=(speaker1, speaker2),
+        model_ids=(AsrModelId.PARAKEET_TDT,),
+    )
+
+    assert [window.start_seconds for window in records[0].windows] == [0.0, 180.0]
+    assert [window.estimated_shift_seconds for window in records[0].windows] == pytest.approx(
+        [-3.0, -1.0]
+    )
+
+
+def _transcript(
+    model_id: AsrModelId,
+    side: TrackSide,
+    shift_seconds: float,
+) -> FullRecordingAsrTranscriptRecord:
+    now = datetime.now(tz=UTC)
+    return FullRecordingAsrTranscriptRecord(
+        id=uuid4(),
+        sample_track_id=uuid4(),
+        sample_id=uuid4(),
+        sample_external_id="pmt_001",
+        side=side,
+        source_audio_sha256="a" * 64,
+        prepared_audio_sha256="b" * 64,
+        audio_filename=f"pmt_001_{side.value}.flac",
+        model_id=model_id,
+        transcript_text="test words",
+        words=tuple(
+            TimestampedWord(
+                text=f"word-{index}",
+                start_seconds=start_seconds + shift_seconds,
+                end_seconds=start_seconds + shift_seconds + 5.0,
+            )
+            for index, start_seconds in enumerate(range(0, 390, 10))
+        ),
+        source_duration_seconds=400.0,
+        prepared_duration_seconds=400.0,
+        processing_time_seconds=10.0,
+        runtime=None,
+        error=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _words(starts: tuple[float, ...]) -> tuple[TimestampedWord, ...]:
+    return tuple(
+        TimestampedWord(
+            text=f"word-{index}",
+            start_seconds=start_seconds,
+            end_seconds=start_seconds + 5.0,
+        )
+        for index, start_seconds in enumerate(starts)
+    )
+
+
+def _words_from_spans(spans: tuple[tuple[float, float], ...]) -> tuple[TimestampedWord, ...]:
+    return tuple(
+        TimestampedWord(
+            text=f"word-{index}",
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        )
+        for index, (start_seconds, end_seconds) in enumerate(spans)
+    )
