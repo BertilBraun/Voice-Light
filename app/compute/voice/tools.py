@@ -42,6 +42,23 @@ class ToolLifecycle(StrEnum):
     INVALIDATED = "invalidated"
 
 
+class ToolResultCommitStatus(StrEnum):
+    NOT_STAGED = "not_staged"
+    STAGED = "staged"
+    GENERATION_LOCAL_COMMITTED = "generation_local_committed"
+    SESSION_COMMITTED = "session_committed"
+    DISCARDED = "discarded"
+
+
+class ToolInvalidationReason(StrEnum):
+    USER_ACTIVITY = "user_activity"
+    RESPONSE_REQUIRING_OVERLAP = "response_requiring_overlap"
+    SPECULATIVE_INVALIDATION = "speculative_invalidation"
+    GENERATION_FAILURE = "generation_failure"
+    SESSION_STOPPED = "session_stopped"
+    PLAYBACK_RESUME_REJECTED = "playback_resume_rejected"
+
+
 class GetWeatherArguments(FrozenBaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

@@ -100,6 +100,18 @@ class GenerationStreamer(Protocol):
     def on_finalized_text(self, text: str, stream_end: bool = False) -> None: ...
 
 
+class QwenChatTemplateTokenizer(Protocol):
+    def apply_chat_template(
+        self,
+        conversation: list[QwenChatMessage],
+        *,
+        tokenize: Literal[False],
+        add_generation_prompt: Literal[True],
+        tools: list[dict[str, object]],
+        enable_thinking: Literal[False],
+    ) -> str: ...
+
+
 class CancellationStoppingCriteria(StoppingCriteria):
     def __init__(self, cancellation_event: threading.Event) -> None:
         self.cancellation_event = cancellation_event
@@ -137,17 +149,7 @@ class QwenRuntime:
         command: StartLlmCommand,
         cancellation_event: threading.Event,
     ) -> Iterator[str]:
-        messages: list[QwenChatMessage] = [
-            {"role": "system", "content": LANGUAGE_MODEL_SYSTEM_PROMPT},
-            *(_qwen_chat_message(message) for message in command.messages),
-        ]
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            tools=[specification.model_dump(mode="json") for specification in command.tools],
-            enable_thinking=False,
-        )
+        prompt = render_qwen_prompt(self.tokenizer, command)
         model_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         streamer = TextIteratorStreamer(
             self.tokenizer,
@@ -412,6 +414,26 @@ def _qwen_chat_message(
                 "content": message.content.model_dump_json(),
                 "tool_call_id": message.tool_call_id,
             }
+
+
+def qwen_chat_messages(command: StartLlmCommand) -> list[QwenChatMessage]:
+    return [
+        {"role": "system", "content": LANGUAGE_MODEL_SYSTEM_PROMPT},
+        *(_qwen_chat_message(message) for message in command.messages),
+    ]
+
+
+def render_qwen_prompt(
+    tokenizer: QwenChatTemplateTokenizer,
+    command: StartLlmCommand,
+) -> str:
+    return tokenizer.apply_chat_template(
+        qwen_chat_messages(command),
+        tokenize=False,
+        add_generation_prompt=True,
+        tools=[specification.model_dump(mode="json") for specification in command.tools],
+        enable_thinking=False,
+    )
 
 
 def main() -> None:
