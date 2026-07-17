@@ -52,16 +52,21 @@ validated playback offsets enter model history.
 ### Predictive generation
 
 `VoiceSession` accepts an optional typed `TurnPredictionSource`. No turn-taking checkpoint or
-canned production predictor is required: when no source is configured, the existing silence/VAD
-commit path remains the measurable baseline. A source consumes typed audio/transcript observations
-and may return the `InteractionPrediction` contract from the natural-interaction design study.
-Predictions must cite the exact transcript revision and input sample position they observed.
+canned predictor is required. By default, Silero's first inactive decision emits a causal
+`InteractionPrediction` and starts speculation while the existing additional 500 ms silence guard
+continues toward commitment. `SessionPolicy.vad_speculation_enabled` can disable this early start
+to retain the original non-speculative path as a measurable baseline. A trained source can augment
+the VAD signal with continuous typed audio/transcript observations. Predictions must cite the exact
+transcript revision and input sample position they observed.
 
 Incremental ASR snapshots are tracked as a monotonic revision lineage with a stable prefix and
 volatile suffix. Crossing the configurable speculative yield threshold starts at most one Qwen/TTS
-candidate, anchored to the stable prefix, immutable conversation snapshot, revision ID, prediction,
-input sample position, and monotonic creation time. This does not call `finish()`; Nemotron remains
-open until the high-confidence commitment rule fires.
+candidate, anchored to the immutable conversation snapshot, revision ID, prediction, input sample
+position, and monotonic creation time. Trained predictions use the stable prefix. The VAD endpoint
+may additionally include the current volatile suffix so it remains useful when ASR has emitted only
+one partial; final validation rejects it if that snapshot changes materially. Speculation does not
+call `finish()`—Nemotron remains open until the high-confidence prediction rule or guarded silence
+commitment fires.
 
 Candidate output passes through a private release gate. Text deltas, word boundaries, PCM bytes,
 and their original offsets are retained in production order but are not sent to the browser and do

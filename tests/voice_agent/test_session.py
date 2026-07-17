@@ -47,7 +47,11 @@ from app.compute.voice.session import SessionPolicy, VoiceSession
 
 SPEECH_CHUNK = b"\x01\x00" * 320
 SILENCE_CHUNK = b"\x00\x00" * 320
-DEFAULT_TEST_POLICY = SessionPolicy(silence_duration_ms=40, pre_roll_duration_ms=20)
+DEFAULT_TEST_POLICY = SessionPolicy(
+    silence_duration_ms=40,
+    pre_roll_duration_ms=20,
+    vad_speculation_enabled=False,
+)
 
 
 class FakeSpeechDetector:
@@ -850,6 +854,54 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
     assert latency.first_released_pcm is not None
     assert latency.first_browser_playback_ack is not None
     assert report.commit_to_first_played_audio_p50_ms is not None
+
+
+def test_first_vad_endpoint_speculates_during_commitment_silence() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent", None, None),),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        policy=SessionPolicy(
+            silence_duration_ms=40,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=True,
+        ),
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+
+        assert transcriber.sessions[0].finish_count == 0
+        assert sink.outputs == []
+        candidate = sessions[0].generations[1]
+        assert candidate.causal_prediction is not None
+        assert candidate.causal_prediction.stamp.source is CausalSource.SILERO_VAD
+
+        websocket.send_bytes(SILENCE_CHUNK)
+        events, _ = receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert events[-1]["generation_id"] == 1
+    assert transcriber.sessions[0].finish_count == 1
+    assert {output.generation_id for output in sink.outputs} == {1}
+    report = sessions[0].predictive_metrics.report()
+    assert report.candidate_hit_rate == 1.0
+    assert report.hidden_qwen_tokens == 4
+    assert report.hidden_tts_samples == 4
 
 
 def test_clear_end_of_turn_can_create_and_commit_candidate_on_same_prediction() -> None:

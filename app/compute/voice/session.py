@@ -53,6 +53,7 @@ from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
     AssistantAudioTextBoundaryEvent,
     AssistantTextDeltaEvent,
+    CausalSource,
     ErrorEvent,
     InteractionPrediction,
     LlmHistoryEvent,
@@ -60,11 +61,13 @@ from app.compute.voice.schemas import (
     PlaybackCompleteEvent,
     PlaybackProgressEvent,
     PlaybackStartedEvent,
+    PlaybackState,
     PlaybackStoppedEvent,
     SessionReadyEvent,
     SessionStartEvent,
     SessionStopEvent,
     SpeechStateEvent,
+    TraceStamp,
     TranscriptEvent,
     TranscriptRevision,
     VoiceServerEvent,
@@ -90,6 +93,9 @@ class SessionPolicy:
     minimum_prediction_confidence: float = 0.7
     decisive_hold_threshold: float = 0.65
     floor_taking_overlap_threshold: float = 0.7
+    vad_speculation_enabled: bool = True
+    vad_endpoint_yield_probability: float = 0.7
+    vad_endpoint_confidence: float = 0.7
 
     def __post_init__(self) -> None:
         thresholds = (
@@ -98,6 +104,8 @@ class SessionPolicy:
             self.minimum_prediction_confidence,
             self.decisive_hold_threshold,
             self.floor_taking_overlap_threshold,
+            self.vad_endpoint_yield_probability,
+            self.vad_endpoint_confidence,
         )
         if any(threshold < 0.0 or threshold > 1.0 for threshold in thresholds):
             raise ValueError("Prediction policy thresholds must be between zero and one.")
@@ -396,6 +404,7 @@ class VoiceSession:
                     pre_roll_samples = 0
                     continue
 
+                vad_endpoint_detected = not is_speech and previous_chunk_was_speech
                 if is_speech and not previous_chunk_was_speech:
                     await self._invalidate_speculative_candidate(
                         CandidateInvalidationReason.USER_ACTIVITY_RESUMED
@@ -416,7 +425,14 @@ class VoiceSession:
                             text_offset=None,
                         )
                 prediction = await self._predict_turn(pcm_bytes, is_speech)
+                if (
+                    prediction is None
+                    and vad_endpoint_detected
+                    and self.policy.vad_speculation_enabled
+                ):
+                    prediction = self._vad_endpoint_prediction()
                 if prediction is not None:
+                    self.latest_prediction = prediction
                     await self._handle_prediction(prediction)
                 if is_speech:
                     silent_samples = 0
@@ -429,11 +445,16 @@ class VoiceSession:
                     and prediction.confidence >= self.policy.minimum_prediction_confidence
                     and prediction.p_user_yield >= self.policy.commitment_yield_threshold
                 )
-                baseline_commits = (
-                    self.turn_prediction_source is None
-                    and silent_samples >= required_silent_samples
+                prediction_blocks_silence_commit = (
+                    prediction is not None
+                    and prediction.confidence >= self.policy.minimum_prediction_confidence
+                    and prediction.p_user_speech >= self.policy.decisive_hold_threshold
                 )
-                if not prediction_commits and not baseline_commits:
+                silence_commits = (
+                    silent_samples >= required_silent_samples
+                    and not prediction_blocks_silence_commit
+                )
+                if not prediction_commits and not silence_commits:
                     continue
                 speech_active = False
                 silent_samples = 0
@@ -469,6 +490,29 @@ class VoiceSession:
                 self.audio_sample_count,
             )
         return None
+
+    def _vad_endpoint_prediction(self) -> InteractionPrediction:
+        revision = self.transcript_revisions.latest
+        return InteractionPrediction(
+            stamp=TraceStamp(
+                event_id=str(uuid4()),
+                parent_event_ids=(() if revision is None else (revision.stamp.event_id,)),
+                monotonic_time_ns=time.perf_counter_ns(),
+                input_sample_position=self.audio_sample_count,
+                output_sample_position=None,
+                transcript_revision_id=(None if revision is None else revision.revision_id),
+                source=CausalSource.SILERO_VAD,
+                model_name="silero-vad",
+                model_revision=None,
+            ),
+            p_user_speech=0.0,
+            p_user_yield=self.policy.vad_endpoint_yield_probability,
+            p_user_backchannel=0.0,
+            p_user_interruption=0.0,
+            future_user_activity_horizons=(),
+            assistant_playback_state=PlaybackState.IDLE,
+            confidence=self.policy.vad_endpoint_confidence,
+        )
 
     async def _predict_turn(
         self,
@@ -525,10 +569,13 @@ class VoiceSession:
                     CandidateInvalidationReason.PREDICTION_RETURNED_TO_HOLD
                 )
         revision = self.transcript_revisions.latest
+        prompted_text = (
+            "" if revision is None else self._speculative_prompt_text(revision, prediction)
+        )
         if (
             self.active_generation is None
             and revision is not None
-            and revision.stable_prefix.strip()
+            and prompted_text
             and prediction.confidence >= self.policy.minimum_prediction_confidence
             and prediction.p_user_yield >= self.policy.speculative_yield_threshold
         ):
@@ -543,6 +590,21 @@ class VoiceSession:
             await self._invalidate_speculative_candidate(
                 CandidateInvalidationReason.STABLE_PREFIX_REVISED
             )
+            return
+        prediction = generation.causal_prediction
+        if (
+            prediction is not None
+            and prediction.stamp.source is CausalSource.SILERO_VAD
+            and candidate_final_invalidation_reason(
+                stable_prefix=stable_prefix,
+                prompted_text=generation.anchored_text,
+                final_text=f"{revision.stable_prefix}{revision.volatile_suffix}",
+            )
+            is not None
+        ):
+            await self._invalidate_speculative_candidate(
+                CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
+            )
 
     async def _start_speculative_candidate(
         self,
@@ -552,7 +614,7 @@ class VoiceSession:
         await self._finalize_cancelled_playback()
         await self._await_generation_teardown()
         assert self.active_generation is None
-        prompted_text = revision.stable_prefix.strip()
+        prompted_text = self._speculative_prompt_text(revision, prediction)
         prompt_messages = (
             *self.conversation,
             ConversationMessage(role=ConversationRole.USER, content=prompted_text),
@@ -601,6 +663,15 @@ class VoiceSession:
             revision.audio_sample_position,
             prediction.confidence,
         )
+
+    @staticmethod
+    def _speculative_prompt_text(
+        revision: TranscriptRevision,
+        prediction: InteractionPrediction,
+    ) -> str:
+        if prediction.stamp.source is CausalSource.SILERO_VAD:
+            return f"{revision.stable_prefix}{revision.volatile_suffix}".strip()
+        return revision.stable_prefix.strip()
 
     async def _finalize_turn(self, transcription: TranscriptionSession) -> None:
         committed_at = time.perf_counter()
