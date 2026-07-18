@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice Light · Tool-use records</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="title">
+        <span class="eyebrow">Voice Light</span>
+        <h1>Tool-use records</h1>
+      </div>
+      <div class="navigation">
+        <button id="previous-record" type="button" aria-label="Previous record">←</button>
+        <label class="record-picker">
+          <span>Record</span>
+          <select id="record-select" aria-label="Select record"></select>
+        </label>
+        <button id="next-record" type="button" aria-label="Next record">→</button>
+        <button id="choose-file" class="secondary" type="button">Open JSONL</button>
+        <input id="file-input" type="file" accept=".jsonl,.json" hidden />
+      </div>
+    </header>
+
+    <main>
+      <section id="empty-state" class="empty-state" hidden>
+        <p id="empty-message">No records loaded.</p>
+        <button id="empty-choose-file" type="button">Choose a JSONL file</button>
+      </section>
+
+      <article id="record-view" hidden>
+        <header class="record-header">
+          <div>
+            <p id="record-position" class="position"></p>
+            <h2 id="record-title"></h2>
+          </div>
+          <div id="record-badges" class="badges"></div>
+        </header>
+
+        <details class="system-panel">
+          <summary>System instruction and available tools</summary>
+          <div id="system-content"></div>
+        </details>
+
+        <section id="conversation" class="conversation" aria-label="Conversation history"></section>
+
+        <details class="raw-panel">
+          <summary>Raw canonical record</summary>
+          <pre id="raw-record"></pre>
+        </details>
+      </article>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
