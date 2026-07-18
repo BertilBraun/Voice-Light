@@ -14,6 +14,7 @@ UnaryOperation = Callable[[Decimal], Decimal]
 
 MAXIMUM_ABSOLUTE_RESULT = Decimal("1e100")
 MAXIMUM_EXPONENT = Decimal("12")
+TIME_SAMPLE_WINDOW = timedelta(days=365)
 
 
 def call_arguments(call: GeneratedToolCall) -> JsonObjectValue:
@@ -53,14 +54,16 @@ def calculate_expression(expression: str) -> str:
     return _format_decimal(result)
 
 
-def seeded_time(random_seed: int) -> str:
+def seeded_time(random_seed: int, reference_time: datetime) -> str:
+    if reference_time.tzinfo is None or reference_time.utcoffset() is None:
+        raise ValueError("Time reference must include a UTC offset.")
+
     generator = random.Random(random_seed)
-    start = datetime(2020, 1, 1, tzinfo=UTC)
-    day_offset = generator.randrange(0, 365 * 12)
-    second_offset = generator.randrange(0, 24 * 60 * 60)
+    reference_utc = reference_time.astimezone(UTC).replace(microsecond=0)
+    seconds_ago = generator.randrange(0, int(TIME_SAMPLE_WINDOW.total_seconds()))
     utc_offset_hours = generator.randrange(-11, 15)
     target_timezone = timezone(timedelta(hours=utc_offset_hours))
-    timestamp = start + timedelta(days=day_offset, seconds=second_offset)
+    timestamp = reference_utc - timedelta(seconds=seconds_ago)
     return timestamp.astimezone(target_timezone).replace(microsecond=0).isoformat()
 
 

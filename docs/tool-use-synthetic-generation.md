@@ -81,6 +81,7 @@ python -m app.training.tool_use.cli generate \
   --model Qwen/Qwen3.6-27B-FP8 \
   --model-revision MODEL_REVISION \
   --quantization fp8 \
+  --time-reference 2026-07-18T12:00:00+00:00 \
   --limit 20 \
   --concurrency 64
 ```
@@ -88,6 +89,11 @@ python -m app.training.tool_use.cli generate \
 The records, failures, run manifests, and raw vLLM request/response journal are append-only. The
 journal never records the API-key header. Re-running the command skips completed `scenario_id`
 values; failed scenarios may be retried on a later invocation.
+
+Choose one timezone-aware `--time-reference` at the beginning of the dataset run and keep it fixed
+for every checkpoint and retry. Each successful `get_time` result is deterministically sampled from
+the 365 days preceding that anchor, with a varied UTC offset. The anchor is retained in both record
+provenance and run manifests.
 
 Validate and summarize:
 

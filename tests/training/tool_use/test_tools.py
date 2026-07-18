@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from app.training.tool_use.tools import calculate_expression, seeded_time
@@ -36,7 +38,24 @@ def test_calculate_expression_rejects_unsafe_or_invalid_input(expression: str) -
 
 
 def test_seeded_time_is_stable_and_timezone_aware() -> None:
-    assert seeded_time(91) == seeded_time(91)
-    assert seeded_time(91) != seeded_time(92)
-    assert "T" in seeded_time(91)
-    assert seeded_time(91)[-6] in ("+", "-")
+    reference_time = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+    first = seeded_time(91, reference_time)
+    assert first == seeded_time(91, reference_time)
+    assert first != seeded_time(92, reference_time)
+    assert "T" in first
+    assert first[-6] in ("+", "-")
+
+    sampled_times = tuple(
+        datetime.fromisoformat(seeded_time(random_seed, reference_time))
+        for random_seed in range(200)
+    )
+    assert len(set(sampled_times)) == len(sampled_times)
+    assert all(
+        reference_time - timedelta(days=365) <= sample.astimezone(UTC) <= reference_time
+        for sample in sampled_times
+    )
+
+
+def test_seeded_time_requires_timezone_aware_reference() -> None:
+    with pytest.raises(ValueError, match="UTC offset"):
+        seeded_time(91, datetime(2026, 7, 18, 12, 0))

@@ -282,6 +282,7 @@ class GenerationProvenance(ToolUseBaseModel):
     quantization: str | None
     prompt_revision: str
     random_seed: int | None
+    time_reference: str | None
 
 
 class ScenarioMetadata(ToolUseBaseModel):

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, TypeVar
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from app.training.tool_use.prompts import (
     PROMPT_REVISION,
@@ -86,6 +86,7 @@ class RolloutGenerationConfig(ToolUseBaseModel):
     model_identifier: str
     model_revision: str
     quantization: str
+    time_reference: AwareDatetime
     maximum_concurrency: int = Field(default=128, ge=1)
     maximum_semantic_attempts: int = Field(default=3, ge=1)
     bridge_word_limit: int = Field(default=8, ge=1)
@@ -127,6 +128,7 @@ class GenerationRunManifest(ToolUseBaseModel):
     model_identifier: str
     model_revision: str
     quantization: str
+    time_reference: AwareDatetime
     prompt_revision: str
     planned_scenarios: int = Field(ge=0)
     previously_completed: int = Field(ge=0)
@@ -256,6 +258,7 @@ async def generate_dataset(
         model_identifier=config.model_identifier,
         model_revision=config.model_revision,
         quantization=config.quantization,
+        time_reference=config.time_reference,
         prompt_revision=PROMPT_REVISION,
         planned_scenarios=len(scenarios),
         previously_completed=len(already_completed),
@@ -360,6 +363,7 @@ async def generate_record(
                 generator=generator,
                 random_seed=_request_seed(scenario.random_seed, turn_index, step_index + 101),
                 maximum_attempts=config.maximum_semantic_attempts,
+                time_reference=config.time_reference,
             )
             usage = usage.add(tool_usage)
             request_count += tool_requests
@@ -490,6 +494,7 @@ async def _execute_tool(
     generator: StructuredGenerator,
     random_seed: int,
     maximum_attempts: int,
+    time_reference: datetime,
 ) -> tuple[ToolOutcome, TokenUsage, int]:
     match planned_step.outcome:
         case PlannedOutcome.EMPTY:
@@ -515,7 +520,11 @@ async def _execute_tool(
         case CalculateCall(expression=expression):
             return SuccessOutcome(content=calculate_expression(expression)), TokenUsage(), 0
         case GetTimeCall():
-            return SuccessOutcome(content=seeded_time(random_seed)), TokenUsage(), 0
+            return (
+                SuccessOutcome(content=seeded_time(random_seed, time_reference)),
+                TokenUsage(),
+                0,
+            )
 
 
 def _validate_search_result(envelope: SyntheticSearchResultEnvelope) -> None:
@@ -557,6 +566,7 @@ def _record_metadata(
             quantization=config.quantization,
             prompt_revision=PROMPT_REVISION,
             random_seed=scenario.random_seed,
+            time_reference=config.time_reference.isoformat(),
         ),
         scenario=ScenarioMetadata(
             family=scenario.family,

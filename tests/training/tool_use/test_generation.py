@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar, cast
 
@@ -43,6 +44,7 @@ from app.training.tool_use.schema import (
 from app.training.tool_use.vllm_client import StructuredGenerationResult
 
 GeneratedValue = TypeVar("GeneratedValue", bound=ToolUseBaseModel)
+TIME_REFERENCE = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
 
 
 class ScriptedGenerator:
@@ -150,6 +152,7 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
                 model_identifier="Qwen/Qwen3.6-27B-FP8",
                 model_revision="test-revision",
                 quantization="fp8",
+                time_reference=TIME_REFERENCE,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -193,6 +196,7 @@ def test_dataset_generation_is_append_only_and_resumable(tmp_path: Path) -> None
             model_identifier="Qwen/Qwen3.6-27B-FP8",
             model_revision="test-revision",
             quantization="fp8",
+            time_reference=TIME_REFERENCE,
         )
         first_generator = ScriptedGenerator(scripted_two_call_values())
         first = await generate_dataset(

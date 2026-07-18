@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from tests.training.tool_use.test_generation import (
 
 QWEN_MODEL_IDENTIFIER = "Qwen/Qwen3-1.7B"
 QWEN_MODEL_REVISION = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+TIME_REFERENCE = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
 
 
 class PrefixStableTokenizer:
@@ -83,6 +85,7 @@ def test_qwen_renderer_masks_every_non_assistant_message() -> None:
                 model_identifier="Qwen/Qwen3.6-27B-FP8",
                 model_revision="test-revision",
                 quantization="fp8",
+                time_reference=TIME_REFERENCE,
             ),
         )
 
@@ -113,6 +116,7 @@ def test_qwen_renderer_keeps_spoken_content_calls_and_string_results_separate() 
                 model_identifier="Qwen/Qwen3.6-27B-FP8",
                 model_revision="test-revision",
                 quantization="fp8",
+                time_reference=TIME_REFERENCE,
             ),
         )
 
@@ -148,6 +152,7 @@ def test_pinned_qwen_template_preserves_tokens_and_returns_assistant_mask() -> N
                 model_identifier="Qwen/Qwen3.6-27B-FP8",
                 model_revision="test-revision",
                 quantization="fp8",
+                time_reference=TIME_REFERENCE,
             ),
         )
 

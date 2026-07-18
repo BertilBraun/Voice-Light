@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from app.training.tool_use.generation import RolloutGenerationConfig, generate_dataset
@@ -50,6 +51,12 @@ def _argument_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--model", required=True)
     generate_parser.add_argument("--model-revision", required=True)
     generate_parser.add_argument("--quantization", required=True)
+    generate_parser.add_argument(
+        "--time-reference",
+        type=_timezone_aware_datetime,
+        required=True,
+        help="Fixed ISO 8601 anchor used to sample reproducible times from the prior year.",
+    )
     generate_parser.add_argument("--limit", type=int)
     generate_parser.add_argument("--concurrency", type=int, default=128)
     generate_parser.add_argument("--semantic-attempts", type=int, default=3)
@@ -104,6 +111,7 @@ async def _generate(arguments: argparse.Namespace) -> None:
         model_identifier=arguments.model,
         model_revision=arguments.model_revision,
         quantization=arguments.quantization,
+        time_reference=arguments.time_reference,
         maximum_concurrency=arguments.concurrency,
         maximum_semantic_attempts=arguments.semantic_attempts,
     )
@@ -131,6 +139,16 @@ def _validate(arguments: argparse.Namespace) -> None:
 def _summarize(arguments: argparse.Namespace) -> None:
     records = read_records(arguments.records)
     print(dataset_statistics(records).model_dump_json(indent=2))
+
+
+def _timezone_aware_datetime(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("Expected an ISO 8601 timestamp.") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError("Timestamp must include a UTC offset.")
+    return parsed
 
 
 if __name__ == "__main__":
