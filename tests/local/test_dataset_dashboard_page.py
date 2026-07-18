@@ -124,3 +124,13 @@ def test_dataset_dashboard_shows_trimmed_annotations_and_full_recordings(
     assert '"First three minutes with ASR annotations"' in dashboard_script
     assert 'title: "Full recordings"' in dashboard_script
     assert 'trimmed ? "?trimmed=true"' in dashboard_script
+
+
+def test_dataset_dashboard_loads_compact_rows_and_exact_completeness(
+    dashboard_script: str,
+) -> None:
+    assert "/api/dataset-dashboard/sample-summaries" in dashboard_script
+    assert "/api/dataset-dashboard/completeness" in dashboard_script
+    assert "/api/dataset-dashboard/samples/${sampleSummary.sample.id}" in dashboard_script
+    assert '"Latest quality / annotation versions"' in dashboard_script
+    assert '"Latest full-recording transcripts"' in dashboard_script

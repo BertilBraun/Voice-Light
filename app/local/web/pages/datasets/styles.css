@@ -54,9 +54,87 @@ h3 {
   color: #627083;
 }
 
-#conversation-summary {
+#conversation-summary,
+#completeness-summary {
   display: grid;
   gap: 12px;
+}
+
+#completeness-summary {
+  min-height: 0;
+  margin-bottom: 16px;
+}
+
+.completeness-overview {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.completeness-card {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border: 1px solid #dce3ea;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.completeness-card strong {
+  font-size: 18px;
+}
+
+.completeness-card span {
+  color: #627083;
+  font-size: 11px;
+}
+
+.completeness-card.complete {
+  border-color: #86c89d;
+  background: #f0fdf4;
+}
+
+.completeness-card.warning {
+  border-color: #e7c58d;
+  background: #fff8e8;
+}
+
+.completeness-card.reviewed {
+  border-color: #9fb7d2;
+  background: #eef5fb;
+}
+
+.completeness-tables {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  overflow-x: auto;
+}
+
+.completeness-tables section {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+}
+
+.completeness-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.completeness-table th,
+.completeness-table td {
+  padding: 5px 7px;
+  border-bottom: 1px solid #e4e9ef;
+  text-align: left;
+  vertical-align: top;
+}
+
+.completeness-table th {
+  color: #526174;
+  background: #f8fafc;
+  font-weight: 650;
 }
 
 .summary-note {
@@ -550,8 +628,13 @@ pre {
 
 @media (max-width: 900px) {
   .filters,
-  .content-grid {
+  .content-grid,
+  .completeness-tables {
     grid-template-columns: 1fr;
+  }
+
+  .completeness-overview {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

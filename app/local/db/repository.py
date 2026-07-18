@@ -18,11 +18,16 @@ from app.local.db.models import (
     AudioMetadataRecord,
     ConversationDatasetSummary,
     DashboardSample,
+    DashboardSampleSummary,
+    DatasetCompletenessSummary,
     DatasetCreate,
     DatasetRecord,
+    FullAsrCoverageCount,
     IngestionJobRecord,
     JobStatus,
     QualityResultRecord,
+    QualityResultSummaryRecord,
+    QualityVersionCount,
     SampleListFilter,
     SampleRecord,
     SampleTrackRecord,
@@ -635,6 +640,214 @@ class Repository:
             ).fetchall()
         return [dashboard_sample_from_row(row) for row in rows]
 
+    def list_dashboard_sample_summaries(
+        self,
+        sample_filter: SampleListFilter,
+    ) -> list[DashboardSampleSummary]:
+        filter_sql = dashboard_filter_sql(sample_filter)
+        parameters = (*filter_sql.parameters, sample_filter.limit, sample_filter.offset)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                  row_to_json(samples.*) AS sample_json,
+                  latest_quality.id AS quality_id,
+                  latest_quality.sample_id AS quality_sample_id,
+                  latest_quality.metric_version,
+                  latest_quality.payload -> 'conversation_annotation' ->> 'annotation_version'
+                    AS annotation_version,
+                  latest_quality.status AS quality_status,
+                  latest_quality.total_quality_score,
+                  latest_quality.speech_ratio,
+                  latest_quality.overlap_ratio,
+                  (
+                    latest_quality.speaker1_parakeet_full_asr_transcript_id IS NOT NULL
+                    AND latest_quality.speaker2_parakeet_full_asr_transcript_id IS NOT NULL
+                  ) AS has_parakeet_transcript_pair,
+                  (
+                    latest_quality.speaker1_canary_full_asr_transcript_id IS NOT NULL
+                    AND latest_quality.speaker2_canary_full_asr_transcript_id IS NOT NULL
+                  ) AS has_canary_transcript_pair,
+                  latest_quality.synchronization_alignment_origin,
+                  latest_quality.created_at AS quality_created_at
+                FROM samples
+                LEFT JOIN LATERAL (
+                  SELECT *
+                  FROM quality_results
+                  WHERE quality_results.sample_id = samples.id
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT 1
+                ) AS latest_quality ON true
+                LEFT JOIN LATERAL (
+                  SELECT *
+                  FROM asr_runs
+                  WHERE asr_runs.sample_id = samples.id
+                  ORDER BY created_at DESC
+                  LIMIT 1
+                ) AS latest_asr_run ON true
+                LEFT JOIN asr_evaluations AS latest_asr_evaluation
+                  ON latest_asr_evaluation.asr_run_id = latest_asr_run.id
+                {filter_sql.where_clause}
+                ORDER BY samples.updated_at DESC, samples.external_id
+                LIMIT %s OFFSET %s
+                """,
+                parameters,
+            ).fetchall()
+        return [dashboard_sample_summary_from_row(row) for row in rows]
+
+    def dataset_completeness_summary(
+        self,
+        dataset_id: UUID | None,
+        expected_metric_version: str,
+        expected_annotation_version: str,
+    ) -> DatasetCompletenessSummary:
+        dataset_filter = "WHERE samples.dataset_id = %s" if dataset_id is not None else ""
+        parameters: tuple[object, ...] = (dataset_id,) if dataset_id is not None else ()
+        with self.connection() as connection:
+            overview = connection.execute(
+                f"""
+                WITH selected_samples AS (
+                  SELECT samples.id
+                  FROM samples
+                  {dataset_filter}
+                ),
+                current_quality AS (
+                  SELECT DISTINCT quality_results.sample_id
+                  FROM quality_results
+                  JOIN selected_samples ON selected_samples.id = quality_results.sample_id
+                  WHERE quality_results.metric_version = %s
+                    AND quality_results.status = 'completed'
+                ),
+                duration_excluded AS (
+                  SELECT DISTINCT quality_results.sample_id
+                  FROM quality_results
+                  JOIN selected_samples ON selected_samples.id = quality_results.sample_id
+                  WHERE quality_results.status = 'invalid'
+                    AND 'duration_mismatch_invalid' = ANY(quality_results.flags)
+                )
+                SELECT
+                  COUNT(*)::integer AS sample_count,
+                  COUNT(current_quality.sample_id)::integer AS current_quality_sample_count,
+                  COUNT(*) FILTER (
+                    WHERE current_quality.sample_id IS NULL
+                  )::integer AS not_current_sample_count,
+                  COUNT(duration_excluded.sample_id) FILTER (
+                    WHERE current_quality.sample_id IS NULL
+                  )::integer AS duration_excluded_sample_count,
+                  COUNT(synchronization_reviews.sample_id) FILTER (
+                    WHERE current_quality.sample_id IS NOT NULL
+                  )::integer AS reviewed_current_quality_sample_count
+                FROM selected_samples
+                LEFT JOIN current_quality ON current_quality.sample_id = selected_samples.id
+                LEFT JOIN duration_excluded ON duration_excluded.sample_id = selected_samples.id
+                LEFT JOIN synchronization_reviews
+                  ON synchronization_reviews.sample_id = selected_samples.id
+                """,
+                (*parameters, expected_metric_version),
+            ).fetchone()
+            assert overview is not None
+            version_rows = connection.execute(
+                f"""
+                WITH selected_samples AS (
+                  SELECT samples.id
+                  FROM samples
+                  {dataset_filter}
+                ),
+                latest_quality AS (
+                  SELECT DISTINCT ON (quality_results.sample_id)
+                    quality_results.sample_id,
+                    quality_results.metric_version,
+                    quality_results.status,
+                    quality_results.payload
+                      -> 'conversation_annotation'
+                      ->> 'annotation_version' AS annotation_version
+                  FROM quality_results
+                  JOIN selected_samples ON selected_samples.id = quality_results.sample_id
+                  ORDER BY quality_results.sample_id,
+                           quality_results.created_at DESC,
+                           quality_results.id DESC
+                )
+                SELECT metric_version, annotation_version, status, COUNT(*)::integer AS sample_count
+                FROM latest_quality
+                GROUP BY metric_version, annotation_version, status
+                ORDER BY metric_version, annotation_version, status
+                """,
+                parameters,
+            ).fetchall()
+            coverage_rows = connection.execute(
+                f"""
+                WITH selected_samples AS (
+                  SELECT samples.id
+                  FROM samples
+                  {dataset_filter}
+                ),
+                current_quality AS (
+                  SELECT DISTINCT quality_results.sample_id
+                  FROM quality_results
+                  JOIN selected_samples ON selected_samples.id = quality_results.sample_id
+                  WHERE quality_results.metric_version = %s
+                    AND quality_results.status = 'completed'
+                ),
+                latest_transcripts AS (
+                  SELECT DISTINCT ON (
+                    transcripts.sample_track_id,
+                    transcripts.model_id
+                  )
+                    sample_tracks.sample_id,
+                    sample_tracks.side,
+                    transcripts.model_id,
+                    transcripts.error,
+                    jsonb_array_length(transcripts.words) AS word_count
+                  FROM full_recording_asr_transcripts AS transcripts
+                  JOIN sample_tracks ON sample_tracks.id = transcripts.sample_track_id
+                  JOIN selected_samples ON selected_samples.id = sample_tracks.sample_id
+                  ORDER BY transcripts.sample_track_id,
+                           transcripts.model_id,
+                           transcripts.updated_at DESC,
+                           transcripts.id DESC
+                )
+                SELECT
+                  CASE
+                    WHEN current_quality.sample_id IS NOT NULL THEN 'current_quality'
+                    ELSE 'not_current'
+                  END AS cohort,
+                  latest_transcripts.model_id,
+                  latest_transcripts.side,
+                  COUNT(*) FILTER (
+                    WHERE latest_transcripts.error IS NULL
+                      AND latest_transcripts.word_count > 0
+                  )::integer AS successful_transcript_count,
+                  COUNT(*) FILTER (
+                    WHERE latest_transcripts.error IS NOT NULL
+                      OR latest_transcripts.word_count = 0
+                  )::integer AS failed_transcript_count
+                FROM latest_transcripts
+                LEFT JOIN current_quality
+                  ON current_quality.sample_id = latest_transcripts.sample_id
+                GROUP BY cohort, latest_transcripts.model_id, latest_transcripts.side
+                ORDER BY cohort, latest_transcripts.model_id, latest_transcripts.side
+                """,
+                (*parameters, expected_metric_version),
+            ).fetchall()
+        sample_count = int(overview["sample_count"])
+        current_quality_sample_count = int(overview["current_quality_sample_count"])
+        reviewed_count = int(overview["reviewed_current_quality_sample_count"])
+        return DatasetCompletenessSummary(
+            dataset_id=dataset_id,
+            expected_metric_version=expected_metric_version,
+            expected_annotation_version=expected_annotation_version,
+            sample_count=sample_count,
+            current_quality_sample_count=current_quality_sample_count,
+            not_current_sample_count=int(overview["not_current_sample_count"]),
+            duration_excluded_sample_count=int(overview["duration_excluded_sample_count"]),
+            reviewed_current_quality_sample_count=reviewed_count,
+            unreviewed_current_quality_sample_count=current_quality_sample_count - reviewed_count,
+            quality_versions=tuple(QualityVersionCount.model_validate(row) for row in version_rows),
+            full_asr_coverage=tuple(
+                FullAsrCoverageCount.model_validate(row) for row in coverage_rows
+            ),
+        )
+
     def conversation_dataset_summary(
         self, sample_filter: SampleListFilter
     ) -> ConversationDatasetSummary:
@@ -1009,6 +1222,55 @@ def dashboard_sample_from_row(row: dict[str, object]) -> DashboardSample:
         if asr_evaluation_json is not None
         else None,
     )
+
+
+def dashboard_sample_summary_from_row(row: dict[str, object]) -> DashboardSampleSummary:
+    sample_json = stable_json_value(row["sample_json"])
+    quality_id = row["quality_id"]
+    latest_quality = (
+        QualityResultSummaryRecord(
+            id=quality_id if isinstance(quality_id, UUID) else UUID(str(quality_id)),
+            sample_id=(
+                row["quality_sample_id"]
+                if isinstance(row["quality_sample_id"], UUID)
+                else UUID(str(row["quality_sample_id"]))
+            ),
+            metric_version=str(row["metric_version"]),
+            annotation_version=(
+                str(row["annotation_version"]) if row["annotation_version"] is not None else None
+            ),
+            status=str(row["quality_status"]),
+            total_quality_score=optional_float(row["total_quality_score"]),
+            speech_ratio=optional_float(row["speech_ratio"]),
+            overlap_ratio=optional_float(row["overlap_ratio"]),
+            has_parakeet_transcript_pair=bool(row["has_parakeet_transcript_pair"]),
+            has_canary_transcript_pair=bool(row["has_canary_transcript_pair"]),
+            synchronization_alignment_origin=(
+                str(row["synchronization_alignment_origin"])
+                if row["synchronization_alignment_origin"] is not None
+                else None
+            ),
+            created_at=datetime_from_value(row["quality_created_at"]),
+        )
+        if quality_id is not None
+        else None
+    )
+    return DashboardSampleSummary(
+        sample=sample_record(dict(sample_json)),
+        latest_quality=latest_quality,
+    )
+
+
+def optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    assert isinstance(value, int | float)
+    return float(value)
+
+
+def datetime_from_value(value: object) -> datetime:
+    assert isinstance(value, datetime)
+    return value
 
 
 def normalize_json_row(row: dict[str, object], key: str) -> dict[str, object]:

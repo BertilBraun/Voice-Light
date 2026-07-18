@@ -3,6 +3,7 @@ import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js"
 const state = {
   datasets: [],
   samples: [],
+  selectedSample: null,
   playbackController: null,
 };
 
@@ -92,6 +93,7 @@ const elements = {
   sampleList: document.querySelector("#sample-list"),
   sampleDetail: document.querySelector("#sample-detail"),
   conversationSummary: document.querySelector("#conversation-summary"),
+  completenessSummary: document.querySelector("#completeness-summary"),
 };
 
 elements.refreshButton.addEventListener("click", loadDashboard);
@@ -129,12 +131,117 @@ async function loadSamples() {
   if (elements.flagFilter.value.trim()) {
     parameters.set("flag", elements.flagFilter.value.trim());
   }
-  const samplesPayload = await fetchJson(`/api/dataset-dashboard/samples?${parameters}`);
-  const summary = await fetchJson(`/api/dataset-dashboard/conversation-summary?${parameters}`);
+  const completenessParameters = new URLSearchParams();
+  if (datasetId) {
+    completenessParameters.set("dataset_id", datasetId);
+  }
+  const samplesPayload = await fetchJson(
+    `/api/dataset-dashboard/sample-summaries?${parameters}`,
+  );
+  const [summary, completeness] = await Promise.all([
+    fetchJson(`/api/dataset-dashboard/conversation-summary?${parameters}`),
+    fetchJson(`/api/dataset-dashboard/completeness?${completenessParameters}`),
+  ]);
   state.samples = samplesPayload.samples;
   elements.status.textContent = `${state.datasets.length} datasets, ${state.samples.length} samples`;
   renderSamples();
   renderConversationSummary(summary);
+  renderCompletenessSummary(completeness);
+}
+
+function renderCompletenessSummary(summary) {
+  const heading = document.createElement("div");
+  heading.className = "section-heading";
+  const title = document.createElement("h2");
+  title.textContent = "Ingestion completeness";
+  const expected = document.createElement("span");
+  expected.className = "muted";
+  expected.textContent =
+    `${summary.expected_metric_version} · ${summary.expected_annotation_version}`;
+  heading.append(title, expected);
+
+  const overview = document.createElement("div");
+  overview.className = "completeness-overview";
+  for (const [label, value, className] of [
+    ["All samples", summary.sample_count, ""],
+    ["Current accepted", summary.current_quality_sample_count, "complete"],
+    ["Not current", summary.not_current_sample_count, "warning"],
+    ["Duration-excluded", summary.duration_excluded_sample_count, ""],
+    ["Reviewed offsets", summary.reviewed_current_quality_sample_count, "reviewed"],
+    ["Unreviewed offsets", summary.unreviewed_current_quality_sample_count, ""],
+  ]) {
+    const card = document.createElement("div");
+    card.className = `completeness-card ${className}`;
+    const count = document.createElement("strong");
+    count.textContent = String(value);
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    card.append(count, caption);
+    overview.appendChild(card);
+  }
+
+  const grids = document.createElement("div");
+  grids.className = "completeness-tables";
+  grids.append(
+    createCompletenessTable(
+      "Latest quality / annotation versions",
+      ["Quality version", "Annotation version", "Status", "Samples"],
+      summary.quality_versions.map((row) => [
+        row.metric_version,
+        row.annotation_version || "none",
+        row.status,
+        row.sample_count,
+      ]),
+    ),
+    createCompletenessTable(
+      "Latest full-recording transcripts",
+      ["Cohort", "Model", "Track", "Success", "Failed"],
+      summary.full_asr_coverage.map((row) => [
+        row.cohort,
+        row.model_id,
+        formatSpeaker(row.side),
+        row.successful_transcript_count,
+        row.failed_transcript_count,
+      ]),
+    ),
+  );
+
+  const note = document.createElement("p");
+  note.className = "summary-note";
+  note.textContent =
+    "Current accepted samples have the expected quality and annotation versions. " +
+    "Duration-excluded samples retain their older real results and are not counted as current.";
+  elements.completenessSummary.replaceChildren(heading, overview, grids, note);
+}
+
+function createCompletenessTable(title, columnLabels, rows) {
+  const section = document.createElement("section");
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  const table = document.createElement("table");
+  table.className = "completeness-table";
+  const tableHead = document.createElement("thead");
+  const headingRow = document.createElement("tr");
+  for (const label of columnLabels) {
+    const cell = document.createElement("th");
+    cell.scope = "col";
+    cell.textContent = label;
+    headingRow.appendChild(cell);
+  }
+  tableHead.appendChild(headingRow);
+  const tableBody = document.createElement("tbody");
+  for (const row of rows) {
+    const tableRow = document.createElement("tr");
+    for (const value of row) {
+      const cell = document.createElement("td");
+      cell.textContent = String(value);
+      tableRow.appendChild(cell);
+    }
+    tableBody.appendChild(tableRow);
+  }
+  table.append(tableHead, tableBody);
+  section.append(heading, table);
+  return section;
 }
 
 function renderConversationSummary(summary) {
@@ -182,7 +289,9 @@ function renderSamples() {
     const button = document.createElement("button");
     button.className = "sample-row";
     button.type = "button";
-    button.addEventListener("click", () => renderSampleDetail(sample));
+    button.addEventListener("click", () => {
+      void loadSampleDetail(sample);
+    });
 
     const text = document.createElement("div");
     const title = document.createElement("div");
@@ -202,6 +311,23 @@ function renderSamples() {
     score.textContent = formatRatio(sample.sample.quality_score);
     button.append(text, score);
     elements.sampleList.appendChild(button);
+  }
+}
+
+async function loadSampleDetail(sampleSummary) {
+  state.playbackController?.destroy();
+  elements.sampleDetail.className = "detail-empty";
+  elements.sampleDetail.textContent = `Loading ${sampleSummary.sample.external_id}`;
+  try {
+    const sample = await fetchJson(
+      `/api/dataset-dashboard/samples/${sampleSummary.sample.id}`,
+    );
+    state.selectedSample = sample;
+    renderSampleDetail(sample);
+  } catch (error) {
+    elements.sampleDetail.className = "detail-empty";
+    elements.sampleDetail.textContent =
+      error instanceof Error ? error.message : "Could not load sample details";
   }
 }
 

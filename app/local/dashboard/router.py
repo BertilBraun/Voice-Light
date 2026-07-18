@@ -11,17 +11,21 @@ from app.local.config import DATABASE_URL
 from app.local.db.models import (
     ConversationDatasetSummary,
     DashboardSample,
+    DashboardSampleSummary,
+    DatasetCompletenessSummary,
     DatasetRecord,
     IngestionJobRecord,
     SampleListFilter,
     TrackSide,
 )
 from app.local.db.repository import Repository
+from app.local.ingestion.conversation import ANNOTATION_VERSION
 from app.local.ingestion.discovery import DatasetLayout
 from app.local.ingestion.service import IngestionService
 from app.shared.audio.wav import capped_wave_bytes
 from app.shared.audio.waveform import capped_waveform_envelope, full_waveform_envelope
 from app.shared.base_model import FrozenBaseModel
+from app.shared.quality import METRIC_VERSION
 
 router = APIRouter(prefix="/api/dataset-dashboard", tags=["dataset-dashboard"])
 
@@ -32,6 +36,10 @@ class DatasetListResponse(FrozenBaseModel):
 
 class SampleListResponse(FrozenBaseModel):
     samples: tuple[DashboardSample, ...]
+
+
+class SampleSummaryListResponse(FrozenBaseModel):
+    samples: tuple[DashboardSampleSummary, ...]
 
 
 class IngestionJobListResponse(FrozenBaseModel):
@@ -138,6 +146,51 @@ def list_samples(
             offset=offset,
         )
         return SampleListResponse(samples=tuple(repository().list_dashboard_samples(sample_filter)))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/sample-summaries")
+def list_sample_summaries(
+    dataset_id: UUID | None = None,
+    quality_min: float | None = None,
+    overlap_ratio_max: float | None = None,
+    flag: str | None = None,
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> SampleSummaryListResponse:
+    try:
+        sample_filter = SampleListFilter(
+            dataset_id=dataset_id,
+            quality_min=quality_min,
+            overlap_ratio_max=overlap_ratio_max,
+            flag=flag,
+            limit=limit,
+            offset=offset,
+        )
+        return SampleSummaryListResponse(
+            samples=tuple(repository().list_dashboard_sample_summaries(sample_filter))
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/samples/{sample_id}")
+def get_sample(sample_id: UUID) -> DashboardSample:
+    try:
+        return repository().get_dashboard_sample(sample_id=sample_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/completeness")
+def dataset_completeness(dataset_id: UUID | None = None) -> DatasetCompletenessSummary:
+    try:
+        return repository().dataset_completeness_summary(
+            dataset_id=dataset_id,
+            expected_metric_version=METRIC_VERSION,
+            expected_annotation_version=ANNOTATION_VERSION,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

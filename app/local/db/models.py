@@ -139,6 +139,55 @@ class QualityResultRecord(FrozenBaseModel):
     updated_at: datetime
 
 
+class QualityResultSummaryRecord(FrozenBaseModel):
+    id: UUID
+    sample_id: UUID
+    metric_version: str
+    annotation_version: str | None
+    status: str
+    total_quality_score: float | None
+    speech_ratio: float | None
+    overlap_ratio: float | None
+    has_parakeet_transcript_pair: bool
+    has_canary_transcript_pair: bool
+    synchronization_alignment_origin: str | None
+    created_at: datetime
+
+
+class DashboardSampleSummary(FrozenBaseModel):
+    sample: SampleRecord
+    latest_quality: QualityResultSummaryRecord | None
+
+
+class QualityVersionCount(FrozenBaseModel):
+    metric_version: str
+    annotation_version: str | None
+    status: str
+    sample_count: int
+
+
+class FullAsrCoverageCount(FrozenBaseModel):
+    cohort: str
+    model_id: str
+    side: TrackSide
+    successful_transcript_count: int
+    failed_transcript_count: int
+
+
+class DatasetCompletenessSummary(FrozenBaseModel):
+    dataset_id: UUID | None
+    expected_metric_version: str
+    expected_annotation_version: str
+    sample_count: int
+    current_quality_sample_count: int
+    not_current_sample_count: int
+    duration_excluded_sample_count: int
+    reviewed_current_quality_sample_count: int
+    unreviewed_current_quality_sample_count: int
+    quality_versions: tuple[QualityVersionCount, ...]
+    full_asr_coverage: tuple[FullAsrCoverageCount, ...]
+
+
 class AsrRunRecord(FrozenBaseModel):
     id: UUID
     sample_id: UUID
