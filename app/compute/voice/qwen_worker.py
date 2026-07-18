@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal, NotRequired, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict
 
 import torch
 from transformers import (
@@ -26,6 +27,7 @@ from app.compute.voice.hermes_tool_parser import (
 )
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
+    GenerateTextLlmCommand,
     LlmAssistantMessage,
     LlmCancelledEvent,
     LlmEndEvent,
@@ -43,27 +45,10 @@ from app.compute.voice.llm_worker_protocol import (
     StartLlmCommand,
     llm_worker_command_adapter,
 )
-from app.compute.voice.model_constants import LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION
-
-LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
-    "You are a conversational voice agent. Respond naturally and directly to the user's latest "
-    "message. Use the complete conversation history as context and do not repeat earlier answers. "
-    "Use a provided tool only when it is needed. When using a latency-bearing tool, always begin "
-    "with exactly one short, natural bridge sentence of no more than eight spoken words; never "
-    "begin with the tool call. Do not claim or guess the result before receiving it, and emit the "
-    "tool call immediately after the bridge. "
-    "After a tool result, answer directly in one or two short spoken sentences. If another "
-    "provided tool call is genuinely needed, first speak a new short bridge and then emit that "
-    "one call. "
-    "Do not repeat an earlier bridge, narrate JSON, or mention tools or internal processing. For "
-    "answers that need no tool, start with substantive content instead of filler acknowledgements "
-    "such as 'Sure' or 'Of course.' Use plain text without Markdown or emoji. "
-    "Use this example only as the required bridge-then-call format, while selecting the "
-    "appropriate provided tool and arguments for the actual request: User: What is the latest "
-    "Mars mission? "
-    "Assistant: Let me look that up. "
-    '<tool_call>{"name":"search","arguments":{"query":"latest Mars mission"}}</tool_call>'
+from app.compute.voice.model_constants import (
+    LANGUAGE_MODEL_SYSTEM_PROMPT,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,6 +86,7 @@ class QwenToolMessage(TypedDict):
 
 
 QwenChatMessage = QwenSystemMessage | QwenUserMessage | QwenAssistantMessage | QwenToolMessage
+QwenGenerationCommand = StartLlmCommand | GenerateTextLlmCommand
 
 
 class GenerationStreamer(Protocol):
@@ -139,21 +125,21 @@ class CancellationStoppingCriteria(StoppingCriteria):
 
 
 class QwenRuntime:
-    def __init__(self) -> None:
+    def __init__(self, model_name: str, model_revision: str) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
-            LANGUAGE_MODEL_NAME,
-            revision=LANGUAGE_MODEL_REVISION,
+            model_name,
+            revision=model_revision,
         )
         self.model = AutoModelForCausalLM.from_pretrained(
-            LANGUAGE_MODEL_NAME,
-            revision=LANGUAGE_MODEL_REVISION,
+            model_name,
+            revision=model_revision,
             dtype=torch.bfloat16,
             attn_implementation="sdpa",
         ).to("cuda")
 
     def stream_text(
         self,
-        command: StartLlmCommand,
+        command: QwenGenerationCommand,
         cancellation_event: threading.Event,
     ) -> Iterator[str]:
         prompt = render_qwen_prompt(self.tokenizer, command)
@@ -166,17 +152,29 @@ class QwenRuntime:
         generation_errors: list[Exception] = []
 
         def generate() -> None:
-            self.model.generate(
-                **model_inputs,
-                streamer=streamer,
-                stopping_criteria=StoppingCriteriaList(
-                    [CancellationStoppingCriteria(cancellation_event)]
-                ),
-                max_new_tokens=256,
-                do_sample=True,
-                temperature=0.6,
-                top_p=0.9,
-            )
+            match command:
+                case StartLlmCommand():
+                    self.model.generate(
+                        **model_inputs,
+                        streamer=streamer,
+                        stopping_criteria=StoppingCriteriaList(
+                            [CancellationStoppingCriteria(cancellation_event)]
+                        ),
+                        max_new_tokens=256,
+                        do_sample=True,
+                        temperature=0.6,
+                        top_p=0.9,
+                    )
+                case GenerateTextLlmCommand(max_new_tokens=max_new_tokens):
+                    self.model.generate(
+                        **model_inputs,
+                        streamer=streamer,
+                        stopping_criteria=StoppingCriteriaList(
+                            [CancellationStoppingCriteria(cancellation_event)]
+                        ),
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                    )
 
         model_thread = threading.Thread(
             target=_run_model_generation,
@@ -228,7 +226,7 @@ class QwenWorkerController:
 
     def _handle_command(self, command: LlmWorkerCommand) -> bool:
         match command:
-            case StartLlmCommand():
+            case StartLlmCommand() | GenerateTextLlmCommand():
                 self._start(command)
                 return False
             case CancelLlmCommand():
@@ -238,7 +236,7 @@ class QwenWorkerController:
                 self._shutdown()
                 return True
 
-    def _start(self, command: StartLlmCommand) -> None:
+    def _start(self, command: QwenGenerationCommand) -> None:
         with self.state_lock:
             if self.active_invocation is not None:
                 self._send_event(
@@ -286,29 +284,47 @@ class QwenWorkerController:
 
     def _generate(
         self,
-        command: StartLlmCommand,
+        command: QwenGenerationCommand,
         cancellation_event: threading.Event,
     ) -> None:
         terminal_event: LlmWorkerEvent | None = None
         raw_response_text = ""
-        parser = HermesToolCallParser(command.invocation_id)
         try:
-            for text_delta in self.runtime.stream_text(command, cancellation_event):
-                raw_response_text += text_delta
-                cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
-                for parser_event in parser.add_text(text_delta):
-                    self._send_parser_event(
-                        command.invocation_id,
-                        cumulative_token_count,
-                        parser_event,
-                    )
-            cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
-            for parser_event in parser.finish():
-                self._send_parser_event(
-                    command.invocation_id,
-                    cumulative_token_count,
-                    parser_event,
-                )
+            match command:
+                case StartLlmCommand():
+                    parser = HermesToolCallParser(command.invocation_id)
+                    for text_delta in self.runtime.stream_text(command, cancellation_event):
+                        raw_response_text += text_delta
+                        cumulative_token_count = self.runtime.count_response_tokens(
+                            raw_response_text
+                        )
+                        for parser_event in parser.add_text(text_delta):
+                            self._send_parser_event(
+                                command.invocation_id,
+                                cumulative_token_count,
+                                parser_event,
+                            )
+                    cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
+                    for parser_event in parser.finish():
+                        self._send_parser_event(
+                            command.invocation_id,
+                            cumulative_token_count,
+                            parser_event,
+                        )
+                case GenerateTextLlmCommand():
+                    for text_delta in self.runtime.stream_text(command, cancellation_event):
+                        raw_response_text += text_delta
+                        cumulative_token_count = self.runtime.count_response_tokens(
+                            raw_response_text
+                        )
+                        self._send_event(
+                            LlmSpokenTextDeltaEvent(
+                                invocation_id=command.invocation_id,
+                                text=text_delta,
+                                cumulative_token_count=cumulative_token_count,
+                            )
+                        )
+                    cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
             if cancellation_event.is_set():
                 terminal_event = LlmCancelledEvent(invocation_id=command.invocation_id)
             else:
@@ -432,20 +448,34 @@ def qwen_chat_messages(command: StartLlmCommand) -> list[QwenChatMessage]:
 
 def render_qwen_prompt(
     tokenizer: QwenChatTemplateTokenizer,
-    command: StartLlmCommand,
+    command: QwenGenerationCommand,
 ) -> str:
+    match command:
+        case StartLlmCommand():
+            messages = qwen_chat_messages(command)
+            tools = [specification.model_dump(mode="json") for specification in command.tools]
+        case GenerateTextLlmCommand(system_prompt=system_prompt, user_prompt=user_prompt):
+            messages = [
+                QwenSystemMessage(role="system", content=system_prompt),
+                QwenUserMessage(role="user", content=user_prompt),
+            ]
+            tools = []
     return tokenizer.apply_chat_template(
-        qwen_chat_messages(command),
+        messages,
         tokenize=False,
         add_generation_prompt=True,
-        tools=[specification.model_dump(mode="json") for specification in command.tools],
+        tools=tools,
         enable_thinking=False,
     )
 
 
-def main() -> None:
+def main(arguments: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--revision", required=True)
+    options = parser.parse_args(arguments)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    QwenWorkerController(QwenRuntime()).run()
+    QwenWorkerController(QwenRuntime(options.model, options.revision)).run()
 
 
 if __name__ == "__main__":

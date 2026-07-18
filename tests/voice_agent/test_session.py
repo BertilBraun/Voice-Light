@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -67,6 +67,7 @@ from app.compute.voice.schemas import (
     PlaybackStoppedEvent,
     TraceStamp,
 )
+from app.compute.voice.search import SearchPipeline, SearchResult, SearchSummary
 from app.compute.voice.session import SessionPolicy, VoiceSession
 from app.compute.voice.speech_understanding import (
     CompositeSpeechUnderstandingProvider,
@@ -79,6 +80,7 @@ from app.compute.voice.tools import (
     SearchArguments,
     SearchToolHandler,
     SerializedToolCall,
+    StandardSearchHandler,
     ToolCallFailure,
     ToolCallFailureReason,
     ToolExecutionFailure,
@@ -88,7 +90,6 @@ from app.compute.voice.tools import (
     ToolLifecycle,
     ToolResultCommitStatus,
     ToolSuccess,
-    create_runtime_tool_registry,
 )
 
 SPEECH_CHUNK = b"\x01\x00" * 320
@@ -153,6 +154,10 @@ def test_session_policy_reads_tool_timeouts() -> None:
 
     assert policy.tool_timeout_seconds == 3.5
     assert policy.tool_cancellation_timeout_seconds == 0.4
+
+
+def test_session_policy_default_allows_search_summarization_latency() -> None:
+    assert SessionPolicy.from_environment({}).tool_timeout_seconds == 30.0
 
 
 def test_session_policy_reads_maximum_tool_rounds() -> None:
@@ -551,13 +556,17 @@ class CancellationResistantWeatherHandler:
         return "London is 12 degrees and lightly cloudy."
 
 
+class UnconfiguredTestSearchHandler:
+    async def __call__(self, arguments: SearchArguments) -> str:
+        del arguments
+        raise RuntimeError("Search was not configured for this test.")
+
+
 def create_search_registry(search_handler: SearchToolHandler) -> RuntimeToolRegistry:
     return RuntimeToolRegistry(
         search_handler=search_handler,
         calculate_handler=PythonArithmeticHandler(),
-        get_time_handler=CurrentLocalTimeHandler(
-            lambda: datetime(2026, 7, 18, tzinfo=timezone.utc)
-        ),
+        get_time_handler=CurrentLocalTimeHandler(lambda: datetime(2026, 7, 18, tzinfo=UTC)),
     )
 
 
@@ -1079,12 +1088,23 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         websocket.receive_json()
         send_turn(websocket)
         history_events, _ = receive_until(websocket, "llm.history")
+        first_request_events, _ = receive_until(websocket, "llm.model_request")
         assert weather_handler.started.wait(timeout=1)
         wait_until(lambda: any(isinstance(output, ReleasedAudioChunk) for output in sink.outputs))
 
+        first_request_event = first_request_events[-1]
+        assert first_request_event["generation_id"] == 1
+        assert first_request_event["invocation_index"] == 1
+        assert not first_request_event["speculative"]
+        assert first_request_event["messages"][0]["role"] == "system"
+        assert first_request_event["messages"][1] == {
+            "role": "user",
+            "content": "hello agent",
+        }
+        assert first_request_event["tools"][0]["function"]["name"] == "search"
         assert len(language_model.requests) == 1
         assert len(synthesizer.sessions) == 1
-        assert not synthesizer.sessions[0].finished
+        assert synthesizer.sessions[0].finished
         assert weather_handler.arguments == [SearchArguments(query="current weather in London")]
         assert released_text(sink) == "Let me check that."
         assert all("<tool_call>" not in word.text for word in synthesizer.words)
@@ -1099,6 +1119,18 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         assert staged_tool.result_commit_status is ToolResultCommitStatus.STAGED
         assert staged_generation.model_context_turn.staged_tool_call is not None
         assert staged_generation.model_context_turn.committed_tool_exchanges == []
+        first_bridge_boundary = next(
+            output
+            for output in sink.outputs
+            if isinstance(output, ReleasedWordBoundary) and output.start_sample == 0
+        )
+        send_playback_progress(
+            websocket,
+            generation_id=1,
+            text_offset=first_bridge_boundary.text_offset,
+            boundary_start_sample=0,
+            played_sample_count=0,
+        )
 
         weather_handler.release.set()
         wait_until(
@@ -1107,6 +1139,21 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
                 and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
             )
         )
+        second_request_events, _ = receive_until(websocket, "llm.model_request")
+        second_request_event = second_request_events[-1]
+        assert second_request_event["invocation_index"] == 2
+        assert second_request_event["messages"][-2]["role"] == "assistant"
+        assert second_request_event["messages"][-2]["tool_calls"][0]["function"]["name"] == "search"
+        assert second_request_event["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "qwen-1-tool-1",
+            "outcome": {
+                "outcome": "success",
+                "call_id": "qwen-1-tool-1",
+                "tool_name": "search",
+                "result": "London is 12 degrees and lightly cloudy.",
+            },
+        }
         committed_tool = sessions[0].generations[1].tool_executions[0]
         assert committed_tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED
         assert committed_tool.result_committed_at is not None
@@ -1163,8 +1210,8 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         assert isinstance(tool_message.outcome, ToolSuccess)
         assert tool_message.outcome.result == "London is 12 degrees and lightly cloudy."
         assert second_request.tools == create_search_registry(weather_handler).specifications
-        assert len(synthesizer.sessions) == 1
-        assert synthesizer.sessions[0].finished
+        assert len(synthesizer.sessions) == 2
+        assert all(session.finished for session in synthesizer.sessions)
 
         released_outputs = tuple(sink.outputs)
         assert sum(isinstance(output, ReleasedAudioStart) for output in released_outputs) == 1
@@ -1232,6 +1279,88 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         cumulative_token_count=5,
     )
     assert language_model.second_pass_answer.endswith("in London.")
+
+
+def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() -> None:
+    raw_result_marker = "RAW_SEARCH_RESULT_PRIVATE"
+    summary_prompt_marker = "SUMMARY_EXCHANGE_PRIVATE"
+    final_tool_result = "London is cool and cloudy. Source: https://weather.example"
+
+    class PrivateSearchProvider:
+        async def search(
+            self,
+            query: str,
+            result_limit: int,
+        ) -> tuple[SearchResult, ...]:
+            del query, result_limit
+            return (
+                SearchResult(
+                    title="Weather report",
+                    url="https://weather.example",
+                    snippet=raw_result_marker,
+                ),
+            )
+
+        async def close(self) -> None:
+            return
+
+    class PrivateSearchSummarizer:
+        async def summarize(
+            self,
+            query: str,
+            results: tuple[SearchResult, ...],
+        ) -> SearchSummary:
+            del query
+            assert results[0].snippet == raw_result_marker
+            return SearchSummary(
+                text=final_tool_result,
+                system_prompt=summary_prompt_marker,
+                user_prompt=f"Summarize {raw_result_marker}",
+            )
+
+    language_model = ScriptedWeatherLanguageModel()
+    sessions: list[VoiceSession] = []
+    sink = InMemoryPlaybackSink()
+    search_handler = StandardSearchHandler(
+        SearchPipeline(PrivateSearchProvider(), PrivateSearchSummarizer())
+    )
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        created_sessions=sessions,
+        tool_executor=create_search_registry(search_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        debug_events, _ = receive_until(websocket, "search.debug")
+        wait_until(
+            lambda: (
+                len(language_model.requests) == 2
+                and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
+            )
+        )
+        websocket.send_json({"type": "session.stop"})
+
+    search_debug_event = debug_events[-1]
+    assert search_debug_event["results"][0]["snippet"] == raw_result_marker
+    assert search_debug_event["summarizer_system_prompt"] == summary_prompt_marker
+    assert raw_result_marker in search_debug_event["summarizer_user_prompt"]
+    assert search_debug_event["summary"] == final_tool_result
+    continuation_messages = language_model.requests[1].messages
+    serialized_messages = repr(continuation_messages)
+    assert final_tool_result in serialized_messages
+    assert raw_result_marker not in serialized_messages
+    assert summary_prompt_marker not in serialized_messages
+    assert all(
+        raw_result_marker not in message.content and summary_prompt_marker not in message.content
+        for message in sessions[0].conversation
+    )
 
 
 def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn() -> None:
@@ -1335,8 +1464,8 @@ def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn()
         assert [boundary.start_sample for boundary in boundaries] == sorted(
             boundary.start_sample for boundary in boundaries
         )
-        assert len(synthesizer.sessions) == 1
-        assert synthesizer.sessions[0].finished
+        assert len(synthesizer.sessions) == 3
+        assert all(session.finished for session in synthesizer.sessions)
 
         send_turn(websocket)
         receive_until(websocket, "llm.history")
@@ -3109,7 +3238,7 @@ def create_test_app(
             language_model=language_model,
             speech_synthesizer=speech_synthesizer,
             policy=policy,
-            tool_executor=tool_executor or create_runtime_tool_registry(),
+            tool_executor=tool_executor or create_search_registry(UnconfiguredTestSearchHandler()),
             playback_sink=playback_sink,
         )
         if created_sessions is not None:

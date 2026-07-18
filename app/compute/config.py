@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.compute.voice.search import SearchSettings, search_settings_from_environment
 from app.compute.voice.tts_selection import SpeechSynthesisSettings
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +13,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 @dataclass(frozen=True)
 class VoiceStackSettings:
     speech_synthesis: SpeechSynthesisSettings
+    search: SearchSettings
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,8 @@ class ComputeSettings:
                     speech_synthesis=SpeechSynthesisSettings.from_environment(
                         environment,
                         REPOSITORY_ROOT,
-                    )
+                    ),
+                    search=search_settings_from_environment(environment),
                 )
                 if voice_stack_enabled
                 else None

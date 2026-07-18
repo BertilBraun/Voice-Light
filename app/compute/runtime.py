@@ -15,8 +15,9 @@ from app.compute.voice.model_constants import (
     NEMOTRON_ASR_MODEL_NAME,
     NEMOTRON_ASR_MODEL_REVISION,
 )
-from app.compute.voice.models import TransformersLanguageModel
+from app.compute.voice.models import TransformersLanguageModel, TransformersTextGenerator
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
+from app.compute.voice.search import SearchProvider, create_search_provider
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
 from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingProvider
 from app.compute.voice.tts_selection import create_speech_synthesizer
@@ -49,13 +50,20 @@ class ComputeRuntime:
         self.streaming_asr_stage = MutableModelStage("streaming_asr")
         self.speech_detection_stage = MutableModelStage("speech_detection")
         self.language_model_stage = MutableModelStage("language_model")
+        self.search_summarizer_stage = MutableModelStage("search_summarizer")
         self.speech_synthesis_stage = MutableModelStage("speech_synthesis")
         self.batch_asr_models = AsrModelCache()
         self.voice_session_admission = SingleVoiceSessionAdmission()
         self.speech_understanding_provider: SpeechUnderstandingProvider | None = None
         self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
         self.language_model: TransformersLanguageModel | None = None
+        self.search_text_generator: TransformersTextGenerator | None = None
         self.speech_synthesizer: SpeechSynthesizer | None = None
+        self.search_provider: SearchProvider | None = (
+            None
+            if voice_stack_settings is None
+            else create_search_provider(voice_stack_settings.search)
+        )
         self.loading_task: asyncio.Task[None] | None = None
 
     @property
@@ -101,8 +109,12 @@ class ComputeRuntime:
             await asyncio.to_thread(self.speech_understanding_provider.close)
         if self.language_model is not None:
             await asyncio.to_thread(self.language_model.close)
+        if self.search_text_generator is not None:
+            await asyncio.to_thread(self.search_text_generator.close)
         if self.speech_synthesizer is not None:
             await asyncio.to_thread(self.speech_synthesizer.close)
+        if self.search_provider is not None:
+            await self.search_provider.close()
         logger.info("compute runtime shutdown complete")
 
     def require_speech_understanding_provider(self) -> SpeechUnderstandingProvider:
@@ -120,15 +132,26 @@ class ComputeRuntime:
             raise RuntimeError("Language model is not ready.")
         return self.language_model
 
+    def require_search_text_generator(self) -> TransformersTextGenerator:
+        if self.search_text_generator is None:
+            raise RuntimeError("Search summarizer is not ready.")
+        return self.search_text_generator
+
     def require_speech_synthesizer(self) -> SpeechSynthesizer:
         if self.speech_synthesizer is None:
             raise RuntimeError("Speech synthesizer is not ready.")
         return self.speech_synthesizer
 
+    def require_search_provider(self) -> SearchProvider:
+        if self.search_provider is None:
+            raise RuntimeError("Search provider is not ready.")
+        return self.search_provider
+
     async def _load_models(self) -> None:
         await self._load_speech_detector()
         await self._load_streaming_asr()
         await self._load_language_model()
+        await self._load_search_text_generator()
         await self._load_speech_synthesizer()
         logger.info("all required compute models ready")
 
@@ -160,6 +183,14 @@ class ComputeRuntime:
         )
         if model is not None:
             self.language_model = model
+
+    async def _load_search_text_generator(self) -> None:
+        generator = await self._timed_load(
+            self.search_summarizer_stage,
+            TransformersTextGenerator,
+        )
+        if generator is not None:
+            self.search_text_generator = generator
 
     async def _load_speech_synthesizer(self) -> None:
         assert self.voice_stack_settings is not None
@@ -202,5 +233,6 @@ class ComputeRuntime:
             self.speech_detection_stage,
             self.streaming_asr_stage,
             self.language_model_stage,
+            self.search_summarizer_stage,
             self.speech_synthesis_stage,
         )

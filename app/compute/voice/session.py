@@ -37,7 +37,6 @@ from app.compute.voice.interfaces import (
     LanguageModelToolCallFailure,
     LanguageModelToolCallStarted,
     SpeechDetector,
-    SpeechSynthesisSession,
     SpeechSynthesizer,
     SpeechUnderstandingProvider,
     SpeechUnderstandingSession,
@@ -48,6 +47,7 @@ from app.compute.voice.interfaces import (
     SynthesizedWordBoundary,
     VoxtreamSynthesisFirstAudioMetrics,
 )
+from app.compute.voice.model_constants import LANGUAGE_MODEL_SYSTEM_PROMPT
 from app.compute.voice.overlap import (
     OverlapEvidence,
     OverlapMetrics,
@@ -87,6 +87,12 @@ from app.compute.voice.schemas import (
     InteractionPrediction,
     LlmHistoryEvent,
     LlmHistoryMessage,
+    LlmModelAssistantMessage,
+    LlmModelMessage,
+    LlmModelRequestEvent,
+    LlmModelSystemMessage,
+    LlmModelToolMessage,
+    LlmModelUserMessage,
     PlaybackCommandAcknowledgementEvent,
     PlaybackCommandEvent,
     PlaybackCompleteEvent,
@@ -95,6 +101,8 @@ from app.compute.voice.schemas import (
     PlaybackStartedEvent,
     PlaybackState,
     PlaybackStoppedEvent,
+    SearchDebugEvent,
+    SearchDebugResultEvent,
     SessionReadyEvent,
     SessionStartEvent,
     SessionStopEvent,
@@ -109,6 +117,7 @@ from app.compute.voice.schemas import (
     voice_client_event_adapter,
 )
 from app.compute.voice.speech_understanding import InteractionPredictionReducer
+from app.compute.voice.synthesis_sequence import SpeechSynthesisSequence
 from app.compute.voice.tools import (
     SerializedToolCall,
     ToolCall,
@@ -147,7 +156,7 @@ class SessionPolicy:
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
     maximum_prediction_lag_ms: int = 80
-    tool_timeout_seconds: float = 5.0
+    tool_timeout_seconds: float = 30.0
     tool_cancellation_timeout_seconds: float = 0.25
     maximum_tool_rounds: int = 8
 
@@ -175,7 +184,7 @@ class SessionPolicy:
                     "VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS must be an integer."
                 ) from error
         tool_timeout_value = environment.get("VOICE_LIGHT_TOOL_TIMEOUT_SECONDS")
-        tool_timeout_seconds = 5.0
+        tool_timeout_seconds = 30.0
         if tool_timeout_value is not None:
             try:
                 tool_timeout_seconds = float(tool_timeout_value)
@@ -604,6 +613,7 @@ class VoiceSession:
             raise ValueError("session.start may only be sent once.")
         if event.input_sample_rate != INPUT_SAMPLE_RATE:
             raise ValueError(f"Input sample rate must be {INPUT_SAMPLE_RATE} Hz.")
+        self.tool_executor.configure_session(event.local_time_zone)
         self.started = True
         self._transition_session(SessionLifecycle.READY)
         await self._send_event(
@@ -1710,7 +1720,7 @@ class VoiceSession:
             )
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
-        synthesis = self.speech_synthesizer.start_session()
+        synthesis = SpeechSynthesisSequence(self.speech_synthesizer)
         text_task = asyncio.create_task(self._stream_response_text(generation, synthesis))
         audio_task = asyncio.create_task(self._stream_speech(generation, synthesis.stream_events()))
         generation_error: BaseException | None = None
@@ -1768,7 +1778,7 @@ class VoiceSession:
     async def _stream_response_text(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
     ) -> None:
         word_stream = CompleteWordStream()
         model_messages = list(generation.model_messages)
@@ -1815,6 +1825,7 @@ class VoiceSession:
                     VoiceOperation.GENERATE_TEXT,
                     "Qwen attempted a tool call after the configured round limit.",
                 )
+            await synthesis.finish_utterance()
             audible_content = generation.response_text[audible_text_start:audible_text_end].strip()
             tool_call: ToolCall | None = None
             assistant_message: ModelAssistantMessage
@@ -1895,20 +1906,31 @@ class VoiceSession:
     async def _run_model_invocation(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word_stream: CompleteWordStream,
         messages: tuple[ModelMessage, ...],
         tools: tuple[ToolSpecification, ...],
         tool_calls_allowed: bool,
         post_tool_continuation: bool,
     ) -> ModelInvocationResult:
-        language_stream = self.language_model.stream_response(
-            LanguageModelRequest(
-                assistant_generation_id=generation.generation_id,
-                messages=messages,
-                tools=tools,
+        request = LanguageModelRequest(
+            assistant_generation_id=generation.generation_id,
+            messages=messages,
+            tools=tools,
+        )
+        await self._send_event(
+            LlmModelRequestEvent(
+                generation_id=generation.generation_id,
+                invocation_index=len(generation.invocation_ids) + 1,
+                speculative=generation.speculative,
+                messages=(
+                    LlmModelSystemMessage(content=LANGUAGE_MODEL_SYSTEM_PROMPT),
+                    *(_llm_model_message(message) for message in request.messages),
+                ),
+                tools=request.tools,
             )
         )
+        language_stream = self.language_model.stream_response(request)
         invocation_id: int | None = None
         tool_request: SerializedToolCall | None = None
         tool_failure: ToolCallFailure | None = None
@@ -2000,7 +2022,7 @@ class VoiceSession:
     async def _publish_spoken_text(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word_stream: CompleteWordStream,
         text_delta: str,
     ) -> None:
@@ -2030,7 +2052,7 @@ class VoiceSession:
     async def _flush_synthesis_words(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word_stream: CompleteWordStream,
     ) -> None:
         for word in word_stream.finish():
@@ -2038,7 +2060,7 @@ class VoiceSession:
             await self._add_synthesis_word(generation, synthesis, word)
 
     @staticmethod
-    async def _finish_synthesis_input(synthesis: SpeechSynthesisSession) -> None:
+    async def _finish_synthesis_input(synthesis: SpeechSynthesisSequence) -> None:
         try:
             await synthesis.finish_input()
         except Exception as error:
@@ -2086,10 +2108,49 @@ class VoiceSession:
         if generation.latency.tool_execution_completed_at is None:
             generation.latency.tool_execution_completed_at = execution_completed_at
         tool.outcome = outcome
+        search_debug_trace = self.tool_executor.take_search_debug_trace(call.id)
+        if search_debug_trace is not None:
+            await self._send_event(
+                SearchDebugEvent(
+                    generation_id=generation.generation_id,
+                    query=search_debug_trace.query,
+                    results=tuple(
+                        SearchDebugResultEvent(
+                            title=result.title,
+                            url=result.url,
+                            snippet=result.snippet,
+                        )
+                        for result in search_debug_trace.results
+                    ),
+                    summarizer_system_prompt=search_debug_trace.summarizer_system_prompt,
+                    summarizer_user_prompt=search_debug_trace.summarizer_user_prompt,
+                    summary=search_debug_trace.summary,
+                    provider_duration_ms=search_debug_trace.provider_duration_ms,
+                    summarizer_duration_ms=search_debug_trace.summarizer_duration_ms,
+                    total_duration_ms=search_debug_trace.total_duration_ms,
+                )
+            )
         if isinstance(outcome, ToolSuccess):
             tool.lifecycle = ToolLifecycle.SUCCEEDED
+            logger.info(
+                "tool execution completed: session=%s generation=%d tool=%s "
+                "status=success duration_ms=%.1f",
+                self.session_id,
+                generation.generation_id,
+                call.function.name,
+                _milliseconds_between(execution_started_at, execution_completed_at),
+            )
         else:
             tool.lifecycle = ToolLifecycle.FAILED
+            logger.warning(
+                "tool execution completed: session=%s generation=%d tool=%s "
+                "status=failure reason=%s duration_ms=%.1f",
+                self.session_id,
+                generation.generation_id,
+                call.function.name,
+                outcome.reason,
+                _milliseconds_between(execution_started_at, execution_completed_at),
+            )
         return outcome
 
     def _tool_failure_outcome(self, failure: ToolCallFailure) -> ToolExecutionFailure:
@@ -2387,7 +2448,7 @@ class VoiceSession:
     async def _add_synthesis_word(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word: SynthesisWord,
     ) -> None:
         if generation.latency.first_synthesis_word_at is None:
@@ -2440,7 +2501,8 @@ class VoiceSession:
                 return
             match event:
                 case KyutaiSynthesisFirstAudioMetrics() | VoxtreamSynthesisFirstAudioMetrics():
-                    generation.latency.synthesis_metrics = event
+                    if generation.latency.synthesis_metrics is None:
+                        generation.latency.synthesis_metrics = event
                 case SynthesizedWordBoundary():
                     if event.text_offset > len(generation.response_text):
                         raise ValueError("TTS returned a text boundary beyond generated text.")
@@ -3169,6 +3231,16 @@ class VoiceSession:
                 f"{generation.lifecycle} -> {target}."
             )
         generation.lifecycle = target
+
+
+def _llm_model_message(message: ModelMessage) -> LlmModelMessage:
+    match message:
+        case ModelUserMessage(content=content):
+            return LlmModelUserMessage(content=content)
+        case ModelAssistantMessage(content=content, tool_calls=tool_calls):
+            return LlmModelAssistantMessage(content=content, tool_calls=tool_calls)
+        case ModelToolMessage(tool_call_id=tool_call_id, outcome=outcome):
+            return LlmModelToolMessage(tool_call_id=tool_call_id, outcome=outcome)
 
 
 def _pcm_sample_count(pcm_bytes: bytes) -> int:

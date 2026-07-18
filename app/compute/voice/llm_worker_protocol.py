@@ -18,6 +18,7 @@ from app.shared.base_model import FrozenBaseModel
 
 class LlmWorkerCommandType(StrEnum):
     START = "start"
+    GENERATE_TEXT = "generate_text"
     CANCEL = "cancel"
     SHUTDOWN = "shutdown"
 
@@ -64,6 +65,14 @@ class StartLlmCommand(FrozenBaseModel):
     tools: tuple[ToolSpecification, ...]
 
 
+class GenerateTextLlmCommand(FrozenBaseModel):
+    type: Literal[LlmWorkerCommandType.GENERATE_TEXT] = LlmWorkerCommandType.GENERATE_TEXT
+    invocation_id: int = Field(gt=0)
+    system_prompt: str = Field(min_length=1, max_length=4_000)
+    user_prompt: str = Field(min_length=1, max_length=8_000)
+    max_new_tokens: int = Field(gt=0, le=256)
+
+
 class CancelLlmCommand(FrozenBaseModel):
     type: Literal[LlmWorkerCommandType.CANCEL] = LlmWorkerCommandType.CANCEL
     invocation_id: int = Field(gt=0)
@@ -74,7 +83,7 @@ class ShutdownLlmCommand(FrozenBaseModel):
 
 
 LlmWorkerCommand = Annotated[
-    StartLlmCommand | CancelLlmCommand | ShutdownLlmCommand,
+    StartLlmCommand | GenerateTextLlmCommand | CancelLlmCommand | ShutdownLlmCommand,
     Field(discriminator="type"),
 ]
 llm_worker_command_adapter: TypeAdapter[LlmWorkerCommand] = TypeAdapter(LlmWorkerCommand)

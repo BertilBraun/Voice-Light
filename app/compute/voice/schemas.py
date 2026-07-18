@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, TypeAdapter, model_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from app.compute.voice.conversation import ConversationRole
 from app.compute.voice.errors import VoiceComponent, VoiceOperation
+from app.compute.voice.tools import (
+    ToolCall,
+    ToolExecutionFailure,
+    ToolSpecification,
+    ToolSuccess,
+)
 from app.shared.base_model import FrozenBaseModel
 
 
@@ -280,6 +287,16 @@ class VoiceClientEventType(StrEnum):
 class SessionStartEvent(FrozenBaseModel):
     type: Literal[VoiceClientEventType.SESSION_START] = VoiceClientEventType.SESSION_START
     input_sample_rate: int = Field(gt=0)
+    local_time_zone: str = Field(default="Etc/UTC", min_length=1, max_length=64)
+
+    @field_validator("local_time_zone")
+    @classmethod
+    def validate_local_time_zone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError(f"Unknown IANA time zone: {value}") from error
+        return value
 
 
 class SessionStopEvent(FrozenBaseModel):
@@ -309,7 +326,7 @@ class PlaybackProgressEvent(FrozenBaseModel):
     generation_id: int = Field(gt=0)
     text_offset: int = Field(gt=0)
     boundary_start_sample: int = Field(ge=0)
-    played_sample_count: int = Field(gt=0)
+    played_sample_count: int = Field(ge=0)
     browser_monotonic_time_ns: int = Field(ge=0)
     rendered_output_sample_position: int = Field(ge=0)
     output_sample_rate: int = Field(gt=0)
@@ -383,6 +400,8 @@ class VoiceServerEventType(StrEnum):
     TRANSCRIPT_FINAL = "transcript.final"
     TURN_COMMITTED = "turn.committed"
     LLM_HISTORY = "llm.history"
+    LLM_MODEL_REQUEST = "llm.model_request"
+    SEARCH_DEBUG = "search.debug"
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
@@ -422,6 +441,62 @@ class LlmHistoryEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.LLM_HISTORY] = VoiceServerEventType.LLM_HISTORY
     generation_id: int = Field(gt=0)
     messages: tuple[LlmHistoryMessage, ...]
+
+
+class LlmModelUserMessage(FrozenBaseModel):
+    role: Literal["user"] = "user"
+    content: str
+
+
+class LlmModelSystemMessage(FrozenBaseModel):
+    role: Literal["system"] = "system"
+    content: str
+
+
+class LlmModelAssistantMessage(FrozenBaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: str
+    tool_calls: tuple[ToolCall, ...]
+
+
+class LlmModelToolMessage(FrozenBaseModel):
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    outcome: ToolSuccess | ToolExecutionFailure
+
+
+LlmModelMessage = Annotated[
+    LlmModelSystemMessage | LlmModelUserMessage | LlmModelAssistantMessage | LlmModelToolMessage,
+    Field(discriminator="role"),
+]
+
+
+class LlmModelRequestEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.LLM_MODEL_REQUEST] = VoiceServerEventType.LLM_MODEL_REQUEST
+    generation_id: int = Field(gt=0)
+    invocation_index: int = Field(gt=0)
+    speculative: bool
+    messages: tuple[LlmModelMessage, ...]
+    tools: tuple[ToolSpecification, ...]
+
+
+class SearchDebugResultEvent(FrozenBaseModel):
+    title: str = Field(max_length=180)
+    url: str = Field(max_length=512)
+    snippet: str = Field(max_length=800)
+
+
+class SearchDebugEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.SEARCH_DEBUG] = VoiceServerEventType.SEARCH_DEBUG
+    generation_id: int = Field(gt=0)
+    query: str = Field(max_length=240)
+    results: tuple[SearchDebugResultEvent, ...] = Field(max_length=3)
+    summarizer_system_prompt: str = Field(max_length=4_000)
+    summarizer_user_prompt: str = Field(max_length=8_000)
+    summary: str = Field(max_length=1_000)
+    provider_duration_ms: float = Field(ge=0)
+    summarizer_duration_ms: float = Field(ge=0)
+    total_duration_ms: float = Field(ge=0)
 
 
 class AssistantTextDeltaEvent(FrozenBaseModel):
@@ -504,6 +579,8 @@ VoiceServerEvent = Annotated[
     | SpeechStateEvent
     | TranscriptEvent
     | LlmHistoryEvent
+    | LlmModelRequestEvent
+    | SearchDebugEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioTextBoundaryEvent

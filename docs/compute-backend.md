@@ -40,6 +40,51 @@ WebSocket is deliberately public for direct use by the browser.
 The compute server never accepts filesystem paths or shell commands from HTTP clients. Quality
 uploads are decoded in request-scoped temporary storage and deleted after the response.
 
+## Voice web search
+
+The voice agent's `search(query)` tool uses the Tavily Search API. Set
+`VOICE_LIGHT_TAVILY_API_KEY` in `.env.compute` to a Tavily API key. The
+voice stack still starts when this setting is absent, but an attempted search returns a clear tool
+failure until a key is configured.
+
+Each invocation requests at most three web results over a three-second HTTP timeout. The compute
+process normalizes and bounds each title, URL, and snippet, then submits only that bounded context
+to a separate deterministic pass through a pinned Qwen3-0.6B worker with tools disabled and a
+64-token output cap. The conversational Qwen3-1.7B worker and search worker remain independently
+replaceable and own separate inference locks. Raw provider payloads and the summarization prompt
+never enter the session conversation; only the bounded plain-text summary is committed through the
+normal tool-result message. The speech-oriented summary targets one or two sentences and 40 words,
+omits unsolicited comparisons and tangents, and excludes source names, URLs, and citations.
+
+This design adds one external network round trip and one serialized Qwen generation before the
+main post-tool response. The dedicated smaller model uses additional resident VRAM but avoids
+coupling summary quality and latency to conversational-model fine-tunes. Search turns will still be
+slower than calculator or local-time turns. Normal tool flow completes conversational inference
+before starting summarization, while independent locks allow a replacement conversational turn to
+proceed if an obsolete tool task is still winding down. The surrounding tool timeout defaults to
+30 seconds so the bounded summary can finish on the supported GPU; deployments can override it
+with `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS`.
+
+Provider and summarizer durations are logged separately without the query or result contents. This
+makes it possible to distinguish Tavily network latency from Qwen prefill/generation time before
+changing result bounds or summary quality. A browser-only `search.debug` event additionally logs
+the bounded normalized results, exact isolated Qwen request, summary, and stage timings to the
+developer console. This event is never added to the main model context or audible conversation.
+
+## Browser-local time
+
+The argument-free `get_time()` tool returns the current time in the browser user's IANA time zone,
+not the compute server's operating-system time zone. The browser includes the zone reported by
+`Intl.DateTimeFormat` in `session.start`; the compute boundary validates it with the IANA zone
+database. Tool results include the local ISO 8601 timestamp, UTC offset, and zone name so the model
+does not have to infer which clock it received. Non-browser clients that omit this session field
+retain an explicit `Etc/UTC` compatibility default.
+
+The model speaks one short bridge before starting search. That bridge is finalized as its own TTS
+utterance so it cannot stall mid-word while the search and summary run. The post-result answer uses
+a successor TTS utterance whose PCM and word boundaries are rebased into the same browser playback
+generation, preserving one audio start/end pair while allowing an intentional silent wait.
+
 ## ASR-only mode
 
 Set `VOICE_LIGHT_VOICE_STACK_ENABLED=false` to run the compute server only for batch ASR and

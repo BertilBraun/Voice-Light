@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -13,18 +13,37 @@ from app.compute.voice.tools import (
     RuntimeToolRegistry,
     SearchArguments,
     SerializedToolCall,
+    StandardSearchHandler,
     ToolCall,
     ToolCallFailure,
     ToolCallFailureReason,
     ToolExecutionFailure,
     ToolExecutionFailureReason,
     ToolName,
+    ToolSuccess,
     create_runtime_tool_registry,
+    runtime_tool_specifications,
 )
 
 
+class StaticSearchAnswerer:
+    def __init__(self, answer: str) -> None:
+        self.answer_text = answer
+        self.queries: list[str] = []
+
+    async def answer(self, query: str) -> str:
+        self.queries.append(query)
+        return self.answer_text
+
+
+def create_test_tool_registry() -> RuntimeToolRegistry:
+    return create_runtime_tool_registry(
+        search_handler=StandardSearchHandler(StaticSearchAnswerer("test search answer"))
+    )
+
+
 def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
-    specifications = create_runtime_tool_registry().specifications
+    specifications = runtime_tool_specifications()
 
     assert tuple(specification.function.name for specification in specifications) == (
         ToolName.SEARCH,
@@ -33,9 +52,10 @@ def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
     )
 
 
-def test_search_returns_standard_placeholder_result() -> None:
+def test_search_returns_pipeline_answer() -> None:
     async def execute() -> None:
-        registry = create_runtime_tool_registry()
+        answerer = StaticSearchAnswerer("Berlin is currently sunny.")
+        registry = create_runtime_tool_registry(search_handler=StandardSearchHandler(answerer))
         validated = registry.validate(
             SerializedToolCall(
                 id="call-1",
@@ -47,9 +67,8 @@ def test_search_returns_standard_placeholder_result() -> None:
         assert isinstance(validated, ToolCall)
         assert validated.function.arguments == SearchArguments(query="current weather in Berlin")
         outcome = await registry.execute(validated)
-        assert outcome.result == (
-            'Search results for "current weather in Berlin" are not configured yet.'
-        )
+        assert outcome.result == "Berlin is currently sunny."
+        assert answerer.queries == ["current weather in Berlin"]
 
     asyncio.run(execute())
 
@@ -67,7 +86,7 @@ def test_search_returns_standard_placeholder_result() -> None:
 )
 def test_calculate_evaluates_basic_python_arithmetic(expression: str, expected: str) -> None:
     async def execute() -> None:
-        registry = create_runtime_tool_registry()
+        registry = create_test_tool_registry()
         validated = registry.validate(
             SerializedToolCall(
                 id="call-1",
@@ -94,7 +113,7 @@ def test_calculate_evaluates_basic_python_arithmetic(expression: str, expected: 
 )
 def test_calculate_rejects_non_arithmetic_or_excessive_expressions(expression: str) -> None:
     async def execute() -> None:
-        registry = create_runtime_tool_registry()
+        registry = create_test_tool_registry()
         validated = registry.validate(
             SerializedToolCall(
                 id="call-1",
@@ -111,18 +130,52 @@ def test_calculate_rejects_non_arithmetic_or_excessive_expressions(expression: s
     asyncio.run(execute())
 
 
-def test_get_time_returns_local_iso_timestamp() -> None:
+@pytest.mark.parametrize(
+    ("current_time", "expected"),
+    (
+        (
+            datetime(2026, 7, 18, 12, 5, 9, tzinfo=UTC),
+            "2026-07-18T14:05:09+02:00 (IANA time zone: Europe/Berlin)",
+        ),
+        (
+            datetime(2026, 1, 18, 12, 5, 9, tzinfo=UTC),
+            "2026-01-18T13:05:09+01:00 (IANA time zone: Europe/Berlin)",
+        ),
+    ),
+)
+def test_get_time_returns_browser_local_timestamp(current_time: datetime, expected: str) -> None:
     async def fixed_time() -> str:
-        handler = CurrentLocalTimeHandler(
-            lambda: datetime(2026, 7, 18, 14, 5, 9, tzinfo=timezone.utc)
-        )
+        handler = CurrentLocalTimeHandler(lambda: current_time)
+        handler.set_local_time_zone("Europe/Berlin")
         return await handler()
 
-    assert asyncio.run(fixed_time()) == "2026-07-18T14:05:09+00:00"
+    assert asyncio.run(fixed_time()) == expected
+
+
+def test_registry_applies_session_time_zone_to_get_time() -> None:
+    async def execute() -> str:
+        registry = RuntimeToolRegistry(
+            search_handler=StandardSearchHandler(StaticSearchAnswerer("unused")),
+            calculate_handler=PythonArithmeticHandler(),
+            get_time_handler=CurrentLocalTimeHandler(
+                lambda: datetime(2026, 7, 18, 12, 5, 9, tzinfo=UTC)
+            ),
+        )
+        registry.configure_session("Europe/Berlin")
+        validated = registry.validate(
+            SerializedToolCall(id="call-1", name="get_time", arguments_json="{}")
+        )
+
+        assert isinstance(validated, ToolCall)
+        outcome = await registry.execute(validated)
+        assert isinstance(outcome, ToolSuccess)
+        return outcome.result
+
+    assert asyncio.run(execute()) == ("2026-07-18T14:05:09+02:00 (IANA time zone: Europe/Berlin)")
 
 
 def test_registry_rejects_unknown_tool() -> None:
-    registry = create_runtime_tool_registry()
+    registry = create_test_tool_registry()
 
     validated = registry.validate(
         SerializedToolCall(
@@ -145,7 +198,7 @@ def test_registry_rejects_unknown_tool() -> None:
     ),
 )
 def test_registry_rejects_invalid_arguments(name: str, arguments_json: str) -> None:
-    registry = create_runtime_tool_registry()
+    registry = create_test_tool_registry()
 
     validated = registry.validate(
         SerializedToolCall(
@@ -167,9 +220,7 @@ def test_registry_converts_handler_failure_to_typed_outcome() -> None:
         registry = RuntimeToolRegistry(
             search_handler=failing_search,
             calculate_handler=PythonArithmeticHandler(),
-            get_time_handler=CurrentLocalTimeHandler(
-                lambda: datetime(2026, 7, 18, tzinfo=timezone.utc)
-            ),
+            get_time_handler=CurrentLocalTimeHandler(lambda: datetime(2026, 7, 18, tzinfo=UTC)),
         )
         validated = registry.validate(
             SerializedToolCall(

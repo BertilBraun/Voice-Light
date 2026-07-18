@@ -22,8 +22,8 @@ from app.compute.voice.schemas import (
     ("payload", "expected_event"),
     [
         (
-            '{"type":"session.start","input_sample_rate":16000}',
-            SessionStartEvent(input_sample_rate=16_000),
+            '{"type":"session.start","input_sample_rate":16000,"local_time_zone":"Europe/Berlin"}',
+            SessionStartEvent(input_sample_rate=16_000, local_time_zone="Europe/Berlin"),
         ),
         ('{"type":"session.stop"}', SessionStopEvent()),
         (
@@ -62,6 +62,21 @@ from app.compute.voice.schemas import (
                 played_sample_count=2_401,
                 browser_monotonic_time_ns=10,
                 rendered_output_sample_position=4_802,
+                output_sample_rate=48_000,
+            ),
+        ),
+        (
+            '{"type":"playback.progress","generation_id":4,"text_offset":2,'
+            '"boundary_start_sample":0,"played_sample_count":0,'
+            '"browser_monotonic_time_ns":10,"rendered_output_sample_position":0,'
+            '"output_sample_rate":48000}',
+            PlaybackProgressEvent(
+                generation_id=4,
+                text_offset=2,
+                boundary_start_sample=0,
+                played_sample_count=0,
+                browser_monotonic_time_ns=10,
+                rendered_output_sample_position=0,
                 output_sample_rate=48_000,
             ),
         ),
@@ -134,11 +149,14 @@ def test_client_event_protocol_parses_discriminated_events(
         '{"type":"playback.complete","generation_id":0}',
         '{"type":"playback.progress","generation_id":1,"text_offset":0,'
         '"boundary_start_sample":0,"played_sample_count":1}',
-        '{"type":"playback.progress","generation_id":1,"text_offset":2,'
-        '"boundary_start_sample":0,"played_sample_count":0}',
         '{"type":"playback.stopped","generation_id":1,"text_offset":-1,"played_sample_count":0}',
     ],
 )
 def test_client_event_protocol_rejects_legacy_and_invalid_events(payload: str) -> None:
     with pytest.raises(ValidationError):
         voice_client_event_adapter.validate_json(payload)
+
+
+def test_session_start_rejects_unknown_iana_time_zone() -> None:
+    with pytest.raises(ValidationError, match="Unknown IANA time zone"):
+        SessionStartEvent(input_sample_rate=16_000, local_time_zone="Berlin/Imaginary")

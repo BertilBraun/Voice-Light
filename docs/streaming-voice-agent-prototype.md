@@ -29,8 +29,9 @@ when audio first reaches a logical turn, releases it when that turn is finalized
 fails, and uses the same manager for the next logical turn. Models are never spawned or reloaded per
 WebSocket or per turn.
 
-The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron, Qwen, and
-Kyutai subprocesses own their respective CUDA models and outlive a connection. The loaded Silero
+The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron,
+conversational Qwen, search-summary Qwen, and Kyutai subprocesses own their respective CUDA models
+and outlive a connection. The two Qwen workers own independent inference locks. The loaded Silero
 model also outlives a connection, while a fresh iterator carries each session's VAD state. There is
 no persistence, session re-entry, or reconnection protocol.
 
@@ -56,9 +57,13 @@ validated playback offsets enter model history.
   and 1120 ms streaming configurations without changing code.
 - Qwen3-1.7B runs in a persistent child process. A typed generation-ID protocol streams
   non-thinking text deltas for the complete ordered conversation.
+- Qwen3-0.6B runs in a second persistent child process and handles only bounded, non-thinking
+  search-result summarization. Its model revision, lifecycle, and inference lock are independent
+  from the conversational worker.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
-  that generation. The browser logs both a table and the complete formatted JSON snapshot to its
-  developer console for prompt inspection.
+  that generation's audible history. Every actual Qwen invocation also emits
+  `llm.model_request`, including its typed private messages and tool specifications. The browser
+  logs both events as tables and formatted JSON to its developer console for prompt inspection.
 - Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
   final trailing word is flushed when Qwen finishes.
 - A response may contain multiple sequential asynchronous `get_weather` calls. The response keeps
@@ -191,7 +196,7 @@ pair before one concise recovery continuation.
 
 Tool cancellation is independent of the Qwen/TTS teardown barrier, and its observation timeout
 cannot block successor generation. `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS` controls execution timeout
-(default 5 seconds) and
+(default 30 seconds, including provider and bounded summarizer latency) and
 `VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS` bounds cancellation observation (default 250 ms).
 Handler error or timeout is committed as a typed private tool failure; a parser or validation
 failure remains transient recovery context. Either path lets the next invocation speak a short
@@ -199,11 +204,12 @@ recovery, and the application never fabricates weather. `VOICE_LIGHT_MAXIMUM_TOO
 sequential calls in one assistant generation (default 8); after the bound, the final invocation is
 tool-disabled and any attempted call fails the generation rather than executing.
 
-One `CompleteWordStream`, TTS session, synthesis output task, browser generation, audio sequence,
-text-offset space, and source-sample space span all Qwen invocations. Each spoken segment's trailing
-word is flushed at its tool boundary without finishing TTS input. Later segments continue at larger
-text offsets, and TTS PCM must continue at the next exact sample. Only the final invocation calls
-`finish_input`, so the browser receives one audio start and one audio end.
+One `CompleteWordStream`, synthesis output task, browser generation, audio sequence, text-offset
+space, and source-sample space span all Qwen invocations. Each spoken segment's trailing word is
+flushed and its TTS utterance is finished at a tool boundary, allowing the bridge to complete before
+the latency-bearing wait. Later utterances continue at larger text offsets; their zero-based PCM is
+rebased to the next exact generation sample. The browser still receives one audio start and one
+audio end.
 
 Each journal entry records its call, execution, result-commit, cancellation, and invalidation
 timing. Generation-scoped monotonic instrumentation retains first-round bridge and first
@@ -219,9 +225,14 @@ result commit <= second invocation start <= first final text/PCM
 These phases do not change existing first-response or predictive latency origins; tool wait is not
 reported as first-response latency.
 
-The browser-facing `llm.history` remains an audible-only user/assistant snapshot. Private structured
-model context is never sent as a WebSocket event. `response_text` contains only the spoken segments,
-so browser text, TTS input, playback boundaries, and durable assistant history cannot contain tool
+The browser-facing `llm.history` remains an audible-only user/assistant snapshot.
+`llm.model_request` is an ephemeral debug event containing the exact typed main-agent request,
+including tool calls and compact tool outcomes; it is not persisted or inserted into either
+conversation history. Raw provider payloads and the isolated search-summarization exchange are
+never included. The separate browser-only `search.debug` event exposes bounded normalized results,
+the isolated summarizer request and output, and provider/summarizer timings without adding them to
+the main model context or audible history. `response_text` contains only the spoken segments, so
+browser text, TTS input, playback boundaries, and durable assistant history cannot contain tool
 tags, JSON, call IDs, control tokens, or results. Assistant history still advances only through
 browser-proven word boundaries or complete playback. Private context uses that same confirmed text
 to add or update the assistant continuation after the final committed exchange; unreleased and
@@ -532,10 +543,11 @@ All microphone audio uses unwrapped binary PCM16 messages. A bounded server queu
 ingestion from recognition and applies backpressure if the single ASR worker cannot keep up.
 
 Server-to-browser JSON events include `session.ready`, VAD boundaries, partial/final transcripts,
-turn commitment, the exact `llm.history` snapshot, assistant text deltas, word-start audio
-metadata, generation audio boundaries, typed `playback.command` controls, and errors. Each playback
-command carries a unique command ID, generation ID, action, server issue time, causal evidence
-ID/source, stream and turn epochs, confidence, and action-specific sample, gain, or age limits.
+turn commitment, the audible `llm.history` snapshot, ephemeral exact `llm.model_request` debug
+snapshots, assistant text deltas, word-start audio metadata, generation audio boundaries, typed
+`playback.command` controls, and errors. Each playback command carries a unique command ID,
+generation ID, action, server issue time, causal evidence ID/source, stream and turn epochs,
+confidence, and action-specific sample, gain, or age limits.
 `assistant.audio.text_boundary`
 maps an original generated-text offset to a generation-relative PCM start sample. Assistant binary
 frames begin with three little-endian unsigned 32-bit integers: generation ID, sequence number, and
@@ -543,6 +555,10 @@ the chunk's generation-relative start sample. Remaining bytes are mono
 PCM16 at the `output_sample_rate` announced by `session.ready`. The browser rejects stale/cancelled
 generations and out-of-sequence frames. Its playback worklet resamples from the announced server
 rate to the browser AudioContext rate while retaining generation-relative input sample progress.
+The worklet reports a local `boundary.started` event as soon as playback crosses a word's start so
+the transcript visualization advances immediately. Its separate `boundary.progress` event
+acknowledges the preceding fully played word to the server; a generation-start position of zero is
+valid and must not terminate the session.
 
 For microphone-path diagnostics, the page retains the exact 16 kHz PCM buffers that it successfully
 sends over the WebSocket. When a session stops or disconnects, it exposes the buffers as a playable

@@ -19,6 +19,8 @@ from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_REVISION,
     NEMOTRON_ASR_MODEL_NAME,
     NEMOTRON_ASR_MODEL_REVISION,
+    SEARCH_SUMMARIZER_MODEL_NAME,
+    SEARCH_SUMMARIZER_MODEL_REVISION,
 )
 from app.compute.voice.tts_selection import (
     SpeechSynthesisBackend,
@@ -89,6 +91,7 @@ def download_required_models(settings: SpeechSynthesisSettings) -> None:
     required_models = [
         (NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION),
         (LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION),
+        (SEARCH_SUMMARIZER_MODEL_NAME, SEARCH_SUMMARIZER_MODEL_REVISION),
     ]
     if settings.backend is SpeechSynthesisBackend.KYUTAI:
         required_models.append((KYUTAI_TTS_MODEL_NAME, KYUTAI_TTS_MODEL_REVISION))

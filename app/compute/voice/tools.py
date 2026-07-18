@@ -4,12 +4,14 @@ import ast
 import asyncio
 import math
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from pydantic import ConfigDict, Field, TypeAdapter
 
+from app.compute.voice.search_debug import SearchDebugTrace, SearchToolOutput
 from app.shared.base_model import FrozenBaseModel
 
 MAXIMUM_ABSOLUTE_INTEGER_RESULT = 10**100
@@ -214,10 +216,19 @@ ToolOutcome = Annotated[
 ]
 tool_outcome_adapter: TypeAdapter[ToolOutcome] = TypeAdapter(ToolOutcome)
 
-SearchToolHandler = Callable[[SearchArguments], Awaitable[str]]
+SearchToolHandler = Callable[[SearchArguments], Awaitable[str | SearchToolOutput]]
 CalculateToolHandler = Callable[[CalculateArguments], Awaitable[str]]
-GetTimeToolHandler = Callable[[], Awaitable[str]]
 CurrentTimeProvider = Callable[[], datetime]
+
+
+class SearchAnswerer(Protocol):
+    async def answer(self, query: str) -> str | SearchToolOutput: ...
+
+
+class GetTimeToolHandler(Protocol):
+    def set_local_time_zone(self, time_zone_name: str) -> None: ...
+
+    async def __call__(self) -> str: ...
 
 
 class ToolExecutor(Protocol):
@@ -225,6 +236,10 @@ class ToolExecutor(Protocol):
     def specifications(self) -> tuple[ToolSpecification, ...]: ...
 
     def validate(self, request: SerializedToolCall) -> ToolCall | ToolCallFailure: ...
+
+    def configure_session(self, local_time_zone: str) -> None: ...
+
+    def take_search_debug_trace(self, call_id: str) -> SearchDebugTrace | None: ...
 
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure: ...
 
@@ -240,6 +255,7 @@ class RuntimeToolRegistry:
         self.calculate_handler = calculate_handler
         self.get_time_handler = get_time_handler
         self._specifications = _tool_specifications()
+        self._search_debug_traces: dict[str, SearchDebugTrace] = {}
 
     @property
     def specifications(self) -> tuple[ToolSpecification, ...]:
@@ -276,11 +292,22 @@ class RuntimeToolRegistry:
             )
         return ToolCall(id=request.id, function=function)
 
+    def configure_session(self, local_time_zone: str) -> None:
+        self.get_time_handler.set_local_time_zone(local_time_zone)
+
+    def take_search_debug_trace(self, call_id: str) -> SearchDebugTrace | None:
+        return self._search_debug_traces.pop(call_id, None)
+
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure:
         try:
             match call.function:
                 case SearchToolCallFunction(arguments=arguments):
-                    result = await self.search_handler(arguments)
+                    search_output = await self.search_handler(arguments)
+                    match search_output:
+                        case str() as result:
+                            pass
+                        case SearchToolOutput(result=result, debug_trace=debug_trace):
+                            self._search_debug_traces[call.id] = debug_trace
                 case CalculateToolCallFunction(arguments=arguments):
                     result = await self.calculate_handler(arguments)
                 case GetTimeToolCallFunction():
@@ -302,8 +329,11 @@ class RuntimeToolRegistry:
 
 
 class StandardSearchHandler:
-    async def __call__(self, arguments: SearchArguments) -> str:
-        return f'Search results for "{arguments.query}" are not configured yet.'
+    def __init__(self, answerer: SearchAnswerer) -> None:
+        self.answerer = answerer
+
+    async def __call__(self, arguments: SearchArguments) -> str | SearchToolOutput:
+        return await self.answerer.answer(arguments.query)
 
 
 class PythonArithmeticHandler:
@@ -315,17 +345,32 @@ class PythonArithmeticHandler:
 class CurrentLocalTimeHandler:
     def __init__(self, current_time: CurrentTimeProvider) -> None:
         self.current_time = current_time
+        self.local_time_zone = ZoneInfo("Etc/UTC")
+
+    def set_local_time_zone(self, time_zone_name: str) -> None:
+        self.local_time_zone = ZoneInfo(time_zone_name)
 
     async def __call__(self) -> str:
-        return self.current_time().isoformat(timespec="seconds")
+        current_time = self.current_time()
+        if current_time.utcoffset() is None:
+            raise ValueError("Current time must include a UTC offset.")
+        local_time = current_time.astimezone(self.local_time_zone)
+        return (
+            f"{local_time.isoformat(timespec='seconds')} "
+            f"(IANA time zone: {self.local_time_zone.key})"
+        )
 
 
-def create_runtime_tool_registry() -> RuntimeToolRegistry:
+def create_runtime_tool_registry(search_handler: SearchToolHandler) -> RuntimeToolRegistry:
     return RuntimeToolRegistry(
-        search_handler=StandardSearchHandler(),
+        search_handler=search_handler,
         calculate_handler=PythonArithmeticHandler(),
         get_time_handler=CurrentLocalTimeHandler(_current_local_time),
     )
+
+
+def runtime_tool_specifications() -> tuple[ToolSpecification, ...]:
+    return _tool_specifications()
 
 
 def _tool_specifications() -> tuple[ToolSpecification, ...]:
@@ -354,7 +399,10 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
         ),
         ToolSpecification(
             function=GetTimeToolFunctionSpecification(
-                description="Get the current local date and time.",
+                description=(
+                    "Get the current date and time in the user's local time zone, including its "
+                    "UTC offset and IANA time-zone name."
+                ),
                 parameters=GetTimeParameters(properties=GetTimeParameterProperties()),
             )
         ),
@@ -362,7 +410,7 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
 
 
 def _current_local_time() -> datetime:
-    return datetime.now().astimezone()
+    return datetime.now(UTC)
 
 
 def _evaluate_arithmetic(expression: ast.expr) -> int | float:

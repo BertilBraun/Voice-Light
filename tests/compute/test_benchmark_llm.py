@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from app.compute.voice.model_constants import (
+    SEARCH_SUMMARIZER_MODEL_NAME,
+    SEARCH_SUMMARIZER_MODEL_REVISION,
+)
 from deployment.compute.benchmark_llm import (
-    DEFAULT_SMALL_MODEL_NAME,
-    DEFAULT_SMALL_MODEL_REVISION,
     PromptStyle,
     _benchmark_cases,
     _default_revision,
@@ -26,7 +28,7 @@ def test_prompt_styles_are_nonempty(prompt_style: PromptStyle) -> None:
 
 
 def test_small_model_has_a_pinned_default_revision() -> None:
-    assert _default_revision(DEFAULT_SMALL_MODEL_NAME) == DEFAULT_SMALL_MODEL_REVISION
+    assert _default_revision(SEARCH_SUMMARIZER_MODEL_NAME) == SEARCH_SUMMARIZER_MODEL_REVISION
 
 
 def test_unknown_model_requires_an_explicit_revision() -> None:

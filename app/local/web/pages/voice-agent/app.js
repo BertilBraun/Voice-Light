@@ -1,4 +1,7 @@
+import { SpokenTextProgress } from "./spoken-text-progress.mjs";
+
 const INPUT_SAMPLE_RATE = 16000;
+const LOCAL_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Etc/UTC";
 const ENDPOINT_STORAGE_KEY = "voice-light-compute-voice-endpoint";
 const endpointInput = document.querySelector("#endpoint-url");
 const startButton = document.querySelector("#start-button");
@@ -49,9 +52,7 @@ class ConversationTurn {
 
     this.transcript = document.createElement("p");
     this.transcript.className = "turn-transcript";
-    this.text = "";
-    this.spokenOffset = 0;
-    this.acknowledgedOffset = 0;
+    this.progress = new SpokenTextProgress();
     if (role === "assistant") {
       this.spokenTranscript = document.createElement("span");
       this.spokenTranscript.className = "turn-spoken";
@@ -67,45 +68,49 @@ class ConversationTurn {
 
   setText(text) {
     const followHistory = historyIsAtEnd();
-    this.text = text;
+    this.progress.replaceText(text);
     this.renderText();
     followConversationHistory(followHistory);
   }
 
   appendText(text) {
     const followHistory = historyIsAtEnd();
-    this.text += text;
+    this.progress.appendText(text);
     this.renderText();
     followConversationHistory(followHistory);
   }
 
   setSpokenOffset(offset) {
-    if (!this.spokenTranscript || offset <= this.spokenOffset) return;
-    this.spokenOffset = Math.min(offset, characterLength(this.text));
+    if (!this.spokenTranscript || offset <= this.progress.spokenOffset) return;
+    this.progress.markSpoken(offset);
     this.renderText();
   }
 
   acknowledgeOffset(offset) {
-    this.acknowledgedOffset = Math.max(this.acknowledgedOffset, offset);
+    this.progress.acknowledge(offset);
   }
 
   settleInterruptedText() {
-    this.spokenOffset = this.acknowledgedOffset;
+    this.progress.settleInterruptedText();
     this.renderText();
   }
 
   renderText() {
     if (!this.spokenTranscript) {
-      this.transcript.textContent = this.text;
+      this.transcript.textContent = this.progress.text;
       return;
     }
-    this.spokenTranscript.textContent = sliceTextByCharacterOffset(this.text, 0, this.spokenOffset);
-    this.unspokenTranscript.textContent = sliceTextByCharacterOffset(this.text, this.spokenOffset);
+    this.spokenTranscript.textContent = this.progress.spokenText();
+    this.unspokenTranscript.textContent = this.progress.unspokenText();
   }
 
   setState(state) {
     this.element.dataset.state = state;
     this.meta.textContent = stateLabel(state);
+  }
+
+  get text() {
+    return this.progress.text;
   }
 }
 
@@ -131,7 +136,11 @@ async function startSession() {
     socket = await openSocket(endpoint);
     setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
     const sessionReady = waitForSessionReady(socket);
-    socket.send(JSON.stringify({ type: "session.start", input_sample_rate: INPUT_SAMPLE_RATE }));
+    socket.send(JSON.stringify({
+      type: "session.start",
+      input_sample_rate: INPUT_SAMPLE_RATE,
+      local_time_zone: LOCAL_TIME_ZONE,
+    }));
     const ready = await sessionReady;
     await setupPlayback(ready.output_sample_rate);
     if (stopRequested) return;
@@ -229,7 +238,7 @@ async function setupCapture(stream) {
 
 async function setupPlayback(inputSampleRate) {
   playbackContext = new AudioContext();
-  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=3");
+  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=4");
   playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", {
     outputChannelCount: [1],
     processorOptions: { inputSampleRate },
@@ -254,6 +263,10 @@ async function setupPlayback(inputSampleRate) {
     }
     if (data.type === "boundary.progress") {
       updateBoundaryProgress(data);
+      return;
+    }
+    if (data.type === "boundary.started") {
+      assistantTurns.get(data.generationId)?.setSpokenOffset(data.textOffset);
       return;
     }
     if (data.type === "playback.stopped") {
@@ -355,9 +368,36 @@ function handleMessage(event) {
   }
   if (message.type === "turn.committed") commitUserTurn(message.text);
   if (message.type === "llm.history") {
-    console.groupCollapsed(`LLM history for generation ${message.generation_id}`);
+    console.groupCollapsed(`Audible history for generation ${message.generation_id}`);
     console.table(message.messages);
     console.log(JSON.stringify(message.messages, null, 2));
+    console.groupEnd();
+  }
+  if (message.type === "llm.model_request") {
+    const mode = message.speculative ? "speculative" : "committed";
+    console.groupCollapsed(
+      `Exact Qwen request for generation ${message.generation_id}, invocation ${message.invocation_index} (${mode})`,
+    );
+    console.table(message.messages);
+    console.log(
+      JSON.stringify({ messages: message.messages, tools: message.tools }, null, 2),
+    );
+    console.groupEnd();
+  }
+  if (message.type === "search.debug") {
+    console.groupCollapsed(`Search trace for generation ${message.generation_id}`);
+    console.table({
+      provider: { durationMs: message.provider_duration_ms },
+      summarizer: { durationMs: message.summarizer_duration_ms },
+      total: { durationMs: message.total_duration_ms },
+    });
+    console.log("Query", message.query);
+    console.table(message.results);
+    console.groupCollapsed("Isolated Qwen summarizer request");
+    console.log("System prompt", message.summarizer_system_prompt);
+    console.log("User prompt", message.summarizer_user_prompt);
+    console.groupEnd();
+    console.log("Isolated Qwen summary / main-agent tool result", message.summary);
     console.groupEnd();
   }
   if (message.type === "assistant.text.delta") {
@@ -559,10 +599,6 @@ function updateBoundaryProgress(progress) {
 
 function characterLength(text) {
   return Array.from(text).length;
-}
-
-function sliceTextByCharacterOffset(text, start, end) {
-  return Array.from(text).slice(start, end).join("");
 }
 
 function historyIsAtEnd() {

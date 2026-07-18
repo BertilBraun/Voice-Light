@@ -14,12 +14,15 @@ import torch
 from pydantic import Field
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from app.compute.voice.model_constants import LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION
+from app.compute.voice.model_constants import (
+    LANGUAGE_MODEL_NAME,
+    LANGUAGE_MODEL_REVISION,
+    SEARCH_SUMMARIZER_MODEL_NAME,
+    SEARCH_SUMMARIZER_MODEL_REVISION,
+)
 from app.compute.voice.qwen_worker import LANGUAGE_MODEL_SYSTEM_PROMPT
 from app.shared.base_model import FrozenBaseModel
 
-DEFAULT_SMALL_MODEL_NAME = "Qwen/Qwen3-0.6B"
-DEFAULT_SMALL_MODEL_REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
 COMPLETE_WORD_PATTERN = re.compile(r"\S+\s+")
 
 
@@ -463,8 +466,8 @@ def _benchmark_cases() -> tuple[BenchmarkCase, ...]:
 def _default_revision(model_name: str) -> str:
     if model_name == LANGUAGE_MODEL_NAME:
         return LANGUAGE_MODEL_REVISION
-    if model_name == DEFAULT_SMALL_MODEL_NAME:
-        return DEFAULT_SMALL_MODEL_REVISION
+    if model_name == SEARCH_SUMMARIZER_MODEL_NAME:
+        return SEARCH_SUMMARIZER_MODEL_REVISION
     raise ValueError("--revision is required for an unrecognized model.")
 
 
