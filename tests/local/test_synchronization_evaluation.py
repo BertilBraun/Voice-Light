@@ -214,7 +214,15 @@ def _evidence_record(
             overlap_reduction=joint_reduction,
             silence_reduction=joint_reduction,
         )
-        for source, shift in zip(SynchronizationEvidenceSource, source_shifts, strict=True)
+        for source, shift in zip(
+            (
+                SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
+                SynchronizationEvidenceSource.PARAKEET,
+                SynchronizationEvidenceSource.CANARY,
+            ),
+            source_shifts,
+            strict=True,
+        )
     )
     return OffsetEvidenceRecord(
         external_id=external_id,

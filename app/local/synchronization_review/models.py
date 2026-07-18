@@ -15,6 +15,7 @@ class OffsetPattern(StrEnum):
 
 
 class SynchronizationEvidenceSource(StrEnum):
+    AUDIO_ACTIVITY = "audio_activity"
     CONVERSATION_ANNOTATION = "conversation_annotation"
     PARAKEET = "parakeet"
     CANARY = "canary"

@@ -27,6 +27,9 @@ from app.local.synchronization_review.models import (
     SynchronizationWindowEstimate,
     TrackGainNormalization,
 )
+from app.local.synchronization_review.optimized_alignment import (
+    ESTIMATOR_VERSION as OPTIMIZED_ESTIMATOR_VERSION,
+)
 from app.local.synchronization_review.repository import (
     StoredConversationAnnotation,
     SynchronizationReviewRepository,
@@ -51,7 +54,7 @@ TARGET_ACTIVE_RMS_DBFS = -20.0
 MINIMUM_DEFAULT_GAIN = 0.1
 MAXIMUM_DEFAULT_GAIN = 12.0
 RECOMMENDED_SHIFT_RESOLUTION_SECONDS = 0.1
-ESTIMATOR_VERSION = "full-recording-static-v1"
+ESTIMATOR_VERSION = OPTIMIZED_ESTIMATOR_VERSION
 
 
 class TimelineState(StrEnum):
@@ -104,6 +107,10 @@ def synchronization_candidates(
 ) -> SynchronizationCandidateListResponse:
     total_session_count = repository.count_pmt_samples()
     stored_alignments = repository.load_reviewed_alignments()
+    stored_predictions = repository.load_unreviewed_predictions(estimator_version=ESTIMATOR_VERSION)
+    prediction_by_sample_id = {
+        prediction.sample_id: prediction for prediction in stored_predictions
+    }
     annotations = repository.load_annotations(metric_version=METRIC_VERSION)
     transcripts = FullRecordingAsrRepository(
         database_url=repository.database_url
@@ -146,6 +153,16 @@ def synchronization_candidates(
             canary_speaker2=canary_speaker2,
             stored_alignments=stored_alignments,
         )
+        stored_prediction = prediction_by_sample_id.get(candidate.sample_id)
+        if (
+            candidate.alignment_estimate_origin is AlignmentEstimateOrigin.PREDICTED
+            and stored_prediction is not None
+        ):
+            assert stored_prediction.external_id == candidate.external_id
+            candidate = _overlay_stored_prediction(
+                current_candidate=candidate,
+                stored_prediction=stored_prediction,
+            )
         if candidate.is_offset_candidate:
             offset_candidate_count += 1
         candidates.append(candidate)
@@ -164,6 +181,47 @@ def synchronization_candidates(
         analyzed_session_count=analyzed_session_count,
         offset_candidate_count=offset_candidate_count,
         excluded_session_count=total_session_count - analyzed_session_count,
+    )
+
+
+def _overlay_stored_prediction(
+    current_candidate: SynchronizationCandidate,
+    stored_prediction: SynchronizationCandidate,
+) -> SynchronizationCandidate:
+    current_evidence = tuple(
+        evidence
+        for evidence in current_candidate.evidence
+        if evidence.source is not SynchronizationEvidenceSource.AUDIO_ACTIVITY
+    )
+    stored_audio_evidence = tuple(
+        evidence
+        for evidence in stored_prediction.evidence
+        if evidence.source is SynchronizationEvidenceSource.AUDIO_ACTIVITY
+    )
+    current_windows = tuple(
+        window
+        for window in current_candidate.window_estimates
+        if window.source is not SynchronizationEvidenceSource.AUDIO_ACTIVITY
+    )
+    stored_audio_windows = tuple(
+        window
+        for window in stored_prediction.window_estimates
+        if window.source is SynchronizationEvidenceSource.AUDIO_ACTIVITY
+    )
+    return current_candidate.model_copy(
+        update={
+            "is_offset_candidate": stored_prediction.is_offset_candidate,
+            "estimated_b_shift_seconds": stored_prediction.estimated_b_shift_seconds,
+            "full_recording_estimated_b_shift_seconds": (
+                stored_prediction.full_recording_estimated_b_shift_seconds
+            ),
+            "offset_confidence_score": stored_prediction.offset_confidence_score,
+            "offset_pattern": stored_prediction.offset_pattern,
+            "static_offset_valid": stored_prediction.static_offset_valid,
+            "drift_warning": stored_prediction.drift_warning,
+            "evidence": (*current_evidence, *stored_audio_evidence),
+            "window_estimates": (*current_windows, *stored_audio_windows),
+        }
     )
 
 

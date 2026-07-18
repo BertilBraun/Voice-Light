@@ -642,26 +642,36 @@ def _stratified_fold_assignments(
     fold_count: int,
     split_seed: str,
 ) -> dict[str, int]:
-    examples_by_stratum: dict[tuple[ReviewProvenance, str], list[ReviewedOffsetExample]] = {}
-    for example in examples:
+    return stratified_label_fold_assignments(
+        labels=tuple(example.label for example in examples),
+        fold_count=fold_count,
+        split_seed=split_seed,
+    )
+
+
+def stratified_label_fold_assignments(
+    labels: tuple[OffsetLabel, ...],
+    fold_count: int,
+    split_seed: str,
+) -> dict[str, int]:
+    labels_by_stratum: dict[tuple[ReviewProvenance, str], list[OffsetLabel]] = {}
+    for label in labels:
         stratum = (
-            example.label.provenance,
-            _label_magnitude_stratum(example.label.speaker2_shift_seconds),
+            label.provenance,
+            _label_magnitude_stratum(label.speaker2_shift_seconds),
         )
-        examples_by_stratum.setdefault(stratum, []).append(example)
+        labels_by_stratum.setdefault(stratum, []).append(label)
 
     assignments: dict[str, int] = {}
     fold_sizes = [0] * fold_count
-    for stratum, stratum_examples in sorted(
-        examples_by_stratum.items(),
+    for stratum, stratum_labels in sorted(
+        labels_by_stratum.items(),
         key=lambda item: (item[0][0].value, item[0][1]),
     ):
         stratum_fold_sizes = [0] * fold_count
-        ordered_examples = sorted(
-            stratum_examples,
-            key=lambda example: hashlib.sha256(
-                f"{split_seed}:{example.label.external_id}".encode()
-            ).digest(),
+        ordered_labels = sorted(
+            stratum_labels,
+            key=lambda label: hashlib.sha256(f"{split_seed}:{label.external_id}".encode()).digest(),
         )
         starting_fold = (
             int.from_bytes(
@@ -672,7 +682,7 @@ def _stratified_fold_assignments(
             )
             % fold_count
         )
-        for example in ordered_examples:
+        for label in ordered_labels:
             fold_index = min(
                 range(fold_count),
                 key=lambda candidate_fold: (
@@ -681,7 +691,7 @@ def _stratified_fold_assignments(
                     (candidate_fold - starting_fold) % fold_count,
                 ),
             )
-            assignments[example.label.external_id] = fold_index
+            assignments[label.external_id] = fold_index
             stratum_fold_sizes[fold_index] += 1
             fold_sizes[fold_index] += 1
     return assignments

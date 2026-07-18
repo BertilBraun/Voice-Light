@@ -522,6 +522,7 @@ function renderGainSummary(gainNormalization) {
 
 function renderWindowTargets(candidate) {
   const sourceLabels = {
+    audio_activity: "Audio activity",
     conversation_annotation: "EOT annotation",
     parakeet: "Parakeet",
     canary: "Canary",

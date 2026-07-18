@@ -214,6 +214,28 @@ class SynchronizationReviewRepository:
                     saved_count += 1
         return saved_count
 
+    def load_unreviewed_predictions(
+        self,
+        estimator_version: str,
+    ) -> tuple[SynchronizationCandidate, ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT synchronization_predictions.payload
+                FROM synchronization_predictions
+                WHERE synchronization_predictions.estimator_version = %s
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM synchronization_reviews
+                    WHERE synchronization_reviews.sample_id =
+                          synchronization_predictions.sample_id
+                  )
+                ORDER BY synchronization_predictions.sample_id
+                """,
+                (estimator_version,),
+            ).fetchall()
+        return tuple(SynchronizationCandidate.model_validate(row["payload"]) for row in rows)
+
     def load_annotations(self, metric_version: str) -> tuple[StoredConversationAnnotation, ...]:
         with self.connection() as connection:
             rows = connection.execute(

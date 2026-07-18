@@ -104,6 +104,7 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "/api/synchronization-review/audio-window/",
         "candidateComparator",
         "offset_candidate_count",
+        "audio_activity",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(

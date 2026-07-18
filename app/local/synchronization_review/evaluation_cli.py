@@ -4,8 +4,13 @@ import argparse
 
 from app.local.asr.full_recording_repository import FullRecordingAsrRepository
 from app.local.config import DATABASE_URL
+from app.local.synchronization_review.activity_evaluation import (
+    evaluate_activity_offset_estimator,
+    reviewed_activity_curves,
+)
 from app.local.synchronization_review.evaluation import (
     EvidenceScope,
+    ReviewProvenance,
     evaluate_offset_estimator,
     reviewed_examples,
     reviewed_offset_labels,
@@ -37,11 +42,25 @@ def main() -> None:
         default=list(SUPPORTED_FULL_EVIDENCE_MODELS),
         help="Full-recording ASR models to evaluate.",
     )
+    parser.add_argument(
+        "--activity-optimizer",
+        action="store_true",
+        help="Cross-validate the full-recording audio-activity basin optimizer.",
+    )
     arguments = parser.parse_args()
     evidence_scope = EvidenceScope(arguments.evidence_scope)
     model_ids = tuple(arguments.models)
     repository = SynchronizationReviewRepository(database_url=DATABASE_URL)
     labels = reviewed_offset_labels(stored_alignments=repository.load_reviewed_alignments())
+    if arguments.activity_optimizer:
+        database_labels = tuple(
+            label for label in labels if label.provenance is ReviewProvenance.DATABASE
+        )
+        activity_report = evaluate_activity_offset_estimator(
+            examples=reviewed_activity_curves(labels=database_labels)
+        )
+        print(activity_report.model_dump_json(indent=2))
+        return
     match evidence_scope:
         case EvidenceScope.INITIAL_180_SECONDS:
             evidence_records = initial_recording_evidence_records(
