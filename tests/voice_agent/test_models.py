@@ -29,6 +29,8 @@ from app.compute.voice.llm_worker_protocol import (
     StartLlmCommand,
 )
 from app.compute.voice.model_constants import (
+    LANGUAGE_MODEL_ADAPTER_NAME,
+    LANGUAGE_MODEL_ADAPTER_REVISION,
     LANGUAGE_MODEL_NAME,
     LANGUAGE_MODEL_REVISION,
     SEARCH_SUMMARIZER_MODEL_NAME,
@@ -42,6 +44,10 @@ from app.compute.voice.models import (
     RestartingQwenWorkerManager,
     TransformersLanguageModel,
     TransformersTextGenerator,
+)
+from app.compute.voice.qwen_config import (
+    QwenAdapterConfiguration,
+    QwenModelConfiguration,
 )
 from app.compute.voice.tools import runtime_tool_specifications
 
@@ -339,8 +345,11 @@ def test_qwen_spawn_failure_releases_manager_lock(
 ) -> None:
     construction_count = 0
     configuration = QwenWorkerConfiguration(
-        model_name="test/model",
-        model_revision="test-revision",
+        model=QwenModelConfiguration(
+            model_name="test/model",
+            model_revision="test-revision",
+            adapter=None,
+        ),
         component_name="test Qwen",
     )
 
@@ -388,13 +397,22 @@ def test_conversation_and_search_models_use_distinct_workers_and_locks(
 
     assert configurations == [
         QwenWorkerConfiguration(
-            model_name=LANGUAGE_MODEL_NAME,
-            model_revision=LANGUAGE_MODEL_REVISION,
+            model=QwenModelConfiguration(
+                model_name=LANGUAGE_MODEL_NAME,
+                model_revision=LANGUAGE_MODEL_REVISION,
+                adapter=QwenAdapterConfiguration(
+                    repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
+                    revision=LANGUAGE_MODEL_ADAPTER_REVISION,
+                ),
+            ),
             component_name="Qwen language model",
         ),
         QwenWorkerConfiguration(
-            model_name=SEARCH_SUMMARIZER_MODEL_NAME,
-            model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
+            model=QwenModelConfiguration(
+                model_name=SEARCH_SUMMARIZER_MODEL_NAME,
+                model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
+                adapter=None,
+            ),
             component_name="Qwen search summarizer",
         ),
     ]

@@ -26,6 +26,47 @@ Qwen/TTS work, and cancellation for the life of that WebSocket. The runtime admi
 WebSocket at a time. Silero is loaded during readiness; persistent Nemotron, Qwen, and selected TTS
 child processes own their CUDA models. No voice state survives disconnection.
 
+## Conversational Qwen tool-use adapter
+
+The conversational worker runs the published
+[`BertilBraun/qwen3-1.7b-voice-light-tool-use-lora`](https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-lora)
+PEFT adapter at immutable revision `2c834fa6398fe342f390752ffa295511190b7376` on
+`Qwen/Qwen3-1.7B` revision `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e`. Bootstrap
+downloads both pinned repositories. The worker attaches the adapter with `PeftModel.from_pretrained`
+and leaves the base weights unmerged. The separate Qwen3-0.6B search summarizer remains on its
+unmodified checkpoint.
+
+The Supervisor parent command remains:
+
+```bash
+exec .venv/bin/python -m app.compute.server
+```
+
+It starts the conversational child with the effective command:
+
+```bash
+/workspace/Voice-Light/.venv/bin/python -m app.compute.voice.qwen_worker \
+  --model Qwen/Qwen3-1.7B \
+  --revision 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e \
+  --adapter BertilBraun/qwen3-1.7b-voice-light-tool-use-lora \
+  --adapter-revision 2c834fa6398fe342f390752ffa295511190b7376
+```
+
+This is a direct Transformers/PEFT runtime, not an OpenAI-compatible model server. Voice Light
+therefore has no request-level `model` setting to switch: every conversational invocation uses the
+attached adapter, while the typed worker configuration omits it for search summarization.
+`enable_thinking=False` remains in the pinned Qwen chat-template call, and generated tool syntax
+continues through the existing incremental Hermes parser.
+
+If the worker is later replaced with vLLM, start it with an explicit alias such as
+`--lora-modules voice-light-tool-use=/models/qwen3-1.7b-voice-light-tool-use-lora`; OpenAI-compatible
+requests must then use `"model": "voice-light-tool-use"`. Using the base repository ID in that
+field selects the base model instead of the adapter.
+
+The adapter was trained from the published
+[`BertilBraun/voice-light-tool-use-synthetic`](https://huggingface.co/datasets/BertilBraun/voice-light-tool-use-synthetic)
+dataset. Runtime integration does not load the dataset.
+
 ## Compute API
 
 Compute HTTP endpoints except liveness require `Authorization: Bearer <token>`. The research voice

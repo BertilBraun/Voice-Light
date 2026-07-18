@@ -2056,6 +2056,7 @@ dependencies = [
     { name = "numba", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "onnxruntime", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "peft", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "psycopg", extra = ["binary"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "python-multipart", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "safetensors", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -2080,7 +2081,6 @@ dev = [
     { name = "ruff", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 training = [
-    { name = "peft", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "tensorboard", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
@@ -2100,6 +2100,7 @@ requires-dist = [
     { name = "numba", specifier = ">=0.61.0" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "onnxruntime", specifier = ">=1.24.3" },
+    { name = "peft", specifier = ">=0.18.1,<0.19" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "safetensors", specifier = ">=0.8.0" },
@@ -2116,10 +2117,7 @@ dev = [
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.6.0" },
 ]
-training = [
-    { name = "peft", specifier = ">=0.18.1,<0.19" },
-    { name = "tensorboard", specifier = ">=2.20.0" },
-]
+training = [{ name = "tensorboard", specifier = ">=2.20.0" }]
 
 [[package]]
 name = "wandb"

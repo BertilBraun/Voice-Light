@@ -19,6 +19,10 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerEvent,
     StartLlmCommand,
 )
+from app.compute.voice.qwen_config import (
+    QwenAdapterConfiguration,
+    QwenModelConfiguration,
+)
 from app.compute.voice.qwen_worker import (
     LANGUAGE_MODEL_SYSTEM_PROMPT,
     QwenChatMessage,
@@ -88,10 +92,18 @@ class RecordingChatTemplateTokenizer:
         return "rendered prompt"
 
 
+class LoadedModel:
+    def __init__(self) -> None:
+        self.selected_device: str | None = None
+
+    def to(self, device: str) -> LoadedModel:
+        self.selected_device = device
+        return self
+
+
 @dataclass(frozen=True)
 class SelectedQwenRuntime:
-    model_name: str
-    model_revision: str
+    configuration: QwenModelConfiguration
 
 
 def test_worker_main_loads_the_explicit_model_revision(
@@ -99,8 +111,8 @@ def test_worker_main_loads_the_explicit_model_revision(
 ) -> None:
     selected_runtimes: list[SelectedQwenRuntime] = []
 
-    def select_runtime(model_name: str, model_revision: str) -> SelectedQwenRuntime:
-        runtime = SelectedQwenRuntime(model_name, model_revision)
+    def select_runtime(configuration: QwenModelConfiguration) -> SelectedQwenRuntime:
+        runtime = SelectedQwenRuntime(configuration)
         selected_runtimes.append(runtime)
         return runtime
 
@@ -125,10 +137,145 @@ def test_worker_main_loads_the_explicit_model_revision(
 
     assert selected_runtimes == [
         SelectedQwenRuntime(
-            model_name="Qwen/Qwen3-0.6B",
-            model_revision="pinned-revision",
+            configuration=QwenModelConfiguration(
+                model_name="Qwen/Qwen3-0.6B",
+                model_revision="pinned-revision",
+                adapter=None,
+            )
         )
     ]
+
+
+def test_qwen_runtime_attaches_pinned_adapter_before_moving_to_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_model = LoadedModel()
+    adapter_model = LoadedModel()
+    tokenizer_calls: list[tuple[str, str]] = []
+    base_model_calls: list[tuple[str, str]] = []
+    adapter_calls: list[tuple[LoadedModel, str, str, bool]] = []
+
+    class RecordingTokenizerFactory:
+        @staticmethod
+        def from_pretrained(model_name: str, revision: str) -> object:
+            tokenizer_calls.append((model_name, revision))
+            return object()
+
+    class RecordingModelFactory:
+        @staticmethod
+        def from_pretrained(
+            model_name: str,
+            revision: str,
+            *,
+            dtype: object,
+            attn_implementation: str,
+        ) -> LoadedModel:
+            assert dtype is qwen_worker_module.torch.bfloat16
+            assert attn_implementation == "sdpa"
+            base_model_calls.append((model_name, revision))
+            return base_model
+
+    class RecordingPeftModel:
+        @staticmethod
+        def from_pretrained(
+            selected_base_model: LoadedModel,
+            repository_id: str,
+            *,
+            revision: str,
+            is_trainable: bool,
+        ) -> LoadedModel:
+            adapter_calls.append(
+                (
+                    selected_base_model,
+                    repository_id,
+                    revision,
+                    is_trainable,
+                )
+            )
+            return adapter_model
+
+    monkeypatch.setattr(qwen_worker_module, "AutoTokenizer", RecordingTokenizerFactory)
+    monkeypatch.setattr(qwen_worker_module, "AutoModelForCausalLM", RecordingModelFactory)
+    monkeypatch.setattr(qwen_worker_module, "PeftModel", RecordingPeftModel)
+
+    runtime = QwenRuntime(
+        QwenModelConfiguration(
+            model_name="Qwen/Qwen3-1.7B",
+            model_revision="base-revision",
+            adapter=QwenAdapterConfiguration(
+                repository_id="owner/tool-use-adapter",
+                revision="adapter-revision",
+            ),
+        )
+    )
+
+    assert tokenizer_calls == [("Qwen/Qwen3-1.7B", "base-revision")]
+    assert base_model_calls == [("Qwen/Qwen3-1.7B", "base-revision")]
+    assert adapter_calls == [
+        (
+            base_model,
+            "owner/tool-use-adapter",
+            "adapter-revision",
+            False,
+        )
+    ]
+    assert base_model.selected_device is None
+    assert adapter_model.selected_device == "cuda"
+    assert runtime.model is adapter_model
+
+
+def test_worker_main_loads_the_explicit_adapter_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_configurations: list[QwenModelConfiguration] = []
+
+    class RecordingController:
+        def __init__(self, configuration: QwenModelConfiguration) -> None:
+            selected_configurations.append(configuration)
+
+        def run(self) -> None:
+            return
+
+    monkeypatch.setattr(qwen_worker_module, "QwenRuntime", lambda configuration: configuration)
+    monkeypatch.setattr(qwen_worker_module, "QwenWorkerController", RecordingController)
+
+    qwen_worker_module.main(
+        [
+            "--model",
+            "Qwen/Qwen3-1.7B",
+            "--revision",
+            "base-revision",
+            "--adapter",
+            "owner/tool-use-adapter",
+            "--adapter-revision",
+            "adapter-revision",
+        ]
+    )
+
+    assert selected_configurations == [
+        QwenModelConfiguration(
+            model_name="Qwen/Qwen3-1.7B",
+            model_revision="base-revision",
+            adapter=QwenAdapterConfiguration(
+                repository_id="owner/tool-use-adapter",
+                revision="adapter-revision",
+            ),
+        )
+    ]
+
+
+def test_worker_main_rejects_unpinned_adapter() -> None:
+    with pytest.raises(SystemExit):
+        qwen_worker_module.main(
+            [
+                "--model",
+                "Qwen/Qwen3-1.7B",
+                "--revision",
+                "base-revision",
+                "--adapter",
+                "owner/tool-use-adapter",
+            ]
+        )
 
 
 def test_tool_prompt_requires_spoken_bridge_before_call() -> None:

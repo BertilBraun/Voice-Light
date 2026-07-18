@@ -8,6 +8,14 @@ from deployment.compute import validate_environment
 def test_compute_environment_validator_imports_voice_model_constants() -> None:
     assert validate_environment.LANGUAGE_MODEL_NAME == "Qwen/Qwen3-1.7B"
     assert validate_environment.LANGUAGE_MODEL_REVISION
+    assert (
+        validate_environment.LANGUAGE_MODEL_ADAPTER_NAME
+        == "BertilBraun/qwen3-1.7b-voice-light-tool-use-lora"
+    )
+    assert (
+        validate_environment.LANGUAGE_MODEL_ADAPTER_REVISION
+        == "2c834fa6398fe342f390752ffa295511190b7376"
+    )
     assert validate_environment.SEARCH_SUMMARIZER_MODEL_NAME == "Qwen/Qwen3-0.6B"
     assert validate_environment.SEARCH_SUMMARIZER_MODEL_REVISION
     assert validate_environment.KYUTAI_TTS_MODEL_NAME

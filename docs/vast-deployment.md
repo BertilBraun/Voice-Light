@@ -24,7 +24,8 @@ and then performs the following operations:
 1. Clones or fast-forwards `/workspace/Voice-Light`.
 2. Installs system packages, Python 3.12, and the locked compute dependencies.
 3. Creates a fresh `.env.compute` token when the instance does not already have one.
-4. Downloads and validates the required models and CUDA environment.
+4. Downloads and validates the required models, the pinned conversational LoRA adapter, and the
+   CUDA environment.
 5. Installs the compute server as a Supervisor service with automatic restart.
 6. Copies the compute environment to the ignored local `.runtime/compute.env` file.
 7. Replaces the tracked SSH tunnel and verifies the service through `127.0.0.1:8080`.
@@ -55,6 +56,34 @@ When updating directly on the instance, use:
 cd /workspace/Voice-Light
 bash deployment/compute/start.sh
 ```
+
+## Verify the conversational LoRA
+
+Bootstrap prints a cache line containing the adapter repository and immutable revision. After the
+service starts, `/var/log/portal/voice-light-compute.log` contains an `activated Qwen adapter`
+record. The Qwen child process command also includes both `--adapter` and `--adapter-revision`.
+
+Run the behavioral smoke test only in an exclusive window. It loads the same Qwen base and adapter
+as production, so first stop the Supervisor service to avoid loading a second copy. The shell trap
+restores the single service even when a smoke case fails:
+
+```bash
+cd /workspace/Voice-Light
+supervisorctl status voice-light-compute
+supervisorctl stop voice-light-compute
+restart_voice_light() { supervisorctl start voice-light-compute; }
+trap restart_voice_light EXIT
+PYTHONPATH=/workspace/Voice-Light \
+  .venv/bin/python -m deployment.compute.smoke_test_tool_use
+supervisorctl start voice-light-compute
+trap - EXIT
+bash deployment/compute/status.sh
+```
+
+The JSON report covers an ordinary no-tool response, a schema-valid `calculate` call, a
+schema-valid `search` call, and a nonempty post-tool continuation without another call. Each
+tool-call case also requires audible bridge text and passes the production Hermes parser. This
+smoke test validates model behavior and call structure without executing live search.
 
 ## Replace or destroy an instance
 

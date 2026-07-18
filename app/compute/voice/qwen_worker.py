@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Literal, NotRequired, Protocol, TypedDict
 
 import torch
+from peft import PeftModel
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -47,6 +48,10 @@ from app.compute.voice.llm_worker_protocol import (
 )
 from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_SYSTEM_PROMPT,
+)
+from app.compute.voice.qwen_config import (
+    QwenAdapterConfiguration,
+    QwenModelConfiguration,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,17 +130,32 @@ class CancellationStoppingCriteria(StoppingCriteria):
 
 
 class QwenRuntime:
-    def __init__(self, model_name: str, model_revision: str) -> None:
+    def __init__(self, configuration: QwenModelConfiguration) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            revision=model_revision,
+            configuration.model_name,
+            revision=configuration.model_revision,
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            revision=model_revision,
+        base_model = AutoModelForCausalLM.from_pretrained(
+            configuration.model_name,
+            revision=configuration.model_revision,
             dtype=torch.bfloat16,
             attn_implementation="sdpa",
-        ).to("cuda")
+        )
+        match configuration.adapter:
+            case None:
+                self.model = base_model.to("cuda")
+            case QwenAdapterConfiguration(repository_id=repository_id, revision=revision):
+                self.model = PeftModel.from_pretrained(
+                    base_model,
+                    repository_id,
+                    revision=revision,
+                    is_trainable=False,
+                ).to("cuda")
+                logger.info(
+                    "activated Qwen adapter %s at revision %s",
+                    repository_id,
+                    revision,
+                )
 
     def stream_text(
         self,
@@ -473,9 +493,29 @@ def main(arguments: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--adapter")
+    parser.add_argument("--adapter-revision")
     options = parser.parse_args(arguments)
+    if (options.adapter is None) != (options.adapter_revision is None):
+        parser.error("--adapter and --adapter-revision must be provided together")
+    adapter = (
+        None
+        if options.adapter is None
+        else QwenAdapterConfiguration(
+            repository_id=options.adapter,
+            revision=options.adapter_revision,
+        )
+    )
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    QwenWorkerController(QwenRuntime(options.model, options.revision)).run()
+    QwenWorkerController(
+        QwenRuntime(
+            QwenModelConfiguration(
+                model_name=options.model,
+                model_revision=options.revision,
+                adapter=adapter,
+            )
+        )
+    ).run()
 
 
 if __name__ == "__main__":

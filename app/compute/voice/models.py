@@ -50,10 +50,16 @@ from app.compute.voice.llm_worker_protocol import (
     llm_worker_event_adapter,
 )
 from app.compute.voice.model_constants import (
+    LANGUAGE_MODEL_ADAPTER_NAME,
+    LANGUAGE_MODEL_ADAPTER_REVISION,
     LANGUAGE_MODEL_NAME,
     LANGUAGE_MODEL_REVISION,
     SEARCH_SUMMARIZER_MODEL_NAME,
     SEARCH_SUMMARIZER_MODEL_REVISION,
+)
+from app.compute.voice.qwen_config import (
+    QwenAdapterConfiguration,
+    QwenModelConfiguration,
 )
 from app.compute.voice.subprocess_start import read_worker_start_event
 
@@ -81,8 +87,7 @@ class QwenWorkerLease:
 
 @dataclass(frozen=True)
 class QwenWorkerConfiguration:
-    model_name: str
-    model_revision: str
+    model: QwenModelConfiguration
     component_name: str
 
 
@@ -96,16 +101,27 @@ class QwenWorkerManager(Protocol):
 
 class QwenWorkerProcess:
     def __init__(self, python_path: Path, configuration: QwenWorkerConfiguration) -> None:
+        command = [
+            python_path.as_posix(),
+            "-m",
+            "app.compute.voice.qwen_worker",
+            "--model",
+            configuration.model.model_name,
+            "--revision",
+            configuration.model.model_revision,
+        ]
+        adapter = configuration.model.adapter
+        if adapter is not None:
+            command.extend(
+                [
+                    "--adapter",
+                    adapter.repository_id,
+                    "--adapter-revision",
+                    adapter.revision,
+                ]
+            )
         self.process = subprocess.Popen(
-            [
-                python_path.as_posix(),
-                "-m",
-                "app.compute.voice.qwen_worker",
-                "--model",
-                configuration.model_name,
-                "--revision",
-                configuration.model_revision,
-            ],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
@@ -228,8 +244,14 @@ class TransformersLanguageModel:
         self.worker_manager = RestartingQwenWorkerManager(
             python_path,
             QwenWorkerConfiguration(
-                model_name=LANGUAGE_MODEL_NAME,
-                model_revision=LANGUAGE_MODEL_REVISION,
+                model=QwenModelConfiguration(
+                    model_name=LANGUAGE_MODEL_NAME,
+                    model_revision=LANGUAGE_MODEL_REVISION,
+                    adapter=QwenAdapterConfiguration(
+                        repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
+                        revision=LANGUAGE_MODEL_ADAPTER_REVISION,
+                    ),
+                ),
                 component_name="Qwen language model",
             ),
         )
@@ -265,8 +287,11 @@ class TransformersTextGenerator:
         self.worker_manager = RestartingQwenWorkerManager(
             python_path,
             QwenWorkerConfiguration(
-                model_name=SEARCH_SUMMARIZER_MODEL_NAME,
-                model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
+                model=QwenModelConfiguration(
+                    model_name=SEARCH_SUMMARIZER_MODEL_NAME,
+                    model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
+                    adapter=None,
+                ),
                 component_name="Qwen search summarizer",
             ),
         )

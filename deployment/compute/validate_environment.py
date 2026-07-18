@@ -15,6 +15,8 @@ from app.compute.voice.interfaces import SynthesisWord, SynthesizedAudioChunk
 from app.compute.voice.model_constants import (
     KYUTAI_TTS_MODEL_NAME,
     KYUTAI_TTS_MODEL_REVISION,
+    LANGUAGE_MODEL_ADAPTER_NAME,
+    LANGUAGE_MODEL_ADAPTER_REVISION,
     LANGUAGE_MODEL_NAME,
     LANGUAGE_MODEL_REVISION,
     NEMOTRON_ASR_MODEL_NAME,
@@ -80,6 +82,7 @@ def validate_imports() -> None:
         "librosa",
         "nemo.collections.asr",
         "moshi",
+        "peft",
         "soundfile",
         "transformers",
     ):
@@ -91,6 +94,7 @@ def download_required_models(settings: SpeechSynthesisSettings) -> None:
     required_models = [
         (NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION),
         (LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION),
+        (LANGUAGE_MODEL_ADAPTER_NAME, LANGUAGE_MODEL_ADAPTER_REVISION),
         (SEARCH_SUMMARIZER_MODEL_NAME, SEARCH_SUMMARIZER_MODEL_REVISION),
     ]
     if settings.backend is SpeechSynthesisBackend.KYUTAI:
