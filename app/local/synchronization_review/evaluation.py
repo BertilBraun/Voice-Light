@@ -9,15 +9,14 @@ from enum import StrEnum
 from pydantic import Field
 
 from app.local.synchronization_review.calibration import REVIEWED_ALIGNMENTS, ReviewedAlignment
-from app.local.synchronization_review.models import (
-    SynchronizationCandidate,
-    SynchronizationEvidenceSource,
-)
+from app.local.synchronization_review.models import SynchronizationEvidenceSource
 from app.shared.base_model import FrozenBaseModel
 
 DEFAULT_FOLD_COUNT = 5
 DEFAULT_SPLIT_SEED = "voice-light-synchronization-v1"
-OFFSET_RESOLUTION_SECONDS = 0.2
+OFFSET_RESOLUTION_SECONDS = 0.1
+LEGACY_OFFSET_RESOLUTION_SECONDS = 0.2
+LEGACY_VARIABLE_WINDOW_SPREAD_SECONDS = 1.5
 
 
 class ReviewProvenance(StrEnum):
@@ -89,7 +88,6 @@ class OffsetEstimatorConfiguration(FrozenBaseModel):
     minimum_meaningful_improvement: float = Field(ge=0.0)
     minimum_joint_reduction: float = Field(ge=0.0)
     minimum_meaningful_source_count: int = Field(ge=1, le=3)
-    variable_window_spread_seconds: float = Field(ge=0.0)
     weak_evidence_fallback: WeakEvidenceFallback
 
 
@@ -99,9 +97,10 @@ class OffsetErrorMetrics(FrozenBaseModel):
     median_absolute_error_seconds: float
     root_mean_squared_error_seconds: float
     maximum_absolute_error_seconds: float
-    within_0_25_seconds: float
+    within_0_05_seconds: float
+    within_0_1_seconds: float
+    within_0_2_seconds: float
     within_0_5_seconds: float
-    within_1_0_seconds: float
 
 
 class OffsetSampleEvaluation(FrozenBaseModel):
@@ -171,7 +170,6 @@ BASELINE_CONFIGURATION = OffsetEstimatorConfiguration(
     minimum_meaningful_improvement=0.03,
     minimum_joint_reduction=0.008,
     minimum_meaningful_source_count=1,
-    variable_window_spread_seconds=1.5,
     weak_evidence_fallback=WeakEvidenceFallback.ALL_SOURCES,
 )
 
@@ -200,40 +198,6 @@ def reviewed_offset_labels(
     return tuple(sorted(labels_by_external_id.values(), key=lambda label: label.external_id))
 
 
-def evidence_records_from_candidates(
-    candidates: tuple[SynchronizationCandidate, ...],
-) -> tuple[OffsetEvidenceRecord, ...]:
-    return tuple(
-        OffsetEvidenceRecord(
-            external_id=candidate.external_id,
-            scope=EvidenceScope.INITIAL_180_SECONDS,
-            sources=tuple(
-                OffsetEvidence(
-                    source=evidence.source,
-                    estimated_shift_seconds=evidence.estimated_b_shift_seconds,
-                    bad_state_improvement=evidence.bad_state_improvement,
-                    overlap_reduction=evidence.overlap_reduction,
-                    silence_reduction=evidence.silence_reduction,
-                )
-                for evidence in candidate.evidence
-            ),
-            windows=tuple(
-                OffsetWindowEvidence(
-                    source=SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
-                    start_seconds=window.start_seconds,
-                    end_seconds=window.end_seconds,
-                    estimated_shift_seconds=window.estimated_b_shift_seconds,
-                    bad_state_improvement=window.bad_state_improvement,
-                    overlap_reduction=window.overlap_reduction,
-                    silence_reduction=window.silence_reduction,
-                )
-                for window in candidate.window_estimates
-            ),
-        )
-        for candidate in candidates
-    )
-
-
 def reviewed_examples(
     labels: tuple[OffsetLabel, ...],
     evidence_records: tuple[OffsetEvidenceRecord, ...],
@@ -256,6 +220,51 @@ def predict_offset(
     evidence: OffsetEvidenceRecord,
     configuration: OffsetEstimatorConfiguration,
 ) -> float:
+    static_sources = (
+        tuple(
+            source
+            for source in evidence.sources
+            if source.source is not SynchronizationEvidenceSource.CONVERSATION_ANNOTATION
+        )
+        if evidence.scope is EvidenceScope.FULL_RECORDING
+        else evidence.sources
+    )
+    meaningful_sources = tuple(
+        source
+        for source in static_sources
+        if _meaningful_source(source=source, configuration=configuration)
+    )
+    if len(meaningful_sources) < configuration.minimum_meaningful_source_count:
+        if configuration.weak_evidence_fallback is WeakEvidenceFallback.ZERO_SHIFT:
+            return 0.0
+        estimation_sources = static_sources
+    else:
+        estimation_sources = meaningful_sources
+    if not estimation_sources:
+        return 0.0
+
+    full_estimate = _weighted_median_shift(estimation_sources)
+    if evidence.scope is EvidenceScope.FULL_RECORDING:
+        selected_windows = _strongest_window_series(windows=evidence.windows)
+        meaningful_windows = tuple(
+            window
+            for window in selected_windows
+            if window.bad_state_improvement >= configuration.minimum_meaningful_improvement
+            and window.joint_reduction >= configuration.minimum_joint_reduction
+        )
+        if (
+            len(meaningful_windows) >= 2
+            and _spread(tuple(window.estimated_shift_seconds for window in meaningful_windows))
+            >= LEGACY_VARIABLE_WINDOW_SPREAD_SECONDS
+        ):
+            return _quantized_shift(selected_windows[0].estimated_shift_seconds)
+    return _quantized_shift(full_estimate)
+
+
+def predict_legacy_offset(
+    evidence: OffsetEvidenceRecord,
+    configuration: OffsetEstimatorConfiguration,
+) -> float:
     meaningful_sources = tuple(
         source
         for source in evidence.sources
@@ -269,7 +278,6 @@ def predict_offset(
         estimation_sources = meaningful_sources
     if not estimation_sources:
         return 0.0
-
     selected_windows = _strongest_window_series(windows=evidence.windows)
     meaningful_windows = tuple(
         window
@@ -277,10 +285,10 @@ def predict_offset(
         if window.bad_state_improvement >= configuration.minimum_meaningful_improvement
         and window.joint_reduction >= configuration.minimum_joint_reduction
     )
-    window_spread = _spread(tuple(window.estimated_shift_seconds for window in meaningful_windows))
     variable = (
         len(meaningful_windows) >= 2
-        and window_spread >= configuration.variable_window_spread_seconds
+        and _spread(tuple(window.estimated_shift_seconds for window in meaningful_windows))
+        >= LEGACY_VARIABLE_WINDOW_SPREAD_SECONDS
     )
     full_estimate = _weighted_median_shift(estimation_sources)
     raw_estimate = (
@@ -288,7 +296,8 @@ def predict_offset(
         if variable and selected_windows
         else full_estimate
     )
-    return _quantized_shift(raw_estimate)
+    quantized_steps = round(raw_estimate / LEGACY_OFFSET_RESOLUTION_SECONDS)
+    return round(quantized_steps * LEGACY_OFFSET_RESOLUTION_SECONDS, 1)
 
 
 def estimator_configuration_grid() -> tuple[OffsetEstimatorConfiguration, ...]:
@@ -298,14 +307,12 @@ def estimator_configuration_grid() -> tuple[OffsetEstimatorConfiguration, ...]:
             minimum_meaningful_improvement=minimum_improvement,
             minimum_joint_reduction=minimum_joint_reduction,
             minimum_meaningful_source_count=minimum_source_count,
-            variable_window_spread_seconds=variable_window_spread,
             weak_evidence_fallback=weak_evidence_fallback,
         )
         for minimum_lag in (0.4, 0.8, 1.2)
         for minimum_improvement in (0.02, 0.03, 0.05)
         for minimum_joint_reduction in (0.0, 0.008, 0.015)
         for minimum_source_count in (1, 2)
-        for variable_window_spread in (1.0, 1.5, 2.5)
         for weak_evidence_fallback in WeakEvidenceFallback
     )
 
@@ -458,9 +465,10 @@ def offset_error_metrics(errors: tuple[float, ...]) -> OffsetErrorMetrics:
         median_absolute_error_seconds=statistics.median(errors),
         root_mean_squared_error_seconds=math.sqrt(statistics.fmean(error**2 for error in errors)),
         maximum_absolute_error_seconds=max(errors),
-        within_0_25_seconds=sum(error <= 0.25 for error in errors) / len(errors),
+        within_0_05_seconds=sum(error <= 0.05 for error in errors) / len(errors),
+        within_0_1_seconds=sum(error <= 0.1 for error in errors) / len(errors),
+        within_0_2_seconds=sum(error <= 0.2 for error in errors) / len(errors),
         within_0_5_seconds=sum(error <= 0.5 for error in errors) / len(errors),
-        within_1_0_seconds=sum(error <= 1.0 for error in errors) / len(errors),
     )
 
 
@@ -469,9 +477,16 @@ def _sample_evaluation(
     fold_index: int,
     tuned_configuration: OffsetEstimatorConfiguration,
 ) -> OffsetSampleEvaluation:
-    baseline_prediction = predict_offset(
-        evidence=example.evidence,
-        configuration=BASELINE_CONFIGURATION,
+    baseline_prediction = (
+        predict_legacy_offset(
+            evidence=example.evidence,
+            configuration=BASELINE_CONFIGURATION,
+        )
+        if example.evidence.scope is EvidenceScope.INITIAL_180_SECONDS
+        else predict_offset(
+            evidence=example.evidence,
+            configuration=BASELINE_CONFIGURATION,
+        )
     )
     tuned_prediction = predict_offset(
         evidence=example.evidence,
@@ -617,7 +632,7 @@ def _selection_key(
         metrics.root_mean_squared_error_seconds,
         metrics.mean_absolute_error_seconds,
         metrics.maximum_absolute_error_seconds,
-        -metrics.within_0_5_seconds,
+        -metrics.within_0_1_seconds,
         configuration.model_dump_json(),
     )
 

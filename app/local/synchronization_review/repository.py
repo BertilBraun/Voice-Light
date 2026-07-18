@@ -7,9 +7,14 @@ from uuid import UUID
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from app.local.asr.transcript import SpeakerTrack
 from app.local.synchronization_review.calibration import ReviewedAlignment
+from app.local.synchronization_review.models import (
+    AlignmentEstimateOrigin,
+    SynchronizationCandidate,
+)
 from app.shared.asr import AsrModelId, TimestampedWord
 from app.shared.quality import AudioQualityMetrics, ConversationAnnotation
 
@@ -134,6 +139,13 @@ class SynchronizationReviewRepository:
                 """,
                 (sample_id, speaker2_shift_seconds),
             ).fetchone()
+            connection.execute(
+                """
+                DELETE FROM synchronization_predictions
+                WHERE sample_id = %s
+                """,
+                (sample_id,),
+            )
         if row is None:
             raise ValueError(f"Sample not found: {sample_id}")
         return ReviewedAlignment(
@@ -141,7 +153,68 @@ class SynchronizationReviewRepository:
             speaker2_shift_seconds=float(row["speaker2_shift_seconds"]),
         )
 
-    def load_annotations(self) -> tuple[StoredConversationAnnotation, ...]:
+    def save_unreviewed_predictions(
+        self,
+        candidates: tuple[SynchronizationCandidate, ...],
+        estimator_version: str,
+    ) -> int:
+        predictions = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.alignment_estimate_origin is AlignmentEstimateOrigin.PREDICTED
+        )
+        with self.connection() as connection:
+            connection.execute(
+                """
+                DELETE FROM synchronization_predictions
+                USING synchronization_reviews
+                WHERE synchronization_predictions.sample_id =
+                      synchronization_reviews.sample_id
+                """
+            )
+            saved_count = 0
+            for candidate in predictions:
+                row = connection.execute(
+                    """
+                    INSERT INTO synchronization_predictions (
+                      sample_id, estimator_version, speaker2_shift_seconds,
+                      confidence_score, offset_pattern, drift_warning,
+                      duration_mismatch_seconds, payload, updated_at
+                    )
+                    SELECT %s, %s, %s, %s, %s, %s, %s, %s, now()
+                    WHERE NOT EXISTS (
+                      SELECT 1
+                      FROM synchronization_reviews
+                      WHERE synchronization_reviews.sample_id = %s
+                    )
+                    ON CONFLICT (sample_id) DO UPDATE
+                    SET estimator_version = EXCLUDED.estimator_version,
+                        speaker2_shift_seconds = EXCLUDED.speaker2_shift_seconds,
+                        confidence_score = EXCLUDED.confidence_score,
+                        offset_pattern = EXCLUDED.offset_pattern,
+                        drift_warning = EXCLUDED.drift_warning,
+                        duration_mismatch_seconds = EXCLUDED.duration_mismatch_seconds,
+                        payload = EXCLUDED.payload,
+                        updated_at = now()
+                    RETURNING sample_id
+                    """,
+                    (
+                        candidate.sample_id,
+                        estimator_version,
+                        candidate.estimated_b_shift_seconds,
+                        candidate.offset_confidence_score,
+                        candidate.offset_pattern.value,
+                        candidate.drift_warning,
+                        candidate.duration_mismatch_seconds,
+                        Jsonb(candidate.model_dump(mode="json")),
+                        candidate.sample_id,
+                    ),
+                ).fetchone()
+                if row is not None:
+                    saved_count += 1
+        return saved_count
+
+    def load_annotations(self, metric_version: str) -> tuple[StoredConversationAnnotation, ...]:
         with self.connection() as connection:
             rows = connection.execute(
                 """
@@ -153,6 +226,8 @@ class SynchronizationReviewRepository:
                     quality_results.payload -> 'audio_quality' AS audio_quality
                   FROM quality_results
                   JOIN samples ON samples.id = quality_results.sample_id
+                  WHERE quality_results.metric_version = %s
+                    AND quality_results.status = 'completed'
                   ORDER BY quality_results.sample_id, quality_results.created_at DESC
                 )
                 SELECT sample_id, external_id, annotation
@@ -160,7 +235,8 @@ class SynchronizationReviewRepository:
                 FROM latest_quality
                 WHERE jsonb_typeof(annotation) = 'object'
                 ORDER BY external_id
-                """
+                """,
+                (metric_version,),
             ).fetchall()
         return tuple(
             StoredConversationAnnotation(

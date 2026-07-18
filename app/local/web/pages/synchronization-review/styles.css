@@ -313,6 +313,12 @@ h1 {
   gap: 8px;
 }
 
+.drift-warning {
+  width: 100%;
+  color: #8a4b08;
+  font-weight: 650;
+}
+
 .navigation {
   display: flex;
   gap: 8px;

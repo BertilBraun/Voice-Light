@@ -40,6 +40,7 @@ class SynchronizationEvidence(FrozenBaseModel):
 
 
 class SynchronizationWindowEstimate(FrozenBaseModel):
+    source: SynchronizationEvidenceSource
     start_seconds: float
     end_seconds: float
     estimated_b_shift_seconds: float
@@ -68,6 +69,9 @@ class SynchronizationCandidate(FrozenBaseModel):
     alignment_estimate_origin: AlignmentEstimateOrigin
     offset_confidence_score: float
     offset_pattern: OffsetPattern
+    static_offset_valid: bool
+    drift_warning: str | None
+    duration_mismatch_seconds: float | None
     source_agreement: bool
     evidence: tuple[SynchronizationEvidence, ...]
     window_estimates: tuple[SynchronizationWindowEstimate, ...]

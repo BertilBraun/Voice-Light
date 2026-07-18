@@ -8,6 +8,9 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from app.local.asr.full_recording_models import FullRecordingAsrTranscriptRecord
+from app.local.asr.full_recording_repository import FullRecordingAsrRepository
+from app.local.db.models import TrackSide
 from app.local.synchronization_review.calibration import (
     ReviewedAlignment,
     is_unresolved_alignment,
@@ -27,28 +30,28 @@ from app.local.synchronization_review.models import (
 from app.local.synchronization_review.repository import (
     StoredConversationAnnotation,
     SynchronizationReviewRepository,
-    TranscriptPair,
 )
 from app.shared.asr import AsrModelId, TimestampedWord
 from app.shared.audio.wav import read_mono_wave_audio
-from app.shared.quality import AnnotationSpan, ConversationAnnotation, TrackAudioQuality
+from app.shared.quality import METRIC_VERSION, AnnotationSpan, TrackAudioQuality
 
 FRAME_DURATION_SECONDS = 0.1
 MERGE_WORD_GAP_SECONDS = 0.5
 MAXIMUM_LAG_SECONDS = 12.0
 ANALYSIS_MARGIN_SECONDS = 12.0
-WINDOW_DURATION_SECONDS = 60.0
-MINIMUM_WINDOW_DURATION_SECONDS = 40.0
+WINDOW_DURATION_SECONDS = 180.0
+MINIMUM_WINDOW_DURATION_SECONDS = 120.0
 LONG_OVERLAP_SECONDS = 0.8
 LONG_SILENCE_SECONDS = 1.2
 MAXIMUM_CYCLE_GAP_SECONDS = 5.0
-MINIMUM_MEANINGFUL_LAG_SECONDS = 0.8
-MINIMUM_MEANINGFUL_IMPROVEMENT = 0.03
-MINIMUM_JOINT_REDUCTION = 0.008
+MINIMUM_MEANINGFUL_LAG_SECONDS = 0.4
+MINIMUM_MEANINGFUL_IMPROVEMENT = 0.02
+MINIMUM_JOINT_REDUCTION = 0.0
 TARGET_ACTIVE_RMS_DBFS = -20.0
 MINIMUM_DEFAULT_GAIN = 0.1
 MAXIMUM_DEFAULT_GAIN = 12.0
-RECOMMENDED_SHIFT_RESOLUTION_SECONDS = 0.2
+RECOMMENDED_SHIFT_RESOLUTION_SECONDS = 0.1
+ESTIMATOR_VERSION = "full-recording-static-v1"
 
 
 class TimelineState(StrEnum):
@@ -101,23 +104,46 @@ def synchronization_candidates(
 ) -> SynchronizationCandidateListResponse:
     total_session_count = repository.count_pmt_samples()
     stored_alignments = repository.load_reviewed_alignments()
-    transcript_pairs = repository.load_transcript_pairs()
-    annotations = repository.load_annotations()
-    pair_by_key = {(pair.external_id, pair.model_id): pair for pair in transcript_pairs}
+    annotations = repository.load_annotations(metric_version=METRIC_VERSION)
+    transcripts = FullRecordingAsrRepository(
+        database_url=repository.database_url
+    ).list_latest_transcripts(
+        model_ids=(AsrModelId.PARAKEET_TDT, AsrModelId.CANARY),
+    )
+    transcript_by_key = {
+        (transcript.sample_external_id, transcript.model_id, transcript.side): transcript
+        for transcript in transcripts
+        if transcript.error is None
+    }
     candidates: list[SynchronizationCandidate] = []
     analyzed_session_count = 0
     offset_candidate_count = 0
 
     for stored_annotation in annotations:
-        parakeet_pair = pair_by_key.get((stored_annotation.external_id, AsrModelId.PARAKEET_TDT))
-        canary_pair = pair_by_key.get((stored_annotation.external_id, AsrModelId.CANARY))
-        if parakeet_pair is None or canary_pair is None:
+        required_transcripts = tuple(
+            transcript_by_key.get((stored_annotation.external_id, model_id, side))
+            for model_id in (AsrModelId.PARAKEET_TDT, AsrModelId.CANARY)
+            for side in TrackSide
+        )
+        if any(transcript is None for transcript in required_transcripts):
             continue
+        (
+            parakeet_speaker1,
+            parakeet_speaker2,
+            canary_speaker1,
+            canary_speaker2,
+        ) = required_transcripts
+        assert parakeet_speaker1 is not None
+        assert parakeet_speaker2 is not None
+        assert canary_speaker1 is not None
+        assert canary_speaker2 is not None
         analyzed_session_count += 1
         candidate = _candidate(
             stored_annotation=stored_annotation,
-            parakeet_pair=parakeet_pair,
-            canary_pair=canary_pair,
+            parakeet_speaker1=parakeet_speaker1,
+            parakeet_speaker2=parakeet_speaker2,
+            canary_speaker1=canary_speaker1,
+            canary_speaker2=canary_speaker2,
             stored_alignments=stored_alignments,
         )
         if candidate.is_offset_candidate:
@@ -143,33 +169,51 @@ def synchronization_candidates(
 
 def _candidate(
     stored_annotation: StoredConversationAnnotation,
-    parakeet_pair: TranscriptPair,
-    canary_pair: TranscriptPair,
+    parakeet_speaker1: FullRecordingAsrTranscriptRecord,
+    parakeet_speaker2: FullRecordingAsrTranscriptRecord,
+    canary_speaker1: FullRecordingAsrTranscriptRecord,
+    canary_speaker2: FullRecordingAsrTranscriptRecord,
     stored_alignments: tuple[ReviewedAlignment, ...],
 ) -> SynchronizationCandidate:
     annotation = stored_annotation.annotation
-    duration_seconds = min(annotation.analyzed_duration_seconds, 180.0)
+    annotation_duration_seconds = annotation.analyzed_duration_seconds
+    annotation_speaker1_spans = annotation_spans(annotation.speaker1.speech_segments)
+    annotation_speaker2_spans = annotation_spans(annotation.speaker2.speech_segments)
+    parakeet_duration_seconds = min(
+        parakeet_speaker1.prepared_duration_seconds,
+        parakeet_speaker2.prepared_duration_seconds,
+    )
+    canary_duration_seconds = min(
+        canary_speaker1.prepared_duration_seconds,
+        canary_speaker2.prepared_duration_seconds,
+    )
+    parakeet_speaker1_spans = timed_word_spans(parakeet_speaker1.words)
+    parakeet_speaker2_spans = timed_word_spans(parakeet_speaker2.words)
+    canary_speaker1_spans = timed_word_spans(canary_speaker1.words)
+    canary_speaker2_spans = timed_word_spans(canary_speaker2.words)
     source_metrics = (
         SourceMetrics(
             source=SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
             metrics=timeline_metrics(
-                speaker1_spans=annotation_spans(annotation.speaker1.speech_segments),
-                speaker2_spans=annotation_spans(annotation.speaker2.speech_segments),
-                duration_seconds=duration_seconds,
+                speaker1_spans=annotation_speaker1_spans,
+                speaker2_spans=annotation_speaker2_spans,
+                duration_seconds=annotation_duration_seconds,
             ),
         ),
         SourceMetrics(
             source=SynchronizationEvidenceSource.PARAKEET,
-            metrics=transcript_metrics(
-                pair=parakeet_pair,
-                duration_seconds=duration_seconds,
+            metrics=timeline_metrics(
+                speaker1_spans=parakeet_speaker1_spans,
+                speaker2_spans=parakeet_speaker2_spans,
+                duration_seconds=parakeet_duration_seconds,
             ),
         ),
         SourceMetrics(
             source=SynchronizationEvidenceSource.CANARY,
-            metrics=transcript_metrics(
-                pair=canary_pair,
-                duration_seconds=duration_seconds,
+            metrics=timeline_metrics(
+                speaker1_spans=canary_speaker1_spans,
+                speaker2_spans=canary_speaker2_spans,
+                duration_seconds=canary_duration_seconds,
             ),
         ),
     )
@@ -178,27 +222,48 @@ def _candidate(
         for source_metric in source_metrics
         if meaningful_metrics(source_metric.metrics)
     )
-    window_estimates = annotation_window_estimates(annotation=annotation)
+    window_estimates = (
+        *timeline_window_estimates(
+            source=SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
+            speaker1_spans=annotation_speaker1_spans,
+            speaker2_spans=annotation_speaker2_spans,
+            duration_seconds=annotation_duration_seconds,
+        ),
+        *timeline_window_estimates(
+            source=SynchronizationEvidenceSource.PARAKEET,
+            speaker1_spans=parakeet_speaker1_spans,
+            speaker2_spans=parakeet_speaker2_spans,
+            duration_seconds=parakeet_duration_seconds,
+        ),
+        *timeline_window_estimates(
+            source=SynchronizationEvidenceSource.CANARY,
+            speaker1_spans=canary_speaker1_spans,
+            speaker2_spans=canary_speaker2_spans,
+            duration_seconds=canary_duration_seconds,
+        ),
+    )
     meaningful_windows = tuple(estimate for estimate in window_estimates if estimate.meaningful)
-    annotation_is_meaningful = meaningful_metrics(source_metrics[0].metrics)
-    has_variable_annotation = (
-        len(meaningful_windows) >= 2
-        and _lag_spread(
-            tuple(estimate.estimated_b_shift_seconds for estimate in meaningful_windows)
-        )
-        >= 1.5
-    )
-    is_offset_candidate = len(meaningful_sources) >= 2 or (
-        annotation_is_meaningful and has_variable_annotation
-    )
+    is_offset_candidate = len(meaningful_sources) >= 2
 
-    estimation_sources = meaningful_sources if meaningful_sources else source_metrics
+    transcript_sources = tuple(
+        source_metric
+        for source_metric in source_metrics
+        if source_metric.source is not SynchronizationEvidenceSource.CONVERSATION_ANNOTATION
+    )
+    meaningful_transcript_sources = tuple(
+        source_metric
+        for source_metric in transcript_sources
+        if meaningful_metrics(source_metric.metrics)
+    )
+    estimation_sources = meaningful_transcript_sources
     source_agreement = lag_agreement(meaningful_sources=estimation_sources)
     offset_pattern = classify_offset_pattern(
         meaningful_sources=meaningful_sources,
         meaningful_windows=meaningful_windows,
     )
-    full_recording_estimated_shift = robust_shift_estimate(meaningful_sources=estimation_sources)
+    full_recording_estimated_shift = (
+        robust_shift_estimate(meaningful_sources=estimation_sources) if estimation_sources else 0.0
+    )
     predicted_shift = recommended_shift_estimate(
         offset_pattern=offset_pattern,
         full_recording_estimated_shift=full_recording_estimated_shift,
@@ -241,6 +306,18 @@ def _candidate(
         alignment_estimate_origin=estimate_origin,
         offset_confidence_score=offset_confidence,
         offset_pattern=offset_pattern,
+        static_offset_valid=offset_pattern is not OffsetPattern.VARIABLE,
+        drift_warning=(
+            "Window estimates vary within at least one evidence source; review for drift "
+            "or structural mismatch."
+            if offset_pattern is OffsetPattern.VARIABLE
+            else None
+        ),
+        duration_mismatch_seconds=(
+            stored_annotation.audio_quality.duration_gap_seconds
+            if stored_annotation.audio_quality is not None
+            else None
+        ),
         source_agreement=source_agreement,
         evidence=tuple(
             SynchronizationEvidence(
@@ -270,14 +347,6 @@ def _candidate(
             if stored_annotation.audio_quality is not None
             else None
         ),
-    )
-
-
-def transcript_metrics(pair: TranscriptPair, duration_seconds: float) -> TimelineMetrics:
-    return timeline_metrics(
-        speaker1_spans=timed_word_spans(pair.speaker1_words),
-        speaker2_spans=timed_word_spans(pair.speaker2_words),
-        duration_seconds=duration_seconds,
     )
 
 
@@ -465,16 +534,18 @@ def timeline_metrics(
     )
 
 
-def annotation_window_estimates(
-    annotation: ConversationAnnotation,
+def timeline_window_estimates(
+    source: SynchronizationEvidenceSource,
+    speaker1_spans: tuple[SpeechSpan, ...],
+    speaker2_spans: tuple[SpeechSpan, ...],
+    duration_seconds: float,
 ) -> tuple[SynchronizationWindowEstimate, ...]:
-    duration_seconds = min(annotation.analyzed_duration_seconds, 180.0)
     speaker1_mask = activity_mask(
-        spans=annotation_spans(annotation.speaker1.speech_segments),
+        spans=speaker1_spans,
         duration_seconds=duration_seconds,
     )
     speaker2_mask = activity_mask(
-        spans=annotation_spans(annotation.speaker2.speech_segments),
+        spans=speaker2_spans,
         duration_seconds=duration_seconds,
     )
     window_frame_count = round(WINDOW_DURATION_SECONDS / FRAME_DURATION_SECONDS)
@@ -500,6 +571,7 @@ def annotation_window_estimates(
         )
         estimates.append(
             SynchronizationWindowEstimate(
+                source=source,
                 start_seconds=start_index * FRAME_DURATION_SECONDS,
                 end_seconds=end_index * FRAME_DURATION_SECONDS,
                 estimated_b_shift_seconds=lag_seconds,
@@ -554,9 +626,15 @@ def recommended_shift_estimate(
     full_recording_estimated_shift: float,
     window_estimates: tuple[SynchronizationWindowEstimate, ...],
 ) -> float:
+    meaningful_windows = tuple(window for window in window_estimates if window.meaningful)
+    review_anchor = (
+        meaningful_windows[0]
+        if meaningful_windows
+        else (window_estimates[0] if window_estimates else None)
+    )
     raw_estimate = (
-        window_estimates[0].estimated_b_shift_seconds
-        if offset_pattern is OffsetPattern.VARIABLE and window_estimates
+        review_anchor.estimated_b_shift_seconds
+        if offset_pattern is OffsetPattern.VARIABLE and review_anchor is not None
         else full_recording_estimated_shift
     )
     quantized_steps = round(raw_estimate / RECOMMENDED_SHIFT_RESOLUTION_SECONDS)
@@ -578,12 +656,9 @@ def classify_offset_pattern(
     meaningful_sources: tuple[SourceMetrics, ...],
     meaningful_windows: tuple[SynchronizationWindowEstimate, ...],
 ) -> OffsetPattern:
-    window_spread = _lag_spread(
-        tuple(estimate.estimated_b_shift_seconds for estimate in meaningful_windows)
-    )
-    if len(meaningful_windows) >= 2 and window_spread >= 1.5:
+    if _variable_window_source_count(windows=meaningful_windows) >= 2:
         return OffsetPattern.VARIABLE
-    if lag_agreement(meaningful_sources) and (len(meaningful_windows) < 2 or window_spread <= 1.5):
+    if lag_agreement(meaningful_sources):
         return OffsetPattern.CONSTANT
     return OffsetPattern.UNCERTAIN
 
@@ -631,9 +706,7 @@ def offset_confidence_score(
     recommendation_consistency = math.exp(
         -abs(predicted_shift - full_recording_estimated_shift) / 2.0
     )
-    window_spread = _lag_spread(
-        tuple(window.estimated_b_shift_seconds for window in meaningful_windows)
-    )
+    window_spread = _maximum_within_source_window_spread(windows=meaningful_windows)
     temporal_consistency = math.exp(-window_spread / 4.0)
     confidence = (
         evidence_strength
@@ -747,3 +820,31 @@ def _lag_spread(lags: tuple[float, ...]) -> float:
     if len(lags) < 2:
         return 0.0
     return max(lags) - min(lags)
+
+
+def _maximum_within_source_window_spread(
+    windows: tuple[SynchronizationWindowEstimate, ...],
+) -> float:
+    windows_by_source = {
+        source: tuple(window for window in windows if window.source is source)
+        for source in SynchronizationEvidenceSource
+    }
+    return max(
+        (
+            _lag_spread(tuple(window.estimated_b_shift_seconds for window in source_windows))
+            for source_windows in windows_by_source.values()
+        ),
+        default=0.0,
+    )
+
+
+def _variable_window_source_count(
+    windows: tuple[SynchronizationWindowEstimate, ...],
+) -> int:
+    return sum(
+        _lag_spread(
+            tuple(window.estimated_b_shift_seconds for window in windows if window.source is source)
+        )
+        >= 1.5
+        for source in SynchronizationEvidenceSource
+    )

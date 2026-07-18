@@ -52,6 +52,45 @@ def test_zero_fallback_rejects_catastrophic_weak_evidence_shift() -> None:
     ) == pytest.approx(0.0)
 
 
+def test_static_prediction_is_independent_of_variable_windows() -> None:
+    evidence = _evidence_record(
+        external_id="pmt_001",
+        source_shifts=(-3.0, -3.0, -3.0),
+        improvement=0.1,
+        joint_reduction=0.05,
+    )
+    evidence = OffsetEvidenceRecord(
+        external_id=evidence.external_id,
+        scope=evidence.scope,
+        sources=evidence.sources,
+        windows=(
+            OffsetWindowEvidence(
+                source=SynchronizationEvidenceSource.PARAKEET,
+                start_seconds=0.0,
+                end_seconds=180.0,
+                estimated_shift_seconds=8.0,
+                bad_state_improvement=0.1,
+                overlap_reduction=0.05,
+                silence_reduction=0.05,
+            ),
+            OffsetWindowEvidence(
+                source=SynchronizationEvidenceSource.PARAKEET,
+                start_seconds=180.0,
+                end_seconds=360.0,
+                estimated_shift_seconds=-8.0,
+                bad_state_improvement=0.1,
+                overlap_reduction=0.05,
+                silence_reduction=0.05,
+            ),
+        ),
+    )
+
+    assert predict_offset(
+        evidence=evidence,
+        configuration=BASELINE_CONFIGURATION,
+    ) == pytest.approx(-3.0)
+
+
 def test_evaluation_reports_deterministic_out_of_fold_predictions() -> None:
     examples = tuple(
         _reviewed_example(
@@ -130,7 +169,6 @@ def test_estimator_configuration_requires_nonnegative_thresholds() -> None:
             minimum_meaningful_improvement=0.03,
             minimum_joint_reduction=0.008,
             minimum_meaningful_source_count=1,
-            variable_window_spread_seconds=1.5,
             weak_evidence_fallback=WeakEvidenceFallback.ZERO_SHIFT,
         )
 

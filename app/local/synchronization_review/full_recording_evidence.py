@@ -11,7 +11,13 @@ from app.local.synchronization_review.evaluation import (
     OffsetWindowEvidence,
 )
 from app.local.synchronization_review.models import SynchronizationEvidenceSource
-from app.local.synchronization_review.service import SpeechSpan, timed_word_spans, timeline_metrics
+from app.local.synchronization_review.repository import StoredConversationAnnotation
+from app.local.synchronization_review.service import (
+    SpeechSpan,
+    annotation_spans,
+    timed_word_spans,
+    timeline_metrics,
+)
 from app.shared.asr import AsrModelId
 
 FULL_EVIDENCE_WINDOW_SECONDS = 180.0
@@ -30,18 +36,50 @@ class FullTranscriptPair:
 def full_recording_evidence_records(
     transcripts: tuple[FullRecordingAsrTranscriptRecord, ...],
     model_ids: tuple[AsrModelId, ...] = SUPPORTED_FULL_EVIDENCE_MODELS,
+    annotations: tuple[StoredConversationAnnotation, ...] = (),
 ) -> tuple[OffsetEvidenceRecord, ...]:
     _validate_model_ids(model_ids=model_ids)
-    pairs = _complete_transcript_pairs(transcripts=transcripts, model_ids=model_ids)
+    selected_transcripts = _transcripts_for_annotations(
+        transcripts=transcripts,
+        annotations=annotations,
+    )
+    pairs = _complete_transcript_pairs(
+        transcripts=selected_transcripts,
+        model_ids=model_ids,
+    )
     pairs_by_external_id: dict[str, list[FullTranscriptPair]] = {}
     for pair in pairs:
         pairs_by_external_id.setdefault(pair.external_id, []).append(pair)
+    annotation_by_external_id = {annotation.external_id: annotation for annotation in annotations}
+    missing_annotations = tuple(
+        external_id
+        for external_id in pairs_by_external_id
+        if annotations and external_id not in annotation_by_external_id
+    )
+    if missing_annotations:
+        raise ValueError(
+            "Missing full-recording conversation annotations: "
+            + ", ".join(missing_annotations[:10])
+        )
     return tuple(
         _full_recording_evidence_record(
             external_id=external_id,
             pairs=tuple(sorted(sample_pairs, key=lambda pair: pair.model_id.value)),
+            annotation=annotation_by_external_id.get(external_id),
         )
         for external_id, sample_pairs in sorted(pairs_by_external_id.items())
+    )
+
+
+def _transcripts_for_annotations(
+    transcripts: tuple[FullRecordingAsrTranscriptRecord, ...],
+    annotations: tuple[StoredConversationAnnotation, ...],
+) -> tuple[FullRecordingAsrTranscriptRecord, ...]:
+    if not annotations:
+        return transcripts
+    external_ids = {annotation.external_id for annotation in annotations}
+    return tuple(
+        transcript for transcript in transcripts if transcript.sample_external_id in external_ids
     )
 
 
@@ -109,9 +147,36 @@ def _complete_transcript_pairs(
 def _full_recording_evidence_record(
     external_id: str,
     pairs: tuple[FullTranscriptPair, ...],
+    annotation: StoredConversationAnnotation | None,
 ) -> OffsetEvidenceRecord:
     sources: list[OffsetEvidence] = []
     windows: list[OffsetWindowEvidence] = []
+    if annotation is not None:
+        annotation_duration_seconds = annotation.annotation.analyzed_duration_seconds
+        speaker1_annotation_spans = annotation_spans(annotation.annotation.speaker1.speech_segments)
+        speaker2_annotation_spans = annotation_spans(annotation.annotation.speaker2.speech_segments)
+        annotation_metrics = timeline_metrics(
+            speaker1_spans=speaker1_annotation_spans,
+            speaker2_spans=speaker2_annotation_spans,
+            duration_seconds=annotation_duration_seconds,
+        )
+        sources.append(
+            OffsetEvidence(
+                source=SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
+                estimated_shift_seconds=annotation_metrics.best_lag_seconds,
+                bad_state_improvement=annotation_metrics.bad_state_improvement,
+                overlap_reduction=annotation_metrics.overlap_reduction,
+                silence_reduction=annotation_metrics.silence_reduction,
+            )
+        )
+        windows.extend(
+            _window_evidence(
+                source=SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
+                speaker1_spans=speaker1_annotation_spans,
+                speaker2_spans=speaker2_annotation_spans,
+                duration_seconds=annotation_duration_seconds,
+            )
+        )
     for pair in pairs:
         source = _evidence_source(model_id=pair.model_id)
         duration_seconds = min(

@@ -7,7 +7,6 @@ from app.local.config import DATABASE_URL
 from app.local.synchronization_review.evaluation import (
     EvidenceScope,
     evaluate_offset_estimator,
-    evidence_records_from_candidates,
     reviewed_examples,
     reviewed_offset_labels,
 )
@@ -15,9 +14,12 @@ from app.local.synchronization_review.full_recording_evidence import (
     SUPPORTED_FULL_EVIDENCE_MODELS,
     full_recording_evidence_records,
 )
+from app.local.synchronization_review.initial_recording_evidence import (
+    initial_recording_evidence_records,
+)
 from app.local.synchronization_review.repository import SynchronizationReviewRepository
-from app.local.synchronization_review.service import synchronization_candidates
 from app.shared.asr import AsrModelId
+from app.shared.quality import METRIC_VERSION
 
 
 def main() -> None:
@@ -32,7 +34,7 @@ def main() -> None:
         nargs="+",
         type=AsrModelId,
         choices=SUPPORTED_FULL_EVIDENCE_MODELS,
-        default=[AsrModelId.PARAKEET_TDT],
+        default=list(SUPPORTED_FULL_EVIDENCE_MODELS),
         help="Full-recording ASR models to evaluate.",
     )
     arguments = parser.parse_args()
@@ -42,16 +44,18 @@ def main() -> None:
     labels = reviewed_offset_labels(stored_alignments=repository.load_reviewed_alignments())
     match evidence_scope:
         case EvidenceScope.INITIAL_180_SECONDS:
-            candidate_response = synchronization_candidates(repository=repository)
-            evidence_records = evidence_records_from_candidates(
-                candidates=candidate_response.candidates
+            evidence_records = initial_recording_evidence_records(
+                transcript_pairs=repository.load_transcript_pairs(),
+                annotations=repository.load_annotations(metric_version=METRIC_VERSION),
             )
         case EvidenceScope.FULL_RECORDING:
             full_repository = FullRecordingAsrRepository(database_url=DATABASE_URL)
             transcripts = full_repository.list_latest_transcripts(model_ids=model_ids)
+            annotations = repository.load_annotations(metric_version=METRIC_VERSION)
             evidence_records = full_recording_evidence_records(
                 transcripts=transcripts,
                 model_ids=model_ids,
+                annotations=annotations,
             )
     examples = reviewed_examples(labels=labels, evidence_records=evidence_records)
     report = evaluate_offset_estimator(examples=examples)

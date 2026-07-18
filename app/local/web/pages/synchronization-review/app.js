@@ -392,10 +392,19 @@ function renderCandidateDetails() {
     ${candidate.alignment_estimate_origin === "reviewed" ? '<span class="badge reviewed">reviewed</span>' : ""}
     ${candidate.alignment_estimate_origin === "unresolved" ? '<span class="badge unresolved">unresolved</span>' : ""}
     <span>${Math.round(candidate.likelihood_score * 100)}% likelihood</span>
-    <span>recommended ${formatShift(candidate.estimated_b_shift_seconds)}</span>
+    <span>
+      ${candidate.static_offset_valid ? "static estimate" : "review anchor"}
+      ${formatShift(candidate.estimated_b_shift_seconds)}
+    </span>
     <span>full recording ${formatShift(candidate.full_recording_estimated_b_shift_seconds)}</span>
     <span>offset confidence ${Math.round(candidate.offset_confidence_score * 100)}%</span>
     <span>${candidate.source_agreement ? "full-recording sources agree" : "sources disagree"}</span>
+    ${candidate.duration_mismatch_seconds == null
+      ? ""
+      : `<span>track duration gap ${candidate.duration_mismatch_seconds.toFixed(2)} s</span>`}
+    ${candidate.drift_warning
+      ? `<span class="drift-warning">${candidate.drift_warning}</span>`
+      : ""}
   `;
   elements.previous.disabled = visibleIndex <= 0;
   elements.next.disabled =
@@ -512,6 +521,11 @@ function renderGainSummary(gainNormalization) {
 }
 
 function renderWindowTargets(candidate) {
+  const sourceLabels = {
+    conversation_annotation: "EOT annotation",
+    parakeet: "Parakeet",
+    canary: "Canary",
+  };
   elements.windowTargets.replaceChildren();
   for (const estimate of candidate.window_estimates) {
     const button = document.createElement("button");
@@ -520,7 +534,10 @@ function renderWindowTargets(candidate) {
       ? "window-target"
       : "window-target unreliable";
     button.innerHTML = `
-      <span>${formatTime(estimate.start_seconds)}–${formatTime(estimate.end_seconds)}</span>
+      <span>
+        ${sourceLabels[estimate.source]} ·
+        ${formatTime(estimate.start_seconds)}–${formatTime(estimate.end_seconds)}
+      </span>
       <strong>${formatShift(estimate.estimated_b_shift_seconds)}</strong>
       <span>
         ${estimate.meaningful ? "usable local estimate" : "weak local evidence"} ·

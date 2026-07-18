@@ -13,8 +13,8 @@
           <a class="back-link" href="/">&larr; Voice Light</a>
           <h1>Track synchronization review</h1>
           <p>
-            Transcript-derived candidates where shifting speaker B reduces both implausible
-            overlap and dual silence. Playback is capped at the first three minutes.
+            Full-recording Canary, Parakeet, and EOT-annotation evidence for aligning speaker B.
+            Variable windows are flagged for drift or structural review.
           </p>
         </div>
         <div id="coverage" class="coverage">Analyzing candidates...</div>
@@ -140,7 +140,7 @@
             <div class="section-heading">
               <div>
                 <span class="eyebrow">Relative targets</span>
-                <h3>Estimated shift by minute</h3>
+                <h3>Estimated shift by recording window</h3>
               </div>
               <span class="muted">Click a target to apply its shift and seek there.</span>
             </div>
@@ -157,9 +157,8 @@
             </div>
             <div id="evidence" class="evidence"></div>
             <p class="note">
-              This page is read-only. It does not rewrite files or save the manual slider value.
-              Estimates come only from our generated timestamps and annotations, not the vendor
-              manifest.
+              Saving records the manual review in the database without rewriting audio files.
+              Reviewed offsets remain ground truth; automatic predictions are stored separately.
             </p>
           </section>
         </section>

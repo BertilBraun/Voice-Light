@@ -55,7 +55,7 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "Slide speaker B relative to speaker A",
         "B earlier",
         "B later",
-        "Estimated shift by minute",
+        "Estimated shift by recording window",
         "Speaker A gain",
         "Speaker B gain",
         "Reset automatic gains",
@@ -173,6 +173,8 @@ def test_offset_pattern_is_variable_when_a_middle_minute_needs_no_shift() -> Non
         _window(0.0, -4.3),
         _window(60.0, -0.5),
         _window(120.0, -4.1),
+        _source_window(0.0, -4.2, SynchronizationEvidenceSource.PARAKEET),
+        _source_window(60.0, -0.4, SynchronizationEvidenceSource.PARAKEET),
     )
 
     pattern = classify_offset_pattern(
@@ -227,11 +229,11 @@ def test_speech_only_gain_excludes_long_track_silence(tmp_path: Path) -> None:
     ("offset_pattern", "full_recording_shift", "first_window_shift", "expected"),
     (
         (OffsetPattern.CONSTANT, -6.8, -6.7, -6.8),
-        (OffsetPattern.VARIABLE, -9.5, -10.0, -10.0),
-        (OffsetPattern.VARIABLE, -5.6, -4.9, -4.8),
+        (OffsetPattern.VARIABLE, -9.5, -4.2, -4.2),
+        (OffsetPattern.UNCERTAIN, -5.64, -4.9, -5.6),
     ),
 )
-def test_recommended_shift_uses_calibrated_initial_offset(
+def test_recommended_shift_separates_static_estimate_from_variable_review_anchor(
     offset_pattern: OffsetPattern,
     full_recording_shift: float,
     first_window_shift: float,
@@ -393,7 +395,20 @@ def _window(
     start_seconds: float,
     lag_seconds: float,
 ) -> SynchronizationWindowEstimate:
+    return _source_window(
+        start_seconds=start_seconds,
+        lag_seconds=lag_seconds,
+        source=SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
+    )
+
+
+def _source_window(
+    start_seconds: float,
+    lag_seconds: float,
+    source: SynchronizationEvidenceSource,
+) -> SynchronizationWindowEstimate:
     return SynchronizationWindowEstimate(
+        source=source,
         start_seconds=start_seconds,
         end_seconds=start_seconds + 60.0,
         estimated_b_shift_seconds=lag_seconds,

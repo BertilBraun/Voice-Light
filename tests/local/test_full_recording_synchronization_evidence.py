@@ -12,7 +12,9 @@ from app.local.synchronization_review.full_recording_evidence import (
     full_recording_evidence_records,
 )
 from app.local.synchronization_review.models import SynchronizationEvidenceSource
+from app.local.synchronization_review.repository import StoredConversationAnnotation
 from app.shared.asr import AsrModelId, TimestampedWord
+from app.shared.quality import AnnotationSpan, ConversationAnnotation, SpeakerConversationAnnotation
 
 
 def test_full_recording_evidence_uses_whole_timeline_and_fixed_windows() -> None:
@@ -100,6 +102,88 @@ def test_full_recording_windows_preserve_local_timing_and_expose_changed_lag() -
     assert [window.start_seconds for window in records[0].windows] == [0.0, 180.0]
     assert [window.estimated_shift_seconds for window in records[0].windows] == pytest.approx(
         [-3.0, -1.0]
+    )
+
+
+def test_full_recording_evidence_includes_full_annotation_windows() -> None:
+    transcripts = tuple(
+        _transcript(model_id=model_id, side=side, shift_seconds=0.0)
+        for model_id in (AsrModelId.PARAKEET_TDT, AsrModelId.CANARY)
+        for side in TrackSide
+    )
+    annotation = StoredConversationAnnotation(
+        sample_id=transcripts[0].sample_id,
+        external_id="pmt_001",
+        annotation=ConversationAnnotation(
+            annotation_version="test-full-annotation",
+            analyzed_duration_seconds=400.0,
+            speaker1=_speaker_annotation(
+                side="speaker1",
+                starts=tuple(float(start_seconds) for start_seconds in range(0, 390, 10)),
+            ),
+            speaker2=_speaker_annotation(
+                side="speaker2",
+                starts=tuple(float(start_seconds + 8) for start_seconds in range(0, 380, 10)),
+            ),
+            speech_segment_count=78,
+            turn_count=0,
+            turn_taking_count=0,
+            interaction_count=0,
+            pause_count=0,
+            backchannel_count=0,
+            interruption_count=0,
+            usable_event_count=0,
+            events_per_hour=0.0,
+            speaker_balance_score=1.0,
+            quality_score=1.0,
+        ),
+        audio_quality=None,
+    )
+
+    records = full_recording_evidence_records(
+        transcripts=transcripts,
+        annotations=(annotation,),
+    )
+
+    assert {source.source for source in records[0].sources} == {
+        SynchronizationEvidenceSource.CONVERSATION_ANNOTATION,
+        SynchronizationEvidenceSource.PARAKEET,
+        SynchronizationEvidenceSource.CANARY,
+    }
+    annotation_windows = tuple(
+        window
+        for window in records[0].windows
+        if window.source is SynchronizationEvidenceSource.CONVERSATION_ANNOTATION
+    )
+    assert [(window.start_seconds, window.end_seconds) for window in annotation_windows] == [
+        (0.0, 180.0),
+        (180.0, 360.0),
+    ]
+
+
+def _speaker_annotation(
+    side: str,
+    starts: tuple[float, ...],
+) -> SpeakerConversationAnnotation:
+    return SpeakerConversationAnnotation(
+        side=side,
+        speech_segments=tuple(
+            AnnotationSpan(
+                start_seconds=start_seconds,
+                end_seconds=start_seconds + 5.0,
+                text=None,
+            )
+            for start_seconds in starts
+        ),
+        pauses=(),
+        backchannels=(),
+        turns=(),
+        interruptions=(),
+        segment_targets=(),
+        connection_targets=(),
+        speech_duration_seconds=len(starts) * 5.0,
+        pause_duration_seconds=0.0,
+        backchannel_duration_seconds=0.0,
     )
 
 
