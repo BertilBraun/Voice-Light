@@ -36,6 +36,7 @@ from app.training.tool_use.protocol import (
     UserTurnScopeAssessmentEnvelope,
 )
 from app.training.tool_use.scenario import (
+    AssistantResponseMode,
     AssistantTurnPlan,
     FollowUpKind,
     PlannedToolStep,
@@ -139,6 +140,41 @@ def calculate_scenario() -> ScenarioSpec:
     )
 
 
+def clarified_search_scenario() -> ScenarioSpec:
+    return ScenarioSpec(
+        scenario_id="scenario-test-clarified-search",
+        random_seed=61,
+        family="search_clarify_then_call",
+        topic="a local public event",
+        length_band=LengthBand.MEDIUM,
+        speech_style=SpeechStyle.CASUAL,
+        turns=(
+            AssistantTurnPlan(
+                user_instruction="Ask for a local event without naming the city.",
+                tool_steps=(),
+                follow_up_kind=FollowUpKind.NONE,
+                utterance_form=UtteranceForm.CONTEXT_FIRST,
+                response_mode=AssistantResponseMode.CLARIFY_SEARCH,
+            ),
+            AssistantTurnPlan(
+                user_instruction="Clarify that the city is Berlin.",
+                tool_steps=(),
+                follow_up_kind=FollowUpKind.CLARIFICATION,
+                utterance_form=UtteranceForm.FRAGMENT,
+                response_mode=AssistantResponseMode.CONFIRM_SEARCH,
+            ),
+            AssistantTurnPlan(
+                user_instruction="Confirm the proposed lookup.",
+                tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
+                follow_up_kind=FollowUpKind.DELAYED_REQUEST,
+                utterance_form=UtteranceForm.REACTION,
+            ),
+        ),
+        split=DatasetSplit.TRAIN,
+        leakage_group_id="clarified-search-test",
+    )
+
+
 def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
     return (
         GeneratedUserTurnEnvelope(
@@ -195,6 +231,21 @@ def accepted_user_scope(
         assessment=UserTurnScopeAssessment(
             required_tools=required_tools,
             scope_is_clear=True,
+            request_is_supported=True,
+            repeats_prior_user_turn=False,
+            voice_style_is_natural=True,
+        )
+    )
+
+
+def user_scope(
+    required_tools: tuple[ToolName, ...],
+    scope_is_clear: bool,
+) -> UserTurnScopeAssessmentEnvelope:
+    return UserTurnScopeAssessmentEnvelope(
+        assessment=UserTurnScopeAssessment(
+            required_tools=required_tools,
+            scope_is_clear=scope_is_clear,
             request_is_supported=True,
             repeats_prior_user_turn=False,
             voice_style_is_natural=True,
@@ -329,6 +380,87 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
     assert tool_results[1].outcome.content == "48"
     assert "Audit this completed candidate record" in generator.requests[-2][1].content
     assert "Audit the assistant messages" in generator.requests[-1][1].content
+
+
+def test_clarified_search_waits_for_confirmation_and_uses_resolved_query() -> None:
+    values: tuple[ToolUseBaseModel, ...] = (
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="Anything interesting happening nearby this weekend?",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        user_scope((ToolName.SEARCH, ToolName.SEARCH), scope_is_clear=False),
+        FinalResponseStepEnvelope(
+            step=FinalResponseStep(audible_text="Which city should I check?")
+        ),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="Berlin, preferably something outdoors.",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        user_scope((ToolName.SEARCH,), scope_is_clear=True),
+        FinalResponseStepEnvelope(
+            step=FinalResponseStep(audible_text="Outdoor events in Berlin this weekend—search now?")
+        ),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="Yeah, go for it.",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        accepted_user_scope((ToolName.SEARCH,)),
+        AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="Alright, looking that up.",
+                call=SearchCall(query="outdoor events in Berlin this weekend"),
+            )
+        ),
+        SyntheticSearchResultEnvelope(
+            result=SyntheticSearchResult(
+                content="Berlin has an outdoor film screening in Tempelhof this Saturday."
+            )
+        ),
+        FinalResponseStepEnvelope(
+            step=FinalResponseStep(
+                audible_text=("There’s an outdoor film screening in Tempelhof this Saturday.")
+            )
+        ),
+        accepted_quality_assessment(),
+        accepted_grounding_assessment(
+            "scenario-test-clarified-search-message-2",
+            "scenario-test-clarified-search-message-4",
+            "scenario-test-clarified-search-message-6",
+            "scenario-test-clarified-search-message-8",
+        ),
+    )
+
+    async def exercise() -> ToolDialogueRecord:
+        generated = await generate_record(
+            scenario=clarified_search_scenario(),
+            generator=ScriptedGenerator(values),
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+            ),
+        )
+        return generated.record
+
+    record = asyncio.run(exercise())
+    assistant_messages = tuple(
+        message for message in record.messages if isinstance(message, AssistantMessage)
+    )
+
+    assert not assistant_messages[0].tool_calls
+    assert not assistant_messages[1].tool_calls
+    assert assistant_messages[2].tool_calls[0].tool_name == "search"
+    assert (
+        assistant_messages[2].tool_calls[0].arguments.fields[0].value.value
+        == "outdoor events in Berlin this weekend"
+    )
 
 
 def test_record_quality_rejection_regenerates_the_entire_candidate() -> None:

@@ -45,6 +45,7 @@ from app.training.tool_use.protocol import (
     generated_call_tool_name,
 )
 from app.training.tool_use.scenario import (
+    AssistantResponseMode,
     AssistantTurnPlan,
     PlannedOutcome,
     PlannedToolStep,
@@ -483,6 +484,7 @@ async def _generate_record_candidate(
                         envelope.step,
                         expected,
                         config.bridge_word_limit,
+                        AssistantResponseMode.ANSWER,
                     )
                 ),
             )
@@ -547,13 +549,17 @@ async def _generate_record_candidate(
                 )
                 if call_index == 0 and not turn_plan.tool_steps
                 else (),
+                turn_plan.response_mode,
             ),
             random_seed=_request_seed(scenario.random_seed + seed_salt, turn_index, 999),
             maximum_attempts=config.maximum_semantic_attempts,
-            validator=lambda envelope: _validate_assistant_step(
-                envelope.step,
-                None,
-                config.bridge_word_limit,
+            validator=lambda envelope, response_mode=turn_plan.response_mode: (
+                _validate_assistant_step(
+                    envelope.step,
+                    None,
+                    config.bridge_word_limit,
+                    response_mode,
+                )
             ),
         )
         usage = usage.add(final_usage)
@@ -629,6 +635,7 @@ async def _generate_scoped_user_turn(
             _validate_user_turn_scope(
                 assessment=assessment_result.value.assessment,
                 expected_tools=expected_tools,
+                response_mode=turn_plan.response_mode,
             )
         except ValueError as error:
             last_error = error
@@ -696,17 +703,27 @@ def _validate_user_turn(
 def _validate_user_turn_scope(
     assessment: UserTurnScopeAssessment,
     expected_tools: tuple[ToolName, ...],
+    response_mode: AssistantResponseMode,
 ) -> None:
-    if not assessment.scope_is_clear:
-        raise ValueError("Generated user turn has unclear information scope.")
     if not assessment.request_is_supported:
         raise ValueError("Generated user turn requests an unsupported action.")
     if assessment.repeats_prior_user_turn:
         raise ValueError("Generated user turn repeats an earlier user turn.")
     if not assessment.voice_style_is_natural:
         raise ValueError("Generated user turn is not natural spoken language.")
-    if assessment.required_tools != expected_tools:
-        expected_names = ", ".join(tool.value for tool in expected_tools) or "none"
+    match response_mode:
+        case AssistantResponseMode.CLARIFY_SEARCH:
+            required_tools = (ToolName.SEARCH,)
+        case AssistantResponseMode.CONFIRM_SEARCH:
+            if not assessment.scope_is_clear:
+                raise ValueError("Search confirmation request remains ambiguous.")
+            required_tools = (ToolName.SEARCH,)
+        case AssistantResponseMode.ANSWER:
+            if not assessment.scope_is_clear:
+                raise ValueError("Generated user turn has unclear information scope.")
+            required_tools = expected_tools
+    if frozenset(assessment.required_tools) != frozenset(required_tools):
+        expected_names = ", ".join(tool.value for tool in required_tools) or "none"
         actual_names = ", ".join(tool.value for tool in assessment.required_tools) or "none"
         raise ValueError(f"Generated user turn requires {actual_names}; expected {expected_names}.")
 
@@ -715,6 +732,7 @@ def _validate_assistant_step(
     step: AssistantStep,
     expected_tool_name: ToolName | None,
     bridge_word_limit: int,
+    response_mode: AssistantResponseMode,
 ) -> None:
     AssistantStepValidation(
         expected_tool_name=expected_tool_name,
@@ -722,6 +740,11 @@ def _validate_assistant_step(
     ).validate_step(step)
     if len(step.audible_text.split()) > MAXIMUM_SPOKEN_TURN_WORDS:
         raise ValueError("Generated assistant response exceeds 100 words.")
+    if response_mode in (
+        AssistantResponseMode.CLARIFY_SEARCH,
+        AssistantResponseMode.CONFIRM_SEARCH,
+    ) and not step.audible_text.rstrip().endswith("?"):
+        raise ValueError("Search clarification response must be a question.")
     match step:
         case FinalResponseStep(audible_text=audible_text):
             if contains_protocol_markup(audible_text):

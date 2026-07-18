@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections import Counter
 
 from app.training.tool_use.scenario import (
+    AssistantResponseMode,
     PlannedOutcome,
     ScenarioSamplingProfile,
     ScenarioSpec,
+    SearchFlow,
     SegmentBucket,
     UtteranceForm,
     sample_scenarios,
@@ -224,6 +226,40 @@ def test_bucket_calibration_requires_an_equal_bucket_count() -> None:
         assert str(error) == "Bucket calibration count must be divisible by 8."
     else:
         raise AssertionError("Unequal bucket calibration count was accepted.")
+
+
+def test_search_calibration_balances_direct_clarified_and_refined_flows() -> None:
+    scenarios = sample_scenarios(
+        count=15,
+        random_seed=71,
+        profile=ScenarioSamplingProfile.SEARCH_CALIBRATION,
+    )
+
+    assert Counter(scenario.family for scenario in scenarios) == Counter(
+        {flow.value: 5 for flow in SearchFlow}
+    )
+    for flow in SearchFlow:
+        flow_scenarios = tuple(scenario for scenario in scenarios if scenario.family == flow.value)
+        assert len({scenario.speech_style for scenario in flow_scenarios}) == 5
+    clarified = tuple(
+        scenario
+        for scenario in scenarios
+        if scenario.family == SearchFlow.CLARIFY_THEN_SEARCH.value
+    )
+    assert all(
+        tuple(turn.response_mode for turn in scenario.turns)
+        == (
+            AssistantResponseMode.CLARIFY_SEARCH,
+            AssistantResponseMode.CONFIRM_SEARCH,
+            AssistantResponseMode.ANSWER,
+        )
+        for scenario in clarified
+    )
+    assert all(
+        tuple(step.tool_name.value for turn in scenario.turns for step in turn.tool_steps)
+        == ("search",)
+        for scenario in clarified
+    )
 
 
 def test_scenario_sampling_makes_adverse_multi_call_outcomes_rare() -> None:

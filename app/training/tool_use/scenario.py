@@ -50,10 +50,17 @@ class UtteranceForm(StrEnum):
     SELF_REPAIR = "self_repair"
 
 
+class AssistantResponseMode(StrEnum):
+    ANSWER = "answer"
+    CLARIFY_SEARCH = "clarify_search"
+    CONFIRM_SEARCH = "confirm_search"
+
+
 class ScenarioSamplingProfile(StrEnum):
     STANDARD = "standard"
     LONG_MIXED = "long_mixed"
     BUCKET_CALIBRATION = "bucket_calibration"
+    SEARCH_CALIBRATION = "search_calibration"
 
 
 class SegmentBucket(StrEnum):
@@ -67,6 +74,12 @@ class SegmentBucket(StrEnum):
     CORRECTION_RECOVERY = "correction_recovery"
 
 
+class SearchFlow(StrEnum):
+    DIRECT = "search_direct"
+    CLARIFY_THEN_SEARCH = "search_clarify_then_call"
+    REFINE_THEN_SEARCH = "search_refine_then_call"
+
+
 class PlannedToolStep(ToolUseBaseModel):
     tool_name: ToolName
     outcome: PlannedOutcome = PlannedOutcome.SUCCESS
@@ -77,6 +90,7 @@ class AssistantTurnPlan(ToolUseBaseModel):
     tool_steps: tuple[PlannedToolStep, ...]
     follow_up_kind: FollowUpKind
     utterance_form: UtteranceForm
+    response_mode: AssistantResponseMode = AssistantResponseMode.ANSWER
 
 
 class ScenarioSpec(ToolUseBaseModel):
@@ -97,6 +111,15 @@ class ScenarioSpec(ToolUseBaseModel):
             raise ValueError("A scenario must contain at least one user turn.")
         if any(len(turn.tool_steps) > 3 for turn in self.turns):
             raise ValueError("A scenario turn may contain at most three sequential tool calls.")
+        for turn_index, turn in enumerate(self.turns):
+            if turn.response_mode is not AssistantResponseMode.ANSWER and turn.tool_steps:
+                raise ValueError("A clarification turn cannot call a tool.")
+            if turn.response_mode is not AssistantResponseMode.ANSWER and not any(
+                step.tool_name is ToolName.SEARCH
+                for future_turn in self.turns[turn_index + 1 :]
+                for step in future_turn.tool_steps
+            ):
+                raise ValueError("A search clarification must precede a later search call.")
         return self
 
 
@@ -106,6 +129,76 @@ class ScenarioTemplate:
     topic: str
     user_instruction: str
     tool_names: tuple[ToolName, ...]
+
+
+@dataclass(frozen=True)
+class SearchScenarioAxis:
+    topic: str
+    direct_request: str
+    ambiguous_request: str
+    clarification: str
+    correction: str
+
+
+SEARCH_SCENARIO_AXES = (
+    SearchScenarioAxis(
+        topic="live music listings",
+        direct_request=(
+            "Ask what live music is scheduled in Berlin on the evening of July 25, 2026."
+        ),
+        ambiguous_request=(
+            "Ask what live music is scheduled on the evening of July 25, 2026, but deliberately "
+            "omit the city. Do not imply a known current location."
+        ),
+        clarification="State that the intended city is Berlin.",
+        correction="Correct the city from Berlin to Hamburg and request a revised lookup.",
+    ),
+    SearchScenarioAxis(
+        topic="concert setlist",
+        direct_request=(
+            "Ask for the setlist from the Arctic Monkeys concert in Amsterdam on July 12, 2026."
+        ),
+        ambiguous_request=(
+            "Ask for the Arctic Monkeys concert setlist from July 12, 2026, but deliberately omit "
+            "which city the concert was in."
+        ),
+        clarification="State that the concert was in Amsterdam.",
+        correction="Correct the concert city from Amsterdam to Rotterdam and request a new lookup.",
+    ),
+    SearchScenarioAxis(
+        topic="specific product price",
+        direct_request=("Ask for the current German price of Sony WH-1000XM5 headphones."),
+        ambiguous_request=(
+            "Ask for the current price of Sony headphones but deliberately omit the model. Do not "
+            "name or imply any model number."
+        ),
+        clarification="State that the model is the Sony WH-1000XM5.",
+        correction="Correct the model from WH-1000XM5 to WH-1000XM4 and request a revised lookup.",
+    ),
+    SearchScenarioAxis(
+        topic="public transport status",
+        direct_request="Ask whether Berlin's U8 line has delays today.",
+        ambiguous_request=(
+            "Ask whether a subway line has delays today but deliberately omit both the city and "
+            "line name."
+        ),
+        clarification="State that the intended service is Berlin's U8 line.",
+        correction="Correct the line from Berlin U8 to Berlin U6 and request a revised lookup.",
+    ),
+    SearchScenarioAxis(
+        topic="cinema showtimes",
+        direct_request=("Ask for tonight's showtimes for one named film at Zoo Palast in Berlin."),
+        ambiguous_request=(
+            "Ask for tonight's showtimes for one named film but deliberately omit the cinema and "
+            "city."
+        ),
+        clarification="State that the cinema is Zoo Palast in Berlin.",
+        correction=(
+            "Correct the cinema from Zoo Palast to Kino International in Berlin and request a "
+            "revised lookup."
+        ),
+    ),
+)
 
 
 NO_TOOL_TEMPLATES = (
@@ -273,6 +366,9 @@ def sample_scenarios(
     bucket_count = len(SegmentBucket)
     if profile is ScenarioSamplingProfile.BUCKET_CALIBRATION and count % bucket_count != 0:
         raise ValueError(f"Bucket calibration count must be divisible by {bucket_count}.")
+    search_flow_count = len(SearchFlow)
+    if profile is ScenarioSamplingProfile.SEARCH_CALIBRATION and count % search_flow_count != 0:
+        raise ValueError(f"Search calibration count must be divisible by {search_flow_count}.")
     generator = random.Random(random_seed)
     scenarios: list[ScenarioSpec] = []
     for index in range(count):
@@ -296,6 +392,16 @@ def sample_scenarios(
                     random_seed=random_seed,
                     scenario_seed=scenario_seed,
                     generator=scenario_generator,
+                )
+            )
+            continue
+        if profile is ScenarioSamplingProfile.SEARCH_CALIBRATION:
+            scenarios.append(
+                _sample_search_calibration_scenario(
+                    index=index,
+                    count=count,
+                    random_seed=random_seed,
+                    scenario_seed=scenario_seed,
                 )
             )
             continue
@@ -324,6 +430,124 @@ def sample_scenarios(
             )
         )
     return tuple(scenarios)
+
+
+def _sample_search_calibration_scenario(
+    index: int,
+    count: int,
+    random_seed: int,
+    scenario_seed: int,
+) -> ScenarioSpec:
+    flows = tuple(SearchFlow)
+    examples_per_flow = count // len(flows)
+    flow = flows[index // examples_per_flow]
+    example_index = index % examples_per_flow
+    speech_styles = tuple(SpeechStyle)
+    speech_style = speech_styles[example_index % len(speech_styles)]
+    axis = SEARCH_SCENARIO_AXES[example_index % len(SEARCH_SCENARIO_AXES)]
+    leakage_group_id = f"{flow.value}-{axis.topic.replace(' ', '-')}"
+    return ScenarioSpec(
+        scenario_id=f"scenario-{random_seed}-{index:06d}",
+        random_seed=scenario_seed,
+        family=flow.value,
+        topic=axis.topic,
+        length_band=LengthBand.MEDIUM,
+        speech_style=speech_style,
+        turns=_search_calibration_turns(flow, axis),
+        split=(
+            DatasetSplit.TRAIN
+            if speech_style in (SpeechStyle.CLEAN, SpeechStyle.ASR_FRAGMENT, SpeechStyle.REPAIR)
+            else DatasetSplit.VALIDATION
+            if speech_style is SpeechStyle.CASUAL
+            else DatasetSplit.TEST
+        ),
+        leakage_group_id=leakage_group_id,
+    )
+
+
+def _search_calibration_turns(
+    flow: SearchFlow,
+    axis: SearchScenarioAxis,
+) -> tuple[AssistantTurnPlan, ...]:
+    match flow:
+        case SearchFlow.DIRECT:
+            return (
+                AssistantTurnPlan(
+                    user_instruction=(
+                        f"Make this fully specified request naturally: {axis.direct_request}"
+                    ),
+                    tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
+                    follow_up_kind=FollowUpKind.NONE,
+                    utterance_form=UtteranceForm.CONTEXT_FIRST,
+                ),
+                AssistantTurnPlan(
+                    user_instruction=(
+                        "React to the result and ask for one concise restatement or filtering "
+                        "that is fully supported by the returned text. Do not require a new fact."
+                    ),
+                    tool_steps=(),
+                    follow_up_kind=FollowUpKind.CONSTRAINT,
+                    utterance_form=UtteranceForm.REACTION,
+                ),
+            )
+        case SearchFlow.CLARIFY_THEN_SEARCH:
+            return (
+                AssistantTurnPlan(
+                    user_instruction=(
+                        "Make this deliberately incomplete lookup request naturally: "
+                        f"{axis.ambiguous_request}"
+                    ),
+                    tool_steps=(),
+                    follow_up_kind=FollowUpKind.NONE,
+                    utterance_form=UtteranceForm.CONTEXT_FIRST,
+                    response_mode=AssistantResponseMode.CLARIFY_SEARCH,
+                ),
+                AssistantTurnPlan(
+                    user_instruction=(
+                        "Answer the assistant's clarification naturally. "
+                        f"{axis.clarification} Keep the lookup request active."
+                    ),
+                    tool_steps=(),
+                    follow_up_kind=FollowUpKind.CLARIFICATION,
+                    utterance_form=UtteranceForm.FRAGMENT,
+                    response_mode=AssistantResponseMode.CONFIRM_SEARCH,
+                ),
+                AssistantTurnPlan(
+                    user_instruction=(
+                        "Briefly confirm that the assistant should perform the proposed lookup. "
+                        "Do not add or change any constraint."
+                    ),
+                    tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
+                    follow_up_kind=FollowUpKind.DELAYED_REQUEST,
+                    utterance_form=UtteranceForm.REACTION,
+                ),
+            )
+        case SearchFlow.REFINE_THEN_SEARCH:
+            return (
+                AssistantTurnPlan(
+                    user_instruction=(
+                        f"Make this fully specified request naturally: {axis.direct_request}"
+                    ),
+                    tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
+                    follow_up_kind=FollowUpKind.NONE,
+                    utterance_form=UtteranceForm.REQUEST,
+                ),
+                AssistantTurnPlan(
+                    user_instruction=(f"Make this correction naturally: {axis.correction}"),
+                    tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
+                    follow_up_kind=FollowUpKind.CORRECTION,
+                    utterance_form=UtteranceForm.SELF_REPAIR,
+                ),
+                AssistantTurnPlan(
+                    user_instruction=(
+                        "React to the corrected result with a short grounded acknowledgement or "
+                        "request an exact restatement already supported by it."
+                    ),
+                    tool_steps=(),
+                    follow_up_kind=FollowUpKind.PRONOUN,
+                    utterance_form=UtteranceForm.REACTION,
+                ),
+            )
 
 
 def _sample_bucket_segment_scenario(

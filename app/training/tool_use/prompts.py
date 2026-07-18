@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from app.training.tool_use.protocol import TeacherChatMessage
 from app.training.tool_use.scenario import (
+    AssistantResponseMode,
     AssistantTurnPlan,
     ScenarioSpec,
     ToolName,
@@ -12,7 +13,7 @@ from app.training.tool_use.scenario import (
 )
 from app.training.tool_use.schema import ConversationMessage, ToolResultMessage
 
-PROMPT_REVISION = "balanced-segment-rollout-v14"
+PROMPT_REVISION = "search-axis-scope-rollout-v17"
 
 TEACHER_SYSTEM_PROMPT = """\
 You create natural English voice-assistant training examples.
@@ -51,10 +52,12 @@ Return only the requested schema-constrained object."""
 
 QUALITY_AUDITOR_SYSTEM_PROMPT = """\
 Audit a synthetic voice-tool conversation conservatively. Do not rewrite it.
-Reject any record where a user turn assigned no tool actually requires current, external, or
-calculated information; where the assistant states a pending result before its tool result; where
-an assistant claim is unsupported by earlier user text or tool results; where a result is
-misread, transformed incorrectly, or contradicted; where a user turn repeats; or where a
+Reject any record where an ordinary user turn assigned no tool actually requires current,
+external, or calculated information. Search clarification and confirmation turns are the narrow
+exception: the assistant must ask the planned question without calling, and a later confirmed
+turn must perform the search. Also reject where the assistant states a pending result before its
+tool result; where an assistant claim is unsupported by earlier user text or tool results; where a
+result is misread, transformed incorrectly, or contradicted; where a user turn repeats; or where a
 sequential call is redundant because an earlier result already answered it.
 Reject promises or claims to play media, book, buy, message, navigate, control a device, or perform
 another action that no recorded tool actually executed. This applies only to assistant claims,
@@ -137,7 +140,19 @@ def user_turn_messages(
 ) -> tuple[TeacherChatMessage, ...]:
     history = _history_json(public_history)
     planned_tools = tuple(step.tool_name.value for step in turn_plan.tool_steps)
-    if planned_tools:
+    if turn_plan.response_mode is AssistantResponseMode.CLARIFY_SEARCH:
+        tool_scope = (
+            "The user wants an external lookup but must leave exactly one essential detail "
+            "ambiguous. The request should ultimately require search, but the assistant must ask "
+            "one clarifying question before any call."
+        )
+    elif turn_plan.response_mode is AssistantResponseMode.CONFIRM_SEARCH:
+        tool_scope = (
+            "Supply the missing detail so the external lookup is now clear and requires search. "
+            "The assistant will confirm the resolved scope before calling; do not withdraw the "
+            "request."
+        )
+    elif planned_tools:
         tool_scope = (
             "This user turn must naturally require exactly these tools, in order: "
             f"{', '.join(planned_tools)}. Do not introduce any additional information need."
@@ -185,19 +200,37 @@ def assistant_step_messages(
     public_history: Sequence[ConversationMessage],
     expected_tool_name: ToolName | None,
     later_tool_names: Sequence[ToolName] = (),
+    response_mode: AssistantResponseMode = AssistantResponseMode.ANSWER,
 ) -> tuple[TeacherChatMessage, ...]:
     history = _history_json(public_history)
-    expected_action = (
-        f"Call {expected_tool_name.value} next."
-        if expected_tool_name is not None
-        else "Give the final spoken response now without calling a tool."
-    )
+    match response_mode:
+        case AssistantResponseMode.CLARIFY_SEARCH:
+            expected_action = (
+                "Ask exactly one concise question for the missing search constraint. Do not call "
+                "a tool or answer the lookup."
+            )
+        case AssistantResponseMode.CONFIRM_SEARCH:
+            expected_action = (
+                "Briefly restate the resolved lookup and ask whether to search now. Do not call a "
+                "tool yet."
+            )
+        case AssistantResponseMode.ANSWER:
+            expected_action = (
+                f"Call {expected_tool_name.value} next."
+                if expected_tool_name is not None
+                else "Give the final spoken response now without calling a tool."
+            )
     transition_guidance = _assistant_transition_guidance(
         public_history=public_history,
         expected_tool_name=expected_tool_name,
         scenario_family=scenario.family,
+        response_mode=response_mode,
     )
-    sequence_guidance = _tool_sequence_guidance(expected_tool_name, later_tool_names)
+    sequence_guidance = _tool_sequence_guidance(
+        expected_tool_name,
+        later_tool_names,
+        response_mode,
+    )
     request = f"""\
 Create exactly the next assistant step for this voice conversation.
 
@@ -279,6 +312,7 @@ def record_quality_messages(
             "user_instruction": turn.user_instruction,
             "planned_tools": [step.tool_name.value for step in turn.tool_steps],
             "planned_outcomes": [step.outcome.value for step in turn.tool_steps],
+            "response_mode": turn.response_mode.value,
         }
         for index, turn in enumerate(scenario.turns)
     ]
@@ -295,9 +329,11 @@ Candidate public conversation:
 
 The plan is not evidence for an answer. Only earlier user messages and completed tool results are
 public evidence. A no-tool turn that requests a new external fact is invalid even if the assistant
-hedges or asks a follow-up. A bridge before a call may acknowledge the task but may not state that
-call's result. Search-result wording matters: do not infer a different role or category from a bare
-name. Missing schedule details cannot support claims about having enough time."""
+hedges or asks a follow-up. The only valid no-call external requests are turns explicitly marked
+clarify_search or confirm_search, and each must lead to the planned later search. A bridge before a
+call may acknowledge the task but may not state that call's result. Search-result wording matters:
+do not infer a different role or category from a bare name. Missing schedule details cannot
+support claims about having enough time."""
     return (
         TeacherChatMessage(role="system", content=QUALITY_AUDITOR_SYSTEM_PROMPT),
         TeacherChatMessage(role="user", content=request),
@@ -348,7 +384,18 @@ def _assistant_transition_guidance(
     public_history: Sequence[ConversationMessage],
     expected_tool_name: ToolName | None,
     scenario_family: str,
+    response_mode: AssistantResponseMode,
 ) -> str:
+    if response_mode is AssistantResponseMode.CLARIFY_SEARCH:
+        return (
+            "Sound curious and practical. Ask only for the single missing detail, without a "
+            "customer-service preamble."
+        )
+    if response_mode is AssistantResponseMode.CONFIRM_SEARCH:
+        return (
+            "Use a short natural confirmation such as 'So, X in Y—want me to look that up?' "
+            "Preserve every clarified constraint."
+        )
     if expected_tool_name is None:
         if scenario_family == "long_mixed":
             return (
@@ -380,7 +427,13 @@ def _assistant_transition_guidance(
 def _tool_sequence_guidance(
     expected_tool_name: ToolName | None,
     later_tool_names: Sequence[ToolName],
+    response_mode: AssistantResponseMode,
 ) -> str:
+    if response_mode is not AssistantResponseMode.ANSWER:
+        return (
+            "A later search is planned. Do not call it during this step and do not invent its "
+            "result."
+        )
     if expected_tool_name is None:
         if later_tool_names:
             return (
