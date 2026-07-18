@@ -31,6 +31,7 @@ from app.training.tool_use.scenario import (
     PlannedToolStep,
     ScenarioSpec,
     ToolName,
+    UtteranceForm,
 )
 from app.training.tool_use.schema import (
     AssistantMessage,
@@ -91,11 +92,13 @@ def two_call_scenario() -> ScenarioSpec:
                     PlannedToolStep(tool_name=ToolName.CALCULATE),
                 ),
                 follow_up_kind=FollowUpKind.NONE,
+                utterance_form=UtteranceForm.REQUEST,
             ),
             AssistantTurnPlan(
                 user_instruction="Ask a pronoun-based follow-up.",
                 tool_steps=(),
                 follow_up_kind=FollowUpKind.PRONOUN,
+                utterance_form=UtteranceForm.FRAGMENT,
             ),
         ),
         split=DatasetSplit.TRAIN,
@@ -162,7 +165,9 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
     ToolDialogueRecord.model_validate_json(record.model_dump_json())
     assert request_count == 7
     assert not generator.values
+    assert "Requested utterance form: request" in generator.requests[0][1].content
     assert "The current ticket price is 24 euros." in generator.requests[3][1].content
+    assert "This is a sequential call." in generator.requests[3][1].content
 
     assistant_calls = tuple(
         message

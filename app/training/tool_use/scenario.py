@@ -38,6 +38,16 @@ class FollowUpKind(StrEnum):
     CORRECTION = "correction"
     CONSTRAINT = "constraint"
     CLARIFICATION = "clarification"
+    DELAYED_REQUEST = "delayed_request"
+
+
+class UtteranceForm(StrEnum):
+    DIRECT_QUESTION = "direct_question"
+    REQUEST = "request"
+    CONTEXT_FIRST = "context_first"
+    FRAGMENT = "fragment"
+    REACTION = "reaction"
+    SELF_REPAIR = "self_repair"
 
 
 class PlannedToolStep(ToolUseBaseModel):
@@ -49,6 +59,7 @@ class AssistantTurnPlan(ToolUseBaseModel):
     user_instruction: str
     tool_steps: tuple[PlannedToolStep, ...]
     follow_up_kind: FollowUpKind
+    utterance_form: UtteranceForm
 
 
 class ScenarioSpec(ToolUseBaseModel):
@@ -84,21 +95,27 @@ NO_TOOL_TEMPLATES = (
     ScenarioTemplate(
         family="ordinary_dialogue",
         topic="daily life",
-        user_instruction="Ask for a brief opinion or conversational suggestion that needs no tool.",
+        user_instruction=(
+            "Start a brief exchange about a preference, minor decision, or everyday situation "
+            "that needs no tool."
+        ),
         tool_names=(),
     ),
     ScenarioTemplate(
         family="provided_context",
         topic="user-provided information",
         user_instruction=(
-            "State a small fact and ask a question answerable entirely from that fact."
+            "Mention a small fact from the user's situation and continue in a way the assistant "
+            "can answer entirely from that fact."
         ),
         tool_names=(),
     ),
     ScenarioTemplate(
         family="stable_knowledge",
         topic="common knowledge",
-        user_instruction="Ask a simple stable question that should be answered without a tool.",
+        user_instruction=(
+            "Bring up a simple stable-knowledge topic in a conversational way that needs no tool."
+        ),
         tool_names=(),
     ),
 )
@@ -107,25 +124,27 @@ ONE_TOOL_TEMPLATES = (
     ScenarioTemplate(
         family="current_lookup",
         topic="recent public information",
-        user_instruction="Ask for one current or externally verifiable fact.",
+        user_instruction="Naturally request one current or externally verifiable fact.",
         tool_names=(ToolName.SEARCH,),
     ),
     ScenarioTemplate(
         family="specific_lookup",
         topic="event or organization detail",
-        user_instruction="Ask for a specific detail that should be looked up.",
+        user_instruction="Naturally request a specific detail that should be looked up.",
         tool_names=(ToolName.SEARCH,),
     ),
     ScenarioTemplate(
         family="precise_arithmetic",
         topic="basic practical arithmetic",
-        user_instruction="Ask for a precise arithmetic result using a short expression.",
+        user_instruction=(
+            "Give a short practical arithmetic expression and request its exact result."
+        ),
         tool_names=(ToolName.CALCULATE,),
     ),
     ScenarioTemplate(
         family="current_local_time",
         topic="current date or local time",
-        user_instruction="Ask for the current local date or time.",
+        user_instruction="Work the current local date or time into a natural request.",
         tool_names=(ToolName.GET_TIME,),
     ),
 )
@@ -135,8 +154,7 @@ TWO_TOOL_TEMPLATES = (
         family="lookup_then_calculate",
         topic="a looked-up number followed by arithmetic",
         user_instruction=(
-            "Ask a simple question that requires looking up one numeric fact and then calculating "
-            "a result from it."
+            "Naturally request a result that needs one looked-up number and one simple calculation."
         ),
         tool_names=(ToolName.SEARCH, ToolName.CALCULATE),
     ),
@@ -144,7 +162,8 @@ TWO_TOOL_TEMPLATES = (
         family="time_then_calculate",
         topic="elapsed or remaining time",
         user_instruction=(
-            "Ask a simple elapsed-time question that needs the current time and one calculation."
+            "Naturally request a simple elapsed or remaining time that needs the current time and "
+            "one calculation."
         ),
         tool_names=(ToolName.GET_TIME, ToolName.CALCULATE),
     ),
@@ -152,7 +171,7 @@ TWO_TOOL_TEMPLATES = (
         family="refined_lookup",
         topic="two-step information lookup",
         user_instruction=(
-            "Ask for one fact and a second closely related fact that depends on the first lookup."
+            "Naturally request one fact and a closely related detail that depends on it."
         ),
         tool_names=(ToolName.SEARCH, ToolName.SEARCH),
     ),
@@ -163,8 +182,8 @@ THREE_TOOL_TEMPLATES = (
         family="lookup_time_calculate",
         topic="simple date comparison",
         user_instruction=(
-            "Ask a concise date-difference question requiring one lookup, the current time, and "
-            "one basic calculation."
+            "Naturally request a concise date difference requiring one lookup, the current time, "
+            "and one basic calculation."
         ),
         tool_names=(ToolName.SEARCH, ToolName.GET_TIME, ToolName.CALCULATE),
     ),
@@ -189,10 +208,10 @@ TOPIC_VARIANTS = (
 )
 
 SPEECH_STYLE_WEIGHTS: tuple[tuple[SpeechStyle, float], ...] = (
-    (SpeechStyle.CLEAN, 0.45),
-    (SpeechStyle.CASUAL, 0.25),
-    (SpeechStyle.ASR_FRAGMENT, 0.15),
-    (SpeechStyle.REPAIR, 0.10),
+    (SpeechStyle.CLEAN, 0.25),
+    (SpeechStyle.CASUAL, 0.35),
+    (SpeechStyle.ASR_FRAGMENT, 0.20),
+    (SpeechStyle.REPAIR, 0.15),
     (SpeechStyle.FORMAL, 0.05),
 )
 
@@ -200,6 +219,23 @@ LENGTH_BAND_WEIGHTS: tuple[tuple[LengthBand, float], ...] = (
     (LengthBand.SHORT, 0.25),
     (LengthBand.MEDIUM, 0.55),
     (LengthBand.LONG, 0.20),
+)
+
+OPENING_FORM_WEIGHTS: tuple[tuple[UtteranceForm, float], ...] = (
+    (UtteranceForm.DIRECT_QUESTION, 0.12),
+    (UtteranceForm.REQUEST, 0.28),
+    (UtteranceForm.CONTEXT_FIRST, 0.35),
+    (UtteranceForm.FRAGMENT, 0.15),
+    (UtteranceForm.SELF_REPAIR, 0.10),
+)
+
+FOLLOW_UP_FORM_WEIGHTS: tuple[tuple[UtteranceForm, float], ...] = (
+    (UtteranceForm.DIRECT_QUESTION, 0.06),
+    (UtteranceForm.REQUEST, 0.16),
+    (UtteranceForm.CONTEXT_FIRST, 0.16),
+    (UtteranceForm.FRAGMENT, 0.25),
+    (UtteranceForm.REACTION, 0.27),
+    (UtteranceForm.SELF_REPAIR, 0.10),
 )
 
 
@@ -287,20 +323,45 @@ def _build_turns(
             turn_count = generator.choice((2, 3))
         case LengthBand.LONG:
             turn_count = generator.choice((4, 5))
-    turns = [
-        AssistantTurnPlan(
-            user_instruction=template.user_instruction,
-            tool_steps=_planned_tool_steps(template.tool_names, generator),
-            follow_up_kind=FollowUpKind.NONE,
-        )
-    ]
+    tool_turn_index = _tool_turn_index(template, turn_count, generator)
+    turns: list[AssistantTurnPlan] = []
     follow_up_kinds = (
         FollowUpKind.PRONOUN,
         FollowUpKind.CORRECTION,
         FollowUpKind.CONSTRAINT,
         FollowUpKind.CLARIFICATION,
     )
-    for _ in range(1, turn_count):
+    for turn_index in range(turn_count):
+        if turn_index < tool_turn_index:
+            turns.append(
+                AssistantTurnPlan(
+                    user_instruction=_pre_tool_instruction(turn_index),
+                    tool_steps=(),
+                    follow_up_kind=(
+                        FollowUpKind.NONE if turn_index == 0 else generator.choice(follow_up_kinds)
+                    ),
+                    utterance_form=_sample_utterance_form(
+                        generator,
+                        is_follow_up=turn_index > 0,
+                    ),
+                )
+            )
+            continue
+        if turn_index == tool_turn_index:
+            turns.append(
+                AssistantTurnPlan(
+                    user_instruction=template.user_instruction,
+                    tool_steps=_planned_tool_steps(template.tool_names, generator),
+                    follow_up_kind=(
+                        FollowUpKind.NONE if turn_index == 0 else FollowUpKind.DELAYED_REQUEST
+                    ),
+                    utterance_form=_sample_utterance_form(
+                        generator,
+                        is_follow_up=turn_index > 0,
+                    ),
+                )
+            )
+            continue
         follow_up_kind = generator.choice(follow_up_kinds)
         correction_requires_search = (
             follow_up_kind is FollowUpKind.CORRECTION
@@ -316,24 +377,96 @@ def _build_turns(
                     else ()
                 ),
                 follow_up_kind=follow_up_kind,
+                utterance_form=_sample_follow_up_form(generator, follow_up_kind),
             )
         )
     return tuple(turns)
 
 
+def _tool_turn_index(
+    template: ScenarioTemplate,
+    turn_count: int,
+    generator: random.Random,
+) -> int:
+    if not template.tool_names or turn_count == 1 or generator.random() >= 0.43:
+        return 0
+    return generator.randrange(1, min(turn_count, 3))
+
+
+def _pre_tool_instruction(turn_index: int) -> str:
+    if turn_index == 0:
+        return (
+            "Begin with a related personal detail, preference, or observation that the assistant "
+            "can respond to without a tool. Do not request the planned current fact yet."
+        )
+    return (
+        "React naturally and add one useful detail that sets up the later request without needing "
+        "a tool yet."
+    )
+
+
+def _sample_utterance_form(
+    generator: random.Random,
+    is_follow_up: bool,
+) -> UtteranceForm:
+    return _weighted_choice(
+        generator,
+        FOLLOW_UP_FORM_WEIGHTS if is_follow_up else OPENING_FORM_WEIGHTS,
+    )
+
+
+def _sample_follow_up_form(
+    generator: random.Random,
+    follow_up_kind: FollowUpKind,
+) -> UtteranceForm:
+    match follow_up_kind:
+        case FollowUpKind.PRONOUN:
+            return generator.choice((UtteranceForm.FRAGMENT, UtteranceForm.REACTION))
+        case FollowUpKind.CORRECTION:
+            return generator.choice(
+                (
+                    UtteranceForm.SELF_REPAIR,
+                    UtteranceForm.SELF_REPAIR,
+                    UtteranceForm.CONTEXT_FIRST,
+                )
+            )
+        case FollowUpKind.CONSTRAINT:
+            return generator.choice((UtteranceForm.REQUEST, UtteranceForm.CONTEXT_FIRST))
+        case FollowUpKind.CLARIFICATION:
+            return generator.choice(
+                (
+                    UtteranceForm.REACTION,
+                    UtteranceForm.FRAGMENT,
+                    UtteranceForm.DIRECT_QUESTION,
+                )
+            )
+        case FollowUpKind.NONE | FollowUpKind.DELAYED_REQUEST:
+            return _sample_utterance_form(generator, is_follow_up=True)
+
+
 def _follow_up_instruction(follow_up_kind: FollowUpKind) -> str:
     match follow_up_kind:
         case FollowUpKind.PRONOUN:
-            return "Ask a short pronoun-based follow-up about the immediately preceding answer."
+            return (
+                "Refer back with a pronoun or elliptical phrase as part of a natural reaction. "
+                "Avoid a standalone 'What about that?'"
+            )
         case FollowUpKind.CORRECTION:
             return (
-                "Briefly correct one detail in the prior request and ask for the corrected answer."
+                "Correct or revise one detail naturally, possibly mid-sentence, and continue from "
+                "the correction."
             )
         case FollowUpKind.CONSTRAINT:
-            return "Add one simple constraint and ask the assistant to adjust its prior answer."
+            return (
+                "Add one simple preference or constraint as a continuation rather than starting "
+                "a fresh formal question."
+            )
         case FollowUpKind.CLARIFICATION:
-            return "Ask one short clarification about the assistant's preceding answer."
-        case FollowUpKind.NONE:
+            return (
+                "React to one specific part of the preceding answer and clarify what the user "
+                "meant. Avoid a generic follow-up."
+            )
+        case FollowUpKind.NONE | FollowUpKind.DELAYED_REQUEST:
             raise ValueError("A generated follow-up cannot use FollowUpKind.NONE.")
 
 
@@ -352,7 +485,7 @@ def _planned_tool_steps(
 ) -> tuple[PlannedToolStep, ...]:
     if not tool_names:
         return ()
-    adverse_probability = 0.15 if len(tool_names) == 1 else 0.08
+    adverse_probability = _adverse_probability(tool_names)
     final_outcome = (
         generator.choices(
             population=(
@@ -360,7 +493,7 @@ def _planned_tool_steps(
                 PlannedOutcome.FAILURE,
                 PlannedOutcome.TIMEOUT,
             ),
-            weights=(0.25, 0.40, 0.35),
+            weights=(0.35, 0.40, 0.25),
             k=1,
         )[0]
         if generator.random() < adverse_probability
@@ -373,6 +506,18 @@ def _planned_tool_steps(
         )
         for index, tool_name in enumerate(tool_names)
     )
+
+
+def _adverse_probability(tool_names: tuple[ToolName, ...]) -> float:
+    if len(tool_names) > 1:
+        return 0.005
+    match tool_names[0]:
+        case ToolName.SEARCH:
+            return 0.04
+        case ToolName.GET_TIME:
+            return 0.01
+        case ToolName.CALCULATE:
+            return 0.005
 
 
 def _leakage_group(template: ScenarioTemplate, topic_variant: str) -> str:

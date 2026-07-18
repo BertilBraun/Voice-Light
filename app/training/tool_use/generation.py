@@ -365,6 +365,7 @@ async def generate_record(
                 random_seed=_request_seed(scenario.random_seed, turn_index, step_index + 101),
                 maximum_attempts=config.maximum_semantic_attempts,
                 time_reference=config.time_reference,
+                public_history=messages,
             )
             usage = usage.add(tool_usage)
             request_count += tool_requests
@@ -492,6 +493,7 @@ async def _execute_tool(
     random_seed: int,
     maximum_attempts: int,
     time_reference: datetime,
+    public_history: Sequence[ConversationMessage],
 ) -> tuple[ToolOutcome, TokenUsage, int]:
     match planned_step.outcome:
         case PlannedOutcome.EMPTY:
@@ -508,7 +510,7 @@ async def _execute_tool(
             search_result, usage, requests = await _generate_validated(
                 generator=generator,
                 response_type=SyntheticSearchResultEnvelope,
-                messages=synthetic_search_messages(query),
+                messages=synthetic_search_messages(query, public_history),
                 random_seed=random_seed,
                 maximum_attempts=maximum_attempts,
                 validator=_validate_search_result,

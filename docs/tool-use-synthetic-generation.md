@@ -43,7 +43,8 @@ vllm serve Qwen/Qwen3.6-27B-FP8 \
   --api-key VOICE_LIGHT_LOCAL \
   --language-model-only \
   --max-model-len 8192 \
-  --gpu-memory-utilization 0.92 \
+  --gpu-memory-utilization 0.85 \
+  --enforce-eager \
   --generation-config vllm
 ```
 
@@ -51,6 +52,10 @@ Use vLLM 0.19 or newer for Qwen3.6. Structured response generation does not requ
 auto-tool-choice or a tool-call parser because the generator requests its own typed semantic
 objects. The client defaults to Qwen's documented non-thinking sampling settings: temperature 0.7,
 top-p 0.8, top-k 20, min-p 0, presence penalty 1.5, and repetition penalty 1.
+
+The 27B FP8 checkpoint fits a reported 48 GB RTX 4090, but vLLM's CUDA-graph profiler can exceed
+the remaining headroom. The measured serving smoke test therefore used eager execution and an 85%
+memory allocation, leaving about 11.5 GiB for the KV cache without a startup OOM.
 
 ## Prepare scenarios
 
@@ -64,6 +69,10 @@ python -m app.training.tool_use.cli plan \
 ```
 
 The scenario plan is deterministic and safe to create without a GPU. `/data/` is ignored by Git.
+The natural-v2 planner makes direct questions a minority, samples requests, context-first turns,
+fragments, reactions, and self-repairs, and delays the first tool need in about 43% of multi-turn
+tool conversations. Adverse outcomes are tool-specific and rare; multi-call turns target a 0.5%
+adverse rate rather than treating failure as routine.
 
 ## Twenty-record serving smoke test
 
