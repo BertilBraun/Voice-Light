@@ -9,10 +9,12 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     with TestClient(app) as client:
         page_response = client.get("/voice-agent")
         script_response = client.get("/pages/voice-agent/app.js")
+        progress_response = client.get("/pages/voice-agent/spoken-text-progress.mjs")
         capture_worklet_response = client.get("/pages/voice-agent/capture-worklet.js")
         worklet_response = client.get("/pages/voice-agent/playback-worklet.js")
 
     assert page_response.status_code == 200
+    assert progress_response.status_code == 200
     assert 'id="conversation-history"' in page_response.text
     assert 'id="conversation-empty"' in page_response.text
     assert 'id="recording-player"' in page_response.text
@@ -49,5 +51,8 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
     assert "playback-worklet.js?v=4" in script_response.text
+    assert "app.js?v=5" in page_response.text
+    assert 'from "./spoken-text-progress.mjs"' in script_response.text
+    assert "this.spokenOffset = Math.max(this.spokenOffset, offset)" in progress_response.text
     assert "input[index]" in capture_worklet_response.text
     assert "sourcePosition" not in capture_worklet_response.text

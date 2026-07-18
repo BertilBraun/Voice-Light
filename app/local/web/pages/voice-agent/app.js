@@ -1,3 +1,5 @@
+import { SpokenTextProgress } from "./spoken-text-progress.mjs";
+
 const INPUT_SAMPLE_RATE = 16000;
 const ENDPOINT_STORAGE_KEY = "voice-light-compute-voice-endpoint";
 const endpointInput = document.querySelector("#endpoint-url");
@@ -49,9 +51,7 @@ class ConversationTurn {
 
     this.transcript = document.createElement("p");
     this.transcript.className = "turn-transcript";
-    this.text = "";
-    this.spokenOffset = 0;
-    this.acknowledgedOffset = 0;
+    this.progress = new SpokenTextProgress();
     if (role === "assistant") {
       this.spokenTranscript = document.createElement("span");
       this.spokenTranscript.className = "turn-spoken";
@@ -67,45 +67,49 @@ class ConversationTurn {
 
   setText(text) {
     const followHistory = historyIsAtEnd();
-    this.text = text;
+    this.progress.replaceText(text);
     this.renderText();
     followConversationHistory(followHistory);
   }
 
   appendText(text) {
     const followHistory = historyIsAtEnd();
-    this.text += text;
+    this.progress.appendText(text);
     this.renderText();
     followConversationHistory(followHistory);
   }
 
   setSpokenOffset(offset) {
-    if (!this.spokenTranscript || offset <= this.spokenOffset) return;
-    this.spokenOffset = Math.min(offset, characterLength(this.text));
+    if (!this.spokenTranscript || offset <= this.progress.spokenOffset) return;
+    this.progress.markSpoken(offset);
     this.renderText();
   }
 
   acknowledgeOffset(offset) {
-    this.acknowledgedOffset = Math.max(this.acknowledgedOffset, offset);
+    this.progress.acknowledge(offset);
   }
 
   settleInterruptedText() {
-    this.spokenOffset = this.acknowledgedOffset;
+    this.progress.settleInterruptedText();
     this.renderText();
   }
 
   renderText() {
     if (!this.spokenTranscript) {
-      this.transcript.textContent = this.text;
+      this.transcript.textContent = this.progress.text;
       return;
     }
-    this.spokenTranscript.textContent = sliceTextByCharacterOffset(this.text, 0, this.spokenOffset);
-    this.unspokenTranscript.textContent = sliceTextByCharacterOffset(this.text, this.spokenOffset);
+    this.spokenTranscript.textContent = this.progress.spokenText();
+    this.unspokenTranscript.textContent = this.progress.unspokenText();
   }
 
   setState(state) {
     this.element.dataset.state = state;
     this.meta.textContent = stateLabel(state);
+  }
+
+  get text() {
+    return this.progress.text;
   }
 }
 
@@ -574,10 +578,6 @@ function updateBoundaryProgress(progress) {
 
 function characterLength(text) {
   return Array.from(text).length;
-}
-
-function sliceTextByCharacterOffset(text, start, end) {
-  return Array.from(text).slice(start, end).join("");
 }
 
 function historyIsAtEnd() {
