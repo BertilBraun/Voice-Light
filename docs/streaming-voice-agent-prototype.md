@@ -191,7 +191,7 @@ pair before one concise recovery continuation.
 
 Tool cancellation is independent of the Qwen/TTS teardown barrier, and its observation timeout
 cannot block successor generation. `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS` controls execution timeout
-(default 5 seconds) and
+(default 30 seconds, including provider and bounded summarizer latency) and
 `VOICE_LIGHT_TOOL_CANCELLATION_TIMEOUT_SECONDS` bounds cancellation observation (default 250 ms).
 Handler error or timeout is committed as a typed private tool failure; a parser or validation
 failure remains transient recovery context. Either path lets the next invocation speak a short
@@ -199,11 +199,12 @@ recovery, and the application never fabricates weather. `VOICE_LIGHT_MAXIMUM_TOO
 sequential calls in one assistant generation (default 8); after the bound, the final invocation is
 tool-disabled and any attempted call fails the generation rather than executing.
 
-One `CompleteWordStream`, TTS session, synthesis output task, browser generation, audio sequence,
-text-offset space, and source-sample space span all Qwen invocations. Each spoken segment's trailing
-word is flushed at its tool boundary without finishing TTS input. Later segments continue at larger
-text offsets, and TTS PCM must continue at the next exact sample. Only the final invocation calls
-`finish_input`, so the browser receives one audio start and one audio end.
+One `CompleteWordStream`, synthesis output task, browser generation, audio sequence, text-offset
+space, and source-sample space span all Qwen invocations. Each spoken segment's trailing word is
+flushed and its TTS utterance is finished at a tool boundary, allowing the bridge to complete before
+the latency-bearing wait. Later utterances continue at larger text offsets; their zero-based PCM is
+rebased to the next exact generation sample. The browser still receives one audio start and one
+audio end.
 
 Each journal entry records its call, execution, result-commit, cancellation, and invalidation
 timing. Generation-scoped monotonic instrumentation retains first-round bridge and first

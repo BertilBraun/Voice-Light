@@ -37,7 +37,6 @@ from app.compute.voice.interfaces import (
     LanguageModelToolCallFailure,
     LanguageModelToolCallStarted,
     SpeechDetector,
-    SpeechSynthesisSession,
     SpeechSynthesizer,
     SpeechUnderstandingProvider,
     SpeechUnderstandingSession,
@@ -109,6 +108,7 @@ from app.compute.voice.schemas import (
     voice_client_event_adapter,
 )
 from app.compute.voice.speech_understanding import InteractionPredictionReducer
+from app.compute.voice.synthesis_sequence import SpeechSynthesisSequence
 from app.compute.voice.tools import (
     SerializedToolCall,
     ToolCall,
@@ -147,7 +147,7 @@ class SessionPolicy:
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
     maximum_prediction_lag_ms: int = 80
-    tool_timeout_seconds: float = 5.0
+    tool_timeout_seconds: float = 30.0
     tool_cancellation_timeout_seconds: float = 0.25
     maximum_tool_rounds: int = 8
 
@@ -175,7 +175,7 @@ class SessionPolicy:
                     "VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS must be an integer."
                 ) from error
         tool_timeout_value = environment.get("VOICE_LIGHT_TOOL_TIMEOUT_SECONDS")
-        tool_timeout_seconds = 5.0
+        tool_timeout_seconds = 30.0
         if tool_timeout_value is not None:
             try:
                 tool_timeout_seconds = float(tool_timeout_value)
@@ -1710,7 +1710,7 @@ class VoiceSession:
             )
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
-        synthesis = self.speech_synthesizer.start_session()
+        synthesis = SpeechSynthesisSequence(self.speech_synthesizer)
         text_task = asyncio.create_task(self._stream_response_text(generation, synthesis))
         audio_task = asyncio.create_task(self._stream_speech(generation, synthesis.stream_events()))
         generation_error: BaseException | None = None
@@ -1768,7 +1768,7 @@ class VoiceSession:
     async def _stream_response_text(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
     ) -> None:
         word_stream = CompleteWordStream()
         model_messages = list(generation.model_messages)
@@ -1815,6 +1815,7 @@ class VoiceSession:
                     VoiceOperation.GENERATE_TEXT,
                     "Qwen attempted a tool call after the configured round limit.",
                 )
+            await synthesis.finish_utterance()
             audible_content = generation.response_text[audible_text_start:audible_text_end].strip()
             tool_call: ToolCall | None = None
             assistant_message: ModelAssistantMessage
@@ -1895,7 +1896,7 @@ class VoiceSession:
     async def _run_model_invocation(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word_stream: CompleteWordStream,
         messages: tuple[ModelMessage, ...],
         tools: tuple[ToolSpecification, ...],
@@ -2000,7 +2001,7 @@ class VoiceSession:
     async def _publish_spoken_text(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word_stream: CompleteWordStream,
         text_delta: str,
     ) -> None:
@@ -2030,7 +2031,7 @@ class VoiceSession:
     async def _flush_synthesis_words(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word_stream: CompleteWordStream,
     ) -> None:
         for word in word_stream.finish():
@@ -2038,7 +2039,7 @@ class VoiceSession:
             await self._add_synthesis_word(generation, synthesis, word)
 
     @staticmethod
-    async def _finish_synthesis_input(synthesis: SpeechSynthesisSession) -> None:
+    async def _finish_synthesis_input(synthesis: SpeechSynthesisSequence) -> None:
         try:
             await synthesis.finish_input()
         except Exception as error:
@@ -2088,8 +2089,25 @@ class VoiceSession:
         tool.outcome = outcome
         if isinstance(outcome, ToolSuccess):
             tool.lifecycle = ToolLifecycle.SUCCEEDED
+            logger.info(
+                "tool execution completed: session=%s generation=%d tool=%s "
+                "status=success duration_ms=%.1f",
+                self.session_id,
+                generation.generation_id,
+                call.function.name,
+                _milliseconds_between(execution_started_at, execution_completed_at),
+            )
         else:
             tool.lifecycle = ToolLifecycle.FAILED
+            logger.warning(
+                "tool execution completed: session=%s generation=%d tool=%s "
+                "status=failure reason=%s duration_ms=%.1f",
+                self.session_id,
+                generation.generation_id,
+                call.function.name,
+                outcome.reason,
+                _milliseconds_between(execution_started_at, execution_completed_at),
+            )
         return outcome
 
     def _tool_failure_outcome(self, failure: ToolCallFailure) -> ToolExecutionFailure:
@@ -2387,7 +2405,7 @@ class VoiceSession:
     async def _add_synthesis_word(
         self,
         generation: ActiveGeneration,
-        synthesis: SpeechSynthesisSession,
+        synthesis: SpeechSynthesisSequence,
         word: SynthesisWord,
     ) -> None:
         if generation.latency.first_synthesis_word_at is None:
@@ -2440,7 +2458,8 @@ class VoiceSession:
                 return
             match event:
                 case KyutaiSynthesisFirstAudioMetrics() | VoxtreamSynthesisFirstAudioMetrics():
-                    generation.latency.synthesis_metrics = event
+                    if generation.latency.synthesis_metrics is None:
+                        generation.latency.synthesis_metrics = event
                 case SynthesizedWordBoundary():
                     if event.text_offset > len(generation.response_text):
                         raise ValueError("TTS returned a text boundary beyond generated text.")

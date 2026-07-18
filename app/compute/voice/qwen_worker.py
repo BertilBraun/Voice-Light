@@ -50,7 +50,8 @@ LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "You are a conversational voice agent. Respond naturally and directly to the user's latest "
     "message. Use the complete conversation history as context and do not repeat earlier answers. "
     "Use a provided tool only when it is needed. When using a latency-bearing tool, always begin "
-    "with exactly one short, natural bridge sentence of no more than eight spoken words; never "
+    "with exactly one short, natural bridge sentence of no more than eight spoken words; vary "
+    "the wording naturally across requests and never "
     "begin with the tool call. Do not claim or guess the result before receiving it, and emit the "
     "tool call immediately after the bridge. "
     "After a tool result, answer directly in one or two short spoken sentences. If another "
@@ -62,7 +63,7 @@ LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "Use this example only as the required bridge-then-call format, while selecting the "
     "appropriate provided tool and arguments for the actual request: User: What is the latest "
     "Mars mission? "
-    "Assistant: Let me look that up. "
+    "Assistant: I will check the latest information. "
     '<tool_call>{"name":"search","arguments":{"query":"latest Mars mission"}}</tool_call>'
 )
 logger = logging.getLogger(__name__)

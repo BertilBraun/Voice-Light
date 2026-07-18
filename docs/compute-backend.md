@@ -56,7 +56,14 @@ bounded plain-text summary is committed through the normal tool-result message.
 This design adds one external network round trip and one serialized Qwen generation before the
 main post-tool response. It avoids an additional model copy and GPU concurrency hazards, but search
 turns will therefore be materially slower than calculator or local-time turns. The worker lease
-ensures the summarization pass cannot overlap another Qwen inference.
+ensures the summarization pass cannot overlap another Qwen inference. The surrounding tool timeout
+defaults to 30 seconds so the bounded summary can finish on the supported GPU; deployments can
+override it with `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS`.
+
+The model speaks one short bridge before starting search. That bridge is finalized as its own TTS
+utterance so it cannot stall mid-word while the search and summary run. The post-result answer uses
+a successor TTS utterance whose PCM and word boundaries are rebased into the same browser playback
+generation, preserving one audio start/end pair while allowing an intentional silent wait.
 
 ## ASR-only mode
 
