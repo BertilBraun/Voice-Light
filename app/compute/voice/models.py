@@ -49,6 +49,12 @@ from app.compute.voice.llm_worker_protocol import (
     StartLlmCommand,
     llm_worker_event_adapter,
 )
+from app.compute.voice.model_constants import (
+    LANGUAGE_MODEL_NAME,
+    LANGUAGE_MODEL_REVISION,
+    SEARCH_SUMMARIZER_MODEL_NAME,
+    SEARCH_SUMMARIZER_MODEL_REVISION,
+)
 from app.compute.voice.subprocess_start import read_worker_start_event
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,13 @@ class QwenWorkerLease:
     invocation_id: int
 
 
+@dataclass(frozen=True)
+class QwenWorkerConfiguration:
+    model_name: str
+    model_revision: str
+    component_name: str
+
+
 class QwenWorkerManager(Protocol):
     async def acquire(self) -> QwenWorkerLease: ...
 
@@ -82,9 +95,17 @@ class QwenWorkerManager(Protocol):
 
 
 class QwenWorkerProcess:
-    def __init__(self, python_path: Path) -> None:
+    def __init__(self, python_path: Path, configuration: QwenWorkerConfiguration) -> None:
         self.process = subprocess.Popen(
-            [python_path.as_posix(), "-m", "app.compute.voice.qwen_worker"],
+            [
+                python_path.as_posix(),
+                "-m",
+                "app.compute.voice.qwen_worker",
+                "--model",
+                configuration.model_name,
+                "--revision",
+                configuration.model_revision,
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
@@ -100,10 +121,12 @@ class QwenWorkerProcess:
                 self.read_event,
                 self.terminate,
                 QWEN_WORKER_START_TIMEOUT_SECONDS,
-                "Qwen",
+                configuration.component_name,
             )
             if not isinstance(ready_event, LlmWorkerReadyEvent):
-                raise RuntimeError("The Qwen worker failed to initialize.")
+                raise RuntimeError(
+                    f"The {configuration.component_name} worker failed to initialize."
+                )
         except BaseException:
             self.terminate()
             raise
@@ -146,17 +169,27 @@ class QwenWorkerProcess:
 
 
 class RestartingQwenWorkerManager:
-    def __init__(self, python_path: Path) -> None:
+    def __init__(
+        self,
+        python_path: Path,
+        configuration: QwenWorkerConfiguration,
+        inference_lock: asyncio.Lock | None = None,
+    ) -> None:
         self.python_path = python_path
-        self.worker: QwenWorkerProcess | None = QwenWorkerProcess(python_path)
-        self.lock = asyncio.Lock()
+        self.configuration = configuration
+        self.worker: QwenWorkerProcess | None = QwenWorkerProcess(python_path, configuration)
+        self.lock = inference_lock if inference_lock is not None else asyncio.Lock()
         self.next_invocation_id = 1
 
     async def acquire(self) -> QwenWorkerLease:
         await self.lock.acquire()
         try:
             if self.worker is None:
-                self.worker = await asyncio.to_thread(QwenWorkerProcess, self.python_path)
+                self.worker = await asyncio.to_thread(
+                    QwenWorkerProcess,
+                    self.python_path,
+                    self.configuration,
+                )
             lease = QwenWorkerLease(
                 worker=self.worker,
                 invocation_id=self.next_invocation_id,
@@ -189,8 +222,20 @@ class RestartingQwenWorkerManager:
 
 
 class TransformersLanguageModel:
-    def __init__(self, python_path: Path = QWEN_PYTHON_PATH) -> None:
-        self.worker_manager = RestartingQwenWorkerManager(python_path)
+    def __init__(
+        self,
+        inference_lock: asyncio.Lock,
+        python_path: Path = QWEN_PYTHON_PATH,
+    ) -> None:
+        self.worker_manager = RestartingQwenWorkerManager(
+            python_path,
+            QwenWorkerConfiguration(
+                model_name=LANGUAGE_MODEL_NAME,
+                model_revision=LANGUAGE_MODEL_REVISION,
+                component_name="Qwen language model",
+            ),
+            inference_lock,
+        )
 
     async def stream_response(
         self,
@@ -209,36 +254,64 @@ class TransformersLanguageModel:
             await session.cancel()
 
     async def generate_text(self, request: TextGenerationRequest) -> str:
-        session = QwenInvocationSession(
-            worker_manager=self.worker_manager,
-            request=request,
-            progress_timeout_seconds=QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS,
-            cancellation_timeout_seconds=QWEN_CANCELLATION_TIMEOUT_SECONDS,
-        )
-        generated_parts: list[str] = []
-        try:
-            async for event in session.stream_events():
-                match event:
-                    case LanguageModelTextDelta(text=text):
-                        generated_parts.append(text)
-                    case LanguageModelCompleted():
-                        pass
-                    case LanguageModelFailed(message=message):
-                        raise RuntimeError(message)
-                    case (
-                        LanguageModelToolCallStarted()
-                        | LanguageModelToolCall()
-                        | LanguageModelToolCallFailure()
-                    ):
-                        raise RuntimeError(
-                            "Qwen emitted a tool event during bounded text generation."
-                        )
-        finally:
-            await session.cancel()
-        return "".join(generated_parts)
+        return await _generate_text(self.worker_manager, request)
 
     def close(self) -> None:
         self.worker_manager.close()
+
+
+class TransformersTextGenerator:
+    def __init__(
+        self,
+        inference_lock: asyncio.Lock,
+        python_path: Path = QWEN_PYTHON_PATH,
+    ) -> None:
+        self.worker_manager = RestartingQwenWorkerManager(
+            python_path,
+            QwenWorkerConfiguration(
+                model_name=SEARCH_SUMMARIZER_MODEL_NAME,
+                model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
+                component_name="Qwen search summarizer",
+            ),
+            inference_lock,
+        )
+
+    async def generate_text(self, request: TextGenerationRequest) -> str:
+        return await _generate_text(self.worker_manager, request)
+
+    def close(self) -> None:
+        self.worker_manager.close()
+
+
+async def _generate_text(
+    worker_manager: QwenWorkerManager,
+    request: TextGenerationRequest,
+) -> str:
+    session = QwenInvocationSession(
+        worker_manager=worker_manager,
+        request=request,
+        progress_timeout_seconds=QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS,
+        cancellation_timeout_seconds=QWEN_CANCELLATION_TIMEOUT_SECONDS,
+    )
+    generated_parts: list[str] = []
+    try:
+        async for event in session.stream_events():
+            match event:
+                case LanguageModelTextDelta(text=text):
+                    generated_parts.append(text)
+                case LanguageModelCompleted():
+                    pass
+                case LanguageModelFailed(message=message):
+                    raise RuntimeError(message)
+                case (
+                    LanguageModelToolCallStarted()
+                    | LanguageModelToolCall()
+                    | LanguageModelToolCallFailure()
+                ):
+                    raise RuntimeError("Qwen emitted a tool event during bounded text generation.")
+    finally:
+        await session.cancel()
+    return "".join(generated_parts)
 
 
 class _InvocationMarker(Enum):

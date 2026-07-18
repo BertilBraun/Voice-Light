@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, NotRequired, Protocol, TypedDict
 
@@ -45,8 +46,6 @@ from app.compute.voice.llm_worker_protocol import (
     llm_worker_command_adapter,
 )
 from app.compute.voice.model_constants import (
-    LANGUAGE_MODEL_NAME,
-    LANGUAGE_MODEL_REVISION,
     LANGUAGE_MODEL_SYSTEM_PROMPT,
 )
 
@@ -126,14 +125,14 @@ class CancellationStoppingCriteria(StoppingCriteria):
 
 
 class QwenRuntime:
-    def __init__(self) -> None:
+    def __init__(self, model_name: str, model_revision: str) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
-            LANGUAGE_MODEL_NAME,
-            revision=LANGUAGE_MODEL_REVISION,
+            model_name,
+            revision=model_revision,
         )
         self.model = AutoModelForCausalLM.from_pretrained(
-            LANGUAGE_MODEL_NAME,
-            revision=LANGUAGE_MODEL_REVISION,
+            model_name,
+            revision=model_revision,
             dtype=torch.bfloat16,
             attn_implementation="sdpa",
         ).to("cuda")
@@ -470,9 +469,13 @@ def render_qwen_prompt(
     )
 
 
-def main() -> None:
+def main(arguments: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--revision", required=True)
+    options = parser.parse_args(arguments)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    QwenWorkerController(QwenRuntime()).run()
+    QwenWorkerController(QwenRuntime(options.model, options.revision)).run()
 
 
 if __name__ == "__main__":

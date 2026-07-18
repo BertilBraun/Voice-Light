@@ -20,7 +20,7 @@ async def run_voice_session(
         language_model = runtime.require_language_model()
         search_pipeline = SearchPipeline(
             provider=runtime.require_search_provider(),
-            summarizer=QwenSearchResultSummarizer(language_model),
+            summarizer=QwenSearchResultSummarizer(runtime.require_search_text_generator()),
         )
         session = VoiceSession(
             websocket=websocket,

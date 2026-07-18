@@ -29,10 +29,11 @@ when audio first reaches a logical turn, releases it when that turn is finalized
 fails, and uses the same manager for the next logical turn. Models are never spawned or reloaded per
 WebSocket or per turn.
 
-The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron, Qwen, and
-Kyutai subprocesses own their respective CUDA models and outlive a connection. The loaded Silero
-model also outlives a connection, while a fresh iterator carries each session's VAD state. There is
-no persistence, session re-entry, or reconnection protocol.
+The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron,
+conversational Qwen, search-summary Qwen, and Kyutai subprocesses own their respective CUDA models
+and outlive a connection. The two Qwen workers share one orchestration lock so their inference
+cannot overlap. The loaded Silero model also outlives a connection, while a fresh iterator carries
+each session's VAD state. There is no persistence, session re-entry, or reconnection protocol.
 
 The browser captures microphone PCM, renders server events, plays server PCM, and reports playback
 progress. The server remains authoritative for VAD, turn boundaries, cancellation, and which
@@ -56,6 +57,9 @@ validated playback offsets enter model history.
   and 1120 ms streaming configurations without changing code.
 - Qwen3-1.7B runs in a persistent child process. A typed generation-ID protocol streams
   non-thinking text deltas for the complete ordered conversation.
+- Qwen3-0.6B runs in a second persistent child process and handles only bounded, non-thinking
+  search-result summarization. Both Qwen managers use one inference lock, while their model
+  revisions and lifecycles remain independent.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
   that generation's audible history. Every actual Qwen invocation also emits
   `llm.model_request`, including its typed private messages and tool specifications. The browser

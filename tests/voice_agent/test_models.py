@@ -28,12 +28,20 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerEvent,
     StartLlmCommand,
 )
+from app.compute.voice.model_constants import (
+    LANGUAGE_MODEL_NAME,
+    LANGUAGE_MODEL_REVISION,
+    SEARCH_SUMMARIZER_MODEL_NAME,
+    SEARCH_SUMMARIZER_MODEL_REVISION,
+)
 from app.compute.voice.models import (
     QwenInvocationSession,
     QwenWorker,
+    QwenWorkerConfiguration,
     QwenWorkerLease,
     RestartingQwenWorkerManager,
     TransformersLanguageModel,
+    TransformersTextGenerator,
 )
 from app.compute.voice.tools import runtime_tool_specifications
 
@@ -330,17 +338,26 @@ def test_qwen_spawn_failure_releases_manager_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     construction_count = 0
+    configuration = QwenWorkerConfiguration(
+        model_name="test/model",
+        model_revision="test-revision",
+        component_name="test Qwen",
+    )
 
-    def create_worker(python_path: Path) -> FakeQwenWorker:
+    def create_worker(
+        python_path: Path,
+        worker_configuration: QwenWorkerConfiguration,
+    ) -> FakeQwenWorker:
         nonlocal construction_count
         del python_path
+        assert worker_configuration == configuration
         construction_count += 1
         if construction_count > 1:
             raise RuntimeError("synthetic Qwen spawn failure")
         return FakeQwenWorker()
 
     monkeypatch.setattr(language_models, "QwenWorkerProcess", create_worker)
-    worker_manager = RestartingQwenWorkerManager(Path("python"))
+    worker_manager = RestartingQwenWorkerManager(Path("python"), configuration)
     worker_manager.worker = None
 
     async def acquire_worker() -> None:
@@ -349,6 +366,42 @@ def test_qwen_spawn_failure_releases_manager_lock(
         assert not worker_manager.lock.locked()
 
     asyncio.run(acquire_worker())
+
+
+def test_conversation_and_search_models_use_distinct_workers_with_one_inference_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configurations: list[QwenWorkerConfiguration] = []
+
+    def create_worker(
+        python_path: Path,
+        configuration: QwenWorkerConfiguration,
+    ) -> FakeQwenWorker:
+        del python_path
+        configurations.append(configuration)
+        return FakeQwenWorker()
+
+    monkeypatch.setattr(language_models, "QwenWorkerProcess", create_worker)
+    inference_lock = asyncio.Lock()
+
+    language_model = TransformersLanguageModel(inference_lock)
+    search_generator = TransformersTextGenerator(inference_lock)
+
+    assert configurations == [
+        QwenWorkerConfiguration(
+            model_name=LANGUAGE_MODEL_NAME,
+            model_revision=LANGUAGE_MODEL_REVISION,
+            component_name="Qwen language model",
+        ),
+        QwenWorkerConfiguration(
+            model_name=SEARCH_SUMMARIZER_MODEL_NAME,
+            model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
+            component_name="Qwen search summarizer",
+        ),
+    ]
+    assert language_model.worker_manager.worker is not search_generator.worker_manager.worker
+    assert language_model.worker_manager.lock is inference_lock
+    assert search_generator.worker_manager.lock is inference_lock
 
 
 def create_session(

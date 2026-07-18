@@ -2,6 +2,8 @@ from typing import Final
 
 LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-1.7B"
 LANGUAGE_MODEL_REVISION: Final = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+SEARCH_SUMMARIZER_MODEL_NAME: Final = "Qwen/Qwen3-0.6B"
+SEARCH_SUMMARIZER_MODEL_REVISION: Final = "c1899de289a04d12100db370d81485cdf75e47ca"
 LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "You are a conversational voice agent. Respond naturally and directly to the user's latest "
     "message. Use the complete conversation history as context and do not repeat earlier answers. "

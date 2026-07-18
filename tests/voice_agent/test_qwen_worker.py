@@ -3,8 +3,12 @@ from __future__ import annotations
 import queue
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Literal
 
+import pytest
+
+import app.compute.voice.qwen_worker as qwen_worker_module
 from app.compute.voice.llm_worker_protocol import (
     GenerateTextLlmCommand,
     LlmAssistantMessage,
@@ -82,6 +86,49 @@ class RecordingChatTemplateTokenizer:
         self.add_generation_prompt = add_generation_prompt
         self.enable_thinking = enable_thinking
         return "rendered prompt"
+
+
+@dataclass(frozen=True)
+class SelectedQwenRuntime:
+    model_name: str
+    model_revision: str
+
+
+def test_worker_main_loads_the_explicit_model_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_runtimes: list[SelectedQwenRuntime] = []
+
+    def select_runtime(model_name: str, model_revision: str) -> SelectedQwenRuntime:
+        runtime = SelectedQwenRuntime(model_name, model_revision)
+        selected_runtimes.append(runtime)
+        return runtime
+
+    class RecordingController:
+        def __init__(self, runtime: SelectedQwenRuntime) -> None:
+            self.runtime = runtime
+
+        def run(self) -> None:
+            assert self.runtime == selected_runtimes[-1]
+
+    monkeypatch.setattr(qwen_worker_module, "QwenRuntime", select_runtime)
+    monkeypatch.setattr(qwen_worker_module, "QwenWorkerController", RecordingController)
+
+    qwen_worker_module.main(
+        [
+            "--model",
+            "Qwen/Qwen3-0.6B",
+            "--revision",
+            "pinned-revision",
+        ]
+    )
+
+    assert selected_runtimes == [
+        SelectedQwenRuntime(
+            model_name="Qwen/Qwen3-0.6B",
+            model_revision="pinned-revision",
+        )
+    ]
 
 
 def test_tool_prompt_requires_spoken_bridge_before_call() -> None:
