@@ -62,26 +62,44 @@ class VllmChatCompletionRequest(ToolUseBaseModel):
 
 
 class VllmResponseMessage(ToolUseBaseModel):
-    role: str
+    role: Literal["assistant"]
     content: str | None
+    refusal: str | None
+    annotations: tuple[JsonValue, ...] | None
+    audio: JsonValue | None
+    function_call: JsonValue | None
+    tool_calls: tuple[JsonValue, ...]
+    reasoning: str | None
 
 
 class VllmResponseChoice(ToolUseBaseModel):
     index: int
     message: VllmResponseMessage
     finish_reason: str | None
+    logprobs: JsonValue | None
+    stop_reason: str | int | None
+    token_ids: tuple[int, ...] | None
 
 
 class VllmUsage(ToolUseBaseModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
+    prompt_tokens_details: JsonValue | None
 
 
 class VllmChatCompletionResponse(ToolUseBaseModel):
     id: str
+    object: Literal["chat.completion"]
+    created: int = Field(ge=0)
+    model: str
     choices: tuple[VllmResponseChoice, ...]
+    service_tier: str | None
+    system_fingerprint: str | None
     usage: VllmUsage | None = None
+    prompt_logprobs: JsonValue | None
+    prompt_token_ids: tuple[int, ...] | None
+    kv_transfer_params: JsonValue | None
 
 
 class VllmRequestLogEntry(ToolUseBaseModel):

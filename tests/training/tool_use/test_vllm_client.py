@@ -36,18 +36,39 @@ def test_vllm_client_sends_json_schema_and_disables_thinking(tmp_path: Path) -> 
             status_code=200,
             json={
                 "id": "completion-1",
+                "object": "chat.completion",
+                "created": 1_784_363_084,
+                "model": "Qwen/Qwen3.6-27B-FP8",
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": content},
+                        "message": {
+                            "role": "assistant",
+                            "content": content,
+                            "refusal": None,
+                            "annotations": None,
+                            "audio": None,
+                            "function_call": None,
+                            "tool_calls": [],
+                            "reasoning": None,
+                        },
                         "finish_reason": "stop",
+                        "logprobs": None,
+                        "stop_reason": None,
+                        "token_ids": None,
                     }
                 ],
+                "service_tier": None,
+                "system_fingerprint": None,
                 "usage": {
                     "prompt_tokens": 12,
                     "completion_tokens": 8,
                     "total_tokens": 20,
+                    "prompt_tokens_details": None,
                 },
+                "prompt_logprobs": None,
+                "prompt_token_ids": None,
+                "kv_transfer_params": None,
             },
         )
 
