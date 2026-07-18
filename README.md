@@ -46,6 +46,10 @@ http://127.0.0.1:8000/future-work
 See [ASR analysis](docs/asr-analysis.md) for the model, caching, and post-processing workflow.
 See [turn-taking adapter training](docs/turn-taking-training.md) for the dataset contract, model
 choice, training schedule, and runnable training prototype.
+See the [synthetic tool-use generator](docs/tool-use-synthetic-generation.md), the
+[tool-use LoRA runbook](docs/tool-use-lora-training.md), and the
+[measured fine-tuning results](docs/tool-use-finetuning-results.md) for the complete natural
+spoken tool-use experiment.
 
 ## Future work
 

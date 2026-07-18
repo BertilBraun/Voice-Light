@@ -1,13 +1,17 @@
 # Natural Spoken Tool Use: Dataset and Fine-Tuning Plan
 
-Status: Phase 1 design completed; local Phase 2 generation tooling approved and in preparation
+Status: Phases 1–3 completed; integration and deployment remain unapproved
 
 Date: 2026-07-17
 Target currently deployed by Voice Light: `Qwen/Qwen3-1.7B` at revision
 `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e`
 
-No dataset generation, training, model loading, service change, artifact merge, or deployment was
-performed for this phase.
+This document preserves the original design and decision record. The approved synthetic generation
+and offline LoRA training were subsequently completed. See
+[Synthetic Tool-Use Dataset](tool-use-synthetic-generation.md) and
+[Natural Spoken Tool-Use Fine-Tuning Results](tool-use-finetuning-results.md) for measured outcomes.
+No adapter merge, runtime integration, production configuration change, or deployment has been
+performed.
 
 ## Executive recommendation
 
