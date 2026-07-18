@@ -47,11 +47,10 @@ INTERESTING_RANDOM_LOCATION_COUNT = 24
 INTERESTING_ANCHOR_LIMIT = 64
 HIGH_CONFIDENCE = 0.8
 LOW_CONFIDENCE = 0.2
-FLOOR_TAKE_SUPERVISION_SECONDS = 0.5
+USER_YIELD_HORIZON_SECONDS = 0.5
 MAXIMUM_NON_FLOOR_FEEDBACK_SECONDS = 1.2
 MINIMUM_ASSISTANT_CONTINUATION_SECONDS = 0.3
 MINIMUM_COMPLETION_INACTIVITY_SECONDS = 1.5
-YIELD_AFTER_COMPLETION_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -74,6 +73,13 @@ class InteractionEventAnchor:
     source: CandidateSource
     distribution: EventTargetDistribution | None
     mask_reason: SupervisionMaskReason | None
+
+
+@dataclass(frozen=True)
+class LogicalUserTurn:
+    start_seconds: float
+    end_seconds: float
+    segments: tuple[SegmentAnnotationTarget, ...]
 
 
 @dataclass(frozen=True)
@@ -371,6 +377,7 @@ def build_frame_previews(
     user: SpeakerConversationAnnotation,
     assistant: SpeakerConversationAnnotation,
 ) -> tuple[TrainingFramePreview, ...]:
+    logical_user_turns = _logical_user_turns(user)
     boundaries = _decision_boundaries(
         user=user,
         assistant=assistant,
@@ -403,12 +410,13 @@ def build_frame_previews(
             annotation_end_seconds=annotation_end_seconds,
             user=user,
             assistant=assistant,
+            logical_user_turns=logical_user_turns,
         )
-        floor_take_supervision = _user_floor_take_supervision(
+        has_floor_supervision = _user_has_floor_supervision(
             time_seconds=time_seconds,
             supervised=supervised,
             user=user,
-            assistant=assistant,
+            logical_user_turns=logical_user_turns,
         )
         event_distribution, event_valid, event_mask_reason = _interaction_event_supervision(
             supervised=supervised,
@@ -447,9 +455,9 @@ def build_frame_previews(
                 user_yield_target=yield_supervision.target,
                 user_yield_valid=yield_supervision.valid,
                 user_yield_mask_reason=yield_supervision.mask_reason,
-                user_floor_take_target=floor_take_supervision.target,
-                user_floor_take_valid=floor_take_supervision.valid,
-                user_floor_take_mask_reason=floor_take_supervision.mask_reason,
+                user_has_floor_target=has_floor_supervision.target,
+                user_has_floor_valid=has_floor_supervision.valid,
+                user_has_floor_mask_reason=has_floor_supervision.mask_reason,
                 interaction_event_distribution=event_distribution,
                 interaction_event_valid=event_valid,
                 interaction_event_mask_reason=event_mask_reason,
@@ -470,11 +478,129 @@ def _user_yield_supervision(
     annotation_end_seconds: float,
     user: SpeakerConversationAnnotation,
     assistant: SpeakerConversationAnnotation,
+    logical_user_turns: Sequence[LogicalUserTurn],
 ) -> ScalarSupervision:
     if not supervised:
         return _masked_scalar(SupervisionMaskReason.BURN_IN)
-    if _assistant_substantively_speaking_at(time_seconds, assistant):
-        return _masked_scalar(SupervisionMaskReason.ASSISTANT_HOLDS_FLOOR)
+    if _ambiguous_user_annotation_at(time_seconds=time_seconds, user=user):
+        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+    logical_turn = _logical_user_turn_at(
+        time_seconds=time_seconds,
+        logical_user_turns=logical_user_turns,
+    )
+    if logical_turn is None:
+        return _masked_scalar(SupervisionMaskReason.USER_DOES_NOT_HOLD_FLOOR)
+    if time_seconds + USER_YIELD_HORIZON_SECONDS < logical_turn.end_seconds:
+        return _valid_scalar(0.0)
+    final_segment = logical_turn.segments[-1]
+    if _logical_turn_end_confirmed(
+        logical_turn=logical_turn,
+        user=user,
+        assistant=assistant,
+        annotation_end_seconds=annotation_end_seconds,
+    ):
+        return _valid_scalar(1.0)
+    if _completion_is_censored(
+        segment=final_segment,
+        user=user,
+        assistant=assistant,
+        annotation_end_seconds=annotation_end_seconds,
+    ):
+        return _masked_scalar(SupervisionMaskReason.CENSORED_ANNOTATION)
+    return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+
+
+def _user_has_floor_supervision(
+    time_seconds: float,
+    supervised: bool,
+    user: SpeakerConversationAnnotation,
+    logical_user_turns: Sequence[LogicalUserTurn],
+) -> ScalarSupervision:
+    if not supervised:
+        return _masked_scalar(SupervisionMaskReason.BURN_IN)
+    if _ambiguous_user_annotation_at(time_seconds=time_seconds, user=user):
+        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+    logical_turn = _logical_user_turn_at(
+        time_seconds=time_seconds,
+        logical_user_turns=logical_user_turns,
+    )
+    return _valid_scalar(1.0 if logical_turn is not None else 0.0)
+
+
+def _logical_user_turns(
+    user: SpeakerConversationAnnotation,
+) -> tuple[LogicalUserTurn, ...]:
+    substantive_segments = tuple(
+        segment
+        for segment in sorted(
+            user.segment_targets,
+            key=lambda candidate: (candidate.start_seconds, candidate.end_seconds),
+        )
+        if _is_substantive_user_segment(segment)
+    )
+    logical_turns: list[LogicalUserTurn] = []
+    for segment in substantive_segments:
+        if logical_turns and _segments_have_confident_connection(
+            earlier_segment=logical_turns[-1].segments[-1],
+            later_segment=segment,
+            connections=user.connection_targets,
+        ):
+            previous_turn = logical_turns[-1]
+            logical_turns[-1] = LogicalUserTurn(
+                start_seconds=previous_turn.start_seconds,
+                end_seconds=segment.end_seconds,
+                segments=(*previous_turn.segments, segment),
+            )
+            continue
+        logical_turns.append(
+            LogicalUserTurn(
+                start_seconds=segment.start_seconds,
+                end_seconds=segment.end_seconds,
+                segments=(segment,),
+            )
+        )
+    return tuple(logical_turns)
+
+
+def _is_substantive_user_segment(segment: SegmentAnnotationTarget) -> bool:
+    return (
+        segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+        and segment.turn_confidence >= HIGH_CONFIDENCE
+        and segment.keep_playing_confidence < HIGH_CONFIDENCE
+    )
+
+
+def _segments_have_confident_connection(
+    earlier_segment: SegmentAnnotationTarget,
+    later_segment: SegmentAnnotationTarget,
+    connections: Sequence[ConnectionAnnotationTarget],
+) -> bool:
+    return any(
+        abs(connection.earlier_end_seconds - earlier_segment.end_seconds) <= FRAME_SECONDS
+        and abs(connection.later_start_seconds - later_segment.start_seconds) <= FRAME_SECONDS
+        and connection.merge_confidence >= HIGH_CONFIDENCE
+        for connection in connections
+    )
+
+
+def _logical_user_turn_at(
+    time_seconds: float,
+    logical_user_turns: Sequence[LogicalUserTurn],
+) -> LogicalUserTurn | None:
+    return next(
+        (
+            logical_turn
+            for logical_turn in logical_user_turns
+            if logical_turn.start_seconds <= time_seconds < logical_turn.end_seconds
+        ),
+        None,
+    )
+
+
+def _ambiguous_user_annotation_at(
+    time_seconds: float,
+    user: SpeakerConversationAnnotation,
+) -> bool:
     active_segment = next(
         (
             segment
@@ -484,9 +610,14 @@ def _user_yield_supervision(
         None,
     )
     if active_segment is not None:
-        if active_segment.evidence_source is AnnotationEvidenceSource.AUDIO_ACTIVITY:
-            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
-        return _valid_scalar(0.0)
+        if _is_substantive_user_segment(active_segment):
+            return False
+        is_non_floor_feedback = (
+            active_segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+            and active_segment.keep_playing_confidence >= HIGH_CONFIDENCE
+            and active_segment.turn_confidence < HIGH_CONFIDENCE
+        )
+        return not is_non_floor_feedback
     active_connection = next(
         (
             connection
@@ -495,83 +626,38 @@ def _user_yield_supervision(
         ),
         None,
     )
-    if active_connection is not None:
-        preceding_segment = _segment_ending_at(
-            time_seconds=active_connection.earlier_end_seconds,
-            segments=user.segment_targets,
-        )
-        if (
-            preceding_segment is None
-            or preceding_segment.evidence_source is not AnnotationEvidenceSource.TRANSCRIPT
-        ):
-            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
-        if active_connection.merge_confidence >= HIGH_CONFIDENCE:
-            return _valid_scalar(0.0)
-        if active_connection.merge_confidence > LOW_CONFIDENCE:
-            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
-        if preceding_segment.turn_confidence < HIGH_CONFIDENCE:
-            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
-        return _valid_scalar(1.0)
-    preceding_segment = _previous_segment(time_seconds, user.segment_targets)
-    if preceding_segment is None:
-        return _masked_scalar(SupervisionMaskReason.BEFORE_USER_TURN)
-    if time_seconds >= preceding_segment.end_seconds + YIELD_AFTER_COMPLETION_SECONDS:
-        return _masked_scalar(SupervisionMaskReason.OUTSIDE_YIELD_WINDOW)
-    if (
-        preceding_segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
-        and preceding_segment.turn_confidence >= HIGH_CONFIDENCE
-        and _completion_confirmed(
-            segment=preceding_segment,
-            user=user,
-            assistant=assistant,
-            annotation_end_seconds=annotation_end_seconds,
-        )
-    ):
-        return _valid_scalar(1.0)
-    if _completion_is_censored(
-        segment=preceding_segment,
+    return (
+        active_connection is not None
+        and LOW_CONFIDENCE < active_connection.merge_confidence < HIGH_CONFIDENCE
+    )
+
+
+def _logical_turn_end_confirmed(
+    logical_turn: LogicalUserTurn,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    annotation_end_seconds: float,
+) -> bool:
+    return _detector_turn_point_at(
+        time_seconds=logical_turn.end_seconds,
+        points=user.turns,
+    ) or _completion_confirmed(
+        segment=logical_turn.segments[-1],
         user=user,
         assistant=assistant,
         annotation_end_seconds=annotation_end_seconds,
-    ):
-        return _masked_scalar(SupervisionMaskReason.CENSORED_ANNOTATION)
-    return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+    )
 
 
-def _user_floor_take_supervision(
+def _detector_turn_point_at(
     time_seconds: float,
-    supervised: bool,
-    user: SpeakerConversationAnnotation,
-    assistant: SpeakerConversationAnnotation,
-) -> ScalarSupervision:
-    if not supervised:
-        return _masked_scalar(SupervisionMaskReason.BURN_IN)
-    assistant_segment = _assistant_substantive_segment_at(time_seconds, assistant)
-    if assistant_segment is None or not _assistant_speaking_at(time_seconds, assistant):
-        return _masked_scalar(SupervisionMaskReason.ASSISTANT_NOT_SPEAKING)
-    user_segment = next(
-        (
-            segment
-            for segment in user.segment_targets
-            if segment.start_seconds
-            <= time_seconds
-            < min(
-                segment.end_seconds,
-                segment.start_seconds + FLOOR_TAKE_SUPERVISION_SECONDS,
-            )
-            and assistant_segment.start_seconds <= segment.start_seconds
-        ),
-        None,
+    points: Sequence[AnnotationPoint],
+) -> bool:
+    return any(
+        abs(point.time_seconds - time_seconds) <= FRAME_SECONDS
+        and (point.confidence is None or point.confidence >= HIGH_CONFIDENCE)
+        for point in points
     )
-    if user_segment is None:
-        return _masked_scalar(SupervisionMaskReason.OUTSIDE_OVERLAP_ONSET)
-    event_distribution = _overlap_event_distribution(
-        user_segment=user_segment,
-        assistant_segment=assistant_segment,
-    )
-    if event_distribution is None:
-        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
-    return _valid_scalar(event_distribution.floor_take)
 
 
 def _valid_scalar(target: float) -> ScalarSupervision:
@@ -707,31 +793,6 @@ def _next_segment_after(
     )
 
 
-def _previous_segment(
-    time_seconds: float,
-    segments: Sequence[SegmentAnnotationTarget],
-) -> SegmentAnnotationTarget | None:
-    return max(
-        (segment for segment in segments if segment.end_seconds <= time_seconds),
-        key=lambda segment: segment.end_seconds,
-        default=None,
-    )
-
-
-def _segment_ending_at(
-    time_seconds: float,
-    segments: Sequence[SegmentAnnotationTarget],
-) -> SegmentAnnotationTarget | None:
-    return next(
-        (
-            segment
-            for segment in segments
-            if abs(segment.end_seconds - time_seconds) <= FRAME_SECONDS
-        ),
-        None,
-    )
-
-
 def _active_boundary(
     time_seconds: float, boundaries: Sequence[DecisionBoundary]
 ) -> DecisionBoundary | None:
@@ -806,11 +867,14 @@ def _boundary_event_anchor(
     if connection is not None and connection.merge_confidence > LOW_CONFIDENCE:
         return _masked_boundary_event(segment, CandidateSource.CONNECTION)
     source = CandidateSource.CONNECTION if connection is not None else CandidateSource.SEGMENT_END
-    if segment.turn_confidence >= HIGH_CONFIDENCE and _completion_confirmed(
-        segment=segment,
-        user=user,
-        assistant=assistant,
-        annotation_end_seconds=annotation_end_seconds,
+    if segment.turn_confidence >= HIGH_CONFIDENCE and (
+        _detector_turn_point_at(time_seconds=segment.end_seconds, points=user.turns)
+        or _completion_confirmed(
+            segment=segment,
+            user=user,
+            assistant=assistant,
+            annotation_end_seconds=annotation_end_seconds,
+        )
     ):
         return InteractionEventAnchor(
             time_seconds=segment.end_seconds,
@@ -857,6 +921,7 @@ def _overlap_event_distribution(
     floor_take = (
         user_segment.turn_confidence >= HIGH_CONFIDENCE
         and user_segment.interruption_confidence >= HIGH_CONFIDENCE
+        and user_segment.keep_playing_confidence < HIGH_CONFIDENCE
     )
     non_floor_feedback = (
         user_segment.keep_playing_confidence >= HIGH_CONFIDENCE

@@ -29,13 +29,9 @@ class CandidateSource(StrEnum):
 
 class SupervisionMaskReason(StrEnum):
     BURN_IN = "Burn-in recurrent-state warm-up"
-    ASSISTANT_HOLDS_FLOOR = "Assistant holds the floor"
-    ASSISTANT_NOT_SPEAKING = "Assistant is not substantively speaking"
-    BEFORE_USER_TURN = "No target-user turn has begun"
+    USER_DOES_NOT_HOLD_FLOOR = "Target user does not hold the floor"
     AMBIGUOUS_ANNOTATION = "Annotation confidence is ambiguous"
     CENSORED_ANNOTATION = "Required future annotation is unavailable"
-    OUTSIDE_YIELD_WINDOW = "Outside an eligible user-yield region"
-    OUTSIDE_OVERLAP_ONSET = "Outside the first 500 ms of an overlap onset"
     NO_EVENT_ANCHOR = "No interaction event is anchored to this frame"
     FUTURE_HORIZON_CENSORED = "Future activity horizon exceeds annotated audio"
 
@@ -91,9 +87,9 @@ class TrainingFramePreview(FrozenBaseModel):
     user_yield_target: float | None
     user_yield_valid: bool
     user_yield_mask_reason: SupervisionMaskReason | None
-    user_floor_take_target: float | None
-    user_floor_take_valid: bool
-    user_floor_take_mask_reason: SupervisionMaskReason | None
+    user_has_floor_target: float | None
+    user_has_floor_valid: bool
+    user_has_floor_mask_reason: SupervisionMaskReason | None
     interaction_event_distribution: EventTargetDistribution | None
     interaction_event_valid: bool
     interaction_event_mask_reason: SupervisionMaskReason | None

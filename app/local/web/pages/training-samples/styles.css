@@ -307,6 +307,10 @@ dd {
   line-height: 1.55;
 }
 
+.info-card p + p {
+  margin-top: 10px;
+}
+
 code {
   background: #f0f3f2;
   border-radius: 4px;

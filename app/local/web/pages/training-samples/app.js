@@ -24,14 +24,14 @@ const rowDefinitions = [
   { label: "User waveform", field: "waveform" },
   { label: "INPUT · Assistant speaking", field: "assistant_speaking_input" },
   {
-    label: "RUNTIME · p_user_yield",
-    field: "user_yield_target",
-    validField: "user_yield_valid",
+    label: "RUNTIME · p_user_has_floor",
+    field: "user_has_floor_target",
+    validField: "user_has_floor_valid",
   },
   {
-    label: "RUNTIME · p_user_floor_take",
-    field: "user_floor_take_target",
-    validField: "user_floor_take_valid",
+    label: "RUNTIME · p_user_yield ≤ 500 ms",
+    field: "user_yield_target",
+    validField: "user_yield_valid",
   },
   {
     label: "AUX event · completion",
@@ -227,18 +227,16 @@ function renderSummary() {
   const assistantSpeakingFrames = preview.frames.filter(
     (frame) => frame.assistant_speaking_input,
   );
-  const validYieldFrames = preview.frames.filter((frame) => frame.user_yield_valid);
-  const validFloorTakeFrames = preview.frames.filter(
-    (frame) => frame.user_floor_take_valid,
+  const validHasFloorFrames = preview.frames.filter(
+    (frame) => frame.user_has_floor_valid,
   );
+  const validYieldFrames = preview.frames.filter((frame) => frame.user_yield_valid);
   const eventFrames = preview.frames.filter((frame) => frame.interaction_event_valid);
-  const meanYield =
-    validYieldFrames.length === 0
-      ? null
-      : validYieldFrames.reduce((total, frame) => total + frame.user_yield_target, 0) /
-        validYieldFrames.length;
-  const floorTakePositives = validFloorTakeFrames.filter(
-    (frame) => frame.user_floor_take_target >= 0.5,
+  const hasFloorPositives = validHasFloorFrames.filter(
+    (frame) => frame.user_has_floor_target >= 0.5,
+  ).length;
+  const yieldSoonPositives = validYieldFrames.filter(
+    (frame) => frame.user_yield_target >= 0.5,
   ).length;
   const eventCounts = interactionEventCounts(eventFrames);
   summary.replaceChildren(
@@ -258,10 +256,10 @@ function renderSummary() {
       ["Frame interval", `${Math.round(preview.frame_seconds * 1000)} ms`],
       ["Supervised frames", String(supervisedFrames.length)],
       ["Assistant-speaking input", percentage(assistantSpeakingFrames.length, preview.frames.length)],
-      ["Valid yield frames", String(validYieldFrames.length)],
-      ["Mean p(YIELD)", meanYield === null ? "—" : meanYield.toFixed(3)],
-      ["Valid floor-take frames", String(validFloorTakeFrames.length)],
-      ["Floor-take positive frames", String(floorTakePositives)],
+      ["Valid floor-state frames", String(validHasFloorFrames.length)],
+      ["User-owned floor frames", String(hasFloorPositives)],
+      ["Valid conditional-yield frames", String(validYieldFrames.length)],
+      ["Yield-within-500-ms frames", String(yieldSoonPositives)],
       ["Valid event anchors", String(eventFrames.length)],
       ["Completion / continuation", `${eventCounts.turnCompletion} / ${eventCounts.continuationPause}`],
       ["Feedback / floor take", `${eventCounts.nonFloorFeedback} / ${eventCounts.floorTake}`],
@@ -328,7 +326,7 @@ function drawTimeline() {
     context.fillStyle = "#48575c";
     context.font =
       field === "user_yield_target" ||
-      field === "user_floor_take_target" ||
+      field === "user_has_floor_target" ||
       field === "assistant_speaking_input"
         ? "bold 12px sans-serif"
         : "12px sans-serif";
@@ -479,15 +477,15 @@ function renderSelectedFrame(frame) {
       ["Candidate", booleanLabel(frame.candidate)],
       ["Candidate source", frame.candidate_source ?? "—"],
       ["Since user speech offset", optionalSeconds(frame.seconds_since_speech_offset)],
-      ["p_user_yield target", maskedProbability(
+      ["p_user_has_floor target", maskedProbability(
+        frame.user_has_floor_target,
+        frame.user_has_floor_valid,
+        frame.user_has_floor_mask_reason,
+      )],
+      ["p_user_yield ≤ 500 ms target", maskedProbability(
         frame.user_yield_target,
         frame.user_yield_valid,
         frame.user_yield_mask_reason,
-      )],
-      ["p_user_floor_take target", maskedProbability(
-        frame.user_floor_take_target,
-        frame.user_floor_take_valid,
-        frame.user_floor_take_mask_reason,
       )],
       ["Event target mask", maskLabel(
         frame.interaction_event_valid,
