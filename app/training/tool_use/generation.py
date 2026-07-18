@@ -1026,6 +1026,7 @@ def _validate_record_quality(assessment: RecordQualityAssessment) -> None:
         assessment.conversation_is_coherent,
         assessment.voice_style_is_natural,
         assessment.tone_is_appropriate,
+        assessment.advice_is_constructive,
     )
     if not all(checks) or assessment.issues:
         issue_names = ", ".join(issue.value for issue in assessment.issues) or "unspecified"

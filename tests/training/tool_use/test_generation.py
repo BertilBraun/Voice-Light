@@ -259,6 +259,7 @@ def accepted_quality_assessment() -> RecordQualityAssessmentEnvelope:
             conversation_is_coherent=True,
             voice_style_is_natural=True,
             tone_is_appropriate=True,
+            advice_is_constructive=True,
             issues=(),
         )
     )
@@ -323,6 +324,7 @@ def rejected_quality_assessment(
             conversation_is_coherent=issue is not RecordQualityIssue.INCOHERENT_CONVERSATION,
             voice_style_is_natural=issue is not RecordQualityIssue.UNNATURAL_VOICE_STYLE,
             tone_is_appropriate=issue is not RecordQualityIssue.INAPPROPRIATE_TONE,
+            advice_is_constructive=issue is not RecordQualityIssue.COUNTERPRODUCTIVE_ADVICE,
             issues=(issue,),
         )
     )

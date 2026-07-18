@@ -12,6 +12,7 @@ const recordView = document.querySelector("#record-view");
 const recordPosition = document.querySelector("#record-position");
 const recordTitle = document.querySelector("#record-title");
 const recordBadges = document.querySelector("#record-badges");
+const reviewRejection = document.querySelector("#review-rejection");
 const systemContent = document.querySelector("#system-content");
 const conversation = document.querySelector("#conversation");
 const rawRecord = document.querySelector("#raw-record");
@@ -184,6 +185,13 @@ function renderSelectedRecord() {
     badge(`${scenario.user_turn_count} user turn${scenario.user_turn_count === 1 ? "" : "s"}`),
     badge(record.metadata.split.name),
   );
+  if (record.review?.status === "rejected") {
+    reviewRejection.textContent = `Rejected: ${record.review.reason}`;
+    reviewRejection.hidden = false;
+  } else {
+    reviewRejection.textContent = "";
+    reviewRejection.hidden = true;
+  }
 
   renderSystem(record);
   renderConversation(record);

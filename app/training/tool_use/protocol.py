@@ -105,6 +105,7 @@ class RecordQualityIssue(StrEnum):
     INCOHERENT_CONVERSATION = "incoherent_conversation"
     UNNATURAL_VOICE_STYLE = "unnatural_voice_style"
     INAPPROPRIATE_TONE = "inappropriate_tone"
+    COUNTERPRODUCTIVE_ADVICE = "counterproductive_advice"
 
 
 class RecordQualityAssessment(ToolUseBaseModel):
@@ -118,6 +119,7 @@ class RecordQualityAssessment(ToolUseBaseModel):
     conversation_is_coherent: bool
     voice_style_is_natural: bool
     tone_is_appropriate: bool
+    advice_is_constructive: bool
     issues: tuple[RecordQualityIssue, ...]
 
 

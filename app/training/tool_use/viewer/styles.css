@@ -156,6 +156,16 @@ main {
   white-space: nowrap;
 }
 
+.review-rejection {
+  margin: -4px 0 18px;
+  padding: 12px 14px;
+  border: 1px solid #d99b91;
+  border-radius: 12px;
+  background: #fff0ed;
+  color: #7b2920;
+  line-height: 1.45;
+}
+
 .conversation {
   display: grid;
   gap: 14px;

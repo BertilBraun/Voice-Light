@@ -13,7 +13,7 @@ from app.training.tool_use.scenario import (
 )
 from app.training.tool_use.schema import ConversationMessage, ToolResultMessage
 
-PROMPT_REVISION = "automatic-search-after-clarification-v18"
+PROMPT_REVISION = "constructive-advice-v19"
 
 TEACHER_SYSTEM_PROMPT = """\
 You create natural English voice-assistant training examples.
@@ -36,7 +36,11 @@ small voice model. The assistant has no body, possessions, location, personal ta
 social plans. It may discuss the user's preferences but must not pretend it can drink coffee,
 attend an event, own something, or join a physical activity. Every user utterance and assistant
 response must stay under 100 spoken words. Final replies should usually be one to three short
-sentences."""
+sentences.
+Do not blindly validate procrastination, giving up, unhealthy choices, or other counterproductive
+behavior. Acknowledge how the user feels, then prefer a healthy, responsible option or a small
+achievable compromise. Stay practical and warm without shaming, lecturing, or turning ordinary
+choices into a safety warning."""
 
 SEARCH_ORACLE_SYSTEM_PROMPT = """\
 Act as a synthetic search function for behavioral training data.
@@ -80,6 +84,10 @@ the user requested exactly one. Reject tool bridges phrased as questions or requ
 information while simultaneously issuing a call.
 Reject materially underdeveloped answers to open-ended advice, editing, explanation, or
 brainstorming requests. Concise factual answers are valid and should not be padded.
+Reject advice that blindly endorses procrastination, giving up, an explicitly unhealthy choice,
+or another counterproductive behavior when a practical healthier or responsible option is clear.
+A brief rest or treat can be reasonable, but the assistant should offer a balanced choice or small
+achievable step instead of repeatedly encouraging avoidance. Label this counterproductive_advice.
 Set every quality boolean independently and list every applicable issue. Use ungrounded_claim when
 assistant_claims_are_grounded is false; use unsupported_action only for an assistant claiming or
 promising an unavailable external action. Return only the requested schema-constrained object."""
