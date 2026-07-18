@@ -158,16 +158,9 @@ def clarified_search_scenario() -> ScenarioSpec:
             ),
             AssistantTurnPlan(
                 user_instruction="Clarify that the city is Berlin.",
-                tool_steps=(),
+                tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
                 follow_up_kind=FollowUpKind.CLARIFICATION,
                 utterance_form=UtteranceForm.FRAGMENT,
-                response_mode=AssistantResponseMode.CONFIRM_SEARCH,
-            ),
-            AssistantTurnPlan(
-                user_instruction="Confirm the proposed lookup.",
-                tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
-                follow_up_kind=FollowUpKind.DELAYED_REQUEST,
-                utterance_form=UtteranceForm.REACTION,
             ),
         ),
         split=DatasetSplit.TRAIN,
@@ -382,7 +375,7 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
     assert "Audit the assistant messages" in generator.requests[-1][1].content
 
 
-def test_clarified_search_waits_for_confirmation_and_uses_resolved_query() -> None:
+def test_clarified_search_calls_automatically_after_resolving_query() -> None:
     values: tuple[ToolUseBaseModel, ...] = (
         GeneratedUserTurnEnvelope(
             turn=GeneratedUserTurn(
@@ -401,19 +394,9 @@ def test_clarified_search_waits_for_confirmation_and_uses_resolved_query() -> No
             )
         ),
         user_scope((ToolName.SEARCH,), scope_is_clear=True),
-        FinalResponseStepEnvelope(
-            step=FinalResponseStep(audible_text="Outdoor events in Berlin this weekend—search now?")
-        ),
-        GeneratedUserTurnEnvelope(
-            turn=GeneratedUserTurn(
-                text="Yeah, go for it.",
-                speech_style=SpeechStyle.CASUAL,
-            )
-        ),
-        accepted_user_scope((ToolName.SEARCH,)),
         AssistantStepEnvelope(
             step=ToolActionStep(
-                audible_text="Alright, looking that up.",
+                audible_text="Checking outdoor events in Berlin.",
                 call=SearchCall(query="outdoor events in Berlin this weekend"),
             )
         ),
@@ -432,7 +415,6 @@ def test_clarified_search_waits_for_confirmation_and_uses_resolved_query() -> No
             "scenario-test-clarified-search-message-2",
             "scenario-test-clarified-search-message-4",
             "scenario-test-clarified-search-message-6",
-            "scenario-test-clarified-search-message-8",
         ),
     )
 
@@ -455,10 +437,9 @@ def test_clarified_search_waits_for_confirmation_and_uses_resolved_query() -> No
     )
 
     assert not assistant_messages[0].tool_calls
-    assert not assistant_messages[1].tool_calls
-    assert assistant_messages[2].tool_calls[0].tool_name == "search"
+    assert assistant_messages[1].tool_calls[0].tool_name == "search"
     assert (
-        assistant_messages[2].tool_calls[0].arguments.fields[0].value.value
+        assistant_messages[1].tool_calls[0].arguments.fields[0].value.value
         == "outdoor events in Berlin this weekend"
     )
 

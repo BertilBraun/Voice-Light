@@ -714,10 +714,6 @@ def _validate_user_turn_scope(
     match response_mode:
         case AssistantResponseMode.CLARIFY_SEARCH:
             required_tools = (ToolName.SEARCH,)
-        case AssistantResponseMode.CONFIRM_SEARCH:
-            if not assessment.scope_is_clear:
-                raise ValueError("Search confirmation request remains ambiguous.")
-            required_tools = (ToolName.SEARCH,)
         case AssistantResponseMode.ANSWER:
             if not assessment.scope_is_clear:
                 raise ValueError("Generated user turn has unclear information scope.")
@@ -740,10 +736,10 @@ def _validate_assistant_step(
     ).validate_step(step)
     if len(step.audible_text.split()) > MAXIMUM_SPOKEN_TURN_WORDS:
         raise ValueError("Generated assistant response exceeds 100 words.")
-    if response_mode in (
-        AssistantResponseMode.CLARIFY_SEARCH,
-        AssistantResponseMode.CONFIRM_SEARCH,
-    ) and not step.audible_text.rstrip().endswith("?"):
+    if (
+        response_mode is AssistantResponseMode.CLARIFY_SEARCH
+        and not step.audible_text.rstrip().endswith("?")
+    ):
         raise ValueError("Search clarification response must be a question.")
     match step:
         case FinalResponseStep(audible_text=audible_text):

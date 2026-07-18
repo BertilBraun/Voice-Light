@@ -53,7 +53,6 @@ class UtteranceForm(StrEnum):
 class AssistantResponseMode(StrEnum):
     ANSWER = "answer"
     CLARIFY_SEARCH = "clarify_search"
-    CONFIRM_SEARCH = "confirm_search"
 
 
 class ScenarioSamplingProfile(StrEnum):
@@ -388,7 +387,6 @@ def sample_scenarios(
             scenarios.append(
                 _sample_bucket_segment_scenario(
                     index=index,
-                    count=count,
                     random_seed=random_seed,
                     scenario_seed=scenario_seed,
                     generator=scenario_generator,
@@ -505,21 +503,12 @@ def _search_calibration_turns(
                 AssistantTurnPlan(
                     user_instruction=(
                         "Answer the assistant's clarification naturally. "
-                        f"{axis.clarification} Keep the lookup request active."
-                    ),
-                    tool_steps=(),
-                    follow_up_kind=FollowUpKind.CLARIFICATION,
-                    utterance_form=UtteranceForm.FRAGMENT,
-                    response_mode=AssistantResponseMode.CONFIRM_SEARCH,
-                ),
-                AssistantTurnPlan(
-                    user_instruction=(
-                        "Briefly confirm that the assistant should perform the proposed lookup. "
-                        "Do not add or change any constraint."
+                        f"{axis.clarification} Keep the lookup request active and supply every "
+                        "missing detail so the assistant can search immediately."
                     ),
                     tool_steps=(PlannedToolStep(tool_name=ToolName.SEARCH),),
-                    follow_up_kind=FollowUpKind.DELAYED_REQUEST,
-                    utterance_form=UtteranceForm.REACTION,
+                    follow_up_kind=FollowUpKind.CLARIFICATION,
+                    utterance_form=UtteranceForm.FRAGMENT,
                 ),
             )
         case SearchFlow.REFINE_THEN_SEARCH:
@@ -552,15 +541,20 @@ def _search_calibration_turns(
 
 def _sample_bucket_segment_scenario(
     index: int,
-    count: int,
     random_seed: int,
     scenario_seed: int,
     generator: random.Random,
 ) -> ScenarioSpec:
     buckets = tuple(SegmentBucket)
-    examples_per_bucket = count // len(buckets)
-    bucket = buckets[index // examples_per_bucket]
-    example_index = index % examples_per_bucket
+    bucket = buckets[index % len(buckets)]
+    example_index = index // len(buckets)
+    if bucket is SegmentBucket.SEARCH and example_index % 2:
+        return _sample_clarified_search_bucket_scenario(
+            index=index,
+            random_seed=random_seed,
+            scenario_seed=scenario_seed,
+            example_index=example_index,
+        )
     template = _bucket_template(bucket, generator)
     turn_count = generator.randrange(2, 5)
     turns = _build_bucket_turns(
@@ -582,6 +576,35 @@ def _sample_bucket_segment_scenario(
         length_band=LengthBand.MEDIUM if turn_count < 4 else LengthBand.LONG,
         speech_style=speech_style,
         turns=turns,
+        split=(
+            DatasetSplit.TRAIN
+            if speech_style in (SpeechStyle.CLEAN, SpeechStyle.ASR_FRAGMENT, SpeechStyle.REPAIR)
+            else DatasetSplit.VALIDATION
+            if speech_style is SpeechStyle.CASUAL
+            else DatasetSplit.TEST
+        ),
+        leakage_group_id=leakage_group_id,
+    )
+
+
+def _sample_clarified_search_bucket_scenario(
+    index: int,
+    random_seed: int,
+    scenario_seed: int,
+    example_index: int,
+) -> ScenarioSpec:
+    axis = SEARCH_SCENARIO_AXES[example_index % len(SEARCH_SCENARIO_AXES)]
+    speech_styles = tuple(SpeechStyle)
+    speech_style = speech_styles[example_index % len(speech_styles)]
+    leakage_group_id = f"segment-search-clarified-{axis.topic.replace(' ', '-')}"
+    return ScenarioSpec(
+        scenario_id=f"scenario-{random_seed}-{index:06d}",
+        random_seed=scenario_seed,
+        family=SegmentBucket.SEARCH.value,
+        topic=axis.topic,
+        length_band=LengthBand.MEDIUM,
+        speech_style=speech_style,
+        turns=_search_calibration_turns(SearchFlow.CLARIFY_THEN_SEARCH, axis),
         split=(
             DatasetSplit.TRAIN
             if speech_style in (SpeechStyle.CLEAN, SpeechStyle.ASR_FRAGMENT, SpeechStyle.REPAIR)

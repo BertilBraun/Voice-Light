@@ -13,7 +13,7 @@ from app.training.tool_use.scenario import (
 )
 from app.training.tool_use.schema import ConversationMessage, ToolResultMessage
 
-PROMPT_REVISION = "search-axis-scope-rollout-v17"
+PROMPT_REVISION = "automatic-search-after-clarification-v18"
 
 TEACHER_SYSTEM_PROMPT = """\
 You create natural English voice-assistant training examples.
@@ -53,9 +53,9 @@ Return only the requested schema-constrained object."""
 QUALITY_AUDITOR_SYSTEM_PROMPT = """\
 Audit a synthetic voice-tool conversation conservatively. Do not rewrite it.
 Reject any record where an ordinary user turn assigned no tool actually requires current,
-external, or calculated information. Search clarification and confirmation turns are the narrow
-exception: the assistant must ask the planned question without calling, and a later confirmed
-turn must perform the search. Also reject where the assistant states a pending result before its
+external, or calculated information. A search clarification turn is the narrow exception: the
+assistant must ask the planned question without calling, and the user's answer must trigger the
+search immediately. Also reject where the assistant states a pending result before its
 tool result; where an assistant claim is unsupported by earlier user text or tool results; where a
 result is misread, transformed incorrectly, or contradicted; where a user turn repeats; or where a
 sequential call is redundant because an earlier result already answered it.
@@ -146,12 +146,6 @@ def user_turn_messages(
             "ambiguous. The request should ultimately require search, but the assistant must ask "
             "one clarifying question before any call."
         )
-    elif turn_plan.response_mode is AssistantResponseMode.CONFIRM_SEARCH:
-        tool_scope = (
-            "Supply the missing detail so the external lookup is now clear and requires search. "
-            "The assistant will confirm the resolved scope before calling; do not withdraw the "
-            "request."
-        )
     elif planned_tools:
         tool_scope = (
             "This user turn must naturally require exactly these tools, in order: "
@@ -208,11 +202,6 @@ def assistant_step_messages(
             expected_action = (
                 "Ask exactly one concise question for the missing search constraint. Do not call "
                 "a tool or answer the lookup."
-            )
-        case AssistantResponseMode.CONFIRM_SEARCH:
-            expected_action = (
-                "Briefly restate the resolved lookup and ask whether to search now. Do not call a "
-                "tool yet."
             )
         case AssistantResponseMode.ANSWER:
             expected_action = (
@@ -329,9 +318,10 @@ Candidate public conversation:
 
 The plan is not evidence for an answer. Only earlier user messages and completed tool results are
 public evidence. A no-tool turn that requests a new external fact is invalid even if the assistant
-hedges or asks a follow-up. The only valid no-call external requests are turns explicitly marked
-clarify_search or confirm_search, and each must lead to the planned later search. A bridge before a
-call may acknowledge the task but may not state that call's result. Search-result wording matters:
+hedges or asks a follow-up. The only valid no-call external request is a turn explicitly marked
+clarify_search, and it must lead to a search immediately after the user supplies the missing
+detail. A bridge before a call may acknowledge the task but may not state that call's result.
+Search-result wording matters:
 do not infer a different role or category from a bare name. Missing schedule details cannot
 support claims about having enough time."""
     return (
@@ -390,11 +380,6 @@ def _assistant_transition_guidance(
         return (
             "Sound curious and practical. Ask only for the single missing detail, without a "
             "customer-service preamble."
-        )
-    if response_mode is AssistantResponseMode.CONFIRM_SEARCH:
-        return (
-            "Use a short natural confirmation such as 'So, X in Y—want me to look that up?' "
-            "Preserve every clarified constraint."
         )
     if expected_tool_name is None:
         if scenario_family == "long_mixed":

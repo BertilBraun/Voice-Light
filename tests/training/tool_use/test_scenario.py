@@ -195,6 +195,9 @@ def test_bucket_calibration_balances_behavior_and_speech_style() -> None:
     family_counts = Counter(scenario.family for scenario in scenarios)
 
     assert family_counts == Counter({bucket.value: 5 for bucket in SegmentBucket})
+    assert tuple(scenario.family for scenario in scenarios[:8]) == tuple(
+        bucket.value for bucket in SegmentBucket
+    )
     assert all(2 <= len(scenario.turns) <= 4 for scenario in scenarios)
     for bucket in SegmentBucket:
         bucket_scenarios = tuple(
@@ -211,8 +214,18 @@ def test_bucket_calibration_balances_behavior_and_speech_style() -> None:
         for scenario in scenarios
         if scenario.family == SegmentBucket.CORRECTION_RECOVERY.value
     )
+    search = tuple(
+        scenario for scenario in scenarios if scenario.family == SegmentBucket.SEARCH.value
+    )
     assert all(len(scenario.turns[0].tool_steps) == 2 for scenario in sequential)
     assert all(sum(len(turn.tool_steps) for turn in scenario.turns) == 2 for scenario in recovery)
+    assert (
+        sum(
+            scenario.turns[0].response_mode is AssistantResponseMode.CLARIFY_SEARCH
+            for scenario in search
+        )
+        == 2
+    )
 
 
 def test_bucket_calibration_requires_an_equal_bucket_count() -> None:
@@ -250,7 +263,6 @@ def test_search_calibration_balances_direct_clarified_and_refined_flows() -> Non
         tuple(turn.response_mode for turn in scenario.turns)
         == (
             AssistantResponseMode.CLARIFY_SEARCH,
-            AssistantResponseMode.CONFIRM_SEARCH,
             AssistantResponseMode.ANSWER,
         )
         for scenario in clarified
