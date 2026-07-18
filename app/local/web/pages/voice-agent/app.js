@@ -229,7 +229,7 @@ async function setupCapture(stream) {
 
 async function setupPlayback(inputSampleRate) {
   playbackContext = new AudioContext();
-  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=3");
+  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=4");
   playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", {
     outputChannelCount: [1],
     processorOptions: { inputSampleRate },
@@ -254,6 +254,10 @@ async function setupPlayback(inputSampleRate) {
     }
     if (data.type === "boundary.progress") {
       updateBoundaryProgress(data);
+      return;
+    }
+    if (data.type === "boundary.started") {
+      assistantTurns.get(data.generationId)?.setSpokenOffset(data.textOffset);
       return;
     }
     if (data.type === "playback.stopped") {

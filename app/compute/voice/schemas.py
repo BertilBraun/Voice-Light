@@ -315,7 +315,7 @@ class PlaybackProgressEvent(FrozenBaseModel):
     generation_id: int = Field(gt=0)
     text_offset: int = Field(gt=0)
     boundary_start_sample: int = Field(ge=0)
-    played_sample_count: int = Field(gt=0)
+    played_sample_count: int = Field(ge=0)
     browser_monotonic_time_ns: int = Field(ge=0)
     rendered_output_sample_position: int = Field(ge=0)
     output_sample_rate: int = Field(gt=0)

@@ -423,12 +423,16 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
   }
 
   reportCrossedBoundaries() {
+    if (!this.playbackStarted) return;
     while (
       this.boundaries.length > 0 &&
       this.sourceSamplePosition >= this.boundaries[0].startSample
     ) {
       const boundary = this.boundaries.shift();
-      if (this.startedBoundary) {
+      if (
+        this.startedBoundary &&
+        boundary.startSample > this.startedBoundary.startSample
+      ) {
         this.acknowledgedTextOffset = Math.max(
           this.acknowledgedTextOffset,
           this.startedBoundary.textOffset,
@@ -445,6 +449,16 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
         });
       }
       this.startedBoundary = boundary;
+      this.port.postMessage({
+        type: "boundary.started",
+        generationId: this.generationId,
+        textOffset: boundary.textOffset,
+        startSample: boundary.startSample,
+        playedSampleCount: this.sourceSamplePosition,
+        browserMonotonicTimeNs: this.browserMonotonicTimeNs(),
+        renderedOutputSamplePosition: this.renderedOutputSamplePosition,
+        outputSampleRate: this.outputSampleRate,
+      });
     }
   }
 

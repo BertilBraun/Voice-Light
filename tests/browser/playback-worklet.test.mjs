@@ -83,6 +83,71 @@ class PlaybackHarness {
   }
 }
 
+test("reports a word when it starts and acknowledges it at the next word", () => {
+  const harness = new PlaybackHarness();
+  harness.enqueue(1, 0, [1, 2, 3, 4, 5, 6]);
+  harness.boundary(1, 3, 0);
+  harness.boundary(1, 7, 4);
+
+  assert.equal(
+    harness.messages.filter((message) => message.type === "boundary.started").length,
+    0,
+  );
+  harness.process(1);
+  assert.deepEqual(
+    harness.messages
+      .filter((message) => message.type === "boundary.started")
+      .map((message) => message.textOffset),
+    [3],
+  );
+  assert.equal(
+    harness.messages.filter((message) => message.type === "boundary.progress").length,
+    0,
+  );
+
+  harness.process(3);
+  assert.deepEqual(
+    harness.messages
+      .filter((message) => message.type === "boundary.started")
+      .map((message) => message.textOffset),
+    [3, 7],
+  );
+  assert.deepEqual(
+    harness.messages
+      .filter((message) => message.type === "boundary.progress")
+      .map((message) => message.textOffset),
+    [3],
+  );
+});
+
+test("coalesces words with the same start sample before acknowledging playback", () => {
+  const harness = new PlaybackHarness();
+  harness.enqueue(1, 0, [1, 2, 3, 4, 5, 6]);
+  harness.boundary(1, 1, 0);
+  harness.boundary(1, 4, 0);
+  harness.boundary(1, 8, 4);
+
+  harness.process(1);
+  assert.deepEqual(
+    harness.messages
+      .filter((message) => message.type === "boundary.started")
+      .map((message) => message.textOffset),
+    [1, 4],
+  );
+  assert.equal(
+    harness.messages.filter((message) => message.type === "boundary.progress").length,
+    0,
+  );
+
+  harness.process(3);
+  assert.deepEqual(
+    harness.messages
+      .filter((message) => message.type === "boundary.progress")
+      .map((message) => message.textOffset),
+    [4],
+  );
+});
+
 test("pauses on a known word boundary and resumes without duplicate or skipped samples", () => {
   const harness = new PlaybackHarness();
   harness.enqueue(1, 0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);

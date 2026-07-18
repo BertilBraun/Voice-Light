@@ -549,6 +549,10 @@ the chunk's generation-relative start sample. Remaining bytes are mono
 PCM16 at the `output_sample_rate` announced by `session.ready`. The browser rejects stale/cancelled
 generations and out-of-sequence frames. Its playback worklet resamples from the announced server
 rate to the browser AudioContext rate while retaining generation-relative input sample progress.
+The worklet reports a local `boundary.started` event as soon as playback crosses a word's start so
+the transcript visualization advances immediately. Its separate `boundary.progress` event
+acknowledges the preceding fully played word to the server; a generation-start position of zero is
+valid and must not terminate the session.
 
 For microphone-path diagnostics, the page retains the exact 16 kHz PCM buffers that it successfully
 sends over the WebSocket. When a session stops or disconnects, it exposes the buffers as a playable

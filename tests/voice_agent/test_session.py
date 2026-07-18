@@ -1121,6 +1121,18 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         assert staged_tool.result_commit_status is ToolResultCommitStatus.STAGED
         assert staged_generation.model_context_turn.staged_tool_call is not None
         assert staged_generation.model_context_turn.committed_tool_exchanges == []
+        first_bridge_boundary = next(
+            output
+            for output in sink.outputs
+            if isinstance(output, ReleasedWordBoundary) and output.start_sample == 0
+        )
+        send_playback_progress(
+            websocket,
+            generation_id=1,
+            text_offset=first_bridge_boundary.text_offset,
+            boundary_start_sample=0,
+            played_sample_count=0,
+        )
 
         weather_handler.release.set()
         wait_until(

@@ -91,11 +91,11 @@ def test_tool_prompt_requires_spoken_bridge_before_call() -> None:
     assert "never begin with the tool call" in LANGUAGE_MODEL_SYSTEM_PROMPT
     assert "another provided tool call is genuinely needed" in LANGUAGE_MODEL_SYSTEM_PROMPT
     assert "vary the wording naturally across requests" in LANGUAGE_MODEL_SYSTEM_PROMPT
-    assert "I will check the latest information." in LANGUAGE_MODEL_SYSTEM_PROMPT
-    assert (
-        '<tool_call>{"name":"search","arguments":{"query":"latest Mars mission"}}</tool_call>'
-        in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert "Do not continue with an answer until a tool-result message is present" in (
+        LANGUAGE_MODEL_SYSTEM_PROMPT
     )
+    assert "Mars" not in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert "<tool_call>" not in LANGUAGE_MODEL_SYSTEM_PROMPT
 
 
 def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_turn() -> None:
