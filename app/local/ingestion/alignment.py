@@ -1,29 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 import numpy as np
 from numpy.typing import NDArray
 
-from app.local.asr.transcript import Word
 from app.shared.audio import AudioTrack
 from app.shared.quality import AudioMetadata
 
 
-class SynchronizationAlignmentOrigin(StrEnum):
-    REVIEWED = "reviewed"
-    UNREVIEWED_ZERO = "unreviewed_zero"
-
-
 @dataclass(frozen=True)
-class SynchronizationAlignment:
-    speaker2_shift_seconds: float
-    origin: SynchronizationAlignmentOrigin
-
-
-@dataclass(frozen=True)
-class AlignedAudioPair:
+class SharedTimelineAudioPair:
     speaker1: AudioTrack
     speaker2: AudioTrack
 
@@ -32,26 +19,14 @@ class AlignedAudioPair:
         return self.speaker1.metadata.duration_seconds
 
 
-def align_audio_tracks(
+def pad_audio_tracks_to_shared_timeline(
     speaker1: AudioTrack,
     speaker2: AudioTrack,
-    speaker2_shift_seconds: float,
-) -> AlignedAudioPair:
+) -> SharedTimelineAudioPair:
     if speaker1.metadata.sample_rate != speaker2.metadata.sample_rate:
-        raise ValueError("Synchronization requires matching audio sample rates.")
-    sample_rate = speaker1.metadata.sample_rate
-    shift_samples = round(speaker2_shift_seconds * sample_rate)
-    shifted_speaker2_samples = (
-        speaker2.samples[-shift_samples:]
-        if shift_samples < 0
-        else (
-            np.pad(speaker2.samples, ((shift_samples, 0), (0, 0)))
-            if shift_samples > 0
-            else speaker2.samples
-        )
-    )
-    shared_sample_count = max(len(speaker1.samples), len(shifted_speaker2_samples))
-    return AlignedAudioPair(
+        raise ValueError("Shared audio timeline requires matching sample rates.")
+    shared_sample_count = max(len(speaker1.samples), len(speaker2.samples))
+    return SharedTimelineAudioPair(
         speaker1=_audio_track_with_sample_count(
             audio=speaker1,
             samples=speaker1.samples,
@@ -59,38 +34,10 @@ def align_audio_tracks(
         ),
         speaker2=_audio_track_with_sample_count(
             audio=speaker2,
-            samples=shifted_speaker2_samples,
+            samples=speaker2.samples,
             sample_count=shared_sample_count,
         ),
     )
-
-
-def shift_words(
-    words: tuple[Word, ...],
-    shift_seconds: float,
-    timeline_duration_seconds: float,
-) -> tuple[Word, ...]:
-    shifted_words: list[Word] = []
-    for word in words:
-        if word.start_seconds is None or word.end_seconds is None:
-            raise ValueError(f"Full-recording ASR word is missing timestamps: {word.text}")
-        shifted_start = word.start_seconds + shift_seconds
-        shifted_end = word.end_seconds + shift_seconds
-        if shifted_end <= 0.0 or shifted_start >= timeline_duration_seconds:
-            continue
-        clipped_start = max(0.0, shifted_start)
-        clipped_end = min(timeline_duration_seconds, shifted_end)
-        if clipped_end <= clipped_start:
-            continue
-        shifted_words.append(
-            Word(
-                text=word.text,
-                start_seconds=clipped_start,
-                end_seconds=clipped_end,
-                confidence=word.confidence,
-            )
-        )
-    return tuple(shifted_words)
 
 
 def _audio_track_with_sample_count(

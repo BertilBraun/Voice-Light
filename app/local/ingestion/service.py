@@ -38,11 +38,7 @@ from app.local.db.repository import (
     Repository,
     SampleTrackInput,
 )
-from app.local.ingestion.alignment import (
-    SynchronizationAlignment,
-    SynchronizationAlignmentOrigin,
-    align_audio_tracks,
-)
+from app.local.ingestion.alignment import pad_audio_tracks_to_shared_timeline
 from app.local.ingestion.conversation import analyze_conversation
 from app.local.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
 from app.local.quality.client import HttpRemoteQualityClient, RemoteQualityClient
@@ -93,7 +89,6 @@ class RegisteredSample:
 class ReadySample:
     registered: RegisteredSample
     transcripts: FullRecordingAsrTranscriptBundle
-    alignment: SynchronizationAlignment
 
 
 @dataclass(frozen=True)
@@ -108,12 +103,6 @@ class QualityResultProvenance:
     speaker2_parakeet_full_asr_transcript_id: UUID
     speaker1_canary_full_asr_transcript_id: UUID
     speaker2_canary_full_asr_transcript_id: UUID
-    speaker2_shift_seconds: float
-    synchronization_alignment_origin: SynchronizationAlignmentOrigin
-
-
-class AlignmentRepository(Protocol):
-    def reviewed_speaker2_shift(self, sample_id: UUID) -> float | None: ...
 
 
 class FullTranscriptPairRepository(Protocol):
@@ -399,6 +388,8 @@ def register_sample(
     speaker2_path = local_storage_path(storage, discovered.speaker2_path)
     speaker1_metadata = probe_local_audio_metadata(speaker1_path)
     speaker2_metadata = probe_local_audio_metadata(speaker2_path)
+    speaker1_source_audio_sha256 = sha256_file(speaker1_path)
+    speaker2_source_audio_sha256 = sha256_file(speaker2_path)
     sample = repository.upsert_sample(dataset_id, discovered.external_id)
     repository.update_sample_duration(
         sample.id,
@@ -412,6 +403,7 @@ def register_sample(
         speaker_index=1,
         path=discovered.speaker1_path,
         metadata=speaker1_metadata,
+        audio_sha256=speaker1_source_audio_sha256,
     )
     speaker2_track = register_track(
         repository=repository,
@@ -421,6 +413,7 @@ def register_sample(
         speaker_index=2,
         path=discovered.speaker2_path,
         metadata=speaker2_metadata,
+        audio_sha256=speaker2_source_audio_sha256,
     )
     return RegisteredSample(
         discovered=discovered,
@@ -429,8 +422,8 @@ def register_sample(
         speaker2_track_id=speaker2_track.id,
         speaker1_metadata=speaker1_metadata,
         speaker2_metadata=speaker2_metadata,
-        speaker1_source_audio_sha256=sha256_file(speaker1_path),
-        speaker2_source_audio_sha256=sha256_file(speaker2_path),
+        speaker1_source_audio_sha256=speaker1_source_audio_sha256,
+        speaker2_source_audio_sha256=speaker2_source_audio_sha256,
     )
 
 
@@ -442,6 +435,7 @@ def register_track(
     speaker_index: int,
     path: str,
     metadata: AudioMetadata,
+    audio_sha256: str,
 ) -> SampleTrackRecord:
     track = repository.upsert_sample_track(
         sample_id,
@@ -454,6 +448,7 @@ def register_track(
             sample_rate=metadata.sample_rate,
             channels=metadata.channels,
             sample_count=metadata.sample_count,
+            audio_sha256=audio_sha256,
         ),
     )
     repository.upsert_audio_metadata(
@@ -470,7 +465,6 @@ def register_track(
 
 
 def ready_sample(
-    repository: AlignmentRepository,
     full_asr_repository: FullTranscriptPairRepository,
     registered: RegisteredSample,
 ) -> ReadySample:
@@ -490,27 +484,14 @@ def ready_sample(
         speaker2_source_audio_sha256=registered.speaker2_source_audio_sha256,
         model_id=AsrModelId.CANARY,
     )
-    speaker2_shift_seconds = repository.reviewed_speaker2_shift(sample_id=registered.sample_id)
     assert parakeet is not None
     assert canary is not None
-    alignment = (
-        SynchronizationAlignment(
-            speaker2_shift_seconds=speaker2_shift_seconds,
-            origin=SynchronizationAlignmentOrigin.REVIEWED,
-        )
-        if speaker2_shift_seconds is not None
-        else SynchronizationAlignment(
-            speaker2_shift_seconds=0.0,
-            origin=SynchronizationAlignmentOrigin.UNREVIEWED_ZERO,
-        )
-    )
     return ReadySample(
         registered=registered,
         transcripts=FullRecordingAsrTranscriptBundle(
             parakeet=parakeet,
             canary=canary,
         ),
-        alignment=alignment,
     )
 
 
@@ -548,7 +529,6 @@ def process_ingestion_sample(
             remote_client_factory=remote_asr_client_factory,
         )
     ready = ready_sample(
-        repository=repository,
         full_asr_repository=full_asr_repository,
         registered=registered,
     )
@@ -572,21 +552,19 @@ def process_ready_sample(
     discovered = ready.registered.discovered
     speaker1_audio = load_audio(storage, discovered.speaker1_path, target_sample_rate=16_000)
     speaker2_audio = load_audio(storage, discovered.speaker2_path, target_sample_rate=16_000)
-    aligned = align_audio_tracks(
+    shared_timeline = pad_audio_tracks_to_shared_timeline(
         speaker1=speaker1_audio,
         speaker2=speaker2_audio,
-        speaker2_shift_seconds=ready.alignment.speaker2_shift_seconds,
     )
     annotation = analyze_conversation(
-        speaker1_audio=aligned.speaker1,
-        speaker2_audio=aligned.speaker2,
+        speaker1_audio=shared_timeline.speaker1,
+        speaker2_audio=shared_timeline.speaker2,
         transcripts=ready.transcripts,
-        alignment=ready.alignment,
     )
     quality_result = score_two_track_sample(
         sample_id=discovered.external_id,
-        speaker1_audio=aligned.speaker1,
-        speaker2_audio=aligned.speaker2,
+        speaker1_audio=shared_timeline.speaker1,
+        speaker2_audio=shared_timeline.speaker2,
         speaker1_uri=storage.access_uri(discovered.speaker1_path),
         speaker2_uri=storage.access_uri(discovered.speaker2_path),
         conversation_annotation=annotation,
@@ -667,6 +645,9 @@ def persist_processed_sample(
                 sample_rate=metadata.sample_rate,
                 channels=metadata.channels,
                 sample_count=metadata.sample_count,
+                audio_sha256=sha256_file(
+                    local_storage_path(storage, path),
+                ),
             ),
         )
         repository.upsert_audio_metadata(
@@ -702,8 +683,6 @@ def persist_processed_ready_sample(
                 speaker2_parakeet_full_asr_transcript_id=(ready.transcripts.parakeet.speaker2.id),
                 speaker1_canary_full_asr_transcript_id=ready.transcripts.canary.speaker1.id,
                 speaker2_canary_full_asr_transcript_id=ready.transcripts.canary.speaker2.id,
-                speaker2_shift_seconds=ready.alignment.speaker2_shift_seconds,
-                synchronization_alignment_origin=ready.alignment.origin,
             ),
         )
     )
@@ -824,12 +803,6 @@ def quality_result_input(
         if provenance is not None
         else None,
         speaker2_canary_full_asr_transcript_id=(provenance.speaker2_canary_full_asr_transcript_id)
-        if provenance is not None
-        else None,
-        speaker2_shift_seconds=provenance.speaker2_shift_seconds
-        if provenance is not None
-        else None,
-        synchronization_alignment_origin=provenance.synchronization_alignment_origin.value
         if provenance is not None
         else None,
         flags=tuple(flags),

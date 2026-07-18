@@ -75,6 +75,7 @@ class SampleTrackRecord(FrozenBaseModel):
     sample_rate: int | None
     channels: int | None
     sample_count: int | None
+    audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
     updated_at: datetime
 
@@ -131,8 +132,6 @@ class QualityResultRecord(FrozenBaseModel):
     speaker2_parakeet_full_asr_transcript_id: UUID | None
     speaker1_canary_full_asr_transcript_id: UUID | None
     speaker2_canary_full_asr_transcript_id: UUID | None
-    speaker2_shift_seconds: float | None
-    synchronization_alignment_origin: str | None
     flags: tuple[str, ...]
     payload: dict[str, object]
     created_at: datetime
@@ -150,7 +149,6 @@ class QualityResultSummaryRecord(FrozenBaseModel):
     overlap_ratio: float | None
     has_parakeet_transcript_pair: bool
     has_canary_transcript_pair: bool
-    synchronization_alignment_origin: str | None
     created_at: datetime
 
 

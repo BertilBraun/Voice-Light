@@ -1,37 +1,89 @@
 from __future__ import annotations
 
+import inspect
+import wave
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import numpy as np
 import pytest
 
+import app.local.ingestion.service as ingestion_service_module
 from app.local.asr.full_recording_models import (
     FullRecordingAsrTranscriptBundle,
     FullRecordingAsrTranscriptPair,
     FullRecordingAsrTranscriptRecord,
 )
-from app.local.db.models import TrackSide
-from app.local.ingestion.alignment import SynchronizationAlignment, SynchronizationAlignmentOrigin
+from app.local.db.models import SampleRecord, SampleTrackRecord, TrackSide
+from app.local.db.repository import AudioMetadataInput, SampleTrackInput
 from app.local.ingestion.conversation import ANNOTATION_VERSION, analyze_conversation
 from app.local.ingestion.discovery import DiscoveredSample
 from app.local.ingestion.service import (
     RegisteredSample,
     ready_sample,
+    register_sample,
     track_durations_are_compatible,
 )
 from app.shared.asr import AsrModelId, TimestampedWord
 from app.shared.audio import AudioTrack
 from app.shared.quality import AudioMetadata
+from app.shared.storage.local import LocalStorageBackend
 
 
-class ReadinessRepository:
-    def __init__(self, reviewed_shift_seconds: float | None) -> None:
-        self.reviewed_shift_seconds = reviewed_shift_seconds
+class RegistrationRepository:
+    def __init__(self) -> None:
+        self.sample_id = uuid4()
+        self.track_inputs: list[SampleTrackInput] = []
 
-    def reviewed_speaker2_shift(self, sample_id: UUID) -> float | None:
-        del sample_id
-        return self.reviewed_shift_seconds
+    def upsert_sample(self, dataset_id: UUID, external_id: str) -> SampleRecord:
+        now = datetime.now(tz=UTC)
+        return SampleRecord(
+            id=self.sample_id,
+            dataset_id=dataset_id,
+            external_id=external_id,
+            duration_seconds=None,
+            quality_score=None,
+            quality_flags=(),
+            created_at=now,
+            updated_at=now,
+        )
+
+    def update_sample_duration(
+        self,
+        sample_id: UUID,
+        duration_seconds: float,
+    ) -> SampleRecord:
+        assert sample_id == self.sample_id
+        assert duration_seconds > 0.0
+        return self.upsert_sample(dataset_id=uuid4(), external_id="pmt_001")
+
+    def upsert_sample_track(
+        self,
+        sample_id: UUID,
+        track: SampleTrackInput,
+    ) -> SampleTrackRecord:
+        assert sample_id == self.sample_id
+        self.track_inputs.append(track)
+        now = datetime.now(tz=UTC)
+        return SampleTrackRecord(
+            id=uuid4(),
+            sample_id=sample_id,
+            side=track.side,
+            speaker_index=track.speaker_index,
+            storage_uri=track.storage_uri,
+            access_uri=track.access_uri,
+            duration_seconds=track.duration_seconds,
+            sample_rate=track.sample_rate,
+            channels=track.channels,
+            sample_count=track.sample_count,
+            audio_sha256=track.audio_sha256,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def upsert_audio_metadata(self, metadata: AudioMetadataInput) -> None:
+        del metadata
 
 
 class ReadinessFullAsrRepository:
@@ -67,33 +119,73 @@ class ReadinessFullAsrRepository:
         )
 
 
-def test_unreviewed_sample_uses_explicit_auditable_zero_alignment() -> None:
+def test_ready_sample_uses_exact_physical_audio_transcripts() -> None:
     registered = registered_sample()
     transcripts = transcript_bundle(registered=registered)
 
     ready = ready_sample(
-        repository=ReadinessRepository(reviewed_shift_seconds=None),
         full_asr_repository=ReadinessFullAsrRepository(transcripts=transcripts),
         registered=registered,
     )
 
-    assert ready.alignment.speaker2_shift_seconds == 0.0
-    assert ready.alignment.origin is SynchronizationAlignmentOrigin.UNREVIEWED_ZERO
+    assert ready.registered is registered
+    assert ready.transcripts == transcripts
 
 
-def test_reviewed_sample_uses_stored_offset() -> None:
+def test_nonzero_stored_review_cannot_influence_production_readiness() -> None:
+    stored_review_shift_seconds = -2.5
     registered = registered_sample()
+    transcripts = transcript_bundle(registered=registered)
 
+    assert tuple(inspect.signature(ready_sample).parameters) == (
+        "full_asr_repository",
+        "registered",
+    )
+    assert stored_review_shift_seconds != 0.0
     ready = ready_sample(
-        repository=ReadinessRepository(reviewed_shift_seconds=-2.5),
-        full_asr_repository=ReadinessFullAsrRepository(
-            transcripts=transcript_bundle(registered=registered)
-        ),
+        full_asr_repository=ReadinessFullAsrRepository(transcripts=transcripts),
         registered=registered,
     )
+    assert (
+        ready.transcripts.parakeet.speaker2.words[0].start_seconds
+        == transcripts.parakeet.speaker2.words[0].start_seconds
+    )
 
-    assert ready.alignment.speaker2_shift_seconds == -2.5
-    assert ready.alignment.origin is SynchronizationAlignmentOrigin.REVIEWED
+
+def test_registration_hashes_each_physical_track_once_and_persists_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    speaker1_path = tmp_path / "pmt_001_speaker1.wav"
+    speaker2_path = tmp_path / "pmt_001_speaker2.wav"
+    _write_silent_wave(speaker1_path)
+    _write_silent_wave(speaker2_path)
+    real_sha256_file = ingestion_service_module.sha256_file
+    hashed_paths: list[Path] = []
+
+    def recording_sha256_file(path: Path) -> str:
+        hashed_paths.append(path)
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(ingestion_service_module, "sha256_file", recording_sha256_file)
+    repository = RegistrationRepository()
+
+    registered = register_sample(
+        repository=repository,
+        dataset_id=uuid4(),
+        storage=LocalStorageBackend(),
+        discovered=DiscoveredSample(
+            external_id="pmt_001",
+            speaker1_path=speaker1_path.as_posix(),
+            speaker2_path=speaker2_path.as_posix(),
+        ),
+    )
+
+    assert hashed_paths == [speaker1_path, speaker2_path]
+    assert tuple(track.audio_sha256 for track in repository.track_inputs) == (
+        registered.speaker1_source_audio_sha256,
+        registered.speaker2_source_audio_sha256,
+    )
 
 
 def test_full_conversation_annotation_uses_words_beyond_three_minutes() -> None:
@@ -136,10 +228,6 @@ def test_full_conversation_annotation_uses_words_beyond_three_minutes() -> None:
                 "parakeet": pair,
                 "canary": pair.model_copy(update={"model_id": AsrModelId.CANARY}),
             }
-        ),
-        alignment=SynchronizationAlignment(
-            speaker2_shift_seconds=0.0,
-            origin=SynchronizationAlignmentOrigin.UNREVIEWED_ZERO,
         ),
     )
 
@@ -294,3 +382,11 @@ def silent_audio_track(duration_seconds: float) -> AudioTrack:
             sample_count=sample_count,
         ),
     )
+
+
+def _write_silent_wave(path: Path) -> None:
+    with wave.open(str(path), "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(2)
+        wave_writer.setframerate(16_000)
+        wave_writer.writeframes(b"\x00\x00" * 160)

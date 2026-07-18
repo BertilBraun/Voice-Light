@@ -48,6 +48,7 @@ class SampleTrackInput:
     sample_rate: int | None
     channels: int | None
     sample_count: int | None
+    audio_sha256: str
 
 
 @dataclass(frozen=True)
@@ -100,8 +101,6 @@ class QualityResultInput:
     speaker2_parakeet_full_asr_transcript_id: UUID | None
     speaker1_canary_full_asr_transcript_id: UUID | None
     speaker2_canary_full_asr_transcript_id: UUID | None
-    speaker2_shift_seconds: float | None
-    synchronization_alignment_origin: str | None
     flags: tuple[str, ...]
     payload: dict[str, object]
 
@@ -300,18 +299,6 @@ class Repository:
             ).fetchall()
         return {str(row["external_id"]) for row in rows}
 
-    def reviewed_speaker2_shift(self, sample_id: UUID) -> float | None:
-        with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT speaker2_shift_seconds
-                FROM synchronization_reviews
-                WHERE sample_id = %s
-                """,
-                (sample_id,),
-            ).fetchone()
-        return float(row["speaker2_shift_seconds"]) if row is not None else None
-
     def update_sample_duration(self, sample_id: UUID, duration_seconds: float) -> SampleRecord:
         with self.connection() as connection:
             row = connection.execute(
@@ -333,9 +320,9 @@ class Repository:
                 """
                 INSERT INTO sample_tracks (
                   sample_id, side, speaker_index, storage_uri, access_uri,
-                  duration_seconds, sample_rate, channels, sample_count, updated_at
+                  duration_seconds, sample_rate, channels, sample_count, audio_sha256, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (sample_id, side) DO UPDATE
                 SET speaker_index = EXCLUDED.speaker_index,
                     storage_uri = EXCLUDED.storage_uri,
@@ -344,6 +331,7 @@ class Repository:
                     sample_rate = EXCLUDED.sample_rate,
                     channels = EXCLUDED.channels,
                     sample_count = EXCLUDED.sample_count,
+                    audio_sha256 = EXCLUDED.audio_sha256,
                     updated_at = now()
                 RETURNING *
                 """,
@@ -357,6 +345,7 @@ class Repository:
                     track.sample_rate,
                     track.channels,
                     track.sample_count,
+                    track.audio_sha256,
                 ),
             ).fetchone()
         assert row is not None
@@ -413,15 +402,13 @@ class Repository:
                   speaker2_parakeet_full_asr_transcript_id,
                   speaker1_canary_full_asr_transcript_id,
                   speaker2_canary_full_asr_transcript_id,
-                  speaker2_shift_seconds, synchronization_alignment_origin,
                   flags, payload
                 )
                 VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING *
                 """,
@@ -464,8 +451,6 @@ class Repository:
                     quality_result.speaker2_parakeet_full_asr_transcript_id,
                     quality_result.speaker1_canary_full_asr_transcript_id,
                     quality_result.speaker2_canary_full_asr_transcript_id,
-                    quality_result.speaker2_shift_seconds,
-                    quality_result.synchronization_alignment_origin,
                     list(quality_result.flags),
                     Jsonb(quality_result.payload),
                 ),
@@ -668,7 +653,6 @@ class Repository:
                     latest_quality.speaker1_canary_full_asr_transcript_id IS NOT NULL
                     AND latest_quality.speaker2_canary_full_asr_transcript_id IS NOT NULL
                   ) AS has_canary_transcript_pair,
-                  latest_quality.synchronization_alignment_origin,
                   latest_quality.created_at AS quality_created_at
                 FROM samples
                 LEFT JOIN LATERAL (
@@ -1245,11 +1229,6 @@ def dashboard_sample_summary_from_row(row: dict[str, object]) -> DashboardSample
             overlap_ratio=optional_float(row["overlap_ratio"]),
             has_parakeet_transcript_pair=bool(row["has_parakeet_transcript_pair"]),
             has_canary_transcript_pair=bool(row["has_canary_transcript_pair"]),
-            synchronization_alignment_origin=(
-                str(row["synchronization_alignment_origin"])
-                if row["synchronization_alignment_origin"] is not None
-                else None
-            ),
             created_at=datetime_from_value(row["quality_created_at"]),
         )
         if quality_id is not None

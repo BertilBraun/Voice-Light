@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from app.local.ingestion.alignment import SynchronizationAlignmentOrigin
 from app.local.ingestion.service import QualityResultProvenance, quality_result_input
 from app.shared.quality import ProcessingStatus, QualityResult
 
@@ -38,15 +37,19 @@ def test_quality_result_input_preserves_failed_payload() -> None:
     assert record.metric_version == "quality-test"
     assert record.status == "failed"
     assert record.flags == ("bad_audio",)
-    assert record.speaker1_full_asr_transcript_id is None
-    assert record.speaker2_shift_seconds is None
+    assert record.speaker1_parakeet_full_asr_transcript_id is None
+    assert record.speaker2_parakeet_full_asr_transcript_id is None
+    assert record.speaker1_canary_full_asr_transcript_id is None
+    assert record.speaker2_canary_full_asr_transcript_id is None
     assert record.payload["error"] == "ValueError: bad audio"
 
 
-def test_quality_result_input_persists_full_asr_and_alignment_provenance() -> None:
+def test_quality_result_input_persists_full_asr_provenance() -> None:
     sample_id = uuid4()
-    speaker1_transcript_id = uuid4()
-    speaker2_transcript_id = uuid4()
+    speaker1_parakeet_transcript_id = uuid4()
+    speaker2_parakeet_transcript_id = uuid4()
+    speaker1_canary_transcript_id = uuid4()
+    speaker2_canary_transcript_id = uuid4()
     quality_result = QualityResult(
         metric_version="quality-conversation-full-parakeet-v5",
         sample_id="sample-a",
@@ -70,14 +73,14 @@ def test_quality_result_input_persists_full_asr_and_alignment_provenance() -> No
         sample_id=sample_id,
         quality_result=quality_result,
         provenance=QualityResultProvenance(
-            speaker1_full_asr_transcript_id=speaker1_transcript_id,
-            speaker2_full_asr_transcript_id=speaker2_transcript_id,
-            speaker2_shift_seconds=-2.5,
-            synchronization_alignment_origin=SynchronizationAlignmentOrigin.REVIEWED,
+            speaker1_parakeet_full_asr_transcript_id=speaker1_parakeet_transcript_id,
+            speaker2_parakeet_full_asr_transcript_id=speaker2_parakeet_transcript_id,
+            speaker1_canary_full_asr_transcript_id=speaker1_canary_transcript_id,
+            speaker2_canary_full_asr_transcript_id=speaker2_canary_transcript_id,
         ),
     )
 
-    assert record.speaker1_full_asr_transcript_id == speaker1_transcript_id
-    assert record.speaker2_full_asr_transcript_id == speaker2_transcript_id
-    assert record.speaker2_shift_seconds == -2.5
-    assert record.synchronization_alignment_origin == "reviewed"
+    assert record.speaker1_parakeet_full_asr_transcript_id == speaker1_parakeet_transcript_id
+    assert record.speaker2_parakeet_full_asr_transcript_id == speaker2_parakeet_transcript_id
+    assert record.speaker1_canary_full_asr_transcript_id == speaker1_canary_transcript_id
+    assert record.speaker2_canary_full_asr_transcript_id == speaker2_canary_transcript_id
