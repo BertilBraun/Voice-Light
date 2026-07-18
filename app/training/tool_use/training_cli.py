@@ -13,6 +13,7 @@ def main() -> None:
     )
     parser.add_argument("records", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument(
         "--prepare-only",
         action="store_true",
@@ -22,6 +23,7 @@ def main() -> None:
     config = pilot_training_config(
         records_path=arguments.records,
         output_directory=arguments.output,
+        source_commit=arguments.source_commit,
     )
     summary = run_lora_training(config=config, prepare_only=arguments.prepare_only)
     if summary is None:

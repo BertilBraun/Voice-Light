@@ -15,6 +15,7 @@ class LoraTrainingConfig(ToolUseBaseModel):
     schema_version: Literal["voice-light.lora-training/v1"] = "voice-light.lora-training/v1"
     records_path: Path
     output_directory: Path
+    source_commit: str = Field(pattern=r"^[a-f0-9]{7,40}$")
     model_identifier: str
     model_revision: str
     random_seed: int
@@ -44,10 +45,12 @@ class LoraTrainingConfig(ToolUseBaseModel):
 def pilot_training_config(
     records_path: Path,
     output_directory: Path,
+    source_commit: str,
 ) -> LoraTrainingConfig:
     return LoraTrainingConfig(
         records_path=records_path,
         output_directory=output_directory,
+        source_commit=source_commit,
         model_identifier=QWEN3_1_7B_MODEL_IDENTIFIER,
         model_revision=QWEN3_1_7B_REVISION,
         random_seed=20260729,

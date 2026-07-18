@@ -4,7 +4,6 @@ import hashlib
 import importlib.metadata
 import math
 import random
-import subprocess
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -318,7 +317,7 @@ def _train_model(
     )
     device_properties = torch.cuda.get_device_properties(0)
     return TrainingRunSummary(
-        source_commit=_repository_commit(),
+        source_commit=config.source_commit,
         optimizer_steps=optimizer_step,
         training_examples=len(corpus.training.examples),
         validation_examples=len(corpus.validation.examples),
@@ -441,16 +440,6 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: input_file.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def _repository_commit() -> str:
-    result = subprocess.run(
-        ("git", "rev-parse", "HEAD"),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
 
 
 def _set_random_seeds(random_seed: int) -> None:

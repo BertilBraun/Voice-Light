@@ -9,6 +9,7 @@ Run the deterministic corpus preflight without loading the model:
 python -m app.training.tool_use.training_cli \
   data/tool-use/production-v2-unfiltered/records.jsonl \
   artifacts/tool-use-lora/pilot-01 \
+  --source-commit COMMIT \
   --prepare-only
 ```
 
