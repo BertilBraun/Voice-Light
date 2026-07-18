@@ -22,6 +22,7 @@ from app.training.tool_use.protocol import (
     AssistantStepValidation,
     CalculateCall,
     FinalResponseStep,
+    FinalResponseStepEnvelope,
     GeneratedToolCall,
     GeneratedUserTurnEnvelope,
     GetTimeCall,
@@ -378,7 +379,7 @@ async def generate_record(
 
         final_result, final_usage, final_requests = await _generate_validated(
             generator=generator,
-            response_type=AssistantStepEnvelope,
+            response_type=FinalResponseStepEnvelope,
             messages=assistant_step_messages(scenario, messages, None),
             random_seed=_request_seed(scenario.random_seed, turn_index, 999),
             maximum_attempts=config.maximum_semantic_attempts,
@@ -390,17 +391,13 @@ async def generate_record(
         )
         usage = usage.add(final_usage)
         request_count += final_requests
-        match final_result.step:
-            case FinalResponseStep(audible_text=audible_text):
-                message_index += 1
-                messages.append(
-                    AssistantMessage(
-                        message_id=f"{scenario.scenario_id}-message-{message_index}",
-                        audible_text=audible_text,
-                    )
-                )
-            case ToolActionStep():
-                raise AssertionError("Validated final response unexpectedly became a tool step.")
+        message_index += 1
+        messages.append(
+            AssistantMessage(
+                message_id=f"{scenario.scenario_id}-message-{message_index}",
+                audible_text=final_result.step.audible_text,
+            )
+        )
 
     metadata = _record_metadata(
         scenario=scenario,

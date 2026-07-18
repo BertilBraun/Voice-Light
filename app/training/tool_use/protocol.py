@@ -59,6 +59,10 @@ class AssistantStepEnvelope(ToolUseBaseModel):
     step: AssistantStep
 
 
+class FinalResponseStepEnvelope(ToolUseBaseModel):
+    step: FinalResponseStep
+
+
 class SyntheticSearchResult(ToolUseBaseModel):
     content: str = Field(min_length=1, max_length=1200)
 

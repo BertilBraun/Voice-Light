@@ -16,6 +16,7 @@ from app.training.tool_use.protocol import (
     AssistantStepEnvelope,
     CalculateCall,
     FinalResponseStep,
+    FinalResponseStepEnvelope,
     GeneratedUserTurn,
     GeneratedUserTurnEnvelope,
     SearchCall,
@@ -125,7 +126,7 @@ def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
                 call=CalculateCall(expression="24 * 2"),
             )
         ),
-        AssistantStepEnvelope(
+        FinalResponseStepEnvelope(
             step=FinalResponseStep(audible_text="Twice the current price is 48 euros.")
         ),
         GeneratedUserTurnEnvelope(
@@ -134,7 +135,7 @@ def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
                 speech_style=SpeechStyle.CASUAL,
             )
         ),
-        AssistantStepEnvelope(
+        FinalResponseStepEnvelope(
             step=FinalResponseStep(
                 audible_text="The search result didn't say whether fees were included."
             )
