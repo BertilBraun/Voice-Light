@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException, UploadFile
 
-from app.compute.asr.models.base import TimedTranscription
+from app.compute.asr.models.base import PreparedAsrAudio, TimedTranscription, prepare_asr_audio
 from app.compute.asr.service import transcribe_requested_models, transcribe_uploaded_request
 from app.shared.asr import AsrModelId, RemoteAsrUploadRequest, TimestampedWord
 from app.shared.audio import probe_local_audio_metadata
@@ -29,13 +29,17 @@ class RecordedTranscriptionCall:
 class RecordingModelCache:
     calls: list[RecordedTranscriptionCall] = field(default_factory=list)
 
-    def transcribe(self, model_id: AsrModelId, audio_path: Path) -> TimedTranscription:
+    def transcribe_prepared(
+        self,
+        model_id: AsrModelId,
+        audio: PreparedAsrAudio,
+    ) -> TimedTranscription:
         self.calls.append(
             RecordedTranscriptionCall(
                 model_id=model_id,
-                audio_path=audio_path,
-                audio_metadata=probe_local_audio_metadata(audio_path),
-                starts_with_flac_header=audio_path.read_bytes().startswith(b"fLaC"),
+                audio_path=audio.path,
+                audio_metadata=probe_local_audio_metadata(audio.path),
+                starts_with_flac_header=audio.path.read_bytes().startswith(b"fLaC"),
             )
         )
         return TimedTranscription(
@@ -57,12 +61,12 @@ def test_remote_endpoint_transcribes_requested_models_with_one_audio_path(tmp_pa
     audio_path = tmp_path / "sample.wav"
     write_wave(source_path=audio_path, sample_rate=16_000, channel_count=1)
     model_cache = RecordingModelCache()
+    audio = prepare_asr_audio(audio_path)
 
     results = transcribe_requested_models(
         model_cache=model_cache,
         model_ids=(AsrModelId.PARAKEET_TDT, AsrModelId.WHISPERX),
-        audio_path=audio_path,
-        audio_duration_seconds=8.0,
+        audio=audio,
     )
 
     assert tuple(call.model_id for call in model_cache.calls) == (
@@ -79,8 +83,8 @@ def test_remote_endpoint_transcribes_requested_models_with_one_audio_path(tmp_pa
         f"{AsrModelId.WHISPERX}-word",
     )
     assert tuple(result.runtime.real_time_factor for result in results if result.runtime) == (
-        0.5,
-        0.5,
+        4.0,
+        4.0,
     )
 
 

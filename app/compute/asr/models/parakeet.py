@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import time
-from pathlib import Path
-from threading import Lock
-
-import librosa
 from transformers import AutoModelForTDT, AutoProcessor
 
 from app.compute.asr.chunking import (
+    PARAKEET_INFERENCE_BATCH_SIZE,
     ParakeetAudioChunk,
     global_chunk_words,
     parakeet_audio_chunks,
-    parakeet_chunk_batches,
 )
-from app.compute.asr.models.base import ModelTranscription, cuda_device, load_time_seconds
+from app.compute.asr.models.base import (
+    BatchInferenceExecutor,
+    ModelTranscription,
+    PreparedAsrAudio,
+    cuda_device,
+    inference_batches,
+    load_time_seconds,
+)
 from app.compute.asr.models.parsing import (
     words_from_parakeet_timestamps,
 )
@@ -24,8 +26,8 @@ class ParakeetAsrModel:
     model_id = AsrModelId.PARAKEET_TDT
     package_names = ("torch", "transformers", "librosa")
 
-    def __init__(self) -> None:
-        self.inference_lock = Lock()
+    def __init__(self, inference_executor: BatchInferenceExecutor) -> None:
+        self.inference_executor = inference_executor
         self.model_loading_time_seconds = load_time_seconds(self.load)
 
     def load(self) -> None:
@@ -42,30 +44,26 @@ class ParakeetAsrModel:
         self.model.to(self.device)
         self.sample_rate = int(self.processor.feature_extractor.sampling_rate)
 
-    def transcribe(self, audio_path: Path) -> ModelTranscription:
-        queue_start = time.perf_counter()
-        with self.inference_lock:
-            inference_queue_time_seconds = time.perf_counter() - queue_start
-            audio_loading_start = time.perf_counter()
-            audio, _sample_rate = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
-            audio_loading_time_seconds = time.perf_counter() - audio_loading_start
-            model_execution_start = time.perf_counter()
-            chunks = parakeet_audio_chunks(audio, self.sample_rate)
-            words = tuple(
-                word
-                for batch in parakeet_chunk_batches(chunks)
-                for chunk_words in self._transcribe_chunks(batch)
-                for word in chunk_words
-            )
-            model_execution_time_seconds = time.perf_counter() - model_execution_start
+    def transcribe(self, audio: PreparedAsrAudio) -> ModelTranscription:
+        if audio.sample_rate != self.sample_rate:
+            raise ValueError("Parakeet audio sample rate does not match the model.")
+        chunks = parakeet_audio_chunks(audio.samples, audio.sample_rate)
+        words: list[TimestampedWord] = []
+        inference_queue_time_seconds = 0.0
+        model_execution_time_seconds = 0.0
+        for batch in inference_batches(chunks, PARAKEET_INFERENCE_BATCH_SIZE):
+            result = self.inference_executor.execute(batch, self)
+            inference_queue_time_seconds += result.queue_time_seconds
+            model_execution_time_seconds += result.execution_time_seconds
+            words.extend(word for chunk_words in result.outputs for word in chunk_words)
         return ModelTranscription(
-            words=words,
+            words=tuple(words),
             inference_queue_time_seconds=inference_queue_time_seconds,
-            audio_loading_time_seconds=audio_loading_time_seconds,
+            audio_loading_time_seconds=audio.loading_time_seconds,
             model_execution_time_seconds=model_execution_time_seconds,
         )
 
-    def _transcribe_chunks(
+    def transcribe_batch(
         self,
         chunks: tuple[ParakeetAudioChunk, ...],
     ) -> tuple[tuple[TimestampedWord, ...], ...]:

@@ -75,18 +75,6 @@ def canary_audio_chunks(
     return tuple(chunks)
 
 
-def canary_chunk_batches(
-    chunks: tuple[CanaryAudioChunk, ...],
-    batch_size: int = CANARY_INFERENCE_BATCH_SIZE,
-) -> tuple[tuple[CanaryAudioChunk, ...], ...]:
-    if batch_size <= 0:
-        raise ValueError("Canary inference batch size must be positive.")
-    return tuple(
-        chunks[start_index : start_index + batch_size]
-        for start_index in range(0, len(chunks), batch_size)
-    )
-
-
 def global_canary_chunk_words(
     chunk: CanaryAudioChunk,
     words: tuple[TimestampedWord, ...],
@@ -145,18 +133,6 @@ def parakeet_audio_chunks(
         )
         start_sample += step_sample_count
     return tuple(chunks)
-
-
-def parakeet_chunk_batches(
-    chunks: tuple[ParakeetAudioChunk, ...],
-    batch_size: int = PARAKEET_INFERENCE_BATCH_SIZE,
-) -> tuple[tuple[ParakeetAudioChunk, ...], ...]:
-    if batch_size <= 0:
-        raise ValueError("Parakeet inference batch size must be positive.")
-    return tuple(
-        chunks[start_index : start_index + batch_size]
-        for start_index in range(0, len(chunks), batch_size)
-    )
 
 
 def global_chunk_words(

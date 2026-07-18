@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import time
-from pathlib import Path
-from threading import Lock
-
-import librosa
 from torch import Tensor
 from transformers import AutoModelForRNNT, AutoProcessor
 
-from app.compute.asr.models.base import ModelTranscription, cuda_device, load_time_seconds
+from app.compute.asr.models.base import (
+    BatchInferenceExecutor,
+    ModelTranscription,
+    PreparedAsrAudio,
+    cuda_device,
+    load_time_seconds,
+)
 from app.shared.asr import (
     NEMOTRON_3_5_IDENTIFIER,
     NEMOTRON_3_5_REVISION,
@@ -21,8 +22,8 @@ class NemotronAsrModel:
     model_id = AsrModelId.NEMOTRON_3_5
     package_names = ("torch", "transformers", "librosa")
 
-    def __init__(self) -> None:
-        self.inference_lock = Lock()
+    def __init__(self, inference_executor: BatchInferenceExecutor) -> None:
+        self.inference_executor = inference_executor
         self.model_loading_time_seconds = load_time_seconds(self.load)
 
     def load(self) -> None:
@@ -39,16 +40,28 @@ class NemotronAsrModel:
         self.model.to(self.device)
         self.sample_rate = int(self.processor.feature_extractor.sampling_rate)
 
-    def transcribe(self, audio_path: Path) -> ModelTranscription:
-        queue_start = time.perf_counter()
-        with self.inference_lock:
-            inference_queue_time_seconds = time.perf_counter() - queue_start
-            audio_loading_start = time.perf_counter()
-            audio, _sample_rate = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
-            audio_loading_time_seconds = time.perf_counter() - audio_loading_start
-            model_execution_start = time.perf_counter()
+    def transcribe(self, audio: PreparedAsrAudio) -> ModelTranscription:
+        if audio.sample_rate != self.sample_rate:
+            raise ValueError("Nemotron audio sample rate does not match the model.")
+        result = self.inference_executor.execute(
+            (audio,),
+            self,
+        )
+        return ModelTranscription(
+            words=result.outputs[0],
+            inference_queue_time_seconds=result.queue_time_seconds,
+            audio_loading_time_seconds=audio.loading_time_seconds,
+            model_execution_time_seconds=result.execution_time_seconds,
+        )
+
+    def transcribe_batch(
+        self,
+        audio_batch: tuple[PreparedAsrAudio, ...],
+    ) -> tuple[tuple[TimestampedWord, ...], ...]:
+        transcriptions: list[tuple[TimestampedWord, ...]] = []
+        for audio in audio_batch:
             inputs = self.processor(
-                audio,
+                audio.samples,
                 sampling_rate=self.sample_rate,
                 language="en-US",
                 return_tensors="pt",
@@ -56,25 +69,18 @@ class NemotronAsrModel:
             inputs.to(self.model.device, dtype=self.model.dtype)
             output = self.model.generate(**inputs, return_dict_in_generate=True)
             decoded_text = self.decoded_text(output.sequences)
-            duration_seconds = float(librosa.get_duration(path=str(audio_path)))
-            model_execution_time_seconds = time.perf_counter() - model_execution_start
-        words = (
-            ()
-            if not decoded_text.strip()
-            else (
-                TimestampedWord(
-                    text=decoded_text.strip(),
-                    start_seconds=0.0,
-                    end_seconds=duration_seconds,
-                ),
+            transcriptions.append(
+                ()
+                if not decoded_text.strip()
+                else (
+                    TimestampedWord(
+                        text=decoded_text.strip(),
+                        start_seconds=0.0,
+                        end_seconds=audio.duration_seconds,
+                    ),
+                )
             )
-        )
-        return ModelTranscription(
-            words=words,
-            inference_queue_time_seconds=inference_queue_time_seconds,
-            audio_loading_time_seconds=audio_loading_time_seconds,
-            model_execution_time_seconds=model_execution_time_seconds,
-        )
+        return tuple(transcriptions)
 
     def decoded_text(self, sequences: Tensor) -> str:
         decoded = self.processor.decode(sequences, skip_special_tokens=True)

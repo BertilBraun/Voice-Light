@@ -15,7 +15,7 @@ import torch
 from fastapi import HTTPException, UploadFile
 from pydantic import ValidationError
 
-from app.compute.asr.models.base import TimedTranscription
+from app.compute.asr.models.base import PreparedAsrAudio, TimedTranscription, prepare_asr_audio
 from app.shared.asr import (
     AsrModelId,
     AsrRequestStats,
@@ -26,7 +26,7 @@ from app.shared.asr import (
     RemoteAsrUploadRequest,
     TimestampedWord,
 )
-from app.shared.audio import load_audio, probe_local_audio_metadata
+from app.shared.audio import probe_local_audio_metadata
 from app.shared.audio.transport import (
     CANONICAL_MODEL_AUDIO_SPEC,
     TRANSPORT_DURATION_TOLERANCE_SECONDS,
@@ -35,7 +35,6 @@ from app.shared.audio.transport import (
     encoded_audio_codec,
     prepare_audio_transport,
 )
-from app.shared.storage.local import LocalStorageBackend
 
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 
@@ -47,7 +46,11 @@ class UploadedAudioStats:
 
 
 class RemoteAsrModelCache(Protocol):
-    def transcribe(self, model_id: AsrModelId, audio_path: Path) -> TimedTranscription: ...
+    def transcribe_prepared(
+        self,
+        model_id: AsrModelId,
+        audio: PreparedAsrAudio,
+    ) -> TimedTranscription: ...
 
 
 def transcribe_request(
@@ -58,24 +61,24 @@ def transcribe_request(
     audio_suffix = Path(request.audio_filename).suffix
     if not audio_suffix:
         raise ValueError("ASR audio filename must have a file extension.")
-    with tempfile.NamedTemporaryFile(suffix=audio_suffix, delete=False) as audio_file:
-        audio_file.write(audio_bytes)
-        audio_path = Path(audio_file.name)
-    try:
-        audio_duration_seconds = load_audio(
-            LocalStorageBackend(),
-            audio_path.as_posix(),
-        ).metadata.duration_seconds
+    with tempfile.TemporaryDirectory(prefix="voice-light-asr-request-") as directory_name:
+        directory = Path(directory_name)
+        source_path = directory / f"source{audio_suffix}"
+        source_path.write_bytes(audio_bytes)
+        canonical_path = directory / "canonical.flac"
+        prepare_audio_transport(
+            source_path=source_path,
+            output_path=canonical_path,
+            spec=CANONICAL_MODEL_AUDIO_SPEC,
+        )
+        audio = prepare_asr_audio(canonical_path)
         return RemoteAsrResponse(
             results=transcribe_requested_models(
                 model_cache=model_cache,
                 model_ids=request.models,
-                audio_path=audio_path,
-                audio_duration_seconds=audio_duration_seconds,
+                audio=audio,
             )
         )
-    finally:
-        audio_path.unlink(missing_ok=True)
 
 
 async def transcribe_uploaded_request(
@@ -119,14 +122,14 @@ async def transcribe_uploaded_request(
             declared_duration_seconds=request.audio.duration_seconds,
             canonical_duration_seconds=canonical_metadata.duration_seconds,
         )
+        prepared_audio = await asyncio.to_thread(prepare_asr_audio, canonical_path)
         audio_preparation_time_seconds = time.perf_counter() - audio_preparation_start
         transcription_start = time.perf_counter()
         results = await asyncio.to_thread(
             transcribe_requested_models,
             model_cache=model_cache,
             model_ids=request.models,
-            audio_path=canonical_path,
-            audio_duration_seconds=canonical_metadata.duration_seconds,
+            audio=prepared_audio,
         )
         transcription_time_seconds = time.perf_counter() - transcription_start
         return RemoteAsrResponse(
@@ -210,15 +213,13 @@ def suffix_for_codec(codec: AudioTransportCodec) -> str:
 def transcribe_requested_models(
     model_cache: RemoteAsrModelCache,
     model_ids: tuple[AsrModelId, ...],
-    audio_path: Path,
-    audio_duration_seconds: float,
+    audio: PreparedAsrAudio,
 ) -> tuple[AsrTranscriptResult, ...]:
     return tuple(
         transcribe_model(
             model_cache=model_cache,
             model_id=model_id,
-            audio_path=audio_path,
-            audio_duration_seconds=audio_duration_seconds,
+            audio=audio,
         )
         for model_id in model_ids
     )
@@ -227,13 +228,12 @@ def transcribe_requested_models(
 def transcribe_model(
     model_cache: RemoteAsrModelCache,
     model_id: AsrModelId,
-    audio_path: Path,
-    audio_duration_seconds: float,
+    audio: PreparedAsrAudio,
 ) -> AsrTranscriptResult:
     reset_peak_gpu_memory_stats()
     return transcript_result_from_model_output(
-        transcription=model_cache.transcribe(model_id=model_id, audio_path=audio_path),
-        audio_duration_seconds=audio_duration_seconds,
+        transcription=model_cache.transcribe_prepared(model_id=model_id, audio=audio),
+        audio_duration_seconds=audio.duration_seconds,
     )
 
 

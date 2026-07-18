@@ -8,8 +8,8 @@ from app.compute.asr.chunking import (
     ParakeetAudioChunk,
     global_chunk_words,
     parakeet_audio_chunks,
-    parakeet_chunk_batches,
 )
+from app.compute.asr.models.base import inference_batches
 from app.shared.asr import TimestampedWord
 
 
@@ -53,7 +53,7 @@ def test_parakeet_chunks_are_grouped_into_bounded_inference_batches() -> None:
     audio = np.zeros(round(300.0 * sample_rate), dtype=np.float32)
     chunks = parakeet_audio_chunks(audio=audio, sample_rate=sample_rate)
 
-    batches = parakeet_chunk_batches(chunks)
+    batches = inference_batches(chunks, PARAKEET_INFERENCE_BATCH_SIZE)
 
     assert len(batches) == 2
     assert len(batches[0]) == PARAKEET_INFERENCE_BATCH_SIZE

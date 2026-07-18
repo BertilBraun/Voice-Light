@@ -7,7 +7,6 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import librosa
 import torch
 
 from app.compute.asr.chunking import (
@@ -15,6 +14,7 @@ from app.compute.asr.chunking import (
     global_chunk_words,
     parakeet_audio_chunks,
 )
+from app.compute.asr.models.base import BatchInferenceExecutor, prepare_asr_audio
 from app.compute.asr.models.parakeet import ParakeetAsrModel
 from app.compute.asr.models.parsing import words_from_parakeet_timestamps
 from app.shared.asr import TimestampedWord
@@ -100,13 +100,9 @@ def main() -> None:
         raise ValueError("Chunk count must be positive.")
     if not arguments.audio_path.is_file():
         raise ValueError(f"Audio file not found: {arguments.audio_path}")
-    model = ParakeetAsrModel()
-    audio, _sample_rate = librosa.load(
-        str(arguments.audio_path),
-        sr=model.sample_rate,
-        mono=True,
-    )
-    chunks = parakeet_audio_chunks(audio=audio, sample_rate=model.sample_rate)[
+    model = ParakeetAsrModel(BatchInferenceExecutor())
+    audio = prepare_asr_audio(arguments.audio_path)
+    chunks = parakeet_audio_chunks(audio=audio.samples, sample_rate=audio.sample_rate)[
         : arguments.chunk_count
     ]
     if not chunks:
