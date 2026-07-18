@@ -16,6 +16,14 @@ def dashboard_script() -> Iterator[str]:
     yield script_response.text
 
 
+@pytest.fixture(scope="module")
+def dashboard_page() -> Iterator[str]:
+    with TestClient(app) as client:
+        page_response = client.get("/datasets")
+    assert page_response.status_code == 200
+    yield page_response.text
+
+
 @pytest.mark.parametrize(
     "metric_label",
     (
@@ -134,3 +142,11 @@ def test_dataset_dashboard_loads_compact_rows_and_exact_completeness(
     assert "/api/dataset-dashboard/samples/${sampleSummary.sample.id}" in dashboard_script
     assert '"Latest quality / annotation versions"' in dashboard_script
     assert '"Latest full-recording transcripts"' in dashboard_script
+
+
+def test_dataset_dashboard_refreshes_cached_script_and_reports_load_failures(
+    dashboard_page: str,
+    dashboard_script: str,
+) -> None:
+    assert 'src="/pages/datasets/app.js?v=2"' in dashboard_page
+    assert "Could not load datasets: ${reason}. Use Refresh to retry." in dashboard_script

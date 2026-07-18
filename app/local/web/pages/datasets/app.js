@@ -96,27 +96,36 @@ const elements = {
   completenessSummary: document.querySelector("#completeness-summary"),
 };
 
-elements.refreshButton.addEventListener("click", loadDashboard);
+elements.refreshButton.addEventListener("click", () => {
+  void loadDashboard();
+});
 for (const element of [
   elements.datasetFilter,
   elements.qualityMin,
   elements.overlapMax,
   elements.flagFilter,
 ]) {
-  element.addEventListener("change", loadSamples);
+  element.addEventListener("change", () => {
+    void loadSamples().catch(renderDashboardError);
+  });
 }
 
-loadDashboard();
+void loadDashboard();
 
 async function loadDashboard() {
   elements.status.textContent = "Loading database records";
-  const datasetsPayload = await fetchJson("/api/dataset-dashboard/datasets");
-  state.datasets = datasetsPayload.datasets;
-  renderDatasetOptions();
-  await loadSamples();
+  try {
+    const datasetsPayload = await fetchJson("/api/dataset-dashboard/datasets");
+    state.datasets = datasetsPayload.datasets;
+    renderDatasetOptions();
+    await loadSamples();
+  } catch (error) {
+    renderDashboardError(error);
+  }
 }
 
 async function loadSamples() {
+  elements.status.textContent = "Loading samples and statistics";
   const parameters = new URLSearchParams();
   const datasetId = elements.datasetFilter.value;
   if (datasetId) {
@@ -147,6 +156,15 @@ async function loadSamples() {
   renderSamples();
   renderConversationSummary(summary);
   renderCompletenessSummary(completeness);
+}
+
+function renderDashboardError(error) {
+  const reason = error instanceof Error ? error.message : "Unknown dashboard error";
+  const message = `Could not load datasets: ${reason}. Use Refresh to retry.`;
+  elements.status.textContent = message;
+  elements.completenessSummary.replaceChildren(createEmptyMessage(message));
+  elements.conversationSummary.replaceChildren(createEmptyMessage(message));
+  elements.sampleList.replaceChildren(createEmptyMessage(message));
 }
 
 function renderCompletenessSummary(summary) {
