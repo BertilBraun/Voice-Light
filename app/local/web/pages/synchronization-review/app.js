@@ -84,6 +84,15 @@ function selectedVisibleIndex() {
   );
 }
 
+function nextVisibleCandidateExternalId() {
+  const selectedIndex = selectedVisibleIndex();
+  if (selectedIndex < 0 || state.visibleCandidates.length < 2) {
+    return null;
+  }
+  const nextIndex = (selectedIndex + 1) % state.visibleCandidates.length;
+  return state.visibleCandidates[nextIndex].external_id;
+}
+
 function formatShift(seconds) {
   return `${seconds >= 0 ? "+" : "−"}${Math.abs(seconds).toFixed(1)} s`;
 }
@@ -432,7 +441,13 @@ async function saveCurrentOffsetAsReviewed() {
   if (!candidate) {
     return;
   }
-  const previousVisibleIndex = selectedVisibleIndex();
+  const preferredNextExternalId = nextVisibleCandidateExternalId();
+  const audioGraphReady = setupAudioGraph()
+    .then(() => true)
+    .catch((error) => {
+      setPlaybackStatus(`Automatic playback unavailable: ${error.message}`, true);
+      return false;
+    });
   elements.saveReview.disabled = true;
   setReviewSaveStatus(`Saving ${formatShift(state.bShiftSeconds)}…`, false);
   try {
@@ -459,27 +474,28 @@ async function saveCurrentOffsetAsReviewed() {
     const savedMessage =
       `Saved ${candidate.external_id.toUpperCase()} at ` +
       `${formatShift(savedReview.speaker2_shift_seconds)}.`;
-    if (
-      !state.visibleCandidates.some(
-        (visibleCandidate) => visibleCandidate.external_id === candidate.external_id,
-      ) &&
-      state.visibleCandidates.length > 0
-    ) {
-      const nextCandidate =
-        state.visibleCandidates[
-          Math.max(
-            0,
-            Math.min(previousVisibleIndex, state.visibleCandidates.length - 1),
-          )
-        ];
+    const nextCandidate =
+      state.visibleCandidates.find(
+        (visibleCandidate) =>
+          visibleCandidate.external_id === preferredNextExternalId,
+      ) ??
+      state.visibleCandidates.find(
+        (visibleCandidate) =>
+          visibleCandidate.external_id !== candidate.external_id,
+      );
+    if (nextCandidate) {
       await selectCandidate(nextCandidate.external_id);
+      setReviewSaveStatus(savedMessage, false);
+      if (await audioGraphReady) {
+        await play();
+      }
     } else {
       renderCandidateDetails();
+      setReviewSaveStatus(
+        `${savedMessage} No additional candidates remain.`,
+        false,
+      );
     }
-    setReviewSaveStatus(
-      savedMessage,
-      false,
-    );
   } catch (error) {
     setReviewSaveStatus(`Could not save review: ${error.message}`, true);
   } finally {
@@ -735,6 +751,9 @@ async function setupAudioGraph() {
   state.masterLimiter.connect(state.audioContext.destination);
   updateGain("a", elements.gainA.value);
   updateGain("b", elements.gainB.value);
+  if (state.audioContext.state === "suspended") {
+    await state.audioContext.resume();
+  }
 }
 
 async function loadAudioBuffers(selectionVersion) {
