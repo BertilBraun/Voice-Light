@@ -32,12 +32,12 @@ from app.compute.voice.models import (
     QwenWorkerLease,
     RestartingQwenWorkerManager,
 )
-from app.compute.voice.tools import create_demo_tool_registry
+from app.compute.voice.tools import create_runtime_tool_registry
 
 REQUEST = LanguageModelRequest(
     assistant_generation_id=7,
     messages=(ModelUserMessage(content="Hello"),),
-    tools=create_demo_tool_registry().specifications,
+    tools=create_runtime_tool_registry().specifications,
 )
 
 

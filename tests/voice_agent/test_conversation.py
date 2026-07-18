@@ -8,12 +8,11 @@ from app.compute.voice.conversation import (
     PrivateModelContext,
 )
 from app.compute.voice.tools import (
-    GetWeatherArguments,
+    SearchArguments,
+    SearchToolCallFunction,
     ToolCall,
-    ToolCallFunction,
     ToolName,
     ToolSuccess,
-    WeatherResult,
 )
 
 
@@ -122,9 +121,8 @@ def test_multiple_tool_exchanges_preserve_exact_chronological_positions() -> Non
         tool_calls=(
             ToolCall(
                 id="qwen-42-tool-1",
-                function=ToolCallFunction(
-                    name=ToolName.GET_WEATHER,
-                    arguments=GetWeatherArguments(location="Berlin"),
+                function=SearchToolCallFunction(
+                    arguments=SearchArguments(query="current weather in Berlin"),
                 ),
             ),
         ),
@@ -148,12 +146,8 @@ def test_multiple_tool_exchanges_preserve_exact_chronological_positions() -> Non
     )
     second_outcome = ToolSuccess(
         call_id="qwen-42-tool-1",
-        tool_name=ToolName.GET_WEATHER,
-        result=WeatherResult(
-            location="Berlin",
-            temperature_celsius=18,
-            conditions="clear",
-        ),
+        tool_name=ToolName.SEARCH,
+        result="Berlin is 18 degrees and clear.",
     )
     second_exchange = turn.commit_tool_result(second_outcome)
     turn.update_audible_assistant_content(audible_content)
@@ -185,9 +179,8 @@ def _assistant_call() -> ModelAssistantMessage:
         tool_calls=(
             ToolCall(
                 id="qwen-41-tool-1",
-                function=ToolCallFunction(
-                    name=ToolName.GET_WEATHER,
-                    arguments=GetWeatherArguments(location="London"),
+                function=SearchToolCallFunction(
+                    arguments=SearchArguments(query="current weather in London"),
                 ),
             ),
         ),
@@ -197,10 +190,6 @@ def _assistant_call() -> ModelAssistantMessage:
 def _weather_outcome() -> ToolSuccess:
     return ToolSuccess(
         call_id="qwen-41-tool-1",
-        tool_name=ToolName.GET_WEATHER,
-        result=WeatherResult(
-            location="London",
-            temperature_celsius=12,
-            conditions="lightly cloudy",
-        ),
+        tool_name=ToolName.SEARCH,
+        result="London is 12 degrees and lightly cloudy.",
     )

@@ -2077,7 +2077,7 @@ class VoiceSession:
                 call_id=call.id,
                 tool_name=call.function.name,
                 reason=ToolExecutionFailureReason.TIMEOUT,
-                message="The weather lookup timed out.",
+                message="Tool execution timed out.",
             )
         except asyncio.CancelledError:
             raise

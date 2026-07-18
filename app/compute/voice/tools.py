@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol
 
@@ -9,9 +12,15 @@ from pydantic import ConfigDict, Field, TypeAdapter
 
 from app.shared.base_model import FrozenBaseModel
 
+MAXIMUM_ABSOLUTE_INTEGER_RESULT = 10**100
+MAXIMUM_ABSOLUTE_FLOAT_RESULT = 1e100
+MAXIMUM_ABSOLUTE_EXPONENT = 100
+
 
 class ToolName(StrEnum):
-    GET_WEATHER = "get_weather"
+    SEARCH = "search"
+    CALCULATE = "calculate"
+    GET_TIME = "get_time"
 
 
 class ToolCallFailureReason(StrEnum):
@@ -59,16 +68,20 @@ class ToolInvalidationReason(StrEnum):
     PLAYBACK_RESUME_REJECTED = "playback_resume_rejected"
 
 
-class GetWeatherArguments(FrozenBaseModel):
+class SearchArguments(FrozenBaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    location: str = Field(min_length=1)
+    query: str = Field(min_length=1, max_length=240)
 
 
-class WeatherResult(FrozenBaseModel):
-    location: str
-    temperature_celsius: int
-    conditions: str
+class CalculateArguments(FrozenBaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    expression: str = Field(min_length=1, max_length=160)
+
+
+class GetTimeArguments(FrozenBaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 class ToolStringParameter(FrozenBaseModel):
@@ -76,21 +89,63 @@ class ToolStringParameter(FrozenBaseModel):
     description: str
 
 
-class GetWeatherParameterProperties(FrozenBaseModel):
-    location: ToolStringParameter
+class SearchParameterProperties(FrozenBaseModel):
+    query: ToolStringParameter
 
 
-class GetWeatherParameters(FrozenBaseModel):
+class SearchParameters(FrozenBaseModel):
     type: Literal["object"] = "object"
-    properties: GetWeatherParameterProperties
-    required: tuple[Literal["location"], ...] = ("location",)
+    properties: SearchParameterProperties
+    required: tuple[Literal["query"], ...] = ("query",)
     additionalProperties: Literal[False] = False
 
 
-class ToolFunctionSpecification(FrozenBaseModel):
-    name: ToolName
+class CalculateParameterProperties(FrozenBaseModel):
+    expression: ToolStringParameter
+
+
+class CalculateParameters(FrozenBaseModel):
+    type: Literal["object"] = "object"
+    properties: CalculateParameterProperties
+    required: tuple[Literal["expression"], ...] = ("expression",)
+    additionalProperties: Literal[False] = False
+
+
+class GetTimeParameterProperties(FrozenBaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class GetTimeParameters(FrozenBaseModel):
+    type: Literal["object"] = "object"
+    properties: GetTimeParameterProperties
+    required: tuple[()] = ()
+    additionalProperties: Literal[False] = False
+
+
+class SearchToolFunctionSpecification(FrozenBaseModel):
+    name: Literal[ToolName.SEARCH] = ToolName.SEARCH
     description: str
-    parameters: GetWeatherParameters
+    parameters: SearchParameters
+
+
+class CalculateToolFunctionSpecification(FrozenBaseModel):
+    name: Literal[ToolName.CALCULATE] = ToolName.CALCULATE
+    description: str
+    parameters: CalculateParameters
+
+
+class GetTimeToolFunctionSpecification(FrozenBaseModel):
+    name: Literal[ToolName.GET_TIME] = ToolName.GET_TIME
+    description: str
+    parameters: GetTimeParameters
+
+
+ToolFunctionSpecification = Annotated[
+    SearchToolFunctionSpecification
+    | CalculateToolFunctionSpecification
+    | GetTimeToolFunctionSpecification,
+    Field(discriminator="name"),
+]
 
 
 class ToolSpecification(FrozenBaseModel):
@@ -98,9 +153,25 @@ class ToolSpecification(FrozenBaseModel):
     function: ToolFunctionSpecification
 
 
-class ToolCallFunction(FrozenBaseModel):
-    name: ToolName
-    arguments: GetWeatherArguments
+class SearchToolCallFunction(FrozenBaseModel):
+    name: Literal[ToolName.SEARCH] = ToolName.SEARCH
+    arguments: SearchArguments
+
+
+class CalculateToolCallFunction(FrozenBaseModel):
+    name: Literal[ToolName.CALCULATE] = ToolName.CALCULATE
+    arguments: CalculateArguments
+
+
+class GetTimeToolCallFunction(FrozenBaseModel):
+    name: Literal[ToolName.GET_TIME] = ToolName.GET_TIME
+    arguments: GetTimeArguments
+
+
+ToolCallFunction = Annotated[
+    SearchToolCallFunction | CalculateToolCallFunction | GetTimeToolCallFunction,
+    Field(discriminator="name"),
+]
 
 
 class ToolCall(FrozenBaseModel):
@@ -126,7 +197,7 @@ class ToolSuccess(FrozenBaseModel):
     outcome: Literal["success"] = "success"
     call_id: str
     tool_name: ToolName
-    result: WeatherResult
+    result: str
 
 
 class ToolExecutionFailure(FrozenBaseModel):
@@ -143,8 +214,10 @@ ToolOutcome = Annotated[
 ]
 tool_outcome_adapter: TypeAdapter[ToolOutcome] = TypeAdapter(ToolOutcome)
 
-
-WeatherToolHandler = Callable[[GetWeatherArguments], Awaitable[WeatherResult]]
+SearchToolHandler = Callable[[SearchArguments], Awaitable[str]]
+CalculateToolHandler = Callable[[CalculateArguments], Awaitable[str]]
+GetTimeToolHandler = Callable[[], Awaitable[str]]
+CurrentTimeProvider = Callable[[], datetime]
 
 
 class ToolExecutor(Protocol):
@@ -156,57 +229,62 @@ class ToolExecutor(Protocol):
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure: ...
 
 
-class WeatherToolRegistry:
-    def __init__(self, weather_handler: WeatherToolHandler) -> None:
-        self.weather_handler = weather_handler
-        self._specifications = (
-            ToolSpecification(
-                function=ToolFunctionSpecification(
-                    name=ToolName.GET_WEATHER,
-                    description="Get deterministic current weather for a location.",
-                    parameters=GetWeatherParameters(
-                        properties=GetWeatherParameterProperties(
-                            location=ToolStringParameter(
-                                description="City or location whose current weather is requested."
-                            )
-                        )
-                    ),
-                )
-            ),
-        )
+class RuntimeToolRegistry:
+    def __init__(
+        self,
+        search_handler: SearchToolHandler,
+        calculate_handler: CalculateToolHandler,
+        get_time_handler: GetTimeToolHandler,
+    ) -> None:
+        self.search_handler = search_handler
+        self.calculate_handler = calculate_handler
+        self.get_time_handler = get_time_handler
+        self._specifications = _tool_specifications()
 
     @property
     def specifications(self) -> tuple[ToolSpecification, ...]:
         return self._specifications
 
     def validate(self, request: SerializedToolCall) -> ToolCall | ToolCallFailure:
-        if request.name != ToolName.GET_WEATHER:
-            return ToolCallFailure(
-                call_id=request.id,
-                reason=ToolCallFailureReason.UNKNOWN_TOOL,
-                message=f"Unknown tool: {request.name}",
-                attempted_tool_name=request.name,
-            )
         try:
-            arguments = GetWeatherArguments.model_validate_json(request.arguments_json)
+            match request.name:
+                case ToolName.SEARCH:
+                    function: ToolCallFunction = SearchToolCallFunction(
+                        arguments=SearchArguments.model_validate_json(request.arguments_json)
+                    )
+                case ToolName.CALCULATE:
+                    function = CalculateToolCallFunction(
+                        arguments=CalculateArguments.model_validate_json(request.arguments_json)
+                    )
+                case ToolName.GET_TIME:
+                    function = GetTimeToolCallFunction(
+                        arguments=GetTimeArguments.model_validate_json(request.arguments_json)
+                    )
+                case _:
+                    return ToolCallFailure(
+                        call_id=request.id,
+                        reason=ToolCallFailureReason.UNKNOWN_TOOL,
+                        message=f"Unknown tool: {request.name}",
+                        attempted_tool_name=request.name,
+                    )
         except ValueError as error:
             return ToolCallFailure(
                 call_id=request.id,
                 reason=ToolCallFailureReason.INVALID_ARGUMENTS,
-                message=f"Invalid get_weather arguments: {error}",
+                message=f"Invalid {request.name} arguments: {error}",
                 attempted_tool_name=request.name,
             )
-        return ToolCall(
-            id=request.id,
-            function=ToolCallFunction(
-                name=ToolName.GET_WEATHER,
-                arguments=arguments,
-            ),
-        )
+        return ToolCall(id=request.id, function=function)
 
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure:
         try:
-            result = await self.weather_handler(call.function.arguments)
+            match call.function:
+                case SearchToolCallFunction(arguments=arguments):
+                    result = await self.search_handler(arguments)
+                case CalculateToolCallFunction(arguments=arguments):
+                    result = await self.calculate_handler(arguments)
+                case GetTimeToolCallFunction():
+                    result = await self.get_time_handler()
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -214,7 +292,7 @@ class WeatherToolRegistry:
                 call_id=call.id,
                 tool_name=call.function.name,
                 reason=ToolExecutionFailureReason.HANDLER_FAILURE,
-                message=f"Weather lookup failed: {error}",
+                message=f"{call.function.name} failed: {error}",
             )
         return ToolSuccess(
             call_id=call.id,
@@ -223,36 +301,130 @@ class WeatherToolRegistry:
         )
 
 
-class DeterministicWeatherHandler:
-    async def __call__(self, arguments: GetWeatherArguments) -> WeatherResult:
-        await asyncio.sleep(1.0)
-        normalized_location = arguments.location.strip().casefold()
-        match normalized_location:
-            case "london" | "london, uk" | "london, united kingdom":
-                return WeatherResult(
-                    location="London",
-                    temperature_celsius=12,
-                    conditions="lightly cloudy",
-                )
-            case "berlin" | "berlin, germany":
-                return WeatherResult(
-                    location="Berlin",
-                    temperature_celsius=18,
-                    conditions="clear",
-                )
-            case "san francisco" | "san francisco, california":
-                return WeatherResult(
-                    location="San Francisco",
-                    temperature_celsius=16,
-                    conditions="foggy",
-                )
-            case _:
-                return WeatherResult(
-                    location=arguments.location.strip(),
-                    temperature_celsius=20,
-                    conditions="clear (deterministic fallback)",
-                )
+class StandardSearchHandler:
+    async def __call__(self, arguments: SearchArguments) -> str:
+        return f'Search results for "{arguments.query}" are not configured yet.'
 
 
-def create_demo_tool_registry() -> WeatherToolRegistry:
-    return WeatherToolRegistry(DeterministicWeatherHandler())
+class PythonArithmeticHandler:
+    async def __call__(self, arguments: CalculateArguments) -> str:
+        expression = ast.parse(arguments.expression, mode="eval")
+        return str(_evaluate_arithmetic(expression.body))
+
+
+class CurrentLocalTimeHandler:
+    def __init__(self, current_time: CurrentTimeProvider) -> None:
+        self.current_time = current_time
+
+    async def __call__(self) -> str:
+        return self.current_time().isoformat(timespec="seconds")
+
+
+def create_runtime_tool_registry() -> RuntimeToolRegistry:
+    return RuntimeToolRegistry(
+        search_handler=StandardSearchHandler(),
+        calculate_handler=PythonArithmeticHandler(),
+        get_time_handler=CurrentLocalTimeHandler(_current_local_time),
+    )
+
+
+def _tool_specifications() -> tuple[ToolSpecification, ...]:
+    return (
+        ToolSpecification(
+            function=SearchToolFunctionSpecification(
+                description="Search for current or externally verifiable information.",
+                parameters=SearchParameters(
+                    properties=SearchParameterProperties(
+                        query=ToolStringParameter(description="A concise search query.")
+                    )
+                ),
+            )
+        ),
+        ToolSpecification(
+            function=CalculateToolFunctionSpecification(
+                description="Evaluate a basic numeric arithmetic expression.",
+                parameters=CalculateParameters(
+                    properties=CalculateParameterProperties(
+                        expression=ToolStringParameter(
+                            description="Numeric literals and basic arithmetic operators."
+                        )
+                    )
+                ),
+            )
+        ),
+        ToolSpecification(
+            function=GetTimeToolFunctionSpecification(
+                description="Get the current local date and time.",
+                parameters=GetTimeParameters(properties=GetTimeParameterProperties()),
+            )
+        ),
+    )
+
+
+def _current_local_time() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _evaluate_arithmetic(expression: ast.expr) -> int | float:
+    match expression:
+        case ast.Constant(value=bool()):
+            raise ValueError("Boolean values are not arithmetic operands.")
+        case ast.Constant(value=int() as value):
+            return _bounded_integer(value)
+        case ast.Constant(value=float() as value):
+            return _bounded_float(value)
+        case ast.UnaryOp(op=ast.UAdd(), operand=operand):
+            return _evaluate_arithmetic(operand)
+        case ast.UnaryOp(op=ast.USub(), operand=operand):
+            value = _evaluate_arithmetic(operand)
+            return _bounded_number(-value)
+        case ast.BinOp(left=left, op=operator, right=right):
+            left_value = _evaluate_arithmetic(left)
+            right_value = _evaluate_arithmetic(right)
+            result: int | float
+            match operator:
+                case ast.Add():
+                    result = left_value + right_value
+                case ast.Sub():
+                    result = left_value - right_value
+                case ast.Mult():
+                    result = left_value * right_value
+                case ast.Div():
+                    result = left_value / right_value
+                case ast.FloorDiv():
+                    result = left_value // right_value
+                case ast.Mod():
+                    result = left_value % right_value
+                case ast.Pow():
+                    if abs(right_value) > MAXIMUM_ABSOLUTE_EXPONENT:
+                        raise ValueError("The exponent is too large.")
+                    result = left_value**right_value
+                case _:
+                    raise ValueError("The expression contains an unsupported operator.")
+            return _bounded_number(result)
+        case _:
+            raise ValueError("Only numeric literals and basic arithmetic operators are allowed.")
+
+
+def _bounded_number(value: int | float) -> int | float:
+    match value:
+        case bool():
+            raise ValueError("Boolean results are not supported.")
+        case int() as integer:
+            return _bounded_integer(integer)
+        case float() as decimal:
+            return _bounded_float(decimal)
+
+
+def _bounded_integer(value: int) -> int:
+    if abs(value) > MAXIMUM_ABSOLUTE_INTEGER_RESULT:
+        raise ValueError("The integer result is too large.")
+    return value
+
+
+def _bounded_float(value: float) -> float:
+    if not math.isfinite(value):
+        raise ValueError("The floating-point result must be finite.")
+    if abs(value) > MAXIMUM_ABSOLUTE_FLOAT_RESULT:
+        raise ValueError("The floating-point result is too large.")
+    return value

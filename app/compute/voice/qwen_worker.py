@@ -57,7 +57,12 @@ LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "one call. "
     "Do not repeat an earlier bridge, narrate JSON, or mention tools or internal processing. For "
     "answers that need no tool, start with substantive content instead of filler acknowledgements "
-    "such as 'Sure' or 'Of course.' Use plain text without Markdown or emoji."
+    "such as 'Sure' or 'Of course.' Use plain text without Markdown or emoji. "
+    "Use this example only as the required bridge-then-call format, while selecting the "
+    "appropriate provided tool and arguments for the actual request: User: What is the latest "
+    "Mars mission? "
+    "Assistant: Let me look that up. "
+    '<tool_call>{"name":"search","arguments":{"query":"latest Mars mission"}}</tool_call>'
 )
 logger = logging.getLogger(__name__)
 

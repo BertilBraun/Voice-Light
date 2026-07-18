@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -72,7 +73,11 @@ from app.compute.voice.speech_understanding import (
     SingleSessionTurnPredictionProvider,
 )
 from app.compute.voice.tools import (
-    GetWeatherArguments,
+    CurrentLocalTimeHandler,
+    PythonArithmeticHandler,
+    RuntimeToolRegistry,
+    SearchArguments,
+    SearchToolHandler,
     SerializedToolCall,
     ToolCallFailure,
     ToolCallFailureReason,
@@ -83,9 +88,7 @@ from app.compute.voice.tools import (
     ToolLifecycle,
     ToolResultCommitStatus,
     ToolSuccess,
-    WeatherResult,
-    WeatherToolRegistry,
-    create_demo_tool_registry,
+    create_runtime_tool_registry,
 )
 
 SPEECH_CHUNK = b"\x01\x00" * 320
@@ -333,7 +336,8 @@ class ScriptedWeatherLanguageModel:
         self.requests: list[LanguageModelRequest] = []
         self.raw_first_pass = (
             "Let me check that."
-            '<tool_call>{"name":"get_weather","arguments":{"location":"London"}}</tool_call>'
+            '<tool_call>{"name":"search","arguments":{"query":"current weather in London"}}'
+            "</tool_call>"
         )
         self.parsed_first_pass_events: list[LanguageModelEvent] = []
         self.second_pass_answer = second_pass_answer
@@ -360,8 +364,8 @@ class ScriptedWeatherLanguageModel:
                     invocation_id=1,
                     request=SerializedToolCall(
                         id="qwen-1-tool-1",
-                        name="get_weather",
-                        arguments_json='{"location":"London"}',
+                        name="search",
+                        arguments_json='{"query":"current weather in London"}',
                     ),
                     cumulative_token_count=16,
                 ),
@@ -439,8 +443,8 @@ class SequentialWeatherLanguageModel:
             invocation_id=invocation_id,
             request=SerializedToolCall(
                 id=call_id,
-                name="get_weather",
-                arguments_json=f'{{"location":"{location}"}}',
+                name="search",
+                arguments_json=f'{{"query":"current weather in {location}"}}',
             ),
             cumulative_token_count=16,
         )
@@ -487,9 +491,9 @@ class ControlledWeatherHandler:
         self.started = threading.Event()
         self.release = threading.Event()
         self.cancelled = threading.Event()
-        self.arguments: list[GetWeatherArguments] = []
+        self.arguments: list[SearchArguments] = []
 
-    async def __call__(self, arguments: GetWeatherArguments) -> WeatherResult:
+    async def __call__(self, arguments: SearchArguments) -> str:
         self.arguments.append(arguments)
         self.started.set()
         try:
@@ -497,29 +501,21 @@ class ControlledWeatherHandler:
         except asyncio.CancelledError:
             self.cancelled.set()
             raise
-        return WeatherResult(
-            location="London",
-            temperature_celsius=12,
-            conditions="lightly cloudy",
-        )
+        return "London is 12 degrees and lightly cloudy."
 
 
 class SecondRoundControlledWeatherHandler:
     def __init__(self) -> None:
         self.second_started = threading.Event()
         self.second_cancelled = threading.Event()
-        self.arguments: list[GetWeatherArguments] = []
+        self.arguments: list[SearchArguments] = []
         self.event_loop: asyncio.AbstractEventLoop | None = None
         self.release_event: asyncio.Event | None = None
 
-    async def __call__(self, arguments: GetWeatherArguments) -> WeatherResult:
+    async def __call__(self, arguments: SearchArguments) -> str:
         self.arguments.append(arguments)
-        if arguments.location == "London":
-            return WeatherResult(
-                location="London",
-                temperature_celsius=12,
-                conditions="lightly cloudy",
-            )
+        if arguments.query == "current weather in London":
+            return "London is 12 degrees and lightly cloudy."
         self.event_loop = asyncio.get_running_loop()
         self.release_event = asyncio.Event()
         self.second_started.set()
@@ -528,11 +524,7 @@ class SecondRoundControlledWeatherHandler:
         except asyncio.CancelledError:
             self.second_cancelled.set()
             raise
-        return WeatherResult(
-            location="Berlin",
-            temperature_celsius=18,
-            conditions="clear",
-        )
+        return "Berlin is 18 degrees and clear."
 
     def release_second(self) -> None:
         if self.event_loop is None or self.release_event is None:
@@ -547,7 +539,7 @@ class CancellationResistantWeatherHandler:
         self.release = threading.Event()
         self.finished = threading.Event()
 
-    async def __call__(self, arguments: GetWeatherArguments) -> WeatherResult:
+    async def __call__(self, arguments: SearchArguments) -> str:
         del arguments
         self.started.set()
         try:
@@ -556,11 +548,17 @@ class CancellationResistantWeatherHandler:
             self.cancelled.set()
             await asyncio.to_thread(self.release.wait)
         self.finished.set()
-        return WeatherResult(
-            location="London",
-            temperature_celsius=12,
-            conditions="lightly cloudy",
-        )
+        return "London is 12 degrees and lightly cloudy."
+
+
+def create_search_registry(search_handler: SearchToolHandler) -> RuntimeToolRegistry:
+    return RuntimeToolRegistry(
+        search_handler=search_handler,
+        calculate_handler=PythonArithmeticHandler(),
+        get_time_handler=CurrentLocalTimeHandler(
+            lambda: datetime(2026, 7, 18, tzinfo=timezone.utc)
+        ),
+    )
 
 
 class GenerationAwareToolLanguageModel:
@@ -589,8 +587,8 @@ class GenerationAwareToolLanguageModel:
                 invocation_id=invocation_id,
                 request=SerializedToolCall(
                     id=f"qwen-{invocation_id}-tool-1",
-                    name="get_weather",
-                    arguments_json='{"location":"London"}',
+                    name="search",
+                    arguments_json='{"query":"current weather in London"}',
                 ),
                 cumulative_token_count=16,
             )
@@ -1073,7 +1071,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         synthesizer,
         playback_sink=sink,
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -1087,7 +1085,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         assert len(language_model.requests) == 1
         assert len(synthesizer.sessions) == 1
         assert not synthesizer.sessions[0].finished
-        assert weather_handler.arguments == [GetWeatherArguments(location="London")]
+        assert weather_handler.arguments == [SearchArguments(query="current weather in London")]
         assert released_text(sink) == "Let me check that."
         assert all("<tool_call>" not in word.text for word in synthesizer.words)
         staged_generation = sessions[0].generations[1]
@@ -1157,14 +1155,14 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         tool_message = second_request.messages[-1]
         assert isinstance(assistant_message, ModelAssistantMessage)
         assert assistant_message.content == "Let me check that."
-        assert assistant_message.tool_calls[0].function.arguments == GetWeatherArguments(
-            location="London"
+        assert assistant_message.tool_calls[0].function.arguments == SearchArguments(
+            query="current weather in London"
         )
         assert isinstance(tool_message, ModelToolMessage)
         assert tool_message.tool_call_id == "qwen-1-tool-1"
         assert isinstance(tool_message.outcome, ToolSuccess)
-        assert tool_message.outcome.result.temperature_celsius == 12
-        assert second_request.tools == WeatherToolRegistry(weather_handler).specifications
+        assert tool_message.outcome.result == "London is 12 degrees and lightly cloudy."
+        assert second_request.tools == create_search_registry(weather_handler).specifications
         assert len(synthesizer.sessions) == 1
         assert synthesizer.sessions[0].finished
 
@@ -1242,7 +1240,7 @@ def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn()
     synthesizer = RecordingSpeechSynthesizer()
     sink = InMemoryPlaybackSink()
     sessions: list[VoiceSession] = []
-    tool_executor = WeatherToolRegistry(weather_handler)
+    tool_executor = create_search_registry(weather_handler)
     web_app = create_test_app(
         RecordingTranscriber(),
         language_model,
@@ -1366,12 +1364,12 @@ def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn()
     )
     assert later_request.tools == tool_executor.specifications
     assert weather_handler.arguments == [
-        GetWeatherArguments(location="London"),
-        GetWeatherArguments(location="Berlin"),
+        SearchArguments(query="current weather in London"),
+        SearchArguments(query="current weather in Berlin"),
     ]
     public_text = released_text(sink)
     durable_text = " ".join(message.content for message in sessions[0].conversation)
-    for private_fragment in ("<tool_call>", "</tool_call>", '"location"', "qwen-1-tool-1"):
+    for private_fragment in ("<tool_call>", "</tool_call>", '"query"', "qwen-1-tool-1"):
         assert private_fragment not in public_text
         assert private_fragment not in durable_text
         assert all(private_fragment not in word.text for word in synthesizer.words)
@@ -1394,7 +1392,7 @@ def test_tool_round_limit_disables_tools_without_dropping_committed_exchanges() 
         ),
         playback_sink=sink,
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -1425,7 +1423,7 @@ def test_later_user_turn_receives_prior_structured_tool_exchange() -> None:
         language_model,
         RecordingSpeechSynthesizer(),
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -1459,7 +1457,7 @@ def test_later_user_turn_receives_prior_structured_tool_exchange() -> None:
         content="It is 12 degrees and lightly cloudy in London."
     )
     assert later_request.messages[4] == ModelUserMessage(content="hello agent")
-    assert later_request.tools == WeatherToolRegistry(weather_handler).specifications
+    assert later_request.tools == create_search_registry(weather_handler).specifications
 
 
 def test_invalid_tool_call_is_private_and_produces_spoken_recovery() -> None:
@@ -1477,7 +1475,7 @@ def test_invalid_tool_call_is_private_and_produces_spoken_recovery() -> None:
         language_model,
         RecordingSpeechSynthesizer(),
         playback_sink=sink,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -1509,11 +1507,11 @@ def test_tool_execution_failure_is_typed_and_does_not_fabricate_weather(
     )
     controlled_handler = ControlledWeatherHandler()
 
-    async def failing_handler(arguments: GetWeatherArguments) -> WeatherResult:
+    async def failing_handler(arguments: SearchArguments) -> str:
         del arguments
         raise RuntimeError("synthetic weather failure")
 
-    tool_executor = WeatherToolRegistry(
+    tool_executor = create_search_registry(
         failing_handler if failure_mode == "handler" else controlled_handler
     )
     sink = InMemoryPlaybackSink()
@@ -1570,7 +1568,7 @@ def test_user_cancellation_while_tool_runs_discards_late_result() -> None:
         RecordingSpeechSynthesizer(),
         playback_sink=sink,
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -1636,7 +1634,7 @@ def test_cancellation_during_later_tool_round_keeps_earlier_committed_exchange()
         language_model,
         RecordingSpeechSynthesizer(),
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -1688,7 +1686,7 @@ def test_user_cancellation_while_call_is_buffering_never_starts_tool() -> None:
         RecordingSpeechSynthesizer(),
         playback_sink=sink,
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -1911,7 +1909,7 @@ def test_backchannel_during_tool_wait_preserves_tool_and_resumes_same_generation
         language_model,
         RecordingSpeechSynthesizer(),
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -2035,7 +2033,7 @@ def test_response_requiring_overlap_cancels_running_tool() -> None:
         language_model,
         RecordingSpeechSynthesizer(),
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -2814,7 +2812,7 @@ def test_speculative_tool_exchange_is_not_session_committed_after_revision() -> 
         turn_prediction_source=prediction_source,
         playback_sink=sink,
         created_sessions=sessions,
-        tool_executor=WeatherToolRegistry(weather_handler),
+        tool_executor=create_search_registry(weather_handler),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -3111,7 +3109,7 @@ def create_test_app(
             language_model=language_model,
             speech_synthesizer=speech_synthesizer,
             policy=policy,
-            tool_executor=tool_executor or create_demo_tool_registry(),
+            tool_executor=tool_executor or create_runtime_tool_registry(),
             playback_sink=playback_sink,
         )
         if created_sessions is not None:

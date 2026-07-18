@@ -23,13 +23,12 @@ from app.compute.voice.qwen_worker import (
     render_qwen_prompt,
 )
 from app.compute.voice.tools import (
-    GetWeatherArguments,
+    SearchArguments,
+    SearchToolCallFunction,
     ToolCall,
-    ToolCallFunction,
     ToolName,
     ToolSuccess,
-    WeatherResult,
-    create_demo_tool_registry,
+    create_runtime_tool_registry,
 )
 
 
@@ -89,40 +88,35 @@ def test_tool_prompt_requires_spoken_bridge_before_call() -> None:
     )
     assert "never begin with the tool call" in LANGUAGE_MODEL_SYSTEM_PROMPT
     assert "another provided tool call is genuinely needed" in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert "Let me look that up." in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert (
+        '<tool_call>{"name":"search","arguments":{"query":"latest Mars mission"}}</tool_call>'
+        in LANGUAGE_MODEL_SYSTEM_PROMPT
+    )
 
 
 def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_turn() -> None:
     tool_call = ToolCall(
         id="qwen-41-tool-1",
-        function=ToolCallFunction(
-            name=ToolName.GET_WEATHER,
-            arguments=GetWeatherArguments(location="London"),
+        function=SearchToolCallFunction(
+            arguments=SearchArguments(query="current weather in London"),
         ),
     )
     tool_outcome = ToolSuccess(
         call_id=tool_call.id,
-        tool_name=ToolName.GET_WEATHER,
-        result=WeatherResult(
-            location="London",
-            temperature_celsius=12,
-            conditions="lightly cloudy",
-        ),
+        tool_name=ToolName.SEARCH,
+        result="London is 12 degrees and lightly cloudy.",
     )
     second_tool_call = ToolCall(
         id="qwen-42-tool-1",
-        function=ToolCallFunction(
-            name=ToolName.GET_WEATHER,
-            arguments=GetWeatherArguments(location="Berlin"),
+        function=SearchToolCallFunction(
+            arguments=SearchArguments(query="current weather in Berlin"),
         ),
     )
     second_tool_outcome = ToolSuccess(
         call_id=second_tool_call.id,
-        tool_name=ToolName.GET_WEATHER,
-        result=WeatherResult(
-            location="Berlin",
-            temperature_celsius=18,
-            conditions="clear",
-        ),
+        tool_name=ToolName.SEARCH,
+        result="Berlin is 18 degrees and clear.",
     )
     command = StartLlmCommand(
         invocation_id=43,
@@ -148,7 +142,7 @@ def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_tur
             LlmAssistantMessage(content="Berlin is warmer at 18 degrees."),
             LlmUserMessage(content="Should I take a coat?"),
         ),
-        tools=create_demo_tool_registry().specifications,
+        tools=create_runtime_tool_registry().specifications,
     )
     tokenizer = RecordingChatTemplateTokenizer()
 
@@ -166,8 +160,8 @@ def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_tur
                     "id": "qwen-41-tool-1",
                     "type": "function",
                     "function": {
-                        "name": "get_weather",
-                        "arguments": '{"location":"London"}',
+                        "name": "search",
+                        "arguments": '{"query":"current weather in London"}',
                     },
                 }
             ],
@@ -185,8 +179,8 @@ def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_tur
                     "id": "qwen-42-tool-1",
                     "type": "function",
                     "function": {
-                        "name": "get_weather",
-                        "arguments": '{"location":"Berlin"}',
+                        "name": "search",
+                        "arguments": '{"query":"current weather in Berlin"}',
                     },
                 }
             ],
@@ -204,7 +198,7 @@ def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_tur
     ]
     assert tokenizer.tools == [
         specification.model_dump(mode="json")
-        for specification in create_demo_tool_registry().specifications
+        for specification in create_runtime_tool_registry().specifications
     ]
     assert tokenizer.tokenize is False
     assert tokenizer.add_generation_prompt is True
