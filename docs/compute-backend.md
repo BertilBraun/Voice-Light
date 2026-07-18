@@ -47,11 +47,12 @@ The voice agent's `search(query)` tool uses the Tavily Search API. Set
 voice stack still starts when this setting is absent, but an attempted search returns a clear tool
 failure until a key is configured.
 
-Each invocation requests at most five web results over a three-second HTTP timeout. The compute
+Each invocation requests at most three web results over a three-second HTTP timeout. The compute
 process normalizes and bounds each title, URL, and snippet, then submits only that bounded context
-to a separate deterministic pass through the already-loaded Qwen model with tools disabled. Raw
-provider payloads and the summarization prompt never enter the session conversation; only Qwen's
-bounded plain-text summary is committed through the normal tool-result message.
+to a separate deterministic pass through the already-loaded Qwen model with tools disabled and a
+96-token output cap. Raw provider payloads and the summarization prompt never enter the session
+conversation; only Qwen's bounded plain-text summary is committed through the normal tool-result
+message.
 
 This design adds one external network round trip and one serialized Qwen generation before the
 main post-tool response. It avoids an additional model copy and GPU concurrency hazards, but search
