@@ -50,9 +50,10 @@ failure until a key is configured.
 Each invocation requests at most three web results over a three-second HTTP timeout. The compute
 process normalizes and bounds each title, URL, and snippet, then submits only that bounded context
 to a separate deterministic pass through the already-loaded Qwen model with tools disabled and a
-96-token output cap. Raw provider payloads and the summarization prompt never enter the session
+64-token output cap. Raw provider payloads and the summarization prompt never enter the session
 conversation; only Qwen's bounded plain-text summary is committed through the normal tool-result
-message. The speech-oriented summary omits source names, URLs, and citations.
+message. The speech-oriented summary targets one or two sentences and 40 words, omits unsolicited
+comparisons and tangents, and excludes source names, URLs, and citations.
 
 This design adds one external network round trip and one serialized Qwen generation before the
 main post-tool response. It avoids an additional model copy and GPU concurrency hazards, but search
