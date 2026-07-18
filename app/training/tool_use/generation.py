@@ -361,8 +361,8 @@ async def generate_record(
         usage = usage.add(candidate.usage)
         request_count += candidate.request_count
         try:
-            _validate_candidate_record(candidate.record)
             if config.semantic_audits_enabled:
+                _validate_candidate_record(candidate.record)
                 audit_usage, audit_requests = await _audit_candidate_record(
                     scenario=scenario,
                     record=candidate.record,
@@ -513,12 +513,20 @@ async def _generate_record_candidate(
                     step_index + 1,
                 ),
                 maximum_attempts=config.maximum_semantic_attempts,
-                validator=lambda envelope, expected=planned_step.tool_name: (
-                    _validate_assistant_step(
-                        envelope.step,
-                        expected,
-                        config.bridge_word_limit,
-                        AssistantResponseMode.ANSWER,
+                validator=(
+                    (
+                        lambda envelope, expected=planned_step.tool_name: _validate_assistant_step(
+                            envelope.step,
+                            expected,
+                            config.bridge_word_limit,
+                            AssistantResponseMode.ANSWER,
+                        )
+                    )
+                    if config.semantic_audits_enabled
+                    else (
+                        lambda envelope, expected=planned_step.tool_name: (
+                            _validate_structural_tool_action(envelope.step, expected)
+                        )
                     )
                 ),
             )
@@ -556,7 +564,9 @@ async def _generate_record_candidate(
                 constrain_time_before_deadline=tuple(
                     step.tool_name for step in turn_plan.tool_steps
                 )
-                == (ToolName.GET_TIME, ToolName.CALCULATE),
+                == (ToolName.GET_TIME, ToolName.CALCULATE)
+                and config.semantic_audits_enabled,
+                semantic_audits_enabled=config.semantic_audits_enabled,
             )
             usage = usage.add(tool_usage)
             request_count += tool_requests
@@ -587,13 +597,19 @@ async def _generate_record_candidate(
             ),
             random_seed=_request_seed(scenario.random_seed + seed_salt, turn_index, 999),
             maximum_attempts=config.maximum_semantic_attempts,
-            validator=lambda envelope, response_mode=turn_plan.response_mode: (
-                _validate_assistant_step(
-                    envelope.step,
-                    None,
-                    config.bridge_word_limit,
-                    response_mode,
+            validator=(
+                (
+                    lambda envelope, response_mode=turn_plan.response_mode: (
+                        _validate_assistant_step(
+                            envelope.step,
+                            None,
+                            config.bridge_word_limit,
+                            response_mode,
+                        )
+                    )
                 )
+                if config.semantic_audits_enabled
+                else (lambda envelope: None)
             ),
         )
         usage = usage.add(final_usage)
@@ -653,8 +669,8 @@ async def _generate_scoped_user_turn(
                 )
             )
             request_count += 1
-            _validate_user_turn(result.value, scenario.speech_style)
             if semantic_audits_enabled:
+                _validate_user_turn(result.value, scenario.speech_style)
                 assessment_result = await generator.generate(
                     messages=user_turn_scope_messages(public_history, result.value.turn.text),
                     response_type=UserTurnScopeAssessmentEnvelope,
@@ -794,6 +810,26 @@ def _validate_assistant_step(
                 raise ValueError("Generated tool bridge is phrased as a question.")
 
 
+def _validate_structural_tool_action(
+    step: AssistantStep,
+    expected_tool_name: ToolName,
+) -> None:
+    match step:
+        case ToolActionStep(call=call):
+            if generated_call_tool_name(call) is not expected_tool_name:
+                raise ValueError(
+                    f"Expected {expected_tool_name.value} tool action, "
+                    f"got {generated_call_tool_name(call).value}."
+                )
+            match call:
+                case CalculateCall(expression=expression):
+                    calculate_expression(expression)
+                case _:
+                    pass
+        case FinalResponseStep():
+            raise ValueError(f"Expected {expected_tool_name.value} tool action.")
+
+
 async def _execute_tool(
     planned_step: PlannedToolStep,
     call: GeneratedToolCall,
@@ -803,6 +839,7 @@ async def _execute_tool(
     time_reference: datetime,
     public_history: Sequence[ConversationMessage],
     constrain_time_before_deadline: bool,
+    semantic_audits_enabled: bool,
 ) -> tuple[ToolOutcome, TokenUsage, int]:
     match planned_step.outcome:
         case PlannedOutcome.EMPTY:
@@ -822,7 +859,9 @@ async def _execute_tool(
                 messages=synthetic_search_messages(query, public_history),
                 random_seed=random_seed,
                 maximum_attempts=maximum_attempts,
-                validator=_validate_search_result,
+                validator=(
+                    _validate_search_result if semantic_audits_enabled else lambda envelope: None
+                ),
             )
             return SuccessOutcome(content=search_result.result.content), usage, requests
         case CalculateCall(expression=expression):

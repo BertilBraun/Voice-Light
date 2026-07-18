@@ -728,6 +728,48 @@ def test_calculate_response_must_preserve_the_exact_result() -> None:
     assert not generator.values
 
 
+def test_generation_without_audits_keeps_long_bridge_and_spoken_calculation() -> None:
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        generator = ScriptedGenerator(
+            (
+                GeneratedUserTurnEnvelope(
+                    turn=GeneratedUserTurn(
+                        text="quick one, twelve times eight",
+                        speech_style=SpeechStyle.CASUAL,
+                    )
+                ),
+                AssistantStepEnvelope(
+                    step=ToolActionStep(
+                        audible_text="Sure, give me a moment while I work that out.",
+                        call=CalculateCall(expression="12 * 8"),
+                    )
+                ),
+                FinalResponseStepEnvelope(
+                    step=FinalResponseStep(audible_text="That's ninety-six.")
+                ),
+            )
+        )
+        generated = await generate_record(
+            scenario=calculate_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=False,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert request_count == 3
+    assert record.messages[2].audible_text == "Sure, give me a moment while I work that out."
+    assert record.messages[4].audible_text == "That's ninety-six."
+    assert not generator.values
+
+
 def test_user_scope_mismatch_regenerates_before_assistant_generation() -> None:
     async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
         generator = ScriptedGenerator(
