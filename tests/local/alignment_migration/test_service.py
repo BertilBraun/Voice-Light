@@ -43,8 +43,10 @@ from app.local.alignment_migration.service import (
     invalid_directory_stage,
     shift_timestamped_words,
 )
+from app.local.asr.full_recording_service import PreparedFullRecordingAudio
 from app.local.synchronization_review.calibration import REVIEWED_ALIGNMENTS
 from app.shared.asr import AsrModelId, TimestampedWord
+from app.shared.audio.transport import AudioTransportCodec, AudioTransportMetadata
 from app.shared.quality import AudioMetadata
 
 
@@ -58,6 +60,39 @@ class SnapshotOnlyRepository(AlignmentMigrationRepository):
         assert configured_sessions_root == self.snapshot.dataset.root
         self.load_count += 1
         return self.snapshot
+
+
+class RecordingPreparedAudioFactory:
+    def __init__(self) -> None:
+        self.calls: list[Path] = []
+
+    def __call__(
+        self,
+        source_path: Path,
+        source_audio_sha256: str | None = None,
+    ) -> PreparedFullRecordingAudio:
+        self.calls.append(source_path)
+        prepared_path = source_path.with_name(f"{source_path.stem}.prepared-{len(self.calls)}.ogg")
+        prepared_path.write_bytes(b"prepared")
+        prepared_hash = f"{len(self.calls):064x}"
+        duration_seconds = 1.001
+        return PreparedFullRecordingAudio(
+            path=prepared_path,
+            transport_metadata=AudioTransportMetadata(
+                original_filename=source_path.name,
+                encoded_filename=prepared_path.name,
+                sha256=prepared_hash,
+                codec=AudioTransportCodec.OGG_OPUS,
+                duration_seconds=duration_seconds,
+                sample_rate=16_000,
+                channels=1,
+                size_bytes=8,
+            ),
+            source_audio_sha256=source_audio_sha256 or sha256_file(source_path),
+            prepared_audio_sha256=prepared_hash,
+            source_duration_seconds=duration_seconds,
+            prepared_duration_seconds=duration_seconds,
+        )
 
 
 def test_dry_run_validates_exact_snapshot_without_mutation(tmp_path: Path) -> None:
@@ -255,9 +290,9 @@ def test_sample_reconciliation_reads_real_riff_channel_count(tmp_path: Path) -> 
             side=track.side,
             model_id=model_id,
             source_audio_sha256=sha256_file(track.access_uri),
-            prepared_audio_sha256="a" * 64,
+            prepared_audio_sha256=f"{index + 1:064x}",
             source_duration_seconds=1.0,
-            prepared_duration_seconds=1.0,
+            prepared_duration_seconds=1.0 + (index * 0.001),
             words=(TimestampedWord(text="word", start_seconds=0.1, end_seconds=0.2),),
         )
         for index, (track, model_id) in enumerate(
@@ -295,6 +330,110 @@ def test_sample_reconciliation_reads_real_riff_channel_count(tmp_path: Path) -> 
 
     assert tuple(track.channels for track in reconciliation.tracks) == (2, 2)
     assert tuple(track.sample_count for track in reconciliation.tracks) == (8_000, 8_000)
+    reconciled_prepared = {
+        transcript.id: (
+            transcript.prepared_audio.sha256,
+            transcript.prepared_audio.duration_seconds,
+        )
+        for track in reconciliation.tracks
+        for transcript in track.transcripts
+    }
+    assert reconciled_prepared == {
+        record.id: (
+            record.prepared_audio_sha256,
+            record.prepared_duration_seconds,
+        )
+        for record in transcripts
+    }
+    assert {
+        transcript.id: transcript.words
+        for track in reconciliation.tracks
+        for transcript in track.transcripts
+    } == {record.id: record.words for record in transcripts}
+
+
+def test_changed_tracks_reuse_one_prepared_provenance_per_model_pair(
+    tmp_path: Path,
+) -> None:
+    sample_directory = tmp_path / "pmt_998"
+    sample_directory.mkdir()
+    speaker1_path = sample_directory / "pmt_998_speaker1.wav"
+    speaker2_path = sample_directory / "pmt_998_speaker2.wav"
+    write_wave(speaker1_path)
+    write_wave(speaker2_path)
+    tracks = (
+        migration_track(UUID(int=1), AlignmentSide.SPEAKER1, speaker1_path, channels=1),
+        migration_track(UUID(int=2), AlignmentSide.SPEAKER2, speaker2_path, channels=1),
+    )
+    original_hashes = {track.id: sha256_file(track.access_uri) for track in tracks}
+    sample = MigrationSample(
+        id=UUID(int=3),
+        external_id="pmt_998",
+        duration_seconds=1.0,
+        tracks=tracks,
+    )
+    transcripts = tuple(
+        FullAsrMigrationRecord(
+            id=UUID(int=20 + index),
+            sample_external_id=sample.external_id,
+            sample_track_id=track.id,
+            side=track.side,
+            model_id=model_id,
+            source_audio_sha256=original_hashes[track.id],
+            prepared_audio_sha256=f"{index + 10:064x}",
+            source_duration_seconds=1.0,
+            prepared_duration_seconds=1.0 + (index * 0.001),
+            words=(TimestampedWord(text="word", start_seconds=0.1, end_seconds=0.2),),
+        )
+        for index, (track, model_id) in enumerate(
+            (
+                (tracks[0], AsrModelId.PARAKEET_TDT),
+                (tracks[0], AsrModelId.CANARY),
+                (tracks[1], AsrModelId.PARAKEET_TDT),
+                (tracks[1], AsrModelId.CANARY),
+            )
+        )
+    )
+    assert len(transcripts) == 4
+    sidecar = apply_alignment_transaction(
+        paths=AlignmentTransactionPaths.create(
+            sample_directory=sample_directory,
+            sample_external_id=sample.external_id,
+            speaker1_filename=speaker1_path.name,
+            speaker2_filename=speaker2_path.name,
+        ),
+        reviewed_speaker2_shift_seconds=-0.001,
+    ).sidecar
+    prepared_factory = RecordingPreparedAudioFactory()
+    service = AlignmentMigrationService(
+        repository=AlignmentMigrationRepository(database_url=""),
+        sessions_root=tmp_path,
+        prepared_audio_factory=prepared_factory,
+    )
+
+    reconciliation = service._sample_reconciliation(
+        plan=SampleMigrationPlan(
+            sample=sample,
+            shift_seconds=-0.001,
+            transcripts=(transcripts[0], transcripts[1], transcripts[2], transcripts[3]),
+        ),
+        sidecar=sidecar,
+    )
+
+    assert prepared_factory.calls == [speaker1_path, speaker2_path]
+    prepared_by_track = tuple(
+        {
+            (
+                transcript.prepared_audio.sha256,
+                transcript.prepared_audio.duration_seconds,
+            )
+            for transcript in track.transcripts
+        }
+        for track in reconciliation.tracks
+    )
+    assert all(len(values) == 1 for values in prepared_by_track)
+    assert prepared_by_track[0] != prepared_by_track[1]
+    assert not tuple(tmp_path.rglob("*.prepared-*.ogg"))
 
 
 def test_post_migration_source_audit_checks_exact_filesystem_and_database(
@@ -593,6 +732,20 @@ def post_migration_snapshot(root: Path) -> MigrationRepositorySnapshot:
                         record,
                         source_audio_sha256=rewrite.aligned_sha256,
                         source_duration_seconds=duration,
+                        prepared_audio_sha256=(
+                            f"{record.id.int:064x}"
+                            if rewrite.original_sha256 == rewrite.aligned_sha256
+                            else record.prepared_audio_sha256
+                        ),
+                        prepared_duration_seconds=(
+                            record.prepared_duration_seconds
+                            + (
+                                0.001
+                                if rewrite.original_sha256 == rewrite.aligned_sha256
+                                and record.model_id is AsrModelId.CANARY
+                                else 0.0
+                            )
+                        ),
                         words=shift_timestamped_words(
                             record.words,
                             shift_seconds=shift_seconds,

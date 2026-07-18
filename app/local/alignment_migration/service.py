@@ -386,9 +386,10 @@ class AlignmentMigrationService:
             already_reconciled = all(
                 record.source_audio_sha256 == rewrite.aligned_sha256 for record in records
             )
-            prepared: PreparedAudioProvenance
+            physically_changed = rewrite.original_sha256 != rewrite.aligned_sha256
+            shared_prepared: PreparedAudioProvenance | None = None
             prepared_path: Path | None = None
-            if already_reconciled:
+            if physically_changed and already_reconciled:
                 prepared_values = {
                     (
                         record.prepared_audio_sha256,
@@ -399,46 +400,35 @@ class AlignmentMigrationService:
                 if len(prepared_values) != 1:
                     raise ValueError("Reconciled ASR rows disagree on prepared-audio provenance.")
                 prepared_hash, prepared_duration = prepared_values.pop()
-                prepared = PreparedAudioProvenance(
+                shared_prepared = PreparedAudioProvenance(
                     sha256=prepared_hash,
                     duration_seconds=prepared_duration,
                 )
-            elif rewrite.original_sha256 == rewrite.aligned_sha256:
-                prepared_values = {
-                    (
-                        record.prepared_audio_sha256,
-                        record.prepared_duration_seconds,
-                    )
-                    for record in records
-                }
-                if len(prepared_values) != 1:
-                    raise ValueError("Zero-offset ASR rows disagree on prepared provenance.")
-                prepared_hash, prepared_duration = prepared_values.pop()
-                prepared = PreparedAudioProvenance(
-                    sha256=prepared_hash,
-                    duration_seconds=prepared_duration,
-                )
-            else:
+            elif physically_changed:
                 generated = self.prepared_audio_factory(
                     source_path=track.access_uri,
                     source_audio_sha256=source_hash,
                 )
                 prepared_path = generated.path
-                prepared = PreparedAudioProvenance(
+                shared_prepared = PreparedAudioProvenance(
                     sha256=generated.prepared_audio_sha256,
                     duration_seconds=generated.prepared_duration_seconds,
                 )
             try:
                 shift_seconds = (
                     0.0
-                    if already_reconciled
+                    if already_reconciled or not physically_changed
                     else rewrite.prepended_silence_frame_count / sidecar.sample_rate
                 )
                 transcript_reconciliations = tuple(
                     TranscriptReconciliation(
                         id=record.id,
                         source_audio_sha256=source_hash,
-                        prepared_audio=prepared,
+                        prepared_audio=shared_prepared
+                        or PreparedAudioProvenance(
+                            sha256=record.prepared_audio_sha256,
+                            duration_seconds=record.prepared_duration_seconds,
+                        ),
                         source_duration_seconds=source_duration,
                         words=shift_timestamped_words(
                             words=record.words,
@@ -908,7 +898,7 @@ def _audit_post_migration_sources(
                 for record in records
             ):
                 raise ValueError("Post-migration ASR source provenance is not canonical.")
-            if (
+            if rewrite.original_sha256 != rewrite.aligned_sha256 and (
                 len(
                     {
                         (
