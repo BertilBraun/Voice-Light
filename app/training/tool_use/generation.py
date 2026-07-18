@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,8 +14,11 @@ from pydantic import AwareDatetime, Field
 from app.training.tool_use.prompts import (
     PROMPT_REVISION,
     assistant_step_messages,
+    record_grounding_messages,
+    record_quality_messages,
     synthetic_search_messages,
     user_turn_messages,
+    user_turn_scope_messages,
 )
 from app.training.tool_use.protocol import (
     AssistantStep,
@@ -26,13 +30,22 @@ from app.training.tool_use.protocol import (
     GeneratedToolCall,
     GeneratedUserTurnEnvelope,
     GetTimeCall,
+    GroundingVerdict,
+    RecordGroundingAssessment,
+    RecordGroundingAssessmentEnvelope,
+    RecordQualityAssessment,
+    RecordQualityAssessmentEnvelope,
     SearchCall,
     SyntheticSearchResultEnvelope,
     TeacherChatMessage,
+    TeacherSamplingMode,
     ToolActionStep,
+    UserTurnScopeAssessment,
+    UserTurnScopeAssessmentEnvelope,
     generated_call_tool_name,
 )
 from app.training.tool_use.scenario import (
+    AssistantTurnPlan,
     PlannedOutcome,
     PlannedToolStep,
     ScenarioSpec,
@@ -68,10 +81,16 @@ from app.training.tool_use.schema import (
     completed_record_ids,
     contains_protocol_markup,
 )
-from app.training.tool_use.tools import calculate_expression, call_arguments, seeded_time
+from app.training.tool_use.tools import (
+    calculate_expression,
+    call_arguments,
+    seeded_time,
+    seeded_time_before_deadline,
+)
 from app.training.tool_use.vllm_client import StructuredGenerationResult
 
 GeneratedValue = TypeVar("GeneratedValue", bound=ToolUseBaseModel)
+MAXIMUM_SPOKEN_TURN_WORDS = 100
 
 
 class StructuredGenerator(Protocol):
@@ -80,6 +99,7 @@ class StructuredGenerator(Protocol):
         messages: Sequence[TeacherChatMessage],
         response_type: type[GeneratedValue],
         random_seed: int,
+        sampling_mode: TeacherSamplingMode = TeacherSamplingMode.CREATIVE,
     ) -> StructuredGenerationResult[GeneratedValue]: ...
 
 
@@ -90,6 +110,7 @@ class RolloutGenerationConfig(ToolUseBaseModel):
     time_reference: AwareDatetime
     maximum_concurrency: int = Field(default=128, ge=1)
     maximum_semantic_attempts: int = Field(default=3, ge=1)
+    maximum_record_attempts: int = Field(default=3, ge=1)
     bridge_word_limit: int = Field(default=8, ge=1)
     system_instruction: str = (
         "Speak naturally. Use supplied tools only when needed. Never invent a pending result."
@@ -108,22 +129,31 @@ class TokenUsage:
         )
 
 
+class GenerationAttemptError(ValueError):
+    def __init__(self, message: str, usage: TokenUsage, request_count: int) -> None:
+        super().__init__(message)
+        self.usage = usage
+        self.request_count = request_count
+
+
 @dataclass(frozen=True)
 class GeneratedRecord:
     record: ToolDialogueRecord
     usage: TokenUsage
     request_count: int
+    rejected_candidate_count: int
 
 
 class GenerationFailure(ToolUseBaseModel):
     scenario_id: str
     error_type: str
     message: str
+    rejected_candidates: int = Field(ge=0)
     recorded_at: str
 
 
 class GenerationRunManifest(ToolUseBaseModel):
-    schema_version: str = "voice-light.generation-run/v1"
+    schema_version: str = "voice-light.generation-run/v2"
     started_at: str
     completed_at: str
     model_identifier: str
@@ -135,6 +165,7 @@ class GenerationRunManifest(ToolUseBaseModel):
     previously_completed: int = Field(ge=0)
     accepted_records: int = Field(ge=0)
     failed_records: int = Field(ge=0)
+    rejected_candidates: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     requests: int = Field(ge=0)
@@ -151,6 +182,12 @@ class RecordHashPayload(ToolUseBaseModel):
     tools: tuple[ToolDefinition, ...]
     messages: tuple[ConversationMessage, ...]
     scenario_id: str
+
+
+class RecordGenerationError(ValueError):
+    def __init__(self, message: str, rejected_candidate_count: int) -> None:
+        super().__init__(message)
+        self.rejected_candidate_count = rejected_candidate_count
 
 
 def runtime_tool_definitions() -> tuple[ToolDefinition, ...]:
@@ -235,23 +272,32 @@ async def generate_dataset(
     failures: list[GenerationFailure] = []
     usage = TokenUsage()
     request_count = 0
+    rejected_candidate_count = 0
     for task, scenario in task_scenarios:
         try:
             generated = await task
         except Exception as error:
+            match error:
+                case RecordGenerationError():
+                    rejected_candidates = error.rejected_candidate_count
+                case _:
+                    rejected_candidates = 0
             failure = GenerationFailure(
                 scenario_id=scenario.scenario_id,
                 error_type=type(error).__name__,
                 message=str(error),
+                rejected_candidates=rejected_candidates,
                 recorded_at=_utc_now(),
             )
             _append_failure(failure_path, failure)
             failures.append(failure)
+            rejected_candidate_count += rejected_candidates
             continue
         append_record(output_path, generated.record)
         generated_records.append(generated.record)
         usage = usage.add(generated.usage)
         request_count += generated.request_count
+        rejected_candidate_count += generated.rejected_candidate_count
 
     manifest = GenerationRunManifest(
         started_at=started_at,
@@ -265,6 +311,7 @@ async def generate_dataset(
         previously_completed=len(already_completed),
         accepted_records=len(generated_records),
         failed_records=len(failures),
+        rejected_candidates=rejected_candidate_count,
         prompt_tokens=usage.prompt_tokens,
         completion_tokens=usage.completion_tokens,
         requests=request_count,
@@ -285,6 +332,94 @@ async def generate_record(
     generator: StructuredGenerator,
     config: RolloutGenerationConfig,
 ) -> GeneratedRecord:
+    usage = TokenUsage()
+    request_count = 0
+    last_error: ValueError | None = None
+    rejected_candidate_count = 0
+    for record_attempt in range(config.maximum_record_attempts):
+        try:
+            candidate = await _generate_record_candidate(
+                scenario=scenario,
+                generator=generator,
+                config=config,
+                seed_salt=record_attempt * 1_000_003,
+            )
+        except GenerationAttemptError as error:
+            usage = usage.add(error.usage)
+            request_count += error.request_count
+            last_error = error
+            rejected_candidate_count += 1
+            continue
+        except ValueError as error:
+            last_error = error
+            rejected_candidate_count += 1
+            continue
+        usage = usage.add(candidate.usage)
+        request_count += candidate.request_count
+        try:
+            _validate_candidate_record(candidate.record)
+            critique_result = await generator.generate(
+                messages=record_quality_messages(scenario, candidate.record.messages),
+                response_type=RecordQualityAssessmentEnvelope,
+                random_seed=_request_seed(
+                    scenario.random_seed + record_attempt,
+                    len(scenario.turns),
+                    10_001,
+                ),
+                sampling_mode=TeacherSamplingMode.DETERMINISTIC,
+            )
+            usage = usage.add(
+                TokenUsage(
+                    prompt_tokens=critique_result.prompt_tokens,
+                    completion_tokens=critique_result.completion_tokens,
+                )
+            )
+            request_count += 1
+            _validate_record_quality(critique_result.value.assessment)
+            grounding_result = await generator.generate(
+                messages=record_grounding_messages(scenario, candidate.record.messages),
+                response_type=RecordGroundingAssessmentEnvelope,
+                random_seed=_request_seed(
+                    scenario.random_seed + record_attempt,
+                    len(scenario.turns),
+                    10_002,
+                ),
+                sampling_mode=TeacherSamplingMode.DETERMINISTIC,
+            )
+            usage = usage.add(
+                TokenUsage(
+                    prompt_tokens=grounding_result.prompt_tokens,
+                    completion_tokens=grounding_result.completion_tokens,
+                )
+            )
+            request_count += 1
+            _validate_record_grounding(
+                candidate.record,
+                grounding_result.value.assessment,
+            )
+        except ValueError as error:
+            last_error = error
+            rejected_candidate_count += 1
+            continue
+        return GeneratedRecord(
+            record=candidate.record,
+            usage=usage,
+            request_count=request_count,
+            rejected_candidate_count=rejected_candidate_count,
+        )
+    assert last_error is not None
+    raise RecordGenerationError(
+        str(last_error),
+        rejected_candidate_count=rejected_candidate_count,
+    ) from last_error
+
+
+async def _generate_record_candidate(
+    scenario: ScenarioSpec,
+    generator: StructuredGenerator,
+    config: RolloutGenerationConfig,
+    seed_salt: int,
+) -> GeneratedRecord:
     tools = runtime_tool_definitions()
     messages: list[ConversationMessage] = [
         SystemMessage(
@@ -298,17 +433,21 @@ async def generate_record(
     message_index = 0
 
     for turn_index, turn_plan in enumerate(scenario.turns):
-        user_result, user_usage, user_requests = await _generate_validated(
-            generator=generator,
-            response_type=GeneratedUserTurnEnvelope,
-            messages=user_turn_messages(scenario, turn_plan, messages),
-            random_seed=_request_seed(scenario.random_seed, turn_index, 0),
-            maximum_attempts=config.maximum_semantic_attempts,
-            validator=lambda envelope: _validate_user_turn(
-                envelope,
-                scenario.speech_style,
-            ),
-        )
+        try:
+            user_result, user_usage, user_requests = await _generate_scoped_user_turn(
+                generator=generator,
+                scenario=scenario,
+                turn_plan=turn_plan,
+                public_history=messages,
+                random_seed=_request_seed(scenario.random_seed + seed_salt, turn_index, 0),
+                maximum_attempts=config.maximum_semantic_attempts,
+            )
+        except GenerationAttemptError as error:
+            raise GenerationAttemptError(
+                str(error),
+                usage=usage.add(error.usage),
+                request_count=request_count + error.request_count,
+            ) from error
         usage = usage.add(user_usage)
         request_count += user_requests
         message_index += 1
@@ -328,8 +467,16 @@ async def generate_record(
                     scenario,
                     messages,
                     planned_step.tool_name,
+                    tuple(
+                        later_step.tool_name
+                        for later_step in turn_plan.tool_steps[step_index + 1 :]
+                    ),
                 ),
-                random_seed=_request_seed(scenario.random_seed, turn_index, step_index + 1),
+                random_seed=_request_seed(
+                    scenario.random_seed + seed_salt,
+                    turn_index,
+                    step_index + 1,
+                ),
                 maximum_attempts=config.maximum_semantic_attempts,
                 validator=lambda envelope, expected=planned_step.tool_name: (
                     _validate_assistant_step(
@@ -362,10 +509,18 @@ async def generate_record(
                 planned_step=planned_step,
                 call=generated_call,
                 generator=generator,
-                random_seed=_request_seed(scenario.random_seed, turn_index, step_index + 101),
+                random_seed=_request_seed(
+                    scenario.random_seed + seed_salt,
+                    turn_index,
+                    step_index + 101,
+                ),
                 maximum_attempts=config.maximum_semantic_attempts,
                 time_reference=config.time_reference,
                 public_history=messages,
+                constrain_time_before_deadline=tuple(
+                    step.tool_name for step in turn_plan.tool_steps
+                )
+                == (ToolName.GET_TIME, ToolName.CALCULATE),
             )
             usage = usage.add(tool_usage)
             request_count += tool_requests
@@ -381,8 +536,19 @@ async def generate_record(
         final_result, final_usage, final_requests = await _generate_validated(
             generator=generator,
             response_type=FinalResponseStepEnvelope,
-            messages=assistant_step_messages(scenario, messages, None),
-            random_seed=_request_seed(scenario.random_seed, turn_index, 999),
+            messages=assistant_step_messages(
+                scenario,
+                messages,
+                None,
+                tuple(
+                    future_step.tool_name
+                    for future_turn in scenario.turns[turn_index + 1 :]
+                    for future_step in future_turn.tool_steps
+                )
+                if call_index == 0 and not turn_plan.tool_steps
+                else (),
+            ),
+            random_seed=_request_seed(scenario.random_seed + seed_salt, turn_index, 999),
             maximum_attempts=config.maximum_semantic_attempts,
             validator=lambda envelope: _validate_assistant_step(
                 envelope.step,
@@ -412,7 +578,68 @@ async def generate_record(
         messages=tuple(messages),
         metadata=metadata,
     )
-    return GeneratedRecord(record=record, usage=usage, request_count=request_count)
+    return GeneratedRecord(
+        record=record,
+        usage=usage,
+        request_count=request_count,
+        rejected_candidate_count=0,
+    )
+
+
+async def _generate_scoped_user_turn(
+    generator: StructuredGenerator,
+    scenario: ScenarioSpec,
+    turn_plan: AssistantTurnPlan,
+    public_history: Sequence[ConversationMessage],
+    random_seed: int,
+    maximum_attempts: int,
+) -> tuple[GeneratedUserTurnEnvelope, TokenUsage, int]:
+    usage = TokenUsage()
+    request_count = 0
+    last_error: ValueError | None = None
+    expected_tools = tuple(step.tool_name for step in turn_plan.tool_steps)
+    for attempt in range(maximum_attempts):
+        try:
+            result = await generator.generate(
+                messages=user_turn_messages(scenario, turn_plan, public_history),
+                response_type=GeneratedUserTurnEnvelope,
+                random_seed=random_seed + attempt * 2,
+            )
+            usage = usage.add(
+                TokenUsage(
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                )
+            )
+            request_count += 1
+            _validate_user_turn(result.value, scenario.speech_style)
+            assessment_result = await generator.generate(
+                messages=user_turn_scope_messages(public_history, result.value.turn.text),
+                response_type=UserTurnScopeAssessmentEnvelope,
+                random_seed=random_seed + attempt * 2 + 1,
+                sampling_mode=TeacherSamplingMode.DETERMINISTIC,
+            )
+            usage = usage.add(
+                TokenUsage(
+                    prompt_tokens=assessment_result.prompt_tokens,
+                    completion_tokens=assessment_result.completion_tokens,
+                )
+            )
+            request_count += 1
+            _validate_user_turn_scope(
+                assessment=assessment_result.value.assessment,
+                expected_tools=expected_tools,
+            )
+        except ValueError as error:
+            last_error = error
+            continue
+        return result.value, usage, request_count
+    assert last_error is not None
+    raise GenerationAttemptError(
+        str(last_error),
+        usage=usage,
+        request_count=request_count,
+    ) from last_error
 
 
 async def _generate_validated(
@@ -462,6 +689,26 @@ def _validate_user_turn(
         )
     if contains_protocol_markup(envelope.turn.text):
         raise ValueError("Generated user text contains protocol markup.")
+    if len(envelope.turn.text.split()) > MAXIMUM_SPOKEN_TURN_WORDS:
+        raise ValueError("Generated user turn exceeds 100 words.")
+
+
+def _validate_user_turn_scope(
+    assessment: UserTurnScopeAssessment,
+    expected_tools: tuple[ToolName, ...],
+) -> None:
+    if not assessment.scope_is_clear:
+        raise ValueError("Generated user turn has unclear information scope.")
+    if not assessment.request_is_supported:
+        raise ValueError("Generated user turn requests an unsupported action.")
+    if assessment.repeats_prior_user_turn:
+        raise ValueError("Generated user turn repeats an earlier user turn.")
+    if not assessment.voice_style_is_natural:
+        raise ValueError("Generated user turn is not natural spoken language.")
+    if assessment.required_tools != expected_tools:
+        expected_names = ", ".join(tool.value for tool in expected_tools) or "none"
+        actual_names = ", ".join(tool.value for tool in assessment.required_tools) or "none"
+        raise ValueError(f"Generated user turn requires {actual_names}; expected {expected_names}.")
 
 
 def _validate_assistant_step(
@@ -473,6 +720,8 @@ def _validate_assistant_step(
         expected_tool_name=expected_tool_name,
         maximum_bridge_words=bridge_word_limit,
     ).validate_step(step)
+    if len(step.audible_text.split()) > MAXIMUM_SPOKEN_TURN_WORDS:
+        raise ValueError("Generated assistant response exceeds 100 words.")
     match step:
         case FinalResponseStep(audible_text=audible_text):
             if contains_protocol_markup(audible_text):
@@ -480,10 +729,14 @@ def _validate_assistant_step(
         case ToolActionStep(audible_text=audible_text, call=CalculateCall(expression=expression)):
             if contains_protocol_markup(audible_text):
                 raise ValueError("Generated tool bridge contains protocol markup.")
+            if audible_text.rstrip().endswith("?"):
+                raise ValueError("Generated tool bridge is phrased as a question.")
             calculate_expression(expression)
         case ToolActionStep(audible_text=audible_text):
             if contains_protocol_markup(audible_text):
                 raise ValueError("Generated tool bridge contains protocol markup.")
+            if audible_text.rstrip().endswith("?"):
+                raise ValueError("Generated tool bridge is phrased as a question.")
 
 
 async def _execute_tool(
@@ -494,6 +747,7 @@ async def _execute_tool(
     maximum_attempts: int,
     time_reference: datetime,
     public_history: Sequence[ConversationMessage],
+    constrain_time_before_deadline: bool,
 ) -> tuple[ToolOutcome, TokenUsage, int]:
     match planned_step.outcome:
         case PlannedOutcome.EMPTY:
@@ -519,6 +773,19 @@ async def _execute_tool(
         case CalculateCall(expression=expression):
             return SuccessOutcome(content=calculate_expression(expression)), TokenUsage(), 0
         case GetTimeCall():
+            if constrain_time_before_deadline:
+                deadline_minutes = _deadline_minutes_from_history(public_history)
+                return (
+                    SuccessOutcome(
+                        content=seeded_time_before_deadline(
+                            random_seed,
+                            time_reference,
+                            deadline_minutes,
+                        )
+                    ),
+                    TokenUsage(),
+                    0,
+                )
             return (
                 SuccessOutcome(content=seeded_time(random_seed, time_reference)),
                 TokenUsage(),
@@ -529,6 +796,248 @@ async def _execute_tool(
 def _validate_search_result(envelope: SyntheticSearchResultEnvelope) -> None:
     if contains_protocol_markup(envelope.result.content):
         raise ValueError("Synthetic search result contains protocol markup.")
+
+
+def _validate_candidate_record(record: ToolDialogueRecord) -> None:
+    seen_user_turns: set[str] = set()
+    for message_index, message in enumerate(record.messages):
+        match message:
+            case UserMessage(text=text):
+                normalized_text = _normalized_spoken_text(text)
+                if normalized_text in seen_user_turns:
+                    raise ValueError("Candidate repeats an earlier user utterance.")
+                seen_user_turns.add(normalized_text)
+            case AssistantMessage(audible_text=audible_text, tool_calls=tool_calls) if tool_calls:
+                result = _result_after_call(record.messages, message_index, tool_calls[0].call_id)
+                _validate_bridge_does_not_reveal_result(
+                    audible_text=audible_text,
+                    tool_name=tool_calls[0].tool_name,
+                    outcome=result.outcome,
+                )
+                if tool_calls[0].tool_name == ToolName.CALCULATE.value:
+                    response = _assistant_after_result(record.messages, result.call_id)
+                    _validate_calculate_response(result.outcome, response.audible_text)
+            case _:
+                pass
+    _validate_time_then_calculate_turns(record)
+
+
+def _deadline_minutes_from_history(public_history: Sequence[ConversationMessage]) -> int:
+    for message in reversed(public_history):
+        match message:
+            case UserMessage(text=text):
+                return _deadline_minutes(text)
+            case _:
+                pass
+    raise ValueError("Time-calculation scenario has no preceding user turn.")
+
+
+def _deadline_minutes(text: str) -> int:
+    matches = tuple(
+        re.finditer(
+            r"\b(?P<hour>1[0-2]|0?[1-9])"
+            r"(?::(?P<minute>[0-5]\d))?\s*"
+            r"(?P<period>a\.?m\.?|p\.?m\.?)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    if len(matches) != 1:
+        raise ValueError("Expected exactly one numeric AM/PM deadline.")
+    match = matches[0]
+    hour = int(match.group("hour"))
+    minute_text = match.group("minute")
+    minute = int(minute_text) if minute_text is not None else 0
+    if match.group("period").casefold().startswith("p") and hour != 12:
+        hour += 12
+    if match.group("period").casefold().startswith("a") and hour == 12:
+        hour = 0
+    deadline_minutes = hour * 60 + minute
+    if not 13 * 60 <= deadline_minutes < 24 * 60:
+        raise ValueError("Time-calculation deadline must be between 1:00 PM and midnight.")
+    return deadline_minutes
+
+
+def _validate_time_then_calculate_turns(record: ToolDialogueRecord) -> None:
+    for message_index, message in enumerate(record.messages):
+        match message:
+            case UserMessage(text=user_text):
+                turn_messages = _messages_until_next_user(record.messages, message_index + 1)
+                _validate_time_calculation_turn(user_text, turn_messages)
+            case _:
+                pass
+
+
+def _messages_until_next_user(
+    messages: tuple[ConversationMessage, ...],
+    start_index: int,
+) -> tuple[ConversationMessage, ...]:
+    turn_messages: list[ConversationMessage] = []
+    for message in messages[start_index:]:
+        match message:
+            case UserMessage():
+                break
+            case _:
+                turn_messages.append(message)
+    return tuple(turn_messages)
+
+
+def _validate_time_calculation_turn(
+    user_text: str,
+    turn_messages: tuple[ConversationMessage, ...],
+) -> None:
+    tool_assistant_messages = tuple(
+        (message_index, message)
+        for message_index, message in enumerate(turn_messages)
+        if isinstance(message, AssistantMessage) and message.tool_calls
+    )
+    tool_names = tuple(message.tool_calls[0].tool_name for _, message in tool_assistant_messages)
+    if tool_names != (ToolName.GET_TIME.value, ToolName.CALCULATE.value):
+        return
+
+    deadline_minutes = _deadline_minutes(user_text)
+    time_message_index, time_message = tool_assistant_messages[0]
+    time_result = _result_after_call(
+        turn_messages,
+        time_message_index,
+        time_message.tool_calls[0].call_id,
+    )
+    match time_result.outcome:
+        case SuccessOutcome(content=timestamp):
+            parsed_time = datetime.fromisoformat(timestamp)
+            current_minutes = parsed_time.hour * 60 + parsed_time.minute
+        case _:
+            return
+
+    calculation_message_index, calculation_message = tool_assistant_messages[1]
+    calculation_result = _result_after_call(
+        turn_messages,
+        calculation_message_index,
+        calculation_message.tool_calls[0].call_id,
+    )
+    match calculation_result.outcome:
+        case SuccessOutcome(content=result_content):
+            expected_result = str(deadline_minutes - current_minutes)
+            if result_content != expected_result:
+                raise ValueError("Time calculation does not match the sampled time and deadline.")
+        case _:
+            pass
+
+
+def _result_after_call(
+    messages: tuple[ConversationMessage, ...],
+    assistant_message_index: int,
+    call_id: str,
+) -> ToolResultMessage:
+    for later_message in messages[assistant_message_index + 1 :]:
+        match later_message:
+            case ToolResultMessage(call_id=result_call_id) if result_call_id == call_id:
+                return later_message
+            case _:
+                pass
+    raise AssertionError("Canonical record omitted the result for a tool call.")
+
+
+def _validate_bridge_does_not_reveal_result(
+    audible_text: str,
+    tool_name: str,
+    outcome: ToolOutcome,
+) -> None:
+    match outcome:
+        case SuccessOutcome(content=result_content):
+            pass
+        case _:
+            return
+    normalized_bridge = _normalized_spoken_text(audible_text)
+    normalized_result = _normalized_spoken_text(result_content)
+    if (
+        tool_name == ToolName.CALCULATE.value
+        and normalized_result
+        and re.search(rf"\b{re.escape(normalized_result)}\b", normalized_bridge)
+    ):
+        raise ValueError("Calculate bridge reveals the pending result.")
+    if tool_name == ToolName.GET_TIME.value and re.search(
+        r"\b(?:[0-2]?\d:[0-5]\d|a\.?m\.?|p\.?m\.?|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"january|february|march|april|may|june|july|august|september|"
+        r"october|november|december)\b",
+        audible_text.casefold(),
+    ):
+        raise ValueError("Get-time bridge states a pending date or time.")
+
+
+def _assistant_after_result(
+    messages: tuple[ConversationMessage, ...],
+    call_id: str,
+) -> AssistantMessage:
+    result_seen = False
+    for message in messages:
+        match message:
+            case ToolResultMessage(call_id=result_call_id) if result_call_id == call_id:
+                result_seen = True
+            case AssistantMessage() if result_seen:
+                return message
+            case _:
+                pass
+    raise AssertionError("Canonical record omitted the assistant response after a tool result.")
+
+
+def _validate_calculate_response(outcome: ToolOutcome, audible_text: str) -> None:
+    match outcome:
+        case SuccessOutcome(content=result_content):
+            pass
+        case _:
+            return
+    if not re.search(
+        rf"(?<![\d.]){re.escape(result_content)}(?!\d|[.,]\d)",
+        audible_text,
+    ):
+        raise ValueError("Assistant response does not state the exact calculate result.")
+
+
+def _validate_record_quality(assessment: RecordQualityAssessment) -> None:
+    checks = (
+        assessment.tool_plan_is_sufficient,
+        assessment.no_premature_tool_results,
+        assessment.assistant_claims_are_grounded,
+        assessment.tool_results_are_used_correctly,
+        assessment.user_turns_are_distinct,
+        assessment.sequential_calls_are_justified,
+        assessment.no_unsupported_action_commitments,
+        assessment.conversation_is_coherent,
+        assessment.voice_style_is_natural,
+        assessment.tone_is_appropriate,
+    )
+    if not all(checks) or assessment.issues:
+        issue_names = ", ".join(issue.value for issue in assessment.issues) or "unspecified"
+        raise ValueError(f"Record quality audit rejected candidate: {issue_names}.")
+
+
+def _validate_record_grounding(
+    record: ToolDialogueRecord,
+    assessment: RecordGroundingAssessment,
+) -> None:
+    expected_message_ids = tuple(
+        message.message_id for message in record.messages if isinstance(message, AssistantMessage)
+    )
+    actual_message_ids = tuple(finding.message_id for finding in assessment.findings)
+    if actual_message_ids != expected_message_ids:
+        raise ValueError("Grounding audit did not assess every assistant message in order.")
+    unsupported_findings = tuple(
+        finding
+        for finding in assessment.findings
+        if finding.verdict is GroundingVerdict.UNSUPPORTED or finding.unsupported_excerpts
+    )
+    if unsupported_findings:
+        excerpts = tuple(
+            excerpt for finding in unsupported_findings for excerpt in finding.unsupported_excerpts
+        )
+        detail = "; ".join(excerpts) or "unspecified assistant claim"
+        raise ValueError(f"Grounding audit rejected candidate: {detail}.")
+
+
+def _normalized_spoken_text(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.casefold()))
 
 
 def _canonical_tool_call(call_id: str, generated_call: GeneratedToolCall) -> ToolCall:

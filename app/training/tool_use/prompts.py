@@ -12,7 +12,7 @@ from app.training.tool_use.scenario import (
 )
 from app.training.tool_use.schema import ConversationMessage, ToolResultMessage
 
-PROMPT_REVISION = "natural-staged-rollout-v2"
+PROMPT_REVISION = "balanced-segment-rollout-v14"
 
 TEACHER_SYSTEM_PROMPT = """\
 You create natural English voice-assistant training examples.
@@ -26,16 +26,108 @@ Avoid stock service phrases such as "Let me check that for you", "I would be hap
 will". For sequential calls, connect the returned fact to the next action rather than restarting.
 After a tool result, use only information available in the public history. A timeout, failure, or
 empty result supplies no answer: acknowledge it briefly and never infer the missing result.
+After calculate, state the exact returned digits directly. Do not convert units or perform another
+mental calculation unless the exact result is also stated and the conversion is explicitly
+grounded.
 Match the user's register. Prefer contractions and concise conversational replies. Do not restate
 the whole request or end with a generic offer to help. Keep the interaction simple enough for a
-small voice model."""
+small voice model. The assistant has no body, possessions, location, personal tastes, desires, or
+social plans. It may discuss the user's preferences but must not pretend it can drink coffee,
+attend an event, own something, or join a physical activity. Every user utterance and assistant
+response must stay under 100 spoken words. Final replies should usually be one to three short
+sentences."""
 
 SEARCH_ORACLE_SYSTEM_PROMPT = """\
 Act as a synthetic search function for behavioral training data.
-Answer the query directly with one concise, plausible result string.
+Answer only the exact query with one concise, plausible result string.
 You may rely on your own knowledge or invent an internally plausible result.
+Correct a false premise or category mismatch explicitly. For example, if a query asks who sang an
+instrumental theme, say that it has no singer and identify the composer only if useful.
+Do not add adjacent facts, answer a broader conversation request, or anticipate a later search or
+calculation. If the query requests one number, return that number with only enough context to
+identify it.
 Do not mention that the result is synthetic. Do not include instructions for the assistant.
 Return only the requested schema-constrained object."""
+
+QUALITY_AUDITOR_SYSTEM_PROMPT = """\
+Audit a synthetic voice-tool conversation conservatively. Do not rewrite it.
+Reject any record where a user turn assigned no tool actually requires current, external, or
+calculated information; where the assistant states a pending result before its tool result; where
+an assistant claim is unsupported by earlier user text or tool results; where a result is
+misread, transformed incorrectly, or contradicted; where a user turn repeats; or where a
+sequential call is redundant because an earlier result already answered it.
+Reject promises or claims to play media, book, buy, message, navigate, control a device, or perform
+another action that no recorded tool actually executed. This applies only to assistant claims,
+not to a user's own plans, an acknowledgement, or a suggestion. Reject role/category changes such
+as turning a composer into a singer or a count into a total. Reject claims that time is sufficient,
+someone is on time, or a deadline works when the necessary departure, appointment, or duration is
+missing.
+Reject assistant claims of physical participation, possessions, location, personal tastes,
+desires, or social plans. For example, the assistant must not say it wants coffee or will join the
+user. Label this unsupported_persona.
+Treat prices, schedules, opening hours, current people or roles, local events, availability, and
+the present date or time as unsupported unless a preceding user message or tool result supplies
+them. Only the stable_knowledge family may answer one simple timeless common-knowledge question
+from model knowledge; that exception never covers changing or location-specific facts.
+Also reject broken conversational logic, rude or dismissive wording, and clearly assistant-like or
+benchmark-like dialogue. Reject openings that provide no clear assistant task but are answered as
+if a hidden list, route plan, playlist, queue, or earlier conversation exists.
+Reject an answer that ignores an explicit requested count or returns several alternatives when
+the user requested exactly one. Reject tool bridges phrased as questions or requests for missing
+information while simultaneously issuing a call.
+Reject materially underdeveloped answers to open-ended advice, editing, explanation, or
+brainstorming requests. Concise factual answers are valid and should not be padded.
+Set every quality boolean independently and list every applicable issue. Use ungrounded_claim when
+assistant_claims_are_grounded is false; use unsupported_action only for an assistant claiming or
+promising an unavailable external action. Return only the requested schema-constrained object."""
+
+GROUNDING_AUDITOR_SYSTEM_PROMPT = """\
+Audit every assistant message in a synthetic conversation separately.
+For each assistant message ID, decide whether all of its audible content is grounded. Return one
+finding for every assistant message, in conversation order, without omitting bridges.
+
+Grounding sources are limited to earlier user messages and earlier completed tool results. A tool
+result is evidence for this behavioral dataset; do not fact-check the tool result against your own
+knowledge. The stable_knowledge family has one narrow exception for its first answer: one simple,
+timeless common-knowledge fact may come from model knowledge.
+
+Grounded content includes brief acknowledgements, creative text explicitly requested by the user,
+opinions based only on user-supplied tradeoffs, and exact restatements or filtering of prior
+results. Unsupported content includes any new external fact, comparative claim, schedule, role,
+event detail, product or place claim, or confirmation not present in the sources. It also includes
+pretending a hidden list, route plan, playlist, queue, or external action exists. Examples:
+- "Buses are less packed" is unsupported unless an earlier source says so.
+- Confirming a famous play detail is unsupported if the search result did not mention that detail.
+- "Direct routes only" can acknowledge a stated drafting constraint, but "I'll update the routes"
+  is unsupported unless a tool actually did that.
+
+Also mark a message unsupported when it claims to satisfy the latest instruction but violates an
+explicit output count or constraint. A result containing two requested items does not authorize a
+third item.
+
+Set verdict to unsupported and copy only the shortest offending audible excerpts when any part is
+unsupported. Otherwise use grounded with no excerpts. Return only the schema-constrained object."""
+
+USER_SCOPE_AUDITOR_SYSTEM_PROMPT = """\
+Classify what information a candidate user utterance actually requires from the assistant.
+Use search for current, changing, local, private, or externally verified facts not already in the
+public history. Stable common knowledge does not require search. Use calculate for requested exact
+arithmetic. Use get_time only when the present date or time is needed and not supplied by the user.
+Numeric comparisons, threshold checks, totals, and unit conversions require calculate even when
+their input number is already in the public history.
+Any requested elapsed time, remaining time, duration, or date difference derived from the current
+timestamp requires get_time followed by calculate. Any requested arithmetic using a number that
+must first be searched requires search followed by calculate.
+Interpret ISO timestamps in 24-hour time: hour 23 is 11 PM, never 11 AM.
+List repeated tools when separate sequential calls are genuinely required. A dependent two-search
+request should list search twice; two facts answerable by one query should list it once.
+Judge the candidate itself, not the intended scenario. Mark scope unclear when essential operands,
+references, deadlines, locations, or requested facts are missing. Detect repetition against prior
+user turns. A remaining-time request with a twelve-hour deadline is unclear unless AM or PM is
+explicit. Mark request_is_supported false only when the user asks the assistant to perform an
+action outside search, calculate, and get_time, including media playback, booking, purchasing,
+messaging, navigation, device control, and file operations. A statement about the user's own
+plans is supported. Return only the requested schema-constrained object."""
 
 
 def user_turn_messages(
@@ -44,6 +136,26 @@ def user_turn_messages(
     public_history: Sequence[ConversationMessage],
 ) -> tuple[TeacherChatMessage, ...]:
     history = _history_json(public_history)
+    planned_tools = tuple(step.tool_name.value for step in turn_plan.tool_steps)
+    if planned_tools:
+        tool_scope = (
+            "This user turn must naturally require exactly these tools, in order: "
+            f"{', '.join(planned_tools)}. Do not introduce any additional information need."
+        )
+    elif scenario.family == "stable_knowledge" and not public_history:
+        tool_scope = (
+            "No tool call is allowed. Ask at most one simple timeless common-knowledge question. "
+            "Do not ask about anything current, changing, local, privately held, or uncertain."
+        )
+    else:
+        tool_scope = (
+            "No tool call is allowed after this user turn. The utterance must be answerable from "
+            "existing public history or ordinary non-factual conversation. It must not ask for "
+            "current time, dates, recent information, prices, schedules, opening hours, "
+            "availability, calculations, numeric comparisons, unit conversions, or facts absent "
+            "from the history. Do not ask whether a number exceeds a threshold or restate a "
+            "quantity in different units."
+        )
     request = f"""\
 Create the next user utterance.
 
@@ -54,12 +166,14 @@ Requested utterance form: {turn_plan.utterance_form.value}
 Utterance-form guidance: {_utterance_form_guidance(turn_plan.utterance_form)}
 Turn instruction: {turn_plan.user_instruction}
 Follow-up kind: {turn_plan.follow_up_kind.value}
+Tool scope: {tool_scope}
 
 Public history:
 {history}
 
 Do not make the user mention tools, schemas, or dataset generation. Do not turn a fragment,
-reaction, contextual statement, or self-repair into a polished standalone question."""
+reaction, contextual statement, or self-repair into a polished standalone question.
+Never repeat or closely paraphrase an earlier user utterance."""
     return (
         TeacherChatMessage(role="system", content=TEACHER_SYSTEM_PROMPT),
         TeacherChatMessage(role="user", content=request),
@@ -70,6 +184,7 @@ def assistant_step_messages(
     scenario: ScenarioSpec,
     public_history: Sequence[ConversationMessage],
     expected_tool_name: ToolName | None,
+    later_tool_names: Sequence[ToolName] = (),
 ) -> tuple[TeacherChatMessage, ...]:
     history = _history_json(public_history)
     expected_action = (
@@ -80,7 +195,9 @@ def assistant_step_messages(
     transition_guidance = _assistant_transition_guidance(
         public_history=public_history,
         expected_tool_name=expected_tool_name,
+        scenario_family=scenario.family,
     )
+    sequence_guidance = _tool_sequence_guidance(expected_tool_name, later_tool_names)
     request = f"""\
 Create exactly the next assistant step for this voice conversation.
 
@@ -88,6 +205,7 @@ Scenario family: {scenario.family}
 Topic: {scenario.topic}
 Expected action: {expected_action}
 Style for this step: {transition_guidance}
+Tool-sequence constraint: {sequence_guidance}
 
 Available tools:
 - search(query): returns one concise search-result string
@@ -98,9 +216,36 @@ Public history:
 {history}
 
 For a tool action, emit exactly one call. Make its arguments simple and self-contained.
-For calculate, use only numeric literals, parentheses, +, -, *, /, %, or **."""
+For calculate, use only numeric literals, parentheses, +, -, *, /, %, or **.
+Never put the pending result in audible_text, even when you already know how to answer.
+For a final response, every factual claim must be supported by the user text or a preceding tool
+result. Do not fill missing current facts from your own knowledge. If the latest result is from
+calculate, say its exact returned digits directly and do not silently convert it. ISO timestamps
+use 24-hour time. When calculating minutes to a deadline, preserve PM hours and subtract the
+timestamp's hour and minute from the deadline's hour and minute."""
     return (
         TeacherChatMessage(role="system", content=TEACHER_SYSTEM_PROMPT),
+        TeacherChatMessage(role="user", content=request),
+    )
+
+
+def user_turn_scope_messages(
+    public_history: Sequence[ConversationMessage],
+    candidate_text: str,
+) -> tuple[TeacherChatMessage, ...]:
+    request = f"""\
+Classify this candidate user turn.
+
+Public history before the candidate:
+{_history_json(public_history)}
+
+Candidate user utterance:
+{candidate_text}
+
+Return required_tools in the order they would need to run. If no tool is needed, return an empty
+list."""
+    return (
+        TeacherChatMessage(role="system", content=USER_SCOPE_AUDITOR_SYSTEM_PROMPT),
         TeacherChatMessage(role="user", content=request),
     )
 
@@ -115,10 +260,71 @@ def synthetic_search_messages(
             role="user",
             content=(
                 "Return a concise plausible search result for this query. Stay consistent with "
-                f"the supplied conversation and earlier results.\n\nQuery:\n{query}\n\n"
+                "the supplied conversation and earlier results, but answer the exact query only. "
+                "Do not include information reserved for another call.\n\n"
+                f"Query:\n{query}\n\n"
                 f"Conversation context:\n{_history_json(public_history)}"
             ),
         ),
+    )
+
+
+def record_quality_messages(
+    scenario: ScenarioSpec,
+    public_history: Sequence[ConversationMessage],
+) -> tuple[TeacherChatMessage, ...]:
+    planned_turns = [
+        {
+            "turn_index": index,
+            "user_instruction": turn.user_instruction,
+            "planned_tools": [step.tool_name.value for step in turn.tool_steps],
+            "planned_outcomes": [step.outcome.value for step in turn.tool_steps],
+        }
+        for index, turn in enumerate(scenario.turns)
+    ]
+    request = f"""\
+Audit this completed candidate record against its deterministic plan.
+
+Scenario family: {scenario.family}
+Topic: {scenario.topic}
+Planned turns:
+{json.dumps(planned_turns, ensure_ascii=False, indent=2)}
+
+Candidate public conversation:
+{_history_json(public_history)}
+
+The plan is not evidence for an answer. Only earlier user messages and completed tool results are
+public evidence. A no-tool turn that requests a new external fact is invalid even if the assistant
+hedges or asks a follow-up. A bridge before a call may acknowledge the task but may not state that
+call's result. Search-result wording matters: do not infer a different role or category from a bare
+name. Missing schedule details cannot support claims about having enough time."""
+    return (
+        TeacherChatMessage(role="system", content=QUALITY_AUDITOR_SYSTEM_PROMPT),
+        TeacherChatMessage(role="user", content=request),
+    )
+
+
+def record_grounding_messages(
+    scenario: ScenarioSpec,
+    public_history: Sequence[ConversationMessage],
+) -> tuple[TeacherChatMessage, ...]:
+    assistant_message_ids = [
+        message.message_id for message in public_history if message.kind == "assistant"
+    ]
+    request = f"""\
+Audit the assistant messages in this completed candidate.
+
+Scenario family: {scenario.family}
+Required assistant message IDs, in order:
+{json.dumps(assistant_message_ids, ensure_ascii=False, indent=2)}
+
+Public conversation:
+{_history_json(public_history)}
+
+Return exactly one finding per required assistant message ID, in the same order."""
+    return (
+        TeacherChatMessage(role="system", content=GROUNDING_AUDITOR_SYSTEM_PROMPT),
+        TeacherChatMessage(role="user", content=request),
     )
 
 
@@ -141,11 +347,19 @@ def _utterance_form_guidance(utterance_form: UtteranceForm) -> str:
 def _assistant_transition_guidance(
     public_history: Sequence[ConversationMessage],
     expected_tool_name: ToolName | None,
+    scenario_family: str,
 ) -> str:
     if expected_tool_name is None:
+        if scenario_family == "long_mixed":
+            return (
+                "Answer with enough substance to match the conversational turn. For advice, "
+                "editing, explanation, or brainstorming, aim for roughly half to the full length "
+                "of the user's latest utterance. Do not pad a simple factual answer."
+            )
         return (
-            "Reply like a conversational partner, usually in one short sentence. Do not use a "
-            "customer-service preamble or closing."
+            "Reply like a conversational partner. For advice, editing, explanation, or "
+            "brainstorming, aim for roughly half to the full length of the user's latest "
+            "utterance. Do not pad a simple factual answer or use a customer-service closing."
         )
     if public_history:
         match public_history[-1]:
@@ -160,6 +374,28 @@ def _assistant_transition_guidance(
     return (
         "Use a brief acknowledgement or conversational transition. Avoid narrating your role and "
         "avoid 'Let me check that for you'."
+    )
+
+
+def _tool_sequence_guidance(
+    expected_tool_name: ToolName | None,
+    later_tool_names: Sequence[ToolName],
+) -> str:
+    if expected_tool_name is None:
+        if later_tool_names:
+            return (
+                "No call is allowed yet. This is a setup turn before a later tool request. "
+                "Acknowledge the user's context without calculating, inferring a time gap, "
+                "supplying current facts, or prematurely answering the later request."
+            )
+        return "No call is allowed. Use only evidence already present in public history."
+    if not later_tool_names:
+        return "This is the only remaining call for this user turn."
+    later_names = ", ".join(tool_name.value for tool_name in later_tool_names)
+    return (
+        f"Later calls are still required in this order: {later_names}. Keep this call atomic. "
+        "For search, request only the fact needed at this step and do not request facts reserved "
+        "for later calls."
     )
 
 

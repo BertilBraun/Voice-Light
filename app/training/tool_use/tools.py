@@ -15,6 +15,8 @@ UnaryOperation = Callable[[Decimal], Decimal]
 MAXIMUM_ABSOLUTE_RESULT = Decimal("1e100")
 MAXIMUM_EXPONENT = Decimal("12")
 TIME_SAMPLE_WINDOW = timedelta(days=365)
+MINIMUM_DEADLINE_GAP_MINUTES = 15
+MAXIMUM_DEADLINE_GAP_MINUTES = 360
 
 
 def call_arguments(call: GeneratedToolCall) -> JsonObjectValue:
@@ -65,6 +67,30 @@ def seeded_time(random_seed: int, reference_time: datetime) -> str:
     target_timezone = timezone(timedelta(hours=utc_offset_hours))
     timestamp = reference_utc - timedelta(seconds=seconds_ago)
     return timestamp.astimezone(target_timezone).replace(microsecond=0).isoformat()
+
+
+def seeded_time_before_deadline(
+    random_seed: int,
+    reference_time: datetime,
+    deadline_minutes: int,
+) -> str:
+    if not MINIMUM_DEADLINE_GAP_MINUTES <= deadline_minutes < 24 * 60:
+        raise ValueError("Deadline must leave room for a same-day sampled time.")
+    timestamp = datetime.fromisoformat(seeded_time(random_seed, reference_time))
+    generator = random.Random(random_seed ^ 0x5A17)
+    maximum_gap = min(MAXIMUM_DEADLINE_GAP_MINUTES, deadline_minutes)
+    gap_minutes = generator.randrange(MINIMUM_DEADLINE_GAP_MINUTES, maximum_gap + 1)
+    sampled_minutes = deadline_minutes - gap_minutes
+    sampled_time = timestamp.replace(
+        hour=sampled_minutes // 60,
+        minute=sampled_minutes % 60,
+    )
+    reference_utc = reference_time.astimezone(UTC).replace(microsecond=0)
+    if sampled_time.astimezone(UTC) > reference_utc:
+        sampled_time -= timedelta(days=1)
+    if sampled_time.astimezone(UTC) < reference_utc - TIME_SAMPLE_WINDOW:
+        sampled_time += timedelta(days=1)
+    return sampled_time.isoformat()
 
 
 def _evaluate_node(node: ast.expr) -> Decimal:

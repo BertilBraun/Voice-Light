@@ -10,7 +10,7 @@ from typing import Generic, Literal, TypeVar
 import httpx
 from pydantic import Field, JsonValue
 
-from app.training.tool_use.protocol import TeacherChatMessage
+from app.training.tool_use.protocol import TeacherChatMessage, TeacherSamplingMode
 from app.training.tool_use.schema import ToolUseBaseModel
 
 StructuredOutput = TypeVar("StructuredOutput", bound=ToolUseBaseModel)
@@ -153,16 +153,18 @@ class VllmStructuredClient:
         messages: Sequence[TeacherChatMessage],
         response_type: type[StructuredOutput],
         random_seed: int,
+        sampling_mode: TeacherSamplingMode = TeacherSamplingMode.CREATIVE,
     ) -> StructuredGenerationResult[StructuredOutput]:
         schema_value: dict[str, JsonValue] = response_type.model_json_schema()
+        sampling = _sampling_parameters(self.config, sampling_mode)
         request = VllmChatCompletionRequest(
             model=self.config.model_identifier,
             messages=tuple(messages),
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            min_p=self.config.min_p,
-            presence_penalty=self.config.presence_penalty,
-            repetition_penalty=self.config.repetition_penalty,
+            temperature=sampling.temperature,
+            top_p=sampling.top_p,
+            min_p=sampling.min_p,
+            presence_penalty=sampling.presence_penalty,
+            repetition_penalty=sampling.repetition_penalty,
             max_tokens=self.config.maximum_tokens,
             seed=random_seed,
             response_format=JsonSchemaResponseFormat(
@@ -172,7 +174,7 @@ class VllmStructuredClient:
                 )
             ),
             chat_template_kwargs=ChatTemplateArguments(),
-            top_k=self.config.top_k,
+            top_k=sampling.top_k,
         )
         response = await self._post_with_retry(request)
         if len(response.choices) != 1:
@@ -243,3 +245,37 @@ class VllmStructuredClient:
             with self.request_log_path.open("a", encoding="utf-8") as request_log:
                 request_log.write(entry.model_dump_json())
                 request_log.write("\n")
+
+
+class SamplingParameters(ToolUseBaseModel):
+    temperature: float
+    top_p: float
+    top_k: int
+    min_p: float
+    presence_penalty: float
+    repetition_penalty: float
+
+
+def _sampling_parameters(
+    config: VllmClientConfig,
+    sampling_mode: TeacherSamplingMode,
+) -> SamplingParameters:
+    match sampling_mode:
+        case TeacherSamplingMode.CREATIVE:
+            return SamplingParameters(
+                temperature=config.temperature,
+                top_p=config.top_p,
+                top_k=config.top_k,
+                min_p=config.min_p,
+                presence_penalty=config.presence_penalty,
+                repetition_penalty=config.repetition_penalty,
+            )
+        case TeacherSamplingMode.DETERMINISTIC:
+            return SamplingParameters(
+                temperature=0.0,
+                top_p=1.0,
+                top_k=1,
+                min_p=0.0,
+                presence_penalty=0.0,
+                repetition_penalty=1.0,
+            )

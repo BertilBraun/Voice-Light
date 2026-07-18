@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field
@@ -11,6 +12,11 @@ from app.training.tool_use.schema import SpeechStyle, ToolUseBaseModel
 class TeacherChatMessage(ToolUseBaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+class TeacherSamplingMode(StrEnum):
+    CREATIVE = "creative"
+    DETERMINISTIC = "deterministic"
 
 
 class GeneratedUserTurn(ToolUseBaseModel):
@@ -71,8 +77,71 @@ class GeneratedUserTurnEnvelope(ToolUseBaseModel):
     turn: GeneratedUserTurn
 
 
+class UserTurnScopeAssessment(ToolUseBaseModel):
+    required_tools: tuple[ToolName, ...]
+    scope_is_clear: bool
+    request_is_supported: bool
+    repeats_prior_user_turn: bool
+    voice_style_is_natural: bool
+
+
+class UserTurnScopeAssessmentEnvelope(ToolUseBaseModel):
+    assessment: UserTurnScopeAssessment
+
+
 class SyntheticSearchResultEnvelope(ToolUseBaseModel):
     result: SyntheticSearchResult
+
+
+class RecordQualityIssue(StrEnum):
+    UNPLANNED_TOOL_NEED = "unplanned_tool_need"
+    PREMATURE_TOOL_RESULT = "premature_tool_result"
+    UNGROUNDED_ASSISTANT_CLAIM = "ungrounded_assistant_claim"
+    INCORRECT_RESULT_USE = "incorrect_result_use"
+    DUPLICATE_USER_TURN = "duplicate_user_turn"
+    REDUNDANT_TOOL_CALL = "redundant_tool_call"
+    UNSUPPORTED_ACTION = "unsupported_action"
+    UNSUPPORTED_PERSONA = "unsupported_persona"
+    INCOHERENT_CONVERSATION = "incoherent_conversation"
+    UNNATURAL_VOICE_STYLE = "unnatural_voice_style"
+    INAPPROPRIATE_TONE = "inappropriate_tone"
+
+
+class RecordQualityAssessment(ToolUseBaseModel):
+    tool_plan_is_sufficient: bool
+    no_premature_tool_results: bool
+    assistant_claims_are_grounded: bool
+    tool_results_are_used_correctly: bool
+    user_turns_are_distinct: bool
+    sequential_calls_are_justified: bool
+    no_unsupported_action_commitments: bool
+    conversation_is_coherent: bool
+    voice_style_is_natural: bool
+    tone_is_appropriate: bool
+    issues: tuple[RecordQualityIssue, ...]
+
+
+class RecordQualityAssessmentEnvelope(ToolUseBaseModel):
+    assessment: RecordQualityAssessment
+
+
+class GroundingVerdict(StrEnum):
+    GROUNDED = "grounded"
+    UNSUPPORTED = "unsupported"
+
+
+class AssistantGroundingFinding(ToolUseBaseModel):
+    message_id: str
+    verdict: GroundingVerdict
+    unsupported_excerpts: tuple[str, ...]
+
+
+class RecordGroundingAssessment(ToolUseBaseModel):
+    findings: tuple[AssistantGroundingFinding, ...]
+
+
+class RecordGroundingAssessmentEnvelope(ToolUseBaseModel):
+    assessment: RecordGroundingAssessment
 
 
 def generated_call_tool_name(call: GeneratedToolCall) -> ToolName:

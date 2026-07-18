@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+import pytest
 
 from app.training.tool_use.protocol import (
     GeneratedUserTurn,
     GeneratedUserTurnEnvelope,
     TeacherChatMessage,
+    TeacherSamplingMode,
 )
 from app.training.tool_use.schema import SpeechStyle
 from app.training.tool_use.vllm_client import (
@@ -19,7 +22,48 @@ from app.training.tool_use.vllm_client import (
 )
 
 
-def test_vllm_client_sends_json_schema_and_disables_thinking(tmp_path: Path) -> None:
+@dataclass(frozen=True)
+class ExpectedSampling:
+    temperature: float
+    top_p: float
+    top_k: int
+    min_p: float
+    presence_penalty: float
+    repetition_penalty: float
+
+
+@pytest.mark.parametrize(
+    ("sampling_mode", "expected_sampling"),
+    (
+        (
+            TeacherSamplingMode.CREATIVE,
+            ExpectedSampling(
+                temperature=0.7,
+                top_p=0.8,
+                top_k=20,
+                min_p=0.0,
+                presence_penalty=1.5,
+                repetition_penalty=1.0,
+            ),
+        ),
+        (
+            TeacherSamplingMode.DETERMINISTIC,
+            ExpectedSampling(
+                temperature=0.0,
+                top_p=1.0,
+                top_k=1,
+                min_p=0.0,
+                presence_penalty=0.0,
+                repetition_penalty=1.0,
+            ),
+        ),
+    ),
+)
+def test_vllm_client_sends_json_schema_and_disables_thinking(
+    tmp_path: Path,
+    sampling_mode: TeacherSamplingMode,
+    expected_sampling: ExpectedSampling,
+) -> None:
     captured_request: httpx.Request | None = None
     request_log_path = tmp_path / "requests.jsonl"
 
@@ -87,6 +131,7 @@ def test_vllm_client_sends_json_schema_and_disables_thinking(tmp_path: Path) -> 
                 messages=(TeacherChatMessage(role="user", content="Create a user turn."),),
                 response_type=GeneratedUserTurnEnvelope,
                 random_seed=17,
+                sampling_mode=sampling_mode,
             )
 
     result = asyncio.run(exercise())
@@ -99,12 +144,12 @@ def test_vllm_client_sends_json_schema_and_disables_thinking(tmp_path: Path) -> 
     assert "schema_value" not in payload["response_format"]["json_schema"]
     assert payload["chat_template_kwargs"]["enable_thinking"] is False
     assert payload["seed"] == 17
-    assert payload["temperature"] == 0.7
-    assert payload["top_p"] == 0.8
-    assert payload["top_k"] == 20
-    assert payload["min_p"] == 0.0
-    assert payload["presence_penalty"] == 1.5
-    assert payload["repetition_penalty"] == 1.0
+    assert payload["temperature"] == expected_sampling.temperature
+    assert payload["top_p"] == expected_sampling.top_p
+    assert payload["top_k"] == expected_sampling.top_k
+    assert payload["min_p"] == expected_sampling.min_p
+    assert payload["presence_penalty"] == expected_sampling.presence_penalty
+    assert payload["repetition_penalty"] == expected_sampling.repetition_penalty
     log_entries = request_log_path.read_text(encoding="utf-8").splitlines()
     assert len(log_entries) == 1
     log_entry = json.loads(log_entries[0])

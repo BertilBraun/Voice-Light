@@ -4,7 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.training.tool_use.tools import calculate_expression, seeded_time
+from app.training.tool_use.tools import (
+    calculate_expression,
+    seeded_time,
+    seeded_time_before_deadline,
+)
 
 
 @pytest.mark.parametrize(
@@ -59,3 +63,28 @@ def test_seeded_time_is_stable_and_timezone_aware() -> None:
 def test_seeded_time_requires_timezone_aware_reference() -> None:
     with pytest.raises(ValueError, match="UTC offset"):
         seeded_time(91, datetime(2026, 7, 18, 12, 0))
+
+
+def test_seeded_time_before_deadline_is_varied_and_compatible() -> None:
+    reference_time = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+    deadline_minutes = 20 * 60 + 30
+    sampled_times = tuple(
+        datetime.fromisoformat(
+            seeded_time_before_deadline(
+                random_seed,
+                reference_time,
+                deadline_minutes,
+            )
+        )
+        for random_seed in range(200)
+    )
+
+    assert len(set(sampled_times)) == len(sampled_times)
+    assert all(
+        15 <= deadline_minutes - (sample.hour * 60 + sample.minute) <= 360
+        for sample in sampled_times
+    )
+    assert all(
+        reference_time - timedelta(days=365) <= sample.astimezone(UTC) <= reference_time
+        for sample in sampled_times
+    )

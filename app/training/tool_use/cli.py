@@ -5,8 +5,19 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
+from app.training.tool_use.composition import (
+    build_bucket_calibration_compositions,
+    select_bucket_calibration_segments,
+    write_composed_records,
+    write_composition_plans,
+)
 from app.training.tool_use.generation import RolloutGenerationConfig, generate_dataset
-from app.training.tool_use.scenario import read_scenarios, sample_scenarios, write_scenarios
+from app.training.tool_use.scenario import (
+    ScenarioSamplingProfile,
+    read_scenarios,
+    sample_scenarios,
+    write_scenarios,
+)
 from app.training.tool_use.schema import read_records, validate_records
 from app.training.tool_use.statistics import dataset_statistics
 from app.training.tool_use.vllm_client import VllmClientConfig, VllmStructuredClient
@@ -24,6 +35,10 @@ def main() -> None:
             _validate(arguments)
         case "summarize":
             _summarize(arguments)
+        case "compose-calibration":
+            _compose_calibration(arguments)
+        case "select-calibration":
+            _select_calibration(arguments)
         case _:
             raise AssertionError("argparse returned an excluded tool-use command.")
 
@@ -36,6 +51,12 @@ def _argument_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("output", type=Path)
     plan_parser.add_argument("--count", type=int, required=True)
     plan_parser.add_argument("--seed", type=int, required=True)
+    plan_parser.add_argument(
+        "--profile",
+        type=ScenarioSamplingProfile,
+        choices=tuple(ScenarioSamplingProfile),
+        required=True,
+    )
 
     generate_parser = subparsers.add_parser(
         "generate",
@@ -60,6 +81,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--limit", type=int)
     generate_parser.add_argument("--concurrency", type=int, default=128)
     generate_parser.add_argument("--semantic-attempts", type=int, default=3)
+    generate_parser.add_argument("--record-attempts", type=int, default=3)
     generate_parser.add_argument("--http-attempts", type=int, default=3)
     generate_parser.add_argument("--timeout-seconds", type=float, default=180.0)
     generate_parser.add_argument("--temperature", type=float, default=0.7)
@@ -78,11 +100,31 @@ def _argument_parser() -> argparse.ArgumentParser:
         help="Print deterministic corpus statistics.",
     )
     summarize_parser.add_argument("records", type=Path)
+
+    compose_parser = subparsers.add_parser(
+        "compose-calibration",
+        help="Compose ten review histories from the balanced segment calibration set.",
+    )
+    compose_parser.add_argument("segments", type=Path)
+    compose_parser.add_argument("output", type=Path)
+    compose_parser.add_argument("--plans", type=Path, required=True)
+    compose_parser.add_argument("--seed", type=int, required=True)
+
+    select_parser = subparsers.add_parser(
+        "select-calibration",
+        help="Select one accepted segment per behavior bucket and speech style.",
+    )
+    select_parser.add_argument("candidates", type=Path)
+    select_parser.add_argument("output", type=Path)
     return parser
 
 
 def _plan(arguments: argparse.Namespace) -> None:
-    scenarios = sample_scenarios(count=arguments.count, random_seed=arguments.seed)
+    scenarios = sample_scenarios(
+        count=arguments.count,
+        random_seed=arguments.seed,
+        profile=arguments.profile,
+    )
     write_scenarios(arguments.output, scenarios)
     print(f"Wrote {len(scenarios)} scenarios to {arguments.output}")
 
@@ -114,6 +156,7 @@ async def _generate(arguments: argparse.Namespace) -> None:
         time_reference=arguments.time_reference,
         maximum_concurrency=arguments.concurrency,
         maximum_semantic_attempts=arguments.semantic_attempts,
+        maximum_record_attempts=arguments.record_attempts,
     )
     async with VllmStructuredClient(
         config=client_config,
@@ -139,6 +182,30 @@ def _validate(arguments: argparse.Namespace) -> None:
 def _summarize(arguments: argparse.Namespace) -> None:
     records = read_records(arguments.records)
     print(dataset_statistics(records).model_dump_json(indent=2))
+
+
+def _compose_calibration(arguments: argparse.Namespace) -> None:
+    source_records = read_records(arguments.segments)
+    compositions = build_bucket_calibration_compositions(
+        source_records=source_records,
+        random_seed=arguments.seed,
+    )
+    write_composition_plans(
+        arguments.plans,
+        tuple(plan for plan, _ in compositions),
+    )
+    write_composed_records(
+        arguments.output,
+        tuple(record for _, record in compositions),
+    )
+    print(f"Wrote {len(compositions)} composed records to {arguments.output}")
+
+
+def _select_calibration(arguments: argparse.Namespace) -> None:
+    candidates = read_records(arguments.candidates)
+    selected = select_bucket_calibration_segments(candidates)
+    write_composed_records(arguments.output, selected)
+    print(f"Wrote {len(selected)} selected records to {arguments.output}")
 
 
 def _timezone_aware_datetime(value: str) -> datetime:

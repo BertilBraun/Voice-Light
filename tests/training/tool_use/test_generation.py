@@ -13,17 +13,27 @@ from app.training.tool_use.generation import (
     generate_record,
 )
 from app.training.tool_use.protocol import (
+    AssistantGroundingFinding,
     AssistantStepEnvelope,
     CalculateCall,
     FinalResponseStep,
     FinalResponseStepEnvelope,
     GeneratedUserTurn,
     GeneratedUserTurnEnvelope,
+    GroundingVerdict,
+    RecordGroundingAssessment,
+    RecordGroundingAssessmentEnvelope,
+    RecordQualityAssessment,
+    RecordQualityAssessmentEnvelope,
+    RecordQualityIssue,
     SearchCall,
     SyntheticSearchResult,
     SyntheticSearchResultEnvelope,
     TeacherChatMessage,
+    TeacherSamplingMode,
     ToolActionStep,
+    UserTurnScopeAssessment,
+    UserTurnScopeAssessmentEnvelope,
 )
 from app.training.tool_use.scenario import (
     AssistantTurnPlan,
@@ -59,8 +69,10 @@ class ScriptedGenerator:
         messages: Sequence[TeacherChatMessage],
         response_type: type[GeneratedValue],
         random_seed: int,
+        sampling_mode: TeacherSamplingMode = TeacherSamplingMode.CREATIVE,
     ) -> StructuredGenerationResult[GeneratedValue]:
         del random_seed
+        del sampling_mode
         self.requests.append(tuple(messages))
         if not self.values:
             raise AssertionError("Scripted generator received an unexpected request.")
@@ -106,6 +118,27 @@ def two_call_scenario() -> ScenarioSpec:
     )
 
 
+def calculate_scenario() -> ScenarioSpec:
+    return ScenarioSpec(
+        scenario_id="scenario-test-calculate",
+        random_seed=53,
+        family="precise_arithmetic",
+        topic="basic arithmetic",
+        length_band=LengthBand.SHORT,
+        speech_style=SpeechStyle.CASUAL,
+        turns=(
+            AssistantTurnPlan(
+                user_instruction="Ask for twelve times eight.",
+                tool_steps=(PlannedToolStep(tool_name=ToolName.CALCULATE),),
+                follow_up_kind=FollowUpKind.NONE,
+                utterance_form=UtteranceForm.REQUEST,
+            ),
+        ),
+        split=DatasetSplit.TRAIN,
+        leakage_group_id="calculate-test",
+    )
+
+
 def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
     return (
         GeneratedUserTurnEnvelope(
@@ -114,6 +147,7 @@ def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
                 speech_style=SpeechStyle.CASUAL,
             )
         ),
+        accepted_user_scope((ToolName.SEARCH, ToolName.CALCULATE)),
         AssistantStepEnvelope(
             step=ToolActionStep(
                 audible_text="I'll check the current price.",
@@ -138,11 +172,115 @@ def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
                 speech_style=SpeechStyle.CASUAL,
             )
         ),
+        accepted_user_scope(()),
         FinalResponseStepEnvelope(
             step=FinalResponseStep(
                 audible_text="The search result didn't say whether fees were included."
             )
         ),
+        accepted_quality_assessment(),
+        accepted_grounding_assessment(
+            "scenario-test-001-message-2",
+            "scenario-test-001-message-4",
+            "scenario-test-001-message-6",
+            "scenario-test-001-message-8",
+        ),
+    )
+
+
+def accepted_user_scope(
+    required_tools: tuple[ToolName, ...],
+) -> UserTurnScopeAssessmentEnvelope:
+    return UserTurnScopeAssessmentEnvelope(
+        assessment=UserTurnScopeAssessment(
+            required_tools=required_tools,
+            scope_is_clear=True,
+            request_is_supported=True,
+            repeats_prior_user_turn=False,
+            voice_style_is_natural=True,
+        )
+    )
+
+
+def accepted_quality_assessment() -> RecordQualityAssessmentEnvelope:
+    return RecordQualityAssessmentEnvelope(
+        assessment=RecordQualityAssessment(
+            tool_plan_is_sufficient=True,
+            no_premature_tool_results=True,
+            assistant_claims_are_grounded=True,
+            tool_results_are_used_correctly=True,
+            user_turns_are_distinct=True,
+            sequential_calls_are_justified=True,
+            no_unsupported_action_commitments=True,
+            conversation_is_coherent=True,
+            voice_style_is_natural=True,
+            tone_is_appropriate=True,
+            issues=(),
+        )
+    )
+
+
+def accepted_grounding_assessment(
+    *message_ids: str,
+) -> RecordGroundingAssessmentEnvelope:
+    return RecordGroundingAssessmentEnvelope(
+        assessment=RecordGroundingAssessment(
+            findings=tuple(
+                AssistantGroundingFinding(
+                    message_id=message_id,
+                    verdict=GroundingVerdict.GROUNDED,
+                    unsupported_excerpts=(),
+                )
+                for message_id in message_ids
+            )
+        )
+    )
+
+
+def rejected_grounding_assessment(
+    *message_ids: str,
+    unsupported_message_id: str,
+    unsupported_excerpt: str,
+) -> RecordGroundingAssessmentEnvelope:
+    return RecordGroundingAssessmentEnvelope(
+        assessment=RecordGroundingAssessment(
+            findings=tuple(
+                AssistantGroundingFinding(
+                    message_id=message_id,
+                    verdict=(
+                        GroundingVerdict.UNSUPPORTED
+                        if message_id == unsupported_message_id
+                        else GroundingVerdict.GROUNDED
+                    ),
+                    unsupported_excerpts=(
+                        (unsupported_excerpt,) if message_id == unsupported_message_id else ()
+                    ),
+                )
+                for message_id in message_ids
+            )
+        )
+    )
+
+
+def rejected_quality_assessment(
+    issue: RecordQualityIssue,
+) -> RecordQualityAssessmentEnvelope:
+    return RecordQualityAssessmentEnvelope(
+        assessment=RecordQualityAssessment(
+            tool_plan_is_sufficient=issue is not RecordQualityIssue.UNPLANNED_TOOL_NEED,
+            no_premature_tool_results=issue is not RecordQualityIssue.PREMATURE_TOOL_RESULT,
+            assistant_claims_are_grounded=(
+                issue is not RecordQualityIssue.UNGROUNDED_ASSISTANT_CLAIM
+            ),
+            tool_results_are_used_correctly=(issue is not RecordQualityIssue.INCORRECT_RESULT_USE),
+            user_turns_are_distinct=issue is not RecordQualityIssue.DUPLICATE_USER_TURN,
+            sequential_calls_are_justified=issue is not RecordQualityIssue.REDUNDANT_TOOL_CALL,
+            no_unsupported_action_commitments=(issue is not RecordQualityIssue.UNSUPPORTED_ACTION),
+            conversation_is_coherent=issue is not RecordQualityIssue.INCOHERENT_CONVERSATION,
+            voice_style_is_natural=issue is not RecordQualityIssue.UNNATURAL_VOICE_STYLE,
+            tone_is_appropriate=issue is not RecordQualityIssue.INAPPROPRIATE_TONE,
+            issues=(issue,),
+        )
     )
 
 
@@ -163,11 +301,11 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
 
     generator, record, request_count = asyncio.run(exercise())
     ToolDialogueRecord.model_validate_json(record.model_dump_json())
-    assert request_count == 7
+    assert request_count == 11
     assert not generator.values
     assert "Requested utterance form: request" in generator.requests[0][1].content
-    assert "The current ticket price is 24 euros." in generator.requests[3][1].content
-    assert "This is a sequential call." in generator.requests[3][1].content
+    assert "The current ticket price is 24 euros." in generator.requests[4][1].content
+    assert "This is a sequential call." in generator.requests[4][1].content
 
     assistant_calls = tuple(
         message
@@ -189,6 +327,299 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
     assert tool_results[0].outcome.content == "The current ticket price is 24 euros."
     assert isinstance(tool_results[1].outcome, SuccessOutcome)
     assert tool_results[1].outcome.content == "48"
+    assert "Audit this completed candidate record" in generator.requests[-2][1].content
+    assert "Audit the assistant messages" in generator.requests[-1][1].content
+
+
+def test_record_quality_rejection_regenerates_the_entire_candidate() -> None:
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        first_candidate = scripted_two_call_values()[:-2]
+        second_candidate = scripted_two_call_values()[:-2]
+        generator = ScriptedGenerator(
+            (
+                *first_candidate,
+                rejected_quality_assessment(RecordQualityIssue.UNGROUNDED_ASSISTANT_CLAIM),
+                *second_candidate,
+                accepted_quality_assessment(),
+                accepted_grounding_assessment(
+                    "scenario-test-001-message-2",
+                    "scenario-test-001-message-4",
+                    "scenario-test-001-message-6",
+                    "scenario-test-001-message-8",
+                ),
+            )
+        )
+        generated = await generate_record(
+            scenario=two_call_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert record.record_id == "scenario-test-001"
+    assert request_count == 21
+    assert not generator.values
+
+
+def test_grounding_rejection_regenerates_the_entire_candidate() -> None:
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        first_candidate = scripted_two_call_values()[:-2]
+        second_candidate = scripted_two_call_values()[:-2]
+        message_ids = (
+            "scenario-test-001-message-2",
+            "scenario-test-001-message-4",
+            "scenario-test-001-message-6",
+            "scenario-test-001-message-8",
+        )
+        generator = ScriptedGenerator(
+            (
+                *first_candidate,
+                accepted_quality_assessment(),
+                rejected_grounding_assessment(
+                    *message_ids,
+                    unsupported_message_id="scenario-test-001-message-8",
+                    unsupported_excerpt="fees are definitely included",
+                ),
+                *second_candidate,
+                accepted_quality_assessment(),
+                accepted_grounding_assessment(*message_ids),
+            )
+        )
+        generated = await generate_record(
+            scenario=two_call_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert record.record_id == "scenario-test-001"
+    assert request_count == 22
+    assert not generator.values
+
+
+def test_calculate_bridge_cannot_reveal_the_pending_result() -> None:
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        user_turn = GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="quick one, twelve times eight",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        )
+        final_response = FinalResponseStepEnvelope(step=FinalResponseStep(audible_text="It's 96."))
+        generator = ScriptedGenerator(
+            (
+                user_turn,
+                accepted_user_scope((ToolName.CALCULATE,)),
+                AssistantStepEnvelope(
+                    step=ToolActionStep(
+                        audible_text="That's 96.",
+                        call=CalculateCall(expression="12 * 8"),
+                    )
+                ),
+                final_response,
+                user_turn,
+                accepted_user_scope((ToolName.CALCULATE,)),
+                AssistantStepEnvelope(
+                    step=ToolActionStep(
+                        audible_text="One sec.",
+                        call=CalculateCall(expression="12 * 8"),
+                    )
+                ),
+                final_response,
+                accepted_quality_assessment(),
+                accepted_grounding_assessment(
+                    "scenario-test-calculate-message-2",
+                    "scenario-test-calculate-message-4",
+                ),
+            )
+        )
+        generated = await generate_record(
+            scenario=calculate_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert request_count == 10
+    assert record.messages[2].audible_text == "One sec."
+    assert not generator.values
+
+
+def test_spoken_turns_over_one_hundred_words_are_regenerated() -> None:
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        valid_user_turn = GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="quick one, twelve times eight",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        )
+        generator = ScriptedGenerator(
+            (
+                GeneratedUserTurnEnvelope(
+                    turn=GeneratedUserTurn(
+                        text=" ".join("a" for _ in range(101)),
+                        speech_style=SpeechStyle.CASUAL,
+                    )
+                ),
+                valid_user_turn,
+                accepted_user_scope((ToolName.CALCULATE,)),
+                AssistantStepEnvelope(
+                    step=ToolActionStep(
+                        audible_text="One sec.",
+                        call=CalculateCall(expression="12 * 8"),
+                    )
+                ),
+                FinalResponseStepEnvelope(step=FinalResponseStep(audible_text="It's 96.")),
+                accepted_quality_assessment(),
+                accepted_grounding_assessment(
+                    "scenario-test-calculate-message-2",
+                    "scenario-test-calculate-message-4",
+                ),
+            )
+        )
+        generated = await generate_record(
+            scenario=calculate_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert request_count == 7
+    assert record.messages[1].text == "quick one, twelve times eight"
+    assert not generator.values
+
+
+def test_calculate_response_must_preserve_the_exact_result() -> None:
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        user_turn = GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="quick one, twelve times eight",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        )
+        tool_step = AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="One sec.",
+                call=CalculateCall(expression="12 * 8"),
+            )
+        )
+        generator = ScriptedGenerator(
+            (
+                user_turn,
+                accepted_user_scope((ToolName.CALCULATE,)),
+                tool_step,
+                FinalResponseStepEnvelope(
+                    step=FinalResponseStep(audible_text="That's about a hundred.")
+                ),
+                user_turn,
+                accepted_user_scope((ToolName.CALCULATE,)),
+                tool_step,
+                FinalResponseStepEnvelope(
+                    step=FinalResponseStep(audible_text="That's exactly 96.")
+                ),
+                accepted_quality_assessment(),
+                accepted_grounding_assessment(
+                    "scenario-test-calculate-message-2",
+                    "scenario-test-calculate-message-4",
+                ),
+            )
+        )
+        generated = await generate_record(
+            scenario=calculate_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert request_count == 10
+    assert record.messages[4].audible_text == "That's exactly 96."
+    assert not generator.values
+
+
+def test_user_scope_mismatch_regenerates_before_assistant_generation() -> None:
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        generator = ScriptedGenerator(
+            (
+                GeneratedUserTurnEnvelope(
+                    turn=GeneratedUserTurn(
+                        text="what time is it",
+                        speech_style=SpeechStyle.CASUAL,
+                    )
+                ),
+                accepted_user_scope((ToolName.GET_TIME,)),
+                GeneratedUserTurnEnvelope(
+                    turn=GeneratedUserTurn(
+                        text="quick one, twelve times eight",
+                        speech_style=SpeechStyle.CASUAL,
+                    )
+                ),
+                accepted_user_scope((ToolName.CALCULATE,)),
+                AssistantStepEnvelope(
+                    step=ToolActionStep(
+                        audible_text="One sec.",
+                        call=CalculateCall(expression="12 * 8"),
+                    )
+                ),
+                FinalResponseStepEnvelope(step=FinalResponseStep(audible_text="It's 96.")),
+                accepted_quality_assessment(),
+                accepted_grounding_assessment(
+                    "scenario-test-calculate-message-2",
+                    "scenario-test-calculate-message-4",
+                ),
+            )
+        )
+        generated = await generate_record(
+            scenario=calculate_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert request_count == 8
+    assert record.messages[1].text == "quick one, twelve times eight"
+    assert not generator.values
 
 
 def test_dataset_generation_is_append_only_and_resumable(tmp_path: Path) -> None:
