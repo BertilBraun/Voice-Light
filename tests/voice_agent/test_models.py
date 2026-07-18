@@ -368,7 +368,7 @@ def test_qwen_spawn_failure_releases_manager_lock(
     asyncio.run(acquire_worker())
 
 
-def test_conversation_and_search_models_use_distinct_workers_with_one_inference_lock(
+def test_conversation_and_search_models_use_distinct_workers_and_locks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configurations: list[QwenWorkerConfiguration] = []
@@ -382,10 +382,9 @@ def test_conversation_and_search_models_use_distinct_workers_with_one_inference_
         return FakeQwenWorker()
 
     monkeypatch.setattr(language_models, "QwenWorkerProcess", create_worker)
-    inference_lock = asyncio.Lock()
 
-    language_model = TransformersLanguageModel(inference_lock)
-    search_generator = TransformersTextGenerator(inference_lock)
+    language_model = TransformersLanguageModel()
+    search_generator = TransformersTextGenerator()
 
     assert configurations == [
         QwenWorkerConfiguration(
@@ -400,8 +399,17 @@ def test_conversation_and_search_models_use_distinct_workers_with_one_inference_
         ),
     ]
     assert language_model.worker_manager.worker is not search_generator.worker_manager.worker
-    assert language_model.worker_manager.lock is inference_lock
-    assert search_generator.worker_manager.lock is inference_lock
+    assert language_model.worker_manager.lock is not search_generator.worker_manager.lock
+
+    async def acquire_both_workers() -> None:
+        await language_model.worker_manager.acquire()
+        await asyncio.wait_for(search_generator.worker_manager.acquire(), timeout=0.1)
+        assert language_model.worker_manager.lock.locked()
+        assert search_generator.worker_manager.lock.locked()
+        search_generator.worker_manager.release()
+        language_model.worker_manager.release()
+
+    asyncio.run(acquire_both_workers())
 
 
 def create_session(

@@ -56,7 +56,6 @@ class ComputeRuntime:
         self.voice_session_admission = SingleVoiceSessionAdmission()
         self.speech_understanding_provider: SpeechUnderstandingProvider | None = None
         self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
-        self.qwen_inference_lock = asyncio.Lock()
         self.language_model: TransformersLanguageModel | None = None
         self.search_text_generator: TransformersTextGenerator | None = None
         self.speech_synthesizer: SpeechSynthesizer | None = None
@@ -181,7 +180,6 @@ class ComputeRuntime:
         model = await self._timed_load(
             self.language_model_stage,
             TransformersLanguageModel,
-            self.qwen_inference_lock,
         )
         if model is not None:
             self.language_model = model
@@ -190,7 +188,6 @@ class ComputeRuntime:
         generator = await self._timed_load(
             self.search_summarizer_stage,
             TransformersTextGenerator,
-            self.qwen_inference_lock,
         )
         if generator is not None:
             self.search_text_generator = generator

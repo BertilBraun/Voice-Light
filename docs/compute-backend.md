@@ -51,19 +51,19 @@ Each invocation requests at most three web results over a three-second HTTP time
 process normalizes and bounds each title, URL, and snippet, then submits only that bounded context
 to a separate deterministic pass through a pinned Qwen3-0.6B worker with tools disabled and a
 64-token output cap. The conversational Qwen3-1.7B worker and search worker remain independently
-replaceable but share one orchestration lock, so their GPU inference cannot overlap. Raw provider
-payloads and the summarization prompt never enter the session conversation; only the bounded
-plain-text summary is committed through the normal tool-result message. The speech-oriented
-summary targets one or two sentences and 40 words, omits unsolicited comparisons and tangents, and
-excludes source names, URLs, and citations.
+replaceable and own separate inference locks. Raw provider payloads and the summarization prompt
+never enter the session conversation; only the bounded plain-text summary is committed through the
+normal tool-result message. The speech-oriented summary targets one or two sentences and 40 words,
+omits unsolicited comparisons and tangents, and excludes source names, URLs, and citations.
 
 This design adds one external network round trip and one serialized Qwen generation before the
 main post-tool response. The dedicated smaller model uses additional resident VRAM but avoids
 coupling summary quality and latency to conversational-model fine-tunes. Search turns will still be
-slower than calculator or local-time turns. The shared inference lock ensures the summarization
-pass cannot overlap conversational Qwen inference. The surrounding tool timeout defaults to 30
-seconds so the bounded summary can finish on the supported GPU; deployments can override it with
-`VOICE_LIGHT_TOOL_TIMEOUT_SECONDS`.
+slower than calculator or local-time turns. Normal tool flow completes conversational inference
+before starting summarization, while independent locks allow a replacement conversational turn to
+proceed if an obsolete tool task is still winding down. The surrounding tool timeout defaults to
+30 seconds so the bounded summary can finish on the supported GPU; deployments can override it
+with `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS`.
 
 Provider and summarizer durations are logged separately without the query or result contents. This
 makes it possible to distinguish Tavily network latency from Qwen prefill/generation time before

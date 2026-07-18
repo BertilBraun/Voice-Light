@@ -173,12 +173,11 @@ class RestartingQwenWorkerManager:
         self,
         python_path: Path,
         configuration: QwenWorkerConfiguration,
-        inference_lock: asyncio.Lock | None = None,
     ) -> None:
         self.python_path = python_path
         self.configuration = configuration
         self.worker: QwenWorkerProcess | None = QwenWorkerProcess(python_path, configuration)
-        self.lock = inference_lock if inference_lock is not None else asyncio.Lock()
+        self.lock = asyncio.Lock()
         self.next_invocation_id = 1
 
     async def acquire(self) -> QwenWorkerLease:
@@ -224,7 +223,6 @@ class RestartingQwenWorkerManager:
 class TransformersLanguageModel:
     def __init__(
         self,
-        inference_lock: asyncio.Lock,
         python_path: Path = QWEN_PYTHON_PATH,
     ) -> None:
         self.worker_manager = RestartingQwenWorkerManager(
@@ -234,7 +232,6 @@ class TransformersLanguageModel:
                 model_revision=LANGUAGE_MODEL_REVISION,
                 component_name="Qwen language model",
             ),
-            inference_lock,
         )
 
     async def stream_response(
@@ -263,7 +260,6 @@ class TransformersLanguageModel:
 class TransformersTextGenerator:
     def __init__(
         self,
-        inference_lock: asyncio.Lock,
         python_path: Path = QWEN_PYTHON_PATH,
     ) -> None:
         self.worker_manager = RestartingQwenWorkerManager(
@@ -273,7 +269,6 @@ class TransformersTextGenerator:
                 model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
                 component_name="Qwen search summarizer",
             ),
-            inference_lock,
         )
 
     async def generate_text(self, request: TextGenerationRequest) -> str:
