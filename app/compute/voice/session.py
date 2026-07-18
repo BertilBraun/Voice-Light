@@ -47,6 +47,7 @@ from app.compute.voice.interfaces import (
     SynthesizedWordBoundary,
     VoxtreamSynthesisFirstAudioMetrics,
 )
+from app.compute.voice.model_constants import LANGUAGE_MODEL_SYSTEM_PROMPT
 from app.compute.voice.overlap import (
     OverlapEvidence,
     OverlapMetrics,
@@ -86,6 +87,12 @@ from app.compute.voice.schemas import (
     InteractionPrediction,
     LlmHistoryEvent,
     LlmHistoryMessage,
+    LlmModelAssistantMessage,
+    LlmModelMessage,
+    LlmModelRequestEvent,
+    LlmModelSystemMessage,
+    LlmModelToolMessage,
+    LlmModelUserMessage,
     PlaybackCommandAcknowledgementEvent,
     PlaybackCommandEvent,
     PlaybackCompleteEvent,
@@ -1903,13 +1910,24 @@ class VoiceSession:
         tool_calls_allowed: bool,
         post_tool_continuation: bool,
     ) -> ModelInvocationResult:
-        language_stream = self.language_model.stream_response(
-            LanguageModelRequest(
-                assistant_generation_id=generation.generation_id,
-                messages=messages,
-                tools=tools,
+        request = LanguageModelRequest(
+            assistant_generation_id=generation.generation_id,
+            messages=messages,
+            tools=tools,
+        )
+        await self._send_event(
+            LlmModelRequestEvent(
+                generation_id=generation.generation_id,
+                invocation_index=len(generation.invocation_ids) + 1,
+                speculative=generation.speculative,
+                messages=(
+                    LlmModelSystemMessage(content=LANGUAGE_MODEL_SYSTEM_PROMPT),
+                    *(_llm_model_message(message) for message in request.messages),
+                ),
+                tools=request.tools,
             )
         )
+        language_stream = self.language_model.stream_response(request)
         invocation_id: int | None = None
         tool_request: SerializedToolCall | None = None
         tool_failure: ToolCallFailure | None = None
@@ -3188,6 +3206,16 @@ class VoiceSession:
                 f"{generation.lifecycle} -> {target}."
             )
         generation.lifecycle = target
+
+
+def _llm_model_message(message: ModelMessage) -> LlmModelMessage:
+    match message:
+        case ModelUserMessage(content=content):
+            return LlmModelUserMessage(content=content)
+        case ModelAssistantMessage(content=content, tool_calls=tool_calls):
+            return LlmModelAssistantMessage(content=content, tool_calls=tool_calls)
+        case ModelToolMessage(tool_call_id=tool_call_id, outcome=outcome):
+            return LlmModelToolMessage(tool_call_id=tool_call_id, outcome=outcome)
 
 
 def _pcm_sample_count(pcm_bytes: bytes) -> int:

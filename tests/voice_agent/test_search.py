@@ -230,7 +230,9 @@ def test_qwen_summarizer_bounds_output_and_maps_failure() -> None:
         asyncio.run(QwenSearchResultSummarizer(FailingTextGenerator()).summarize("query", ()))
 
 
-def test_search_pipeline_passes_only_normalized_results_to_summarizer() -> None:
+def test_search_pipeline_passes_only_normalized_results_to_summarizer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     results = (
         SearchResult(
             title="Result",
@@ -242,11 +244,16 @@ def test_search_pipeline_passes_only_normalized_results_to_summarizer() -> None:
     summarizer = RecordingSearchSummarizer("Final search answer")
     pipeline = SearchPipeline(provider, summarizer)
 
-    answer = asyncio.run(pipeline.answer("current topic"))
+    with caplog.at_level("INFO", logger="app.compute.voice.search"):
+        answer = asyncio.run(pipeline.answer("current topic"))
 
     assert answer == "Final search answer"
     assert provider.queries == [("current topic", MAXIMUM_SEARCH_RESULTS)]
     assert summarizer.calls == [("current topic", results)]
+    assert "search provider completed: results=1 duration_ms=" in caplog.text
+    assert "search summarizer completed: duration_ms=" in caplog.text
+    assert "total_ms=" in caplog.text
+    assert "current topic" not in caplog.text
 
 
 def test_missing_search_credentials_fail_only_when_search_is_invoked() -> None:

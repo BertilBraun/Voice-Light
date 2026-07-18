@@ -57,8 +57,9 @@ validated playback offsets enter model history.
 - Qwen3-1.7B runs in a persistent child process. A typed generation-ID protocol streams
   non-thinking text deltas for the complete ordered conversation.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
-  that generation. The browser logs both a table and the complete formatted JSON snapshot to its
-  developer console for prompt inspection.
+  that generation's audible history. Every actual Qwen invocation also emits
+  `llm.model_request`, including its typed private messages and tool specifications. The browser
+  logs both events as tables and formatted JSON to its developer console for prompt inspection.
 - Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
   final trailing word is flushed when Qwen finishes.
 - A response may contain multiple sequential asynchronous `get_weather` calls. The response keeps
@@ -220,13 +221,16 @@ result commit <= second invocation start <= first final text/PCM
 These phases do not change existing first-response or predictive latency origins; tool wait is not
 reported as first-response latency.
 
-The browser-facing `llm.history` remains an audible-only user/assistant snapshot. Private structured
-model context is never sent as a WebSocket event. `response_text` contains only the spoken segments,
-so browser text, TTS input, playback boundaries, and durable assistant history cannot contain tool
-tags, JSON, call IDs, control tokens, or results. Assistant history still advances only through
-browser-proven word boundaries or complete playback. Private context uses that same confirmed text
-to add or update the assistant continuation after the final committed exchange; unreleased and
-released-but-unplayed continuation text is not carried into a later user turn.
+The browser-facing `llm.history` remains an audible-only user/assistant snapshot.
+`llm.model_request` is an ephemeral debug event containing the exact typed main-agent request,
+including tool calls and compact tool outcomes; it is not persisted or inserted into either
+conversation history. Raw provider payloads and the isolated search-summarization exchange are
+never included. `response_text` contains only the spoken segments, so browser text, TTS input,
+playback boundaries, and durable assistant history cannot contain tool tags, JSON, call IDs,
+control tokens, or results. Assistant history still advances only through browser-proven word
+boundaries or complete playback. Private context uses that same confirmed text to add or update the
+assistant continuation after the final committed exchange; unreleased and released-but-unplayed
+continuation text is not carried into a later user turn.
 
 Across later turns, the canonical Qwen message order is:
 
@@ -533,10 +537,11 @@ All microphone audio uses unwrapped binary PCM16 messages. A bounded server queu
 ingestion from recognition and applies backpressure if the single ASR worker cannot keep up.
 
 Server-to-browser JSON events include `session.ready`, VAD boundaries, partial/final transcripts,
-turn commitment, the exact `llm.history` snapshot, assistant text deltas, word-start audio
-metadata, generation audio boundaries, typed `playback.command` controls, and errors. Each playback
-command carries a unique command ID, generation ID, action, server issue time, causal evidence
-ID/source, stream and turn epochs, confidence, and action-specific sample, gain, or age limits.
+turn commitment, the audible `llm.history` snapshot, ephemeral exact `llm.model_request` debug
+snapshots, assistant text deltas, word-start audio metadata, generation audio boundaries, typed
+`playback.command` controls, and errors. Each playback command carries a unique command ID,
+generation ID, action, server issue time, causal evidence ID/source, stream and turn epochs,
+confidence, and action-specific sample, gain, or age limits.
 `assistant.audio.text_boundary`
 maps an original generated-text offset to a generation-relative PCM start sample. Assistant binary
 frames begin with three little-endian unsigned 32-bit integers: generation ID, sequence number, and

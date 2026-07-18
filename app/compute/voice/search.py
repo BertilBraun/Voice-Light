@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -33,6 +35,7 @@ SEARCH_SUMMARIZER_SYSTEM_PROMPT = (
 )
 
 WHITESPACE_PATTERN = re.compile(r"\s+")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -186,8 +189,39 @@ class SearchPipeline:
         self.summarizer = summarizer
 
     async def answer(self, query: str) -> str:
-        results = await self.provider.search(query, MAXIMUM_SEARCH_RESULTS)
-        return await self.summarizer.summarize(query, results)
+        pipeline_started_at = time.perf_counter()
+        provider_started_at = time.perf_counter()
+        try:
+            results = await self.provider.search(query, MAXIMUM_SEARCH_RESULTS)
+        except Exception:
+            logger.warning(
+                "search provider failed: duration_ms=%.1f",
+                (time.perf_counter() - provider_started_at) * 1_000,
+            )
+            raise
+        provider_completed_at = time.perf_counter()
+        logger.info(
+            "search provider completed: results=%d duration_ms=%.1f",
+            len(results),
+            (provider_completed_at - provider_started_at) * 1_000,
+        )
+        try:
+            summary = await self.summarizer.summarize(query, results)
+        except Exception:
+            logger.warning(
+                "search summarizer failed: duration_ms=%.1f total_ms=%.1f",
+                (time.perf_counter() - provider_completed_at) * 1_000,
+                (time.perf_counter() - pipeline_started_at) * 1_000,
+            )
+            raise
+        completed_at = time.perf_counter()
+        logger.info(
+            "search summarizer completed: duration_ms=%.1f total_ms=%.1f output_characters=%d",
+            (completed_at - provider_completed_at) * 1_000,
+            (completed_at - pipeline_started_at) * 1_000,
+            len(summary),
+        )
+        return summary
 
 
 def search_settings_from_environment(environment: Mapping[str, str]) -> SearchSettings:

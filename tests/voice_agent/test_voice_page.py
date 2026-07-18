@@ -21,8 +21,9 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'id="assistant-transcript"' not in page_response.text
     assert 'message.type === "turn.committed"' in script_response.text
     assert 'message.type === "llm.history"' in script_response.text
+    assert 'message.type === "llm.model_request"' in script_response.text
     assert "console.table(message.messages)" in script_response.text
-    assert "JSON.stringify(message.messages, null, 2)" in script_response.text
+    assert "messages: message.messages, tools: message.tools" in script_response.text
     assert "recordedInputChunks.push(data.slice(0))" in script_response.text
     assert "createPcmWav(recordedInputChunks, INPUT_SAMPLE_RATE)" in script_response.text
     assert "new AudioContext({ sampleRate: INPUT_SAMPLE_RATE })" in script_response.text

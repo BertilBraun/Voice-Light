@@ -355,9 +355,20 @@ function handleMessage(event) {
   }
   if (message.type === "turn.committed") commitUserTurn(message.text);
   if (message.type === "llm.history") {
-    console.groupCollapsed(`LLM history for generation ${message.generation_id}`);
+    console.groupCollapsed(`Audible history for generation ${message.generation_id}`);
     console.table(message.messages);
     console.log(JSON.stringify(message.messages, null, 2));
+    console.groupEnd();
+  }
+  if (message.type === "llm.model_request") {
+    const mode = message.speculative ? "speculative" : "committed";
+    console.groupCollapsed(
+      `Exact Qwen request for generation ${message.generation_id}, invocation ${message.invocation_index} (${mode})`,
+    );
+    console.table(message.messages);
+    console.log(
+      JSON.stringify({ messages: message.messages, tools: message.tools }, null, 2),
+    );
     console.groupEnd();
   }
   if (message.type === "assistant.text.delta") {

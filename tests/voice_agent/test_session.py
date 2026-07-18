@@ -1090,9 +1090,20 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         websocket.receive_json()
         send_turn(websocket)
         history_events, _ = receive_until(websocket, "llm.history")
+        first_request_events, _ = receive_until(websocket, "llm.model_request")
         assert weather_handler.started.wait(timeout=1)
         wait_until(lambda: any(isinstance(output, ReleasedAudioChunk) for output in sink.outputs))
 
+        first_request_event = first_request_events[-1]
+        assert first_request_event["generation_id"] == 1
+        assert first_request_event["invocation_index"] == 1
+        assert not first_request_event["speculative"]
+        assert first_request_event["messages"][0]["role"] == "system"
+        assert first_request_event["messages"][1] == {
+            "role": "user",
+            "content": "hello agent",
+        }
+        assert first_request_event["tools"][0]["function"]["name"] == "search"
         assert len(language_model.requests) == 1
         assert len(synthesizer.sessions) == 1
         assert synthesizer.sessions[0].finished
@@ -1118,6 +1129,21 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
                 and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
             )
         )
+        second_request_events, _ = receive_until(websocket, "llm.model_request")
+        second_request_event = second_request_events[-1]
+        assert second_request_event["invocation_index"] == 2
+        assert second_request_event["messages"][-2]["role"] == "assistant"
+        assert second_request_event["messages"][-2]["tool_calls"][0]["function"]["name"] == "search"
+        assert second_request_event["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "qwen-1-tool-1",
+            "outcome": {
+                "outcome": "success",
+                "call_id": "qwen-1-tool-1",
+                "tool_name": "search",
+                "result": "London is 12 degrees and lightly cloudy.",
+            },
+        }
         committed_tool = sessions[0].generations[1].tool_executions[0]
         assert committed_tool.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED
         assert committed_tool.result_committed_at is not None

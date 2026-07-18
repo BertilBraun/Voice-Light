@@ -27,7 +27,6 @@ from app.compute.voice.tts_worker_protocol import (
     StartTtsCommand,
     TtsAudioEvent,
     TtsEndEvent,
-    TtsWordBoundaryEvent,
     TtsWordCommand,
     TtsWordProcessedEvent,
     TtsWorkerCommand,
@@ -36,6 +35,10 @@ from app.compute.voice.tts_worker_protocol import (
     TtsWorkerReadyEvent,
     VoxtreamTtsFirstAudioMetricsEvent,
     tts_worker_command_adapter,
+)
+from app.compute.voice.voxtream_alignment import (
+    VoxtreamPendingWordBoundary,
+    release_started_word_boundaries,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,12 +56,6 @@ class _QueuedWord:
     sequence_number: int
     text: str
     text_end: int
-
-
-@dataclass(frozen=True)
-class _PendingBoundary:
-    phone_end: int
-    text_offset: int
 
 
 class _InputMarker(Enum):
@@ -107,7 +104,7 @@ class VoxtreamGeneration:
         self.emit = emit
         self.input_queue: queue.Queue[_GenerationInput] = queue.Queue()
         self.cancellation_event = threading.Event()
-        self.pending_boundaries: deque[_PendingBoundary] = deque()
+        self.pending_boundaries: deque[VoxtreamPendingWordBoundary] = deque()
         self.accumulated_words: list[str] = []
         self.first_word_received_at: float | None = None
         self.first_text_requested_at: float | None = None
@@ -193,8 +190,8 @@ class VoxtreamGeneration:
                     if not text_metadata.words:
                         raise RuntimeError("VoXtream produced no phonemes for a synthesis word.")
                     self.pending_boundaries.append(
-                        _PendingBoundary(
-                            phone_end=text_metadata.words[-1].end,
+                        VoxtreamPendingWordBoundary(
+                            phone_start=text_metadata.words[-1].start,
                             text_offset=item.text_end,
                         )
                     )
@@ -206,14 +203,12 @@ class VoxtreamGeneration:
                     return
 
     def _emit_boundaries(self, phone_position: int, start_sample: int) -> None:
-        while self.pending_boundaries and self.pending_boundaries[0].phone_end <= phone_position:
-            boundary = self.pending_boundaries.popleft()
-            self.emit(
-                TtsWordBoundaryEvent(
-                    text_offset=boundary.text_offset,
-                    start_sample=start_sample,
-                )
-            )
+        for boundary in release_started_word_boundaries(
+            self.pending_boundaries,
+            phone_position,
+            start_sample,
+        ):
+            self.emit(boundary)
 
     def _first_audio_metrics(
         self,

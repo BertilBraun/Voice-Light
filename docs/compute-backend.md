@@ -60,6 +60,10 @@ ensures the summarization pass cannot overlap another Qwen inference. The surrou
 defaults to 30 seconds so the bounded summary can finish on the supported GPU; deployments can
 override it with `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS`.
 
+Provider and summarizer durations are logged separately without the query or result contents. This
+makes it possible to distinguish Tavily network latency from Qwen prefill/generation time before
+changing result bounds or summary quality.
+
 The model speaks one short bridge before starting search. That bridge is finalized as its own TTS
 utterance so it cannot stall mid-word while the search and summary run. The post-result answer uses
 a successor TTS utterance whose PCM and word boundaries are rebased into the same browser playback

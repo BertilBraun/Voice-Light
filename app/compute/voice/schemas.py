@@ -7,6 +7,12 @@ from pydantic import Field, TypeAdapter, model_validator
 
 from app.compute.voice.conversation import ConversationRole
 from app.compute.voice.errors import VoiceComponent, VoiceOperation
+from app.compute.voice.tools import (
+    ToolCall,
+    ToolExecutionFailure,
+    ToolSpecification,
+    ToolSuccess,
+)
 from app.shared.base_model import FrozenBaseModel
 
 
@@ -383,6 +389,7 @@ class VoiceServerEventType(StrEnum):
     TRANSCRIPT_FINAL = "transcript.final"
     TURN_COMMITTED = "turn.committed"
     LLM_HISTORY = "llm.history"
+    LLM_MODEL_REQUEST = "llm.model_request"
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
@@ -422,6 +429,43 @@ class LlmHistoryEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.LLM_HISTORY] = VoiceServerEventType.LLM_HISTORY
     generation_id: int = Field(gt=0)
     messages: tuple[LlmHistoryMessage, ...]
+
+
+class LlmModelUserMessage(FrozenBaseModel):
+    role: Literal["user"] = "user"
+    content: str
+
+
+class LlmModelSystemMessage(FrozenBaseModel):
+    role: Literal["system"] = "system"
+    content: str
+
+
+class LlmModelAssistantMessage(FrozenBaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: str
+    tool_calls: tuple[ToolCall, ...]
+
+
+class LlmModelToolMessage(FrozenBaseModel):
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    outcome: ToolSuccess | ToolExecutionFailure
+
+
+LlmModelMessage = Annotated[
+    LlmModelSystemMessage | LlmModelUserMessage | LlmModelAssistantMessage | LlmModelToolMessage,
+    Field(discriminator="role"),
+]
+
+
+class LlmModelRequestEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.LLM_MODEL_REQUEST] = VoiceServerEventType.LLM_MODEL_REQUEST
+    generation_id: int = Field(gt=0)
+    invocation_index: int = Field(gt=0)
+    speculative: bool
+    messages: tuple[LlmModelMessage, ...]
+    tools: tuple[ToolSpecification, ...]
 
 
 class AssistantTextDeltaEvent(FrozenBaseModel):
@@ -504,6 +548,7 @@ VoiceServerEvent = Annotated[
     | SpeechStateEvent
     | TranscriptEvent
     | LlmHistoryEvent
+    | LlmModelRequestEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioTextBoundaryEvent
