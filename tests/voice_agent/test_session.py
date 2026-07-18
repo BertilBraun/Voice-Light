@@ -67,7 +67,7 @@ from app.compute.voice.schemas import (
     PlaybackStoppedEvent,
     TraceStamp,
 )
-from app.compute.voice.search import SearchPipeline, SearchResult
+from app.compute.voice.search import SearchPipeline, SearchResult, SearchSummary
 from app.compute.voice.session import SessionPolicy, VoiceSession
 from app.compute.voice.speech_understanding import (
     CompositeSpeechUnderstandingProvider,
@@ -1309,12 +1309,14 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
             self,
             query: str,
             results: tuple[SearchResult, ...],
-        ) -> str:
+        ) -> SearchSummary:
             del query
             assert results[0].snippet == raw_result_marker
-            private_summary_exchange = summary_prompt_marker
-            assert private_summary_exchange
-            return final_tool_result
+            return SearchSummary(
+                text=final_tool_result,
+                system_prompt=summary_prompt_marker,
+                user_prompt=f"Summarize {raw_result_marker}",
+            )
 
     language_model = ScriptedWeatherLanguageModel()
     sessions: list[VoiceSession] = []
@@ -1336,6 +1338,7 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
         websocket.receive_json()
         send_turn(websocket)
         receive_until(websocket, "llm.history")
+        debug_events, _ = receive_until(websocket, "search.debug")
         wait_until(
             lambda: (
                 len(language_model.requests) == 2
@@ -1344,6 +1347,11 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
         )
         websocket.send_json({"type": "session.stop"})
 
+    search_debug_event = debug_events[-1]
+    assert search_debug_event["results"][0]["snippet"] == raw_result_marker
+    assert search_debug_event["summarizer_system_prompt"] == summary_prompt_marker
+    assert raw_result_marker in search_debug_event["summarizer_user_prompt"]
+    assert search_debug_event["summary"] == final_tool_result
     continuation_messages = language_model.requests[1].messages
     serialized_messages = repr(continuation_messages)
     assert final_tool_result in serialized_messages

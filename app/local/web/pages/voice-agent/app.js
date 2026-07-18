@@ -384,6 +384,22 @@ function handleMessage(event) {
     );
     console.groupEnd();
   }
+  if (message.type === "search.debug") {
+    console.groupCollapsed(`Search trace for generation ${message.generation_id}`);
+    console.table({
+      provider: { durationMs: message.provider_duration_ms },
+      summarizer: { durationMs: message.summarizer_duration_ms },
+      total: { durationMs: message.total_duration_ms },
+    });
+    console.log("Query", message.query);
+    console.table(message.results);
+    console.groupCollapsed("Isolated Qwen summarizer request");
+    console.log("System prompt", message.summarizer_system_prompt);
+    console.log("User prompt", message.summarizer_user_prompt);
+    console.groupEnd();
+    console.log("Isolated Qwen summary / main-agent tool result", message.summary);
+    console.groupEnd();
+  }
   if (message.type === "assistant.text.delta") {
     const turn = assistantTurn(message.generation_id);
     turn.appendText(message.text);

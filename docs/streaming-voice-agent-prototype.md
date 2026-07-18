@@ -225,12 +225,14 @@ The browser-facing `llm.history` remains an audible-only user/assistant snapshot
 `llm.model_request` is an ephemeral debug event containing the exact typed main-agent request,
 including tool calls and compact tool outcomes; it is not persisted or inserted into either
 conversation history. Raw provider payloads and the isolated search-summarization exchange are
-never included. `response_text` contains only the spoken segments, so browser text, TTS input,
-playback boundaries, and durable assistant history cannot contain tool tags, JSON, call IDs,
-control tokens, or results. Assistant history still advances only through browser-proven word
-boundaries or complete playback. Private context uses that same confirmed text to add or update the
-assistant continuation after the final committed exchange; unreleased and released-but-unplayed
-continuation text is not carried into a later user turn.
+never included. The separate browser-only `search.debug` event exposes bounded normalized results,
+the isolated summarizer request and output, and provider/summarizer timings without adding them to
+the main model context or audible history. `response_text` contains only the spoken segments, so
+browser text, TTS input, playback boundaries, and durable assistant history cannot contain tool
+tags, JSON, call IDs, control tokens, or results. Assistant history still advances only through
+browser-proven word boundaries or complete playback. Private context uses that same confirmed text
+to add or update the assistant continuation after the final committed exchange; unreleased and
+released-but-unplayed continuation text is not carried into a later user turn.
 
 Across later turns, the canonical Qwen message order is:
 

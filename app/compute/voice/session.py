@@ -101,6 +101,8 @@ from app.compute.voice.schemas import (
     PlaybackStartedEvent,
     PlaybackState,
     PlaybackStoppedEvent,
+    SearchDebugEvent,
+    SearchDebugResultEvent,
     SessionReadyEvent,
     SessionStartEvent,
     SessionStopEvent,
@@ -2106,6 +2108,28 @@ class VoiceSession:
         if generation.latency.tool_execution_completed_at is None:
             generation.latency.tool_execution_completed_at = execution_completed_at
         tool.outcome = outcome
+        search_debug_trace = self.tool_executor.take_search_debug_trace(call.id)
+        if search_debug_trace is not None:
+            await self._send_event(
+                SearchDebugEvent(
+                    generation_id=generation.generation_id,
+                    query=search_debug_trace.query,
+                    results=tuple(
+                        SearchDebugResultEvent(
+                            title=result.title,
+                            url=result.url,
+                            snippet=result.snippet,
+                        )
+                        for result in search_debug_trace.results
+                    ),
+                    summarizer_system_prompt=search_debug_trace.summarizer_system_prompt,
+                    summarizer_user_prompt=search_debug_trace.summarizer_user_prompt,
+                    summary=search_debug_trace.summary,
+                    provider_duration_ms=search_debug_trace.provider_duration_ms,
+                    summarizer_duration_ms=search_debug_trace.summarizer_duration_ms,
+                    total_duration_ms=search_debug_trace.total_duration_ms,
+                )
+            )
         if isinstance(outcome, ToolSuccess):
             tool.lifecycle = ToolLifecycle.SUCCEEDED
             logger.info(

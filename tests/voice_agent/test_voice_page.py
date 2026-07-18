@@ -24,6 +24,9 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "turn.committed"' in script_response.text
     assert 'message.type === "llm.history"' in script_response.text
     assert 'message.type === "llm.model_request"' in script_response.text
+    assert 'message.type === "search.debug"' in script_response.text
+    assert "console.table(message.results)" in script_response.text
+    assert '"Isolated Qwen summary / main-agent tool result"' in script_response.text
     assert "console.table(message.messages)" in script_response.text
     assert "messages: message.messages, tools: message.tools" in script_response.text
     assert "recordedInputChunks.push(data.slice(0))" in script_response.text
@@ -51,7 +54,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
     assert "playback-worklet.js?v=4" in script_response.text
-    assert "app.js?v=6" in page_response.text
+    assert "app.js?v=7" in page_response.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text
     assert "local_time_zone: LOCAL_TIME_ZONE" in script_response.text
     assert 'from "./spoken-text-progress.mjs"' in script_response.text

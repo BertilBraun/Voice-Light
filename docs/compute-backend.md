@@ -52,7 +52,7 @@ process normalizes and bounds each title, URL, and snippet, then submits only th
 to a separate deterministic pass through the already-loaded Qwen model with tools disabled and a
 96-token output cap. Raw provider payloads and the summarization prompt never enter the session
 conversation; only Qwen's bounded plain-text summary is committed through the normal tool-result
-message.
+message. The speech-oriented summary omits source names, URLs, and citations.
 
 This design adds one external network round trip and one serialized Qwen generation before the
 main post-tool response. It avoids an additional model copy and GPU concurrency hazards, but search
@@ -63,7 +63,9 @@ override it with `VOICE_LIGHT_TOOL_TIMEOUT_SECONDS`.
 
 Provider and summarizer durations are logged separately without the query or result contents. This
 makes it possible to distinguish Tavily network latency from Qwen prefill/generation time before
-changing result bounds or summary quality.
+changing result bounds or summary quality. A browser-only `search.debug` event additionally logs
+the bounded normalized results, exact isolated Qwen request, summary, and stage timings to the
+developer console. This event is never added to the main model context or audible conversation.
 
 ## Browser-local time
 

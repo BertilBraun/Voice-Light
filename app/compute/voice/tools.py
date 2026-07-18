@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ConfigDict, Field, TypeAdapter
 
+from app.compute.voice.search_debug import SearchDebugTrace, SearchToolOutput
 from app.shared.base_model import FrozenBaseModel
 
 MAXIMUM_ABSOLUTE_INTEGER_RESULT = 10**100
@@ -215,13 +216,13 @@ ToolOutcome = Annotated[
 ]
 tool_outcome_adapter: TypeAdapter[ToolOutcome] = TypeAdapter(ToolOutcome)
 
-SearchToolHandler = Callable[[SearchArguments], Awaitable[str]]
+SearchToolHandler = Callable[[SearchArguments], Awaitable[str | SearchToolOutput]]
 CalculateToolHandler = Callable[[CalculateArguments], Awaitable[str]]
 CurrentTimeProvider = Callable[[], datetime]
 
 
 class SearchAnswerer(Protocol):
-    async def answer(self, query: str) -> str: ...
+    async def answer(self, query: str) -> str | SearchToolOutput: ...
 
 
 class GetTimeToolHandler(Protocol):
@@ -238,6 +239,8 @@ class ToolExecutor(Protocol):
 
     def configure_session(self, local_time_zone: str) -> None: ...
 
+    def take_search_debug_trace(self, call_id: str) -> SearchDebugTrace | None: ...
+
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure: ...
 
 
@@ -252,6 +255,7 @@ class RuntimeToolRegistry:
         self.calculate_handler = calculate_handler
         self.get_time_handler = get_time_handler
         self._specifications = _tool_specifications()
+        self._search_debug_traces: dict[str, SearchDebugTrace] = {}
 
     @property
     def specifications(self) -> tuple[ToolSpecification, ...]:
@@ -291,11 +295,19 @@ class RuntimeToolRegistry:
     def configure_session(self, local_time_zone: str) -> None:
         self.get_time_handler.set_local_time_zone(local_time_zone)
 
+    def take_search_debug_trace(self, call_id: str) -> SearchDebugTrace | None:
+        return self._search_debug_traces.pop(call_id, None)
+
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure:
         try:
             match call.function:
                 case SearchToolCallFunction(arguments=arguments):
-                    result = await self.search_handler(arguments)
+                    search_output = await self.search_handler(arguments)
+                    match search_output:
+                        case str() as result:
+                            pass
+                        case SearchToolOutput(result=result, debug_trace=debug_trace):
+                            self._search_debug_traces[call.id] = debug_trace
                 case CalculateToolCallFunction(arguments=arguments):
                     result = await self.calculate_handler(arguments)
                 case GetTimeToolCallFunction():
@@ -320,7 +332,7 @@ class StandardSearchHandler:
     def __init__(self, answerer: SearchAnswerer) -> None:
         self.answerer = answerer
 
-    async def __call__(self, arguments: SearchArguments) -> str:
+    async def __call__(self, arguments: SearchArguments) -> str | SearchToolOutput:
         return await self.answerer.answer(arguments.query)
 
 

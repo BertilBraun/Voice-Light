@@ -401,6 +401,7 @@ class VoiceServerEventType(StrEnum):
     TURN_COMMITTED = "turn.committed"
     LLM_HISTORY = "llm.history"
     LLM_MODEL_REQUEST = "llm.model_request"
+    SEARCH_DEBUG = "search.debug"
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
@@ -477,6 +478,25 @@ class LlmModelRequestEvent(FrozenBaseModel):
     speculative: bool
     messages: tuple[LlmModelMessage, ...]
     tools: tuple[ToolSpecification, ...]
+
+
+class SearchDebugResultEvent(FrozenBaseModel):
+    title: str = Field(max_length=180)
+    url: str = Field(max_length=512)
+    snippet: str = Field(max_length=800)
+
+
+class SearchDebugEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.SEARCH_DEBUG] = VoiceServerEventType.SEARCH_DEBUG
+    generation_id: int = Field(gt=0)
+    query: str = Field(max_length=240)
+    results: tuple[SearchDebugResultEvent, ...] = Field(max_length=3)
+    summarizer_system_prompt: str = Field(max_length=4_000)
+    summarizer_user_prompt: str = Field(max_length=8_000)
+    summary: str = Field(max_length=1_000)
+    provider_duration_ms: float = Field(ge=0)
+    summarizer_duration_ms: float = Field(ge=0)
+    total_duration_ms: float = Field(ge=0)
 
 
 class AssistantTextDeltaEvent(FrozenBaseModel):
@@ -560,6 +580,7 @@ VoiceServerEvent = Annotated[
     | TranscriptEvent
     | LlmHistoryEvent
     | LlmModelRequestEvent
+    | SearchDebugEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioTextBoundaryEvent
