@@ -16,6 +16,7 @@ from pydantic import Field
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 from app.training.tool_use.renderer import (
@@ -42,7 +43,8 @@ class TrainingBatch(TypedDict):
 
 class TrainingMetric(ToolUseBaseModel):
     schema_version: Literal["voice-light.training-metric/v1"] = "voice-light.training-metric/v1"
-    phase: Literal["train", "validation"]
+    phase: Literal["baseline", "train", "validation"]
+    logical_epoch: int | None = Field(default=None, ge=0)
     optimizer_step: int = Field(ge=0)
     loss: float = Field(ge=0.0)
     learning_rate: float = Field(ge=0.0)
@@ -70,8 +72,11 @@ class TrainingRunSummary(ToolUseBaseModel):
     validation_examples: int = Field(ge=1)
     training_tokens: int = Field(ge=1)
     assistant_target_tokens: int = Field(ge=1)
+    base_validation_loss: float = Field(ge=0.0)
     final_training_loss: float = Field(ge=0.0)
     validation_loss: float = Field(ge=0.0)
+    best_validation_loss: float = Field(ge=0.0)
+    best_logical_epoch: int = Field(ge=0)
     elapsed_seconds: float = Field(gt=0.0)
     trainable_parameters: int = Field(ge=1)
     total_parameters: int = Field(ge=1)
@@ -138,6 +143,7 @@ def run_lora_training(
     corpus = prepare_training_corpus(
         tokenizer=cast(ChatTemplateTokenizer, tokenizer),
         source_records=source_records,
+        holdout_record_count=config.holdout_record_count,
         logical_epochs=config.logical_epochs,
         random_seed=config.random_seed,
         minimum_user_turns=config.minimum_user_turns,
@@ -146,7 +152,6 @@ def run_lora_training(
     )
     corpus_manifest = training_corpus_manifest(
         records_path=config.records_path,
-        source_records=source_records,
         corpus=corpus,
     )
     _write_corpus_artifacts(config.output_directory, corpus, corpus_manifest)
@@ -209,16 +214,6 @@ def _train_model(
     total_parameters: int,
 ) -> TrainingRunSummary:
     collator = QwenBatchCollator(pad_token_id=cast(int, tokenizer.pad_token_id))
-    generator = torch.Generator()
-    generator.manual_seed(config.random_seed)
-    training_loader = DataLoader(
-        QwenExampleDataset(corpus.training.examples),
-        batch_size=config.per_device_batch_size,
-        shuffle=True,
-        generator=generator,
-        collate_fn=collator,
-        num_workers=0,
-    )
     validation_loader = DataLoader(
         QwenExampleDataset(corpus.validation.examples),
         batch_size=config.per_device_batch_size,
@@ -226,8 +221,14 @@ def _train_model(
         collate_fn=collator,
         num_workers=0,
     )
-    optimizer_steps = math.ceil(len(training_loader) / config.gradient_accumulation_steps)
-    warmup_steps = max(1, round(optimizer_steps * config.warmup_ratio))
+    total_optimizer_steps = sum(
+        _optimizer_steps_for_examples(
+            example_count=len(_training_examples_for_epoch(corpus, logical_epoch)),
+            config=config,
+        )
+        for logical_epoch in range(config.logical_epochs)
+    )
+    warmup_steps = max(1, round(total_optimizer_steps * config.warmup_ratio))
     optimizer = AdamW(
         tuple(parameter for parameter in model.parameters() if parameter.requires_grad),
         lr=config.learning_rate,
@@ -237,79 +238,115 @@ def _train_model(
         optimizer,
         _learning_rate_schedule(
             warmup_steps=warmup_steps,
-            total_steps=optimizer_steps,
+            total_steps=total_optimizer_steps,
         ),
     )
     metrics_path = config.output_directory / "metrics.jsonl"
+    tensorboard = SummaryWriter(log_dir=config.output_directory / "tensorboard")
+    tensorboard.add_text("run/config", config.model_dump_json(indent=2), 0)
     started_at = time.monotonic()
     optimizer.zero_grad(set_to_none=True)
-    accumulated_training_loss = 0.0
-    accumulated_micro_batches = 0
     optimizer_step = 0
     final_training_loss = 0.0
-    model.train()
-    for micro_batch_index, cpu_batch in enumerate(training_loader, start=1):
-        batch = _move_batch_to_cuda(cpu_batch)
-        outputs = model(**batch)
-        loss = outputs.loss
-        if loss is None:
-            raise AssertionError("Causal language model training always returns a loss.")
-        accumulated_training_loss += float(loss.detach().item())
-        accumulated_micro_batches += 1
-        group_start = (
-            (micro_batch_index - 1) // config.gradient_accumulation_steps
-        ) * config.gradient_accumulation_steps
-        group_size = min(
-            config.gradient_accumulation_steps,
-            len(training_loader) - group_start,
+    base_validation_loss = _evaluate_model(model, validation_loader)
+    _append_metric(
+        metrics_path,
+        TrainingMetric(
+            phase="baseline",
+            optimizer_step=0,
+            loss=base_validation_loss,
+            learning_rate=0.0,
+            elapsed_seconds=time.monotonic() - started_at,
+        ),
+    )
+    tensorboard.add_scalar("loss/validation", base_validation_loss, 0)
+    best_validation_loss = base_validation_loss
+    best_logical_epoch = 0
+    validation_loss = base_validation_loss
+
+    for logical_epoch in range(config.logical_epochs):
+        training_loader = _training_loader(
+            examples=_training_examples_for_epoch(corpus, logical_epoch),
+            collator=collator,
+            config=config,
+            logical_epoch=logical_epoch,
         )
-        (loss / group_size).backward()
-        should_step = (
-            micro_batch_index % config.gradient_accumulation_steps == 0
-            or micro_batch_index == len(training_loader)
-        )
-        if not should_step:
-            continue
-        torch.nn.utils.clip_grad_norm_(
-            model.parameters(),
-            config.maximum_gradient_norm,
-        )
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad(set_to_none=True)
-        optimizer_step += 1
-        final_training_loss = accumulated_training_loss / accumulated_micro_batches
-        _append_metric(
-            metrics_path,
-            TrainingMetric(
+        accumulated_training_loss = 0.0
+        accumulated_micro_batches = 0
+        model.train()
+        for micro_batch_index, cpu_batch in enumerate(training_loader, start=1):
+            batch = _move_batch_to_cuda(cpu_batch)
+            outputs = model(**batch)
+            loss = outputs.loss
+            if loss is None:
+                raise AssertionError("Causal language model training always returns a loss.")
+            accumulated_training_loss += float(loss.detach().item())
+            accumulated_micro_batches += 1
+            group_start = (
+                (micro_batch_index - 1) // config.gradient_accumulation_steps
+            ) * config.gradient_accumulation_steps
+            group_size = min(
+                config.gradient_accumulation_steps,
+                len(training_loader) - group_start,
+            )
+            (loss / group_size).backward()
+            should_step = (
+                micro_batch_index % config.gradient_accumulation_steps == 0
+                or micro_batch_index == len(training_loader)
+            )
+            if not should_step:
+                continue
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                config.maximum_gradient_norm,
+            )
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            optimizer_step += 1
+            final_training_loss = accumulated_training_loss / accumulated_micro_batches
+            metric = TrainingMetric(
                 phase="train",
+                logical_epoch=logical_epoch,
                 optimizer_step=optimizer_step,
                 loss=final_training_loss,
                 learning_rate=scheduler.get_last_lr()[0],
                 elapsed_seconds=time.monotonic() - started_at,
-            ),
-        )
-        accumulated_training_loss = 0.0
-        accumulated_micro_batches = 0
-        if optimizer_step % config.save_steps == 0:
-            _save_checkpoint(
-                model=model,
-                tokenizer=tokenizer,
-                directory=config.output_directory / f"checkpoint-{optimizer_step:05d}",
             )
+            _append_metric(metrics_path, metric)
+            tensorboard.add_scalar("loss/train", final_training_loss, optimizer_step)
+            tensorboard.add_scalar(
+                "learning_rate",
+                scheduler.get_last_lr()[0],
+                optimizer_step,
+            )
+            accumulated_training_loss = 0.0
+            accumulated_micro_batches = 0
+            if optimizer_step % config.save_steps == 0:
+                _save_checkpoint(
+                    model=model,
+                    tokenizer=tokenizer,
+                    directory=config.output_directory / f"checkpoint-{optimizer_step:05d}",
+                )
 
-    validation_loss = _evaluate_model(model, validation_loader)
-    elapsed_seconds = time.monotonic() - started_at
-    _append_metric(
-        metrics_path,
-        TrainingMetric(
+        validation_loss = _evaluate_model(model, validation_loader)
+        validation_metric = TrainingMetric(
             phase="validation",
+            logical_epoch=logical_epoch,
             optimizer_step=optimizer_step,
             loss=validation_loss,
             learning_rate=scheduler.get_last_lr()[0],
-            elapsed_seconds=elapsed_seconds,
-        ),
-    )
+            elapsed_seconds=time.monotonic() - started_at,
+        )
+        _append_metric(metrics_path, validation_metric)
+        tensorboard.add_scalar("loss/validation", validation_loss, optimizer_step)
+        tensorboard.flush()
+        if validation_loss < best_validation_loss:
+            best_validation_loss = validation_loss
+            best_logical_epoch = logical_epoch
+
+    elapsed_seconds = time.monotonic() - started_at
+    tensorboard.close()
     _save_checkpoint(
         model=model,
         tokenizer=tokenizer,
@@ -323,8 +360,11 @@ def _train_model(
         validation_examples=len(corpus.validation.examples),
         training_tokens=corpus_manifest.training.token_lengths.total,
         assistant_target_tokens=corpus_manifest.training.assistant_target_tokens,
+        base_validation_loss=base_validation_loss,
         final_training_loss=final_training_loss,
         validation_loss=validation_loss,
+        best_validation_loss=best_validation_loss,
+        best_logical_epoch=best_logical_epoch,
         elapsed_seconds=elapsed_seconds,
         trainable_parameters=trainable_parameters,
         total_parameters=total_parameters,
@@ -339,6 +379,47 @@ def _train_model(
             cuda_version=torch.version.cuda or "unknown",
         ),
     )
+
+
+def _training_examples_for_epoch(
+    corpus: PreparedTrainingCorpus,
+    logical_epoch: int,
+) -> tuple[QwenTrainingExample, ...]:
+    return tuple(
+        example
+        for plan, example in zip(
+            corpus.training.plans,
+            corpus.training.examples,
+            strict=True,
+        )
+        if plan.logical_epoch == logical_epoch
+    )
+
+
+def _training_loader(
+    examples: tuple[QwenTrainingExample, ...],
+    collator: QwenBatchCollator,
+    config: LoraTrainingConfig,
+    logical_epoch: int,
+) -> DataLoader[TrainingBatch]:
+    generator = torch.Generator()
+    generator.manual_seed(config.random_seed + logical_epoch)
+    return DataLoader(
+        QwenExampleDataset(examples),
+        batch_size=config.per_device_batch_size,
+        shuffle=True,
+        generator=generator,
+        collate_fn=collator,
+        num_workers=0,
+    )
+
+
+def _optimizer_steps_for_examples(
+    example_count: int,
+    config: LoraTrainingConfig,
+) -> int:
+    micro_batches = math.ceil(example_count / config.per_device_batch_size)
+    return math.ceil(micro_batches / config.gradient_accumulation_steps)
 
 
 def _evaluate_model(

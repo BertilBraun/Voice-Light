@@ -2081,6 +2081,7 @@ dev = [
 ]
 training = [
     { name = "peft", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "tensorboard", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -2115,7 +2116,10 @@ dev = [
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.6.0" },
 ]
-training = [{ name = "peft", specifier = ">=0.18.1,<0.19" }]
+training = [
+    { name = "peft", specifier = ">=0.18.1,<0.19" },
+    { name = "tensorboard", specifier = ">=2.20.0" },
+]
 
 [[package]]
 name = "wandb"
