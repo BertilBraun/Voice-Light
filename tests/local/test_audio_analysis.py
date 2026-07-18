@@ -63,8 +63,11 @@ def test_end_of_turn_events_require_minimum_silence() -> None:
     assert events[0].silence_seconds == 1.0
 
 
-def test_data_folder_exists() -> None:
-    assert Path("data/luel/sessions/manifest.json").exists()
+def test_sessions_folder_does_not_require_deleted_source_manifest() -> None:
+    sessions_root = Path("data/luel/sessions")
+
+    assert sessions_root.is_dir()
+    assert not (sessions_root / "manifest.json").exists()
 
 
 def test_session_listing_uses_session_directories() -> None:

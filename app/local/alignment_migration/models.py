@@ -42,3 +42,39 @@ class AlignmentSidecar(FrozenBaseModel):
     speaker1: AlignmentTrackRewrite
     speaker2: AlignmentTrackRewrite
     applied_at: AwareDatetime
+
+
+class MigrationPreflightSummary(FrozenBaseModel):
+    dataset_id: str
+    source_sample_count: int
+    retained_sample_count: int
+    invalid_sample_count: int
+    negative_offset_count: int
+    positive_offset_count: int
+    zero_offset_count: int
+    rewritten_sample_count: int
+    full_asr_transcript_count: int
+    dataset_cached_asr_count: int
+    unrelated_cached_asr_count: int
+
+
+class MigrationApplySummary(FrozenBaseModel):
+    retained_sample_count: int
+    newly_applied_sample_count: int
+    already_applied_sample_count: int
+    invalid_sample_count: int
+    deleted_cached_asr_count: int
+
+
+class MigrationAuditSummary(FrozenBaseModel):
+    retained_sample_count: int
+    sidecar_count: int
+    full_asr_transcript_count: int
+    quality_result_count: int
+    dataset_cached_asr_count: int
+
+
+class MigrationQualitySummary(FrozenBaseModel):
+    retained_sample_count: int
+    already_current_count: int
+    regenerated_count: int
