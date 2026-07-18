@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.training.tool_use.composition import (
     build_bucket_calibration_compositions,
+    build_training_compositions,
     select_bucket_calibration_segments,
 )
 from app.training.tool_use.generation import runtime_tool_definitions
@@ -71,6 +72,90 @@ def test_bucket_selection_keeps_one_record_per_bucket_and_style() -> None:
 
     assert len(selected) == 40
     assert all(record.record_id.endswith("-0") for record in selected)
+
+
+def test_training_compositions_mix_buckets_without_reusing_source_segments() -> None:
+    source_records = tuple(
+        _source_record(
+            record_id=f"{bucket.value}-train-{candidate_index}",
+            family=bucket.value,
+            speech_style=SpeechStyle.CLEAN,
+            split=DatasetSplit.TRAIN,
+        )
+        for bucket in SegmentBucket
+        for candidate_index in range(4)
+    )
+
+    compositions = build_training_compositions(
+        source_records=source_records,
+        split=DatasetSplit.TRAIN,
+        logical_epoch=1,
+        random_seed=83,
+        minimum_user_turns=8,
+        maximum_user_turns=16,
+    )
+
+    selected_ids = tuple(
+        source_id for plan, _ in compositions for source_id in plan.segment_record_ids
+    )
+    assert len(selected_ids) == len(set(selected_ids))
+    assert set(selected_ids) == {record.record_id for record in source_records}
+    assert all(plan.logical_epoch == 1 for plan, _ in compositions)
+    assert all(8 <= record.metadata.scenario.user_turn_count <= 16 for _, record in compositions)
+    source_by_id = {record.record_id: record for record in source_records}
+    assert all(
+        len(
+            {
+                source_by_id[source_id].metadata.scenario.family
+                for source_id in plan.segment_record_ids
+            }
+        )
+        >= 2
+        for plan, _ in compositions
+    )
+
+
+def test_training_compositions_are_reproducible_and_change_across_epochs() -> None:
+    source_records = tuple(
+        _source_record(
+            record_id=f"{bucket.value}-train-{candidate_index}",
+            family=bucket.value,
+            speech_style=SpeechStyle.CLEAN,
+            split=DatasetSplit.TRAIN,
+        )
+        for bucket in SegmentBucket
+        for candidate_index in range(3)
+    )
+
+    first = build_training_compositions(
+        source_records=source_records,
+        split=DatasetSplit.TRAIN,
+        logical_epoch=0,
+        random_seed=89,
+        minimum_user_turns=8,
+        maximum_user_turns=16,
+    )
+    repeated = build_training_compositions(
+        source_records=source_records,
+        split=DatasetSplit.TRAIN,
+        logical_epoch=0,
+        random_seed=89,
+        minimum_user_turns=8,
+        maximum_user_turns=16,
+    )
+    next_epoch = build_training_compositions(
+        source_records=source_records,
+        split=DatasetSplit.TRAIN,
+        logical_epoch=1,
+        random_seed=89,
+        minimum_user_turns=8,
+        maximum_user_turns=16,
+    )
+
+    assert tuple(plan for plan, _ in first) == tuple(plan for plan, _ in repeated)
+    assert tuple(plan.segment_record_ids for plan, _ in first) != tuple(
+        plan.segment_record_ids for plan, _ in next_epoch
+    )
 
 
 def _source_record(

@@ -12,6 +12,7 @@ from app.training.tool_use.schema import (
     AssistantMessage,
     AuditMetadata,
     ConversationMessage,
+    DatasetSplit,
     GenerationProvenance,
     LengthBand,
     RecordMetadata,
@@ -34,6 +35,7 @@ class CompositionPlan(ToolUseBaseModel):
     schema_version: Literal["voice-light.composition-plan/v1"] = "voice-light.composition-plan/v1"
     composition_id: str
     random_seed: int
+    logical_epoch: int = Field(ge=0)
     segment_record_ids: tuple[str, ...] = Field(min_length=2)
 
 
@@ -204,9 +206,62 @@ def build_bucket_calibration_compositions(
             plan = CompositionPlan(
                 composition_id=f"composition-{random_seed}-{composition_index:03d}",
                 random_seed=random_seed + composition_index,
+                logical_epoch=0,
                 segment_record_ids=tuple(record.record_id for record in ordered_records),
             )
             compositions.append((plan, compose_segment_record(plan, ordered_records)))
+    return tuple(compositions)
+
+
+def build_training_compositions(
+    source_records: tuple[ToolDialogueRecord, ...],
+    split: DatasetSplit,
+    logical_epoch: int,
+    random_seed: int,
+    minimum_user_turns: int,
+    maximum_user_turns: int,
+) -> tuple[tuple[CompositionPlan, ToolDialogueRecord], ...]:
+    if minimum_user_turns < 1:
+        raise ValueError("Minimum user turns must be positive.")
+    if maximum_user_turns < minimum_user_turns:
+        raise ValueError("Maximum user turns cannot be smaller than the minimum.")
+    split_records = tuple(
+        record for record in source_records if record.metadata.split.name is split
+    )
+    if not split_records:
+        raise ValueError(f"No source records belong to the {split.value} split.")
+
+    compositions: list[tuple[CompositionPlan, ToolDialogueRecord]] = []
+    composition_index = 0
+    for speech_style in SpeechStyle:
+        style_records = tuple(
+            record
+            for record in split_records
+            if record.metadata.scenario.speech_style is speech_style
+        )
+        if not style_records:
+            continue
+        style_groups = _group_style_segments(
+            records=style_records,
+            random_seed=random_seed + logical_epoch * 10_000 + len(compositions),
+            minimum_user_turns=minimum_user_turns,
+            maximum_user_turns=maximum_user_turns,
+        )
+        for group in style_groups:
+            plan_seed = random_seed + logical_epoch * 1_000_000 + composition_index
+            plan = CompositionPlan(
+                composition_id=(
+                    f"training-{split.value}-e{logical_epoch:02d}-"
+                    f"{speech_style.value}-{composition_index:05d}"
+                ),
+                random_seed=plan_seed,
+                logical_epoch=logical_epoch,
+                segment_record_ids=tuple(record.record_id for record in group),
+            )
+            compositions.append((plan, compose_segment_record(plan, group)))
+            composition_index += 1
+    if not compositions:
+        raise ValueError(f"No {split.value} compositions could satisfy the turn bounds.")
     return tuple(compositions)
 
 
@@ -252,3 +307,126 @@ def _record_for_bucket_and_style(
     if not matches:
         raise ValueError(f"No accepted {bucket.value}/{speech_style.value} segment was found.")
     return sorted(matches, key=lambda record: record.record_id)[0]
+
+
+def _group_style_segments(
+    records: tuple[ToolDialogueRecord, ...],
+    random_seed: int,
+    minimum_user_turns: int,
+    maximum_user_turns: int,
+) -> tuple[tuple[ToolDialogueRecord, ...], ...]:
+    generator = random.Random(random_seed)
+    remaining = list(records)
+    generator.shuffle(remaining)
+    groups: list[list[ToolDialogueRecord]] = []
+    while remaining:
+        target_user_turns = generator.randint(minimum_user_turns, maximum_user_turns)
+        group: list[ToolDialogueRecord] = []
+        user_turns = 0
+        used_buckets: set[str] = set()
+        previous_bucket: str | None = None
+        while user_turns < minimum_user_turns:
+            candidate_index = _choose_segment_index(
+                records=remaining,
+                generator=generator,
+                maximum_additional_turns=maximum_user_turns - user_turns,
+                used_buckets=used_buckets,
+                previous_bucket=previous_bucket,
+            )
+            if candidate_index is None:
+                break
+            candidate = remaining.pop(candidate_index)
+            group.append(candidate)
+            user_turns += candidate.metadata.scenario.user_turn_count
+            previous_bucket = candidate.metadata.scenario.family
+            used_buckets.add(previous_bucket)
+        if user_turns < minimum_user_turns or len(used_buckets) < 2:
+            remaining.extend(group)
+            break
+        while user_turns < target_user_turns:
+            candidate_index = _choose_segment_index(
+                records=remaining,
+                generator=generator,
+                maximum_additional_turns=maximum_user_turns - user_turns,
+                used_buckets=used_buckets,
+                previous_bucket=previous_bucket,
+            )
+            if candidate_index is None:
+                break
+            candidate = remaining.pop(candidate_index)
+            group.append(candidate)
+            user_turns += candidate.metadata.scenario.user_turn_count
+            previous_bucket = candidate.metadata.scenario.family
+            used_buckets.add(previous_bucket)
+        groups.append(group)
+    generator.shuffle(remaining)
+    _distribute_remaining_segments(
+        remaining=remaining,
+        groups=groups,
+        maximum_user_turns=maximum_user_turns,
+    )
+    return tuple(tuple(group) for group in groups)
+
+
+def _choose_segment_index(
+    records: list[ToolDialogueRecord],
+    generator: random.Random,
+    maximum_additional_turns: int,
+    used_buckets: set[str],
+    previous_bucket: str | None,
+) -> int | None:
+    fitting_indexes = tuple(
+        index
+        for index, record in enumerate(records)
+        if record.metadata.scenario.user_turn_count <= maximum_additional_turns
+    )
+    if not fitting_indexes:
+        return None
+    new_bucket_indexes = tuple(
+        index
+        for index in fitting_indexes
+        if records[index].metadata.scenario.family not in used_buckets
+    )
+    different_bucket_indexes = tuple(
+        index
+        for index in fitting_indexes
+        if records[index].metadata.scenario.family != previous_bucket
+    )
+    candidates = new_bucket_indexes or different_bucket_indexes or fitting_indexes
+    return generator.choice(candidates)
+
+
+def _distribute_remaining_segments(
+    remaining: list[ToolDialogueRecord],
+    groups: list[list[ToolDialogueRecord]],
+    maximum_user_turns: int,
+) -> None:
+    unplaced: list[ToolDialogueRecord] = []
+    while remaining:
+        record = remaining.pop()
+        fitting_group_indexes = tuple(
+            index
+            for index, group in enumerate(groups)
+            if _user_turn_count(group) + record.metadata.scenario.user_turn_count
+            <= maximum_user_turns
+        )
+        if not fitting_group_indexes:
+            unplaced.append(record)
+            continue
+        new_bucket_group_indexes = tuple(
+            index
+            for index in fitting_group_indexes
+            if record.metadata.scenario.family
+            not in {candidate.metadata.scenario.family for candidate in groups[index]}
+        )
+        candidates = new_bucket_group_indexes or fitting_group_indexes
+        target_index = max(
+            candidates,
+            key=lambda index: maximum_user_turns - _user_turn_count(groups[index]),
+        )
+        groups[target_index].append(record)
+    remaining.extend(unplaced)
+
+
+def _user_turn_count(records: list[ToolDialogueRecord]) -> int:
+    return sum(record.metadata.scenario.user_turn_count for record in records)

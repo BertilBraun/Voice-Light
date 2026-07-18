@@ -36,6 +36,9 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.6.0",
 ]
+training = [
+    "peft>=0.18.1,<0.19",
+]
 
 [tool.ruff]
 line-length = 100
