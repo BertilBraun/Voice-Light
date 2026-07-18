@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, TypeAdapter, model_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from app.compute.voice.conversation import ConversationRole
 from app.compute.voice.errors import VoiceComponent, VoiceOperation
@@ -286,6 +287,16 @@ class VoiceClientEventType(StrEnum):
 class SessionStartEvent(FrozenBaseModel):
     type: Literal[VoiceClientEventType.SESSION_START] = VoiceClientEventType.SESSION_START
     input_sample_rate: int = Field(gt=0)
+    local_time_zone: str = Field(default="Etc/UTC", min_length=1, max_length=64)
+
+    @field_validator("local_time_zone")
+    @classmethod
+    def validate_local_time_zone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError(f"Unknown IANA time zone: {value}") from error
+        return value
 
 
 class SessionStopEvent(FrozenBaseModel):

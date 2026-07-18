@@ -1,6 +1,7 @@
 import { SpokenTextProgress } from "./spoken-text-progress.mjs";
 
 const INPUT_SAMPLE_RATE = 16000;
+const LOCAL_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Etc/UTC";
 const ENDPOINT_STORAGE_KEY = "voice-light-compute-voice-endpoint";
 const endpointInput = document.querySelector("#endpoint-url");
 const startButton = document.querySelector("#start-button");
@@ -135,7 +136,11 @@ async function startSession() {
     socket = await openSocket(endpoint);
     setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
     const sessionReady = waitForSessionReady(socket);
-    socket.send(JSON.stringify({ type: "session.start", input_sample_rate: INPUT_SAMPLE_RATE }));
+    socket.send(JSON.stringify({
+      type: "session.start",
+      input_sample_rate: INPUT_SAMPLE_RATE,
+      local_time_zone: LOCAL_TIME_ZONE,
+    }));
     const ready = await sessionReady;
     await setupPlayback(ready.output_sample_rate);
     if (stopRequested) return;

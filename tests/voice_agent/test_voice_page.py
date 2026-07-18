@@ -51,7 +51,9 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
     assert "playback-worklet.js?v=4" in script_response.text
-    assert "app.js?v=5" in page_response.text
+    assert "app.js?v=6" in page_response.text
+    assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text
+    assert "local_time_zone: LOCAL_TIME_ZONE" in script_response.text
     assert 'from "./spoken-text-progress.mjs"' in script_response.text
     assert "this.spokenOffset = Math.max(this.spokenOffset, offset)" in progress_response.text
     assert "input[index]" in capture_worklet_response.text

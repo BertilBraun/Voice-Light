@@ -22,8 +22,8 @@ from app.compute.voice.schemas import (
     ("payload", "expected_event"),
     [
         (
-            '{"type":"session.start","input_sample_rate":16000}',
-            SessionStartEvent(input_sample_rate=16_000),
+            '{"type":"session.start","input_sample_rate":16000,"local_time_zone":"Europe/Berlin"}',
+            SessionStartEvent(input_sample_rate=16_000, local_time_zone="Europe/Berlin"),
         ),
         ('{"type":"session.stop"}', SessionStopEvent()),
         (
@@ -155,3 +155,8 @@ def test_client_event_protocol_parses_discriminated_events(
 def test_client_event_protocol_rejects_legacy_and_invalid_events(payload: str) -> None:
     with pytest.raises(ValidationError):
         voice_client_event_adapter.validate_json(payload)
+
+
+def test_session_start_rejects_unknown_iana_time_zone() -> None:
+    with pytest.raises(ValidationError, match="Unknown IANA time zone"):
+        SessionStartEvent(input_sample_rate=16_000, local_time_zone="Berlin/Imaginary")

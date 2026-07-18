@@ -611,6 +611,7 @@ class VoiceSession:
             raise ValueError("session.start may only be sent once.")
         if event.input_sample_rate != INPUT_SAMPLE_RATE:
             raise ValueError(f"Input sample rate must be {INPUT_SAMPLE_RATE} Hz.")
+        self.tool_executor.configure_session(event.local_time_zone)
         self.started = True
         self._transition_session(SessionLifecycle.READY)
         await self._send_event(

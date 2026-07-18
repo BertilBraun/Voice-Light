@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -566,9 +566,7 @@ def create_search_registry(search_handler: SearchToolHandler) -> RuntimeToolRegi
     return RuntimeToolRegistry(
         search_handler=search_handler,
         calculate_handler=PythonArithmeticHandler(),
-        get_time_handler=CurrentLocalTimeHandler(
-            lambda: datetime(2026, 7, 18, tzinfo=timezone.utc)
-        ),
+        get_time_handler=CurrentLocalTimeHandler(lambda: datetime(2026, 7, 18, tzinfo=UTC)),
     )
 
 

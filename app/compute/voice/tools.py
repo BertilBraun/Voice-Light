@@ -4,9 +4,10 @@ import ast
 import asyncio
 import math
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from pydantic import ConfigDict, Field, TypeAdapter
 
@@ -216,7 +217,6 @@ tool_outcome_adapter: TypeAdapter[ToolOutcome] = TypeAdapter(ToolOutcome)
 
 SearchToolHandler = Callable[[SearchArguments], Awaitable[str]]
 CalculateToolHandler = Callable[[CalculateArguments], Awaitable[str]]
-GetTimeToolHandler = Callable[[], Awaitable[str]]
 CurrentTimeProvider = Callable[[], datetime]
 
 
@@ -224,11 +224,19 @@ class SearchAnswerer(Protocol):
     async def answer(self, query: str) -> str: ...
 
 
+class GetTimeToolHandler(Protocol):
+    def set_local_time_zone(self, time_zone_name: str) -> None: ...
+
+    async def __call__(self) -> str: ...
+
+
 class ToolExecutor(Protocol):
     @property
     def specifications(self) -> tuple[ToolSpecification, ...]: ...
 
     def validate(self, request: SerializedToolCall) -> ToolCall | ToolCallFailure: ...
+
+    def configure_session(self, local_time_zone: str) -> None: ...
 
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure: ...
 
@@ -280,6 +288,9 @@ class RuntimeToolRegistry:
             )
         return ToolCall(id=request.id, function=function)
 
+    def configure_session(self, local_time_zone: str) -> None:
+        self.get_time_handler.set_local_time_zone(local_time_zone)
+
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure:
         try:
             match call.function:
@@ -322,9 +333,20 @@ class PythonArithmeticHandler:
 class CurrentLocalTimeHandler:
     def __init__(self, current_time: CurrentTimeProvider) -> None:
         self.current_time = current_time
+        self.local_time_zone = ZoneInfo("Etc/UTC")
+
+    def set_local_time_zone(self, time_zone_name: str) -> None:
+        self.local_time_zone = ZoneInfo(time_zone_name)
 
     async def __call__(self) -> str:
-        return self.current_time().isoformat(timespec="seconds")
+        current_time = self.current_time()
+        if current_time.utcoffset() is None:
+            raise ValueError("Current time must include a UTC offset.")
+        local_time = current_time.astimezone(self.local_time_zone)
+        return (
+            f"{local_time.isoformat(timespec='seconds')} "
+            f"(IANA time zone: {self.local_time_zone.key})"
+        )
 
 
 def create_runtime_tool_registry(search_handler: SearchToolHandler) -> RuntimeToolRegistry:
@@ -365,7 +387,10 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
         ),
         ToolSpecification(
             function=GetTimeToolFunctionSpecification(
-                description="Get the current local date and time.",
+                description=(
+                    "Get the current date and time in the user's local time zone, including its "
+                    "UTC offset and IANA time-zone name."
+                ),
                 parameters=GetTimeParameters(properties=GetTimeParameterProperties()),
             )
         ),
@@ -373,7 +398,7 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
 
 
 def _current_local_time() -> datetime:
-    return datetime.now().astimezone()
+    return datetime.now(UTC)
 
 
 def _evaluate_arithmetic(expression: ast.expr) -> int | float:

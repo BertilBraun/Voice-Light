@@ -65,6 +65,15 @@ Provider and summarizer durations are logged separately without the query or res
 makes it possible to distinguish Tavily network latency from Qwen prefill/generation time before
 changing result bounds or summary quality.
 
+## Browser-local time
+
+The argument-free `get_time()` tool returns the current time in the browser user's IANA time zone,
+not the compute server's operating-system time zone. The browser includes the zone reported by
+`Intl.DateTimeFormat` in `session.start`; the compute boundary validates it with the IANA zone
+database. Tool results include the local ISO 8601 timestamp, UTC offset, and zone name so the model
+does not have to infer which clock it received. Non-browser clients that omit this session field
+retain an explicit `Etc/UTC` compatibility default.
+
 The model speaks one short bridge before starting search. That bridge is finalized as its own TTS
 utterance so it cannot stall mid-word while the search and summary run. The post-result answer uses
 a successor TTS utterance whose PCM and word boundaries are rebased into the same browser playback
