@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from threading import Lock
 from typing import cast
 
 import nemo.collections.asr as nemo_asr
@@ -37,6 +38,7 @@ class CanaryAsrModel:
 
     def __init__(self, inference_executor: BatchInferenceExecutor) -> None:
         self.inference_executor = inference_executor
+        self.model_state_lock = Lock()
         self.model_loading_time_seconds = load_time_seconds(self.load)
 
     def load(self) -> None:
@@ -107,12 +109,14 @@ class CanaryAsrModel:
         self,
         chunk_paths: tuple[Path, ...],
     ) -> tuple[tuple[TimestampedWord, ...], ...]:
-        hypotheses: list[Hypothesis] = self.model.transcribe(
-            [str(chunk_path) for chunk_path in chunk_paths],
-            source_lang="en",
-            target_lang="en",
-            timestamps=True,
-        )
+        with self.model_state_lock:
+            hypotheses: list[Hypothesis] = self.model.transcribe(
+                [str(chunk_path) for chunk_path in chunk_paths],
+                batch_size=len(chunk_paths),
+                source_lang="en",
+                target_lang="en",
+                timestamps=True,
+            )
         if len(hypotheses) != len(chunk_paths):
             raise ValueError("Canary did not return one hypothesis per audio chunk.")
         return tuple(
