@@ -53,31 +53,32 @@ class CanaryAsrModel:
         self.model.eval()
 
     def transcribe(self, audio_path: Path) -> ModelTranscription:
-        queue_start = time.perf_counter()
-        with self.inference_lock:
-            inference_queue_time_seconds = time.perf_counter() - queue_start
-            audio_loading_start = time.perf_counter()
-            metadata = probe_local_audio_metadata(audio_path)
-            chunks = canary_audio_chunks(metadata.duration_seconds)
-            audio_loading_time_seconds = time.perf_counter() - audio_loading_start
-            words: list[TimestampedWord] = []
-            model_execution_time_seconds = 0.0
-            with tempfile.TemporaryDirectory(prefix="voice-light-canary-") as directory_name:
-                directory = Path(directory_name)
-                for batch_index, batch in enumerate(canary_chunk_batches(chunks)):
-                    chunk_paths = tuple(
-                        directory / f"batch-{batch_index}-chunk-{chunk_index}.flac"
-                        for chunk_index in range(len(batch))
-                    )
-                    try:
-                        chunk_loading_start = time.perf_counter()
-                        for chunk, chunk_path in zip(batch, chunk_paths, strict=True):
-                            write_canary_audio_chunk(
-                                source_path=audio_path,
-                                output_path=chunk_path,
-                                chunk=chunk,
-                            )
-                        audio_loading_time_seconds += time.perf_counter() - chunk_loading_start
+        audio_loading_start = time.perf_counter()
+        metadata = probe_local_audio_metadata(audio_path)
+        chunks = canary_audio_chunks(metadata.duration_seconds)
+        audio_loading_time_seconds = time.perf_counter() - audio_loading_start
+        words: list[TimestampedWord] = []
+        inference_queue_time_seconds = 0.0
+        model_execution_time_seconds = 0.0
+        with tempfile.TemporaryDirectory(prefix="voice-light-canary-") as directory_name:
+            directory = Path(directory_name)
+            for batch_index, batch in enumerate(canary_chunk_batches(chunks)):
+                chunk_paths = tuple(
+                    directory / f"batch-{batch_index}-chunk-{chunk_index}.flac"
+                    for chunk_index in range(len(batch))
+                )
+                try:
+                    chunk_loading_start = time.perf_counter()
+                    for chunk, chunk_path in zip(batch, chunk_paths, strict=True):
+                        write_canary_audio_chunk(
+                            source_path=audio_path,
+                            output_path=chunk_path,
+                            chunk=chunk,
+                        )
+                    audio_loading_time_seconds += time.perf_counter() - chunk_loading_start
+                    queue_start = time.perf_counter()
+                    with self.inference_lock:
+                        inference_queue_time_seconds += time.perf_counter() - queue_start
                         model_execution_start = time.perf_counter()
                         hypotheses: list[Hypothesis] = self.model.transcribe(
                             [str(chunk_path) for chunk_path in chunk_paths],
@@ -86,24 +87,22 @@ class CanaryAsrModel:
                             timestamps=True,
                         )
                         model_execution_time_seconds += time.perf_counter() - model_execution_start
-                        if len(hypotheses) != len(batch):
-                            raise ValueError(
-                                "Canary did not return one hypothesis per audio chunk."
+                    if len(hypotheses) != len(batch):
+                        raise ValueError("Canary did not return one hypothesis per audio chunk.")
+                    for chunk, hypothesis in zip(batch, hypotheses, strict=True):
+                        words.extend(
+                            global_canary_chunk_words(
+                                chunk=chunk,
+                                words=tuple(
+                                    words_from_nemo_timestamps(
+                                        hypothesis.timestamp["word"],
+                                    )
+                                ),
                             )
-                        for chunk, hypothesis in zip(batch, hypotheses, strict=True):
-                            words.extend(
-                                global_canary_chunk_words(
-                                    chunk=chunk,
-                                    words=tuple(
-                                        words_from_nemo_timestamps(
-                                            hypothesis.timestamp["word"],
-                                        )
-                                    ),
-                                )
-                            )
-                    finally:
-                        for chunk_path in chunk_paths:
-                            chunk_path.unlink(missing_ok=True)
+                        )
+                finally:
+                    for chunk_path in chunk_paths:
+                        chunk_path.unlink(missing_ok=True)
         return ModelTranscription(
             words=tuple(words),
             inference_queue_time_seconds=inference_queue_time_seconds,
