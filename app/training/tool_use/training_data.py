@@ -153,7 +153,7 @@ def _prepare_split(
     pairs = tuple(
         pair
         for logical_epoch in range(logical_epochs)
-        for pair in build_training_compositions(
+        for pair in _complete_epoch_compositions(
             source_records=source_records,
             split=split,
             logical_epoch=logical_epoch,
@@ -185,6 +185,34 @@ def _prepare_split(
         records=records,
         examples=examples,
         omitted_source_record_ids=tuple(sorted(source_ids - selected_ids)),
+    )
+
+
+def _complete_epoch_compositions(
+    source_records: tuple[ToolDialogueRecord, ...],
+    split: DatasetSplit,
+    logical_epoch: int,
+    random_seed: int,
+    minimum_user_turns: int,
+    maximum_user_turns: int,
+) -> tuple[tuple[CompositionPlan, ToolDialogueRecord], ...]:
+    expected_ids = {
+        record.record_id for record in source_records if record.metadata.split.name is split
+    }
+    for seed_attempt in range(256):
+        pairs = build_training_compositions(
+            source_records=source_records,
+            split=split,
+            logical_epoch=logical_epoch,
+            random_seed=random_seed + seed_attempt * 100_000_000,
+            minimum_user_turns=minimum_user_turns,
+            maximum_user_turns=maximum_user_turns,
+        )
+        selected_ids = {record_id for plan, _ in pairs for record_id in plan.segment_record_ids}
+        if selected_ids == expected_ids:
+            return pairs
+    raise ValueError(
+        f"Could not compose every {split.value} source record after 256 grouping seeds."
     )
 
 
