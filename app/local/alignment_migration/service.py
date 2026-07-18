@@ -770,14 +770,24 @@ def _database_is_reconciled(
         AlignmentSide.SPEAKER1: sidecar.speaker1,
         AlignmentSide.SPEAKER2: sidecar.speaker2,
     }
+    expected_sample_duration = max(
+        rewrite.aligned_frame_count / sidecar.sample_rate for rewrite in rewrite_by_side.values()
+    )
+    if plan.sample.duration_seconds != expected_sample_duration:
+        return False
     for track in plan.sample.tracks:
         rewrite = rewrite_by_side[track.side]
-        if track.audio_sha256 != rewrite.aligned_sha256:
+        expected_duration = rewrite.aligned_frame_count / sidecar.sample_rate
+        if (
+            track.audio_sha256 != rewrite.aligned_sha256
+            or track.duration_seconds != expected_duration
+            or track.sample_rate != sidecar.sample_rate
+            or track.sample_count != rewrite.aligned_frame_count
+        ):
             return False
         records = tuple(record for record in plan.transcripts if record.sample_track_id == track.id)
         if len(records) != 2:
             return False
-        expected_duration = rewrite.aligned_frame_count / sidecar.sample_rate
         if any(
             record.source_audio_sha256 != rewrite.aligned_sha256
             or abs(record.source_duration_seconds - expected_duration) > 1e-6

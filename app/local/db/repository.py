@@ -458,14 +458,12 @@ class Repository:
             connection.execute(
                 """
                 UPDATE samples
-                SET duration_seconds = COALESCE(%s, duration_seconds),
-                    quality_score = %s,
+                SET quality_score = %s,
                     quality_flags = %s,
                     updated_at = now()
                 WHERE id = %s
                 """,
                 (
-                    quality_result.payload.get("duration_seconds"),
                     quality_result.total_quality_score,
                     list(quality_result.flags),
                     quality_result.sample_id,

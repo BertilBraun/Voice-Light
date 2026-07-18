@@ -14,7 +14,7 @@ from app.local.alignment_migration.filesystem_transaction import (
     apply_alignment_transaction,
     confirm_database_reconciliation,
 )
-from app.local.alignment_migration.models import AlignmentSide
+from app.local.alignment_migration.models import AlignmentSide, AlignmentSidecar
 from app.local.alignment_migration.repository import (
     AlignmentMigrationRepository,
     CachedAsrMigrationRecord,
@@ -37,6 +37,7 @@ from app.local.alignment_migration.service import (
     AlignmentMigrationService,
     SampleMigrationPlan,
     _audit_post_migration_sources,
+    _database_is_reconciled,
     _validate_word_timestamps,
     cached_asr_external_id,
     classify_cached_asr,
@@ -529,6 +530,32 @@ def test_post_migration_source_audit_checks_exact_filesystem_and_database(
 
     assert summary.already_current_count == 1
     assert summary.regenerated_count == 164
+
+
+def test_database_reconciliation_requires_canonical_sample_duration(
+    tmp_path: Path,
+) -> None:
+    snapshot = post_migration_snapshot(tmp_path)
+    service = AlignmentMigrationService(
+        repository=SnapshotOnlyRepository(snapshot),
+        sessions_root=tmp_path,
+    )
+    sample_plan = service.preflight().retained[0]
+    sidecar_path = (
+        sample_plan.sample.tracks[0].access_uri.parent
+        / f"{sample_plan.sample.external_id}.alignment.json"
+    )
+    sidecar = AlignmentSidecar.model_validate_json(sidecar_path.read_text(encoding="utf-8"))
+    altered_plan = replace(
+        sample_plan,
+        sample=replace(
+            sample_plan.sample,
+            duration_seconds=sample_plan.sample.duration_seconds + (1 / 48_000),
+        ),
+    )
+
+    assert _database_is_reconciled(sample_plan, sidecar)
+    assert not _database_is_reconciled(altered_plan, sidecar)
 
 
 def migration_snapshot(root: Path) -> MigrationRepositorySnapshot:
