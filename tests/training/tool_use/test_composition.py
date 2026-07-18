@@ -4,6 +4,7 @@ from app.training.tool_use.composition import (
     build_bucket_calibration_compositions,
     build_training_compositions,
     select_bucket_calibration_segments,
+    select_review_records,
 )
 from app.training.tool_use.generation import runtime_tool_definitions
 from app.training.tool_use.scenario import SegmentBucket
@@ -156,6 +157,36 @@ def test_training_compositions_are_reproducible_and_change_across_epochs() -> No
     assert tuple(plan.segment_record_ids for plan, _ in first) != tuple(
         plan.segment_record_ids for plan, _ in next_epoch
     )
+
+
+def test_review_selection_covers_every_behavior_bucket() -> None:
+    source_records = tuple(
+        _source_record(
+            record_id=f"{bucket.value}-review-{candidate_index}",
+            family=bucket.value,
+            speech_style=SpeechStyle.CLEAN,
+            split=DatasetSplit.TRAIN,
+        )
+        for bucket in SegmentBucket
+        for candidate_index in range(2)
+    )
+
+    selected = select_review_records(
+        candidate_records=source_records,
+        count=10,
+        random_seed=97,
+    )
+    repeated = select_review_records(
+        candidate_records=source_records,
+        count=10,
+        random_seed=97,
+    )
+
+    assert selected == repeated
+    assert len(selected) == 10
+    assert {record.metadata.scenario.family for record in selected} == {
+        bucket.value for bucket in SegmentBucket
+    }
 
 
 def _source_record(

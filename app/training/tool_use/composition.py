@@ -275,6 +275,34 @@ def select_bucket_calibration_segments(
     )
 
 
+def select_review_records(
+    candidate_records: tuple[ToolDialogueRecord, ...],
+    count: int,
+    random_seed: int,
+) -> tuple[ToolDialogueRecord, ...]:
+    if count < 1:
+        raise ValueError("Review record count must be positive.")
+    if count > len(candidate_records):
+        raise ValueError("Review record count exceeds the available records.")
+    generator = random.Random(random_seed)
+    selected: list[ToolDialogueRecord] = []
+    remaining = list(candidate_records)
+    if count >= len(SegmentBucket):
+        for bucket in SegmentBucket:
+            bucket_candidates = tuple(
+                record for record in remaining if record.metadata.scenario.family == bucket.value
+            )
+            if not bucket_candidates:
+                raise ValueError(f"No {bucket.value} record is available for review.")
+            record = generator.choice(bucket_candidates)
+            selected.append(record)
+            remaining.remove(record)
+    additional_count = count - len(selected)
+    selected.extend(generator.sample(remaining, additional_count))
+    generator.shuffle(selected)
+    return tuple(selected)
+
+
 def write_composition_plans(
     path: Path,
     plans: tuple[CompositionPlan, ...],

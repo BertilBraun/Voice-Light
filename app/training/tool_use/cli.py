@@ -8,6 +8,7 @@ from pathlib import Path
 from app.training.tool_use.composition import (
     build_bucket_calibration_compositions,
     select_bucket_calibration_segments,
+    select_review_records,
     write_composed_records,
     write_composition_plans,
 )
@@ -39,6 +40,8 @@ def main() -> None:
             _compose_calibration(arguments)
         case "select-calibration":
             _select_calibration(arguments)
+        case "select-review":
+            _select_review(arguments)
         case _:
             raise AssertionError("argparse returned an excluded tool-use command.")
 
@@ -117,6 +120,15 @@ def _argument_parser() -> argparse.ArgumentParser:
     )
     select_parser.add_argument("candidates", type=Path)
     select_parser.add_argument("output", type=Path)
+
+    review_parser = subparsers.add_parser(
+        "select-review",
+        help="Select a reproducible behavior-balanced review subset.",
+    )
+    review_parser.add_argument("candidates", type=Path)
+    review_parser.add_argument("output", type=Path)
+    review_parser.add_argument("--count", type=int, required=True)
+    review_parser.add_argument("--seed", type=int, required=True)
     return parser
 
 
@@ -208,6 +220,17 @@ def _select_calibration(arguments: argparse.Namespace) -> None:
     selected = select_bucket_calibration_segments(candidates)
     write_composed_records(arguments.output, selected)
     print(f"Wrote {len(selected)} selected records to {arguments.output}")
+
+
+def _select_review(arguments: argparse.Namespace) -> None:
+    candidates = read_records(arguments.candidates)
+    selected = select_review_records(
+        candidate_records=candidates,
+        count=arguments.count,
+        random_seed=arguments.seed,
+    )
+    write_composed_records(arguments.output, selected)
+    print(f"Wrote {len(selected)} review records to {arguments.output}")
 
 
 def _timezone_aware_datetime(value: str) -> datetime:
