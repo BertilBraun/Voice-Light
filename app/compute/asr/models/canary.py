@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from threading import Lock
+from threading import BoundedSemaphore
 from typing import cast
 
 import nemo.collections.asr as nemo_asr
@@ -25,6 +25,7 @@ from app.shared.audio import probe_local_audio_metadata
 from app.shared.audio.transport import CANONICAL_MODEL_AUDIO_SPEC
 
 CANARY_MODEL_FILENAME = "canary-1b-v2.nemo"
+CANARY_MAX_CONCURRENT_INFERENCE_CALLS = 2
 
 
 class CanaryAsrModel:
@@ -32,7 +33,7 @@ class CanaryAsrModel:
     package_names = ("torch", "nemo_toolkit")
 
     def __init__(self) -> None:
-        self.inference_lock = Lock()
+        self.inference_slots = BoundedSemaphore(CANARY_MAX_CONCURRENT_INFERENCE_CALLS)
         self.model_loading_time_seconds = load_time_seconds(self.load)
 
     def load(self) -> None:
@@ -77,7 +78,7 @@ class CanaryAsrModel:
                         )
                     audio_loading_time_seconds += time.perf_counter() - chunk_loading_start
                     queue_start = time.perf_counter()
-                    with self.inference_lock:
+                    with self.inference_slots:
                         inference_queue_time_seconds += time.perf_counter() - queue_start
                         model_execution_start = time.perf_counter()
                         hypotheses: list[Hypothesis] = self.model.transcribe(
