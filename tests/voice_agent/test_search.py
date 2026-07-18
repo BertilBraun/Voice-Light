@@ -8,7 +8,6 @@ import pytest
 
 from app.compute.voice.interfaces import TextGenerationRequest
 from app.compute.voice.search import (
-    BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE,
     MAXIMUM_SEARCH_CONTEXT_CHARACTERS,
     MAXIMUM_SEARCH_RESPONSE_BYTES,
     MAXIMUM_SEARCH_RESULTS,
@@ -16,13 +15,16 @@ from app.compute.voice.search import (
     MAXIMUM_SEARCH_SUMMARY_CHARACTERS,
     MAXIMUM_SEARCH_SUMMARY_TOKENS,
     MAXIMUM_SEARCH_TITLE_CHARACTERS,
-    BraveSearchProvider,
-    ConfiguredBraveSearchSettings,
+    TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE,
+    TAVILY_SEARCH_API_URL,
+    ConfiguredTavilySearchSettings,
     QwenSearchResultSummarizer,
     SearchPipeline,
     SearchProviderError,
     SearchResult,
     SearchSummarizationError,
+    TavilySearchProvider,
+    TavilySearchRequest,
     UnconfiguredSearchProvider,
     UnconfiguredSearchSettings,
     render_search_summary_prompt,
@@ -69,40 +71,44 @@ class RecordingSearchSummarizer:
         return self.summary
 
 
-def test_brave_provider_normalizes_deduplicates_and_bounds_results() -> None:
+def test_tavily_provider_normalizes_deduplicates_and_bounds_results() -> None:
     long_title = "T" * (MAXIMUM_SEARCH_TITLE_CHARACTERS + 100)
     long_snippet = "S" * (MAXIMUM_SEARCH_SNIPPET_CHARACTERS + 100)
 
     def respond(request: httpx.Request) -> httpx.Response:
-        assert request.headers["X-Subscription-Token"] == "test-key"
-        assert request.url.params["count"] == str(MAXIMUM_SEARCH_RESULTS)
+        assert request.method == "POST"
+        assert str(request.url) == TAVILY_SEARCH_API_URL
+        assert request.headers["Authorization"] == "Bearer test-key"
+        assert TavilySearchRequest.model_validate_json(request.content) == TavilySearchRequest(
+            query="test query",
+            max_results=MAXIMUM_SEARCH_RESULTS,
+        )
         return httpx.Response(
             200,
             json={
-                "web": {
-                    "results": [
-                        {
-                            "title": f"  {long_title}  ",
-                            "url": "https://example.com/first",
-                            "description": f"  {long_snippet}  ",
-                        },
-                        {
-                            "title": "Duplicate",
-                            "url": "https://example.com/first",
-                            "description": "Ignored",
-                        },
-                        {
-                            "title": " Second   result ",
-                            "url": "https://example.org/two",
-                        },
-                    ]
-                }
+                "results": [
+                    {
+                        "title": f"  {long_title}  ",
+                        "url": "https://example.com/first",
+                        "content": f"  {long_snippet}  ",
+                    },
+                    {
+                        "title": "Duplicate",
+                        "url": "https://example.com/first",
+                        "content": "Ignored",
+                    },
+                    {
+                        "title": " Second   result ",
+                        "url": "https://example.org/two",
+                        "content": "",
+                    },
+                ]
             },
         )
 
     async def run_search() -> tuple[SearchResult, ...]:
         client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        provider = BraveSearchProvider("test-key", client)
+        provider = TavilySearchProvider("test-key", client)
         try:
             return await provider.search("test query", MAXIMUM_SEARCH_RESULTS)
         finally:
@@ -127,7 +133,7 @@ def test_brave_provider_normalizes_deduplicates_and_bounds_results() -> None:
         (httpx.Response(200, text="{invalid"), "invalid response"),
     ),
 )
-def test_brave_provider_maps_failures_without_provider_payload(
+def test_tavily_provider_maps_failures_without_provider_payload(
     response: httpx.Response,
     message: str,
 ) -> None:
@@ -137,7 +143,7 @@ def test_brave_provider_maps_failures_without_provider_payload(
 
     async def run_search() -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        provider = BraveSearchProvider("test-key", client)
+        provider = TavilySearchProvider("test-key", client)
         try:
             with pytest.raises(SearchProviderError, match=message) as error:
                 await provider.search("test query", 1)
@@ -149,13 +155,13 @@ def test_brave_provider_maps_failures_without_provider_payload(
     asyncio.run(run_search())
 
 
-def test_brave_provider_maps_request_timeout() -> None:
+def test_tavily_provider_maps_request_timeout() -> None:
     def time_out(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("synthetic timeout with private transport details", request=request)
 
     async def run_search() -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(time_out))
-        provider = BraveSearchProvider("test-key", client)
+        provider = TavilySearchProvider("test-key", client)
         try:
             with pytest.raises(SearchProviderError, match="request timed out") as error:
                 await provider.search("test query", 1)
@@ -167,7 +173,7 @@ def test_brave_provider_maps_request_timeout() -> None:
     asyncio.run(run_search())
 
 
-def test_brave_provider_rejects_oversized_response() -> None:
+def test_tavily_provider_rejects_oversized_response() -> None:
     oversized_payload = b"x" * (MAXIMUM_SEARCH_RESPONSE_BYTES + 1)
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -176,7 +182,7 @@ def test_brave_provider_rejects_oversized_response() -> None:
 
     async def run_search() -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        provider = BraveSearchProvider("test-key", client)
+        provider = TavilySearchProvider("test-key", client)
         try:
             with pytest.raises(SearchProviderError, match="oversized response"):
                 await provider.search("test query", 1)
@@ -247,22 +253,22 @@ def test_missing_search_credentials_fail_only_when_search_is_invoked() -> None:
     settings = search_settings_from_environment({})
 
     assert settings == UnconfiguredSearchSettings()
-    provider = UnconfiguredSearchProvider(BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE)
-    with pytest.raises(SearchProviderError, match=BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE):
+    provider = UnconfiguredSearchProvider(TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE)
+    with pytest.raises(SearchProviderError, match=TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE):
         asyncio.run(provider.search("query", MAXIMUM_SEARCH_RESULTS))
     assert search_settings_from_environment(
-        {BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE: " configured-key "}
-    ) == ConfiguredBraveSearchSettings(api_key="configured-key")
+        {TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE: " configured-key "}
+    ) == ConfiguredTavilySearchSettings(api_key="configured-key")
 
 
 @pytest.mark.integration
-def test_live_brave_search_provider() -> None:
-    api_key = os.environ.get(BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE, "").strip()
+def test_live_tavily_search_provider() -> None:
+    api_key = os.environ.get(TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE, "").strip()
     if not api_key:
-        pytest.skip(f"{BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE} is not configured.")
+        pytest.skip(f"{TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE} is not configured.")
 
     async def run_search() -> tuple[SearchResult, ...]:
-        provider = BraveSearchProvider(api_key)
+        provider = TavilySearchProvider(api_key)
         try:
             return await provider.search("Voice Light web search integration test", 2)
         finally:

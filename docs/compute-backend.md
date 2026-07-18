@@ -42,8 +42,8 @@ uploads are decoded in request-scoped temporary storage and deleted after the re
 
 ## Voice web search
 
-The voice agent's `search(query)` tool uses the Brave Web Search API. Set
-`VOICE_LIGHT_BRAVE_SEARCH_API_KEY` in `.env.compute` to a Brave Search subscription token. The
+The voice agent's `search(query)` tool uses the Tavily Search API. Set
+`VOICE_LIGHT_TAVILY_API_KEY` in `.env.compute` to a Tavily API key. The
 voice stack still starts when this setting is absent, but an attempted search returns a clear tool
 failure until a key is configured.
 

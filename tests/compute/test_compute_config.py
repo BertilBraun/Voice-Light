@@ -4,8 +4,8 @@ import pytest
 
 from app.compute.config import ComputeSettings
 from app.compute.voice.search import (
-    BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE,
-    ConfiguredBraveSearchSettings,
+    TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE,
+    ConfiguredTavilySearchSettings,
     UnconfiguredSearchSettings,
 )
 
@@ -29,16 +29,16 @@ def test_compute_settings_enable_voice_stack_by_default() -> None:
     assert settings.voice_stack.search == UnconfiguredSearchSettings()
 
 
-def test_compute_settings_load_optional_brave_search_key() -> None:
+def test_compute_settings_load_optional_tavily_search_key() -> None:
     settings = ComputeSettings.from_environment(
         {
             "VOICE_LIGHT_COMPUTE_TOKEN": "secret-token",
-            BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE: "brave-key",
+            TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE: "tavily-key",
         }
     )
 
     assert settings.voice_stack is not None
-    assert settings.voice_stack.search == ConfiguredBraveSearchSettings(api_key="brave-key")
+    assert settings.voice_stack.search == ConfiguredTavilySearchSettings(api_key="tavily-key")
 
 
 def test_compute_settings_reject_invalid_voice_stack_setting() -> None:

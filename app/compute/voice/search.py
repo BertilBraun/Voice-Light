@@ -3,16 +3,16 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 import httpx
-from pydantic import HttpUrl, ValidationError
+from pydantic import Field, HttpUrl, ValidationError
 
 from app.compute.voice.interfaces import TextGenerationRequest, TextGenerator
 from app.shared.base_model import FrozenBaseModel
 
-BRAVE_SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
-BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE = "VOICE_LIGHT_BRAVE_SEARCH_API_KEY"
+TAVILY_SEARCH_API_URL = "https://api.tavily.com/search"
+TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE = "VOICE_LIGHT_TAVILY_API_KEY"
 MAXIMUM_SEARCH_RESULTS = 5
 MAXIMUM_SEARCH_TITLE_CHARACTERS = 180
 MAXIMUM_SEARCH_URL_CHARACTERS = 512
@@ -36,16 +36,16 @@ WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
-class ConfiguredBraveSearchSettings:
+class ConfiguredTavilySearchSettings:
     api_key: str
 
 
 @dataclass(frozen=True)
 class UnconfiguredSearchSettings:
-    environment_variable: str = BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE
+    environment_variable: str = TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE
 
 
-SearchSettings = ConfiguredBraveSearchSettings | UnconfiguredSearchSettings
+SearchSettings = ConfiguredTavilySearchSettings | UnconfiguredSearchSettings
 
 
 @dataclass(frozen=True)
@@ -73,24 +73,29 @@ class SearchSummarizationError(RuntimeError):
     """A safe, user-facing search summarization failure."""
 
 
-class BraveWebResult(FrozenBaseModel):
+class TavilySearchRequest(FrozenBaseModel):
+    query: str = Field(min_length=1, max_length=240)
+    search_depth: Literal["basic"] = "basic"
+    max_results: int = Field(ge=1, le=MAXIMUM_SEARCH_RESULTS)
+    include_answer: Literal[False] = False
+    include_raw_content: Literal[False] = False
+    include_images: Literal[False] = False
+
+
+class TavilyWebResult(FrozenBaseModel):
     title: str
     url: HttpUrl
-    description: str | None = None
+    content: str
 
 
-class BraveWebResults(FrozenBaseModel):
-    results: tuple[BraveWebResult, ...]
+class TavilySearchResponse(FrozenBaseModel):
+    results: tuple[TavilyWebResult, ...]
 
 
-class BraveSearchResponse(FrozenBaseModel):
-    web: BraveWebResults | None = None
-
-
-class BraveSearchProvider:
+class TavilySearchProvider:
     def __init__(self, api_key: str, client: httpx.AsyncClient | None = None) -> None:
         if not api_key.strip():
-            raise ValueError("A non-empty Brave Search API key is required.")
+            raise ValueError("A non-empty Tavily API key is required.")
         self._api_key = api_key
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
@@ -100,41 +105,35 @@ class BraveSearchProvider:
     async def search(self, query: str, result_limit: int) -> tuple[SearchResult, ...]:
         if not 1 <= result_limit <= MAXIMUM_SEARCH_RESULTS:
             raise ValueError(f"Search result limit must be between 1 and {MAXIMUM_SEARCH_RESULTS}.")
+        request = TavilySearchRequest(query=query, max_results=result_limit)
         try:
             async with self.client.stream(
-                "GET",
-                BRAVE_SEARCH_API_URL,
+                "POST",
+                TAVILY_SEARCH_API_URL,
                 headers={
-                    "Accept": "application/json",
-                    "X-Subscription-Token": self._api_key,
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
                 },
-                params=(
-                    ("q", query),
-                    ("count", str(result_limit)),
-                    ("safesearch", "moderate"),
-                    ("text_decorations", "false"),
-                ),
+                content=request.model_dump_json(),
             ) as response:
                 response.raise_for_status()
                 response_bytes = bytearray()
                 async for chunk in response.aiter_bytes():
                     if len(response_bytes) + len(chunk) > MAXIMUM_SEARCH_RESPONSE_BYTES:
-                        raise SearchProviderError("Brave Search returned an oversized response.")
+                        raise SearchProviderError("Tavily returned an oversized response.")
                     response_bytes.extend(chunk)
-            payload = BraveSearchResponse.model_validate_json(bytes(response_bytes))
+            payload = TavilySearchResponse.model_validate_json(bytes(response_bytes))
         except httpx.TimeoutException as error:
-            raise SearchProviderError("Brave Search request timed out.") from error
+            raise SearchProviderError("Tavily request timed out.") from error
         except httpx.HTTPStatusError as error:
             raise SearchProviderError(
-                f"Brave Search returned HTTP {error.response.status_code}."
+                f"Tavily returned HTTP {error.response.status_code}."
             ) from error
         except httpx.RequestError as error:
-            raise SearchProviderError("Brave Search could not be reached.") from error
+            raise SearchProviderError("Tavily could not be reached.") from error
         except ValidationError as error:
-            raise SearchProviderError("Brave Search returned an invalid response.") from error
-        if payload.web is None:
-            return ()
-        return normalize_brave_results(payload.web.results, result_limit)
+            raise SearchProviderError("Tavily returned an invalid response.") from error
+        return normalize_tavily_results(payload.results, result_limit)
 
     async def close(self) -> None:
         if self._owns_client:
@@ -192,22 +191,22 @@ class SearchPipeline:
 
 
 def search_settings_from_environment(environment: Mapping[str, str]) -> SearchSettings:
-    api_key = environment.get(BRAVE_SEARCH_API_KEY_ENVIRONMENT_VARIABLE, "").strip()
+    api_key = environment.get(TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE, "").strip()
     if api_key:
-        return ConfiguredBraveSearchSettings(api_key=api_key)
+        return ConfiguredTavilySearchSettings(api_key=api_key)
     return UnconfiguredSearchSettings()
 
 
 def create_search_provider(settings: SearchSettings) -> SearchProvider:
     match settings:
-        case ConfiguredBraveSearchSettings(api_key=api_key):
-            return BraveSearchProvider(api_key)
+        case ConfiguredTavilySearchSettings(api_key=api_key):
+            return TavilySearchProvider(api_key)
         case UnconfiguredSearchSettings(environment_variable=environment_variable):
             return UnconfiguredSearchProvider(environment_variable)
 
 
-def normalize_brave_results(
-    results: tuple[BraveWebResult, ...],
+def normalize_tavily_results(
+    results: tuple[TavilyWebResult, ...],
     result_limit: int,
 ) -> tuple[SearchResult, ...]:
     normalized_results: list[SearchResult] = []
@@ -217,7 +216,7 @@ def normalize_brave_results(
         if url in seen_urls:
             continue
         title = bounded_text(result.title, MAXIMUM_SEARCH_TITLE_CHARACTERS)
-        snippet = bounded_text(result.description or "", MAXIMUM_SEARCH_SNIPPET_CHARACTERS)
+        snippet = bounded_text(result.content, MAXIMUM_SEARCH_SNIPPET_CHARACTERS)
         if not title or not url:
             continue
         normalized_results.append(SearchResult(title=title, url=url, snippet=snippet))
