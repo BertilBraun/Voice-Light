@@ -12,6 +12,7 @@ CHUNK_HEADER_SIZE = 8
 FORMAT_PCM = 1
 FORMAT_EXTENSIBLE = 0xFFFE
 PCM_SUBFORMAT_GUID = bytes.fromhex("0100000000001000800000aa00389b71")
+SUPPORTED_PCM_BITS_PER_SAMPLE = frozenset({8, 16, 24, 32})
 MAXIMUM_UINT32 = (1 << 32) - 1
 COPY_BLOCK_SIZE_BYTES = 1024 * 1024
 
@@ -142,15 +143,17 @@ def rewrite_pcm_wave(
                 if chunk.identifier == b"data":
                     output.write(b"data")
                     output.write(struct.pack("<I", output_data_size))
-                    _write_zero_bytes(
+                    _write_silence_bytes(
                         output,
                         prepended_silence_frame_count * metadata.block_alignment,
+                        metadata.bits_per_sample,
                     )
                     source.seek(chunk.payload_offset)
                     _copy_exact(source, output, chunk.payload_size)
-                    _write_zero_bytes(
+                    _write_silence_bytes(
                         output,
                         appended_silence_frame_count * metadata.block_alignment,
+                        metadata.bits_per_sample,
                     )
                     if output_data_size % 2:
                         output.write(b"\x00")
@@ -231,6 +234,8 @@ def _validate_pcm_format(
         raise ValueError(f"Compressed WAV format {format_tag} is not supported: {path}")
     if channel_count <= 0 or sample_rate <= 0 or bits_per_sample <= 0:
         raise ValueError(f"WAV PCM format contains non-positive dimensions: {path}")
+    if bits_per_sample not in SUPPORTED_PCM_BITS_PER_SAMPLE:
+        raise ValueError(f"Unsupported WAV PCM bit depth {bits_per_sample}: {path}")
     expected_block_alignment = channel_count * ((bits_per_sample + 7) // 8)
     if block_alignment != expected_block_alignment:
         raise ValueError(f"WAV block alignment is inconsistent with its PCM format: {path}")
@@ -256,10 +261,15 @@ def _copy_exact(source: BinaryIO, output: BinaryIO, byte_count: int) -> None:
         remaining -= len(block)
 
 
-def _write_zero_bytes(output: BinaryIO, byte_count: int) -> None:
-    zero_block = bytes(min(byte_count, COPY_BLOCK_SIZE_BYTES))
+def _write_silence_bytes(
+    output: BinaryIO,
+    byte_count: int,
+    bits_per_sample: int,
+) -> None:
+    silence_byte = b"\x80" if bits_per_sample == 8 else b"\x00"
+    silence_block = silence_byte * min(byte_count, COPY_BLOCK_SIZE_BYTES)
     remaining = byte_count
     while remaining:
-        write_count = min(remaining, len(zero_block))
-        output.write(zero_block[:write_count])
+        write_count = min(remaining, len(silence_block))
+        output.write(silence_block[:write_count])
         remaining -= write_count

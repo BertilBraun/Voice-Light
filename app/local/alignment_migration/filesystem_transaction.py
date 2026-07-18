@@ -69,16 +69,20 @@ def apply_alignment_transaction(
     if not math.isfinite(reviewed_speaker2_shift_seconds):
         raise ValueError("Reviewed synchronization offset must be finite.")
     if paths.final_sidecar.exists():
-        sidecar = _load_sidecar(paths.final_sidecar)
+        result = (
+            recover_alignment_transaction(paths)
+            if paths.pending_sidecar.exists()
+            else AlignmentApplicationResult(
+                status=AlignmentApplicationStatus.ALREADY_APPLIED,
+                sidecar=_load_sidecar(paths.final_sidecar),
+            )
+        )
         _validate_completed_application(
             paths=paths,
-            sidecar=sidecar,
+            sidecar=result.sidecar,
             requested_shift_seconds=reviewed_speaker2_shift_seconds,
         )
-        return AlignmentApplicationResult(
-            status=AlignmentApplicationStatus.ALREADY_APPLIED,
-            sidecar=sidecar,
-        )
+        return result
     if _has_transaction_artifacts(paths):
         if not paths.pending_sidecar.exists():
             raise ValueError(

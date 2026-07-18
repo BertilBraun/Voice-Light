@@ -45,6 +45,44 @@ def test_rewrite_preserves_pcm_and_every_non_data_chunk(tmp_path: Path) -> None:
     assert _non_data_chunks(output_path) == _non_data_chunks(source_path)
 
 
+@pytest.mark.parametrize(
+    ("bits_per_sample", "original_pcm", "silence_byte"),
+    (
+        (8, b"\x01\xfe", b"\x80"),
+        (16, b"\x01\x02\xfe\xff", b"\x00"),
+        (24, b"\x01\x02\x03\xfd\xfe\xff", b"\x00"),
+        (32, b"\x01\x02\x03\x04\xfc\xfd\xfe\xff", b"\x00"),
+    ),
+)
+def test_rewrite_preserves_raw_pcm_and_encodes_silence_for_each_bit_depth(
+    tmp_path: Path,
+    bits_per_sample: int,
+    original_pcm: bytes,
+    silence_byte: bytes,
+) -> None:
+    source_path = tmp_path / f"source-{bits_per_sample}.wav"
+    output_path = tmp_path / f"output-{bits_per_sample}.wav"
+    bytes_per_frame = bits_per_sample // 8
+    source_path.write_bytes(
+        wave_bytes(
+            pcm_data=original_pcm,
+            bits_per_sample=bits_per_sample,
+        )
+    )
+
+    rewrite_pcm_wave(
+        source_path=source_path,
+        output_path=output_path,
+        prepended_silence_frame_count=1,
+        target_frame_count=4,
+    )
+
+    expected_silence_frame = silence_byte * bytes_per_frame
+    assert _data_payload(output_path) == (
+        expected_silence_frame + original_pcm + expected_silence_frame
+    )
+
+
 def test_rewrite_accepts_pcm_extensible_and_preserves_24_bit_frames(tmp_path: Path) -> None:
     source_path = tmp_path / "extensible.wav"
     output_path = tmp_path / "aligned.wav"
@@ -157,6 +195,19 @@ def test_rewrite_rejects_partial_pcm_frame(tmp_path: Path) -> None:
     source_path.write_bytes(wave_bytes(pcm_data=b"\x00\x01\x02"))
 
     with pytest.raises(ValueError, match="complete PCM frames"):
+        inspect_pcm_wave(source_path)
+
+
+def test_rewrite_rejects_unsupported_pcm_bit_depth(tmp_path: Path) -> None:
+    source_path = tmp_path / "unsupported-depth.wav"
+    source_path.write_bytes(
+        wave_bytes(
+            pcm_data=b"\x00\x00",
+            bits_per_sample=12,
+        )
+    )
+
+    with pytest.raises(ValueError, match="Unsupported WAV PCM bit depth"):
         inspect_pcm_wave(source_path)
 
 

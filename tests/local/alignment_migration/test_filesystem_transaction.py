@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 import app.local.alignment_migration.filesystem_transaction as transaction_module
 from app.local.alignment_migration.filesystem_transaction import (
+    AlignmentApplicationResult,
     AlignmentApplicationStatus,
     AlignmentTrackPaths,
     AlignmentTransactionPaths,
@@ -151,9 +153,143 @@ def test_pending_transaction_recovers_after_first_track_was_installed(
     recovered = recover_alignment_transaction(alignment_paths)
 
     assert recovered.status is AlignmentApplicationStatus.RECOVERED
-    _assert_sidecar_matches_canonical(alignment_paths, recovered.sidecar)
+    _assert_completed_recovery(alignment_paths, recovered)
+
+
+def test_rerun_recovers_after_staging_and_pending_sidecar_creation(
+    alignment_paths: AlignmentTransactionPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_complete = transaction_module._complete_pending_transaction
+
+    def interrupted_completion(
+        paths: AlignmentTransactionPaths,
+        recovered: bool,
+    ) -> AlignmentApplicationResult:
+        del paths, recovered
+        raise RuntimeError("simulated interruption after staging")
+
+    monkeypatch.setattr(
+        transaction_module,
+        "_complete_pending_transaction",
+        interrupted_completion,
+    )
+    with pytest.raises(RuntimeError, match="after staging"):
+        apply_alignment_transaction(
+            paths=alignment_paths,
+            reviewed_speaker2_shift_seconds=-0.00025,
+            applied_at=APPLIED_AT,
+        )
+    assert alignment_paths.pending_sidecar.is_file()
+    assert alignment_paths.speaker1.staged.is_file()
+    assert alignment_paths.speaker2.staged.is_file()
+    assert not alignment_paths.speaker1.backup.exists()
+    assert not alignment_paths.speaker2.backup.exists()
+    monkeypatch.setattr(
+        transaction_module,
+        "_complete_pending_transaction",
+        original_complete,
+    )
+
+    recovered = apply_alignment_transaction(
+        paths=alignment_paths,
+        reviewed_speaker2_shift_seconds=-0.00025,
+    )
+
+    assert recovered.status is AlignmentApplicationStatus.RECOVERED
+    _assert_completed_recovery(alignment_paths, recovered)
+
+
+def test_recovery_after_canonical_was_backed_up_before_staged_replacement(
+    alignment_paths: AlignmentTransactionPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_replace = transaction_module.os.replace
+
+    def interrupted_replace(source: Path, destination: Path) -> None:
+        original_replace(source, destination)
+        if (
+            source == alignment_paths.speaker1.canonical
+            and destination == alignment_paths.speaker1.backup
+        ):
+            raise RuntimeError("simulated interruption after backup")
+
+    monkeypatch.setattr(transaction_module.os, "replace", interrupted_replace)
+    with pytest.raises(RuntimeError, match="after backup"):
+        apply_alignment_transaction(
+            paths=alignment_paths,
+            reviewed_speaker2_shift_seconds=-0.00025,
+            applied_at=APPLIED_AT,
+        )
+    assert not alignment_paths.speaker1.canonical.exists()
+    assert alignment_paths.speaker1.backup.is_file()
+    assert alignment_paths.speaker1.staged.is_file()
+    monkeypatch.setattr(transaction_module.os, "replace", original_replace)
+
+    recovered = recover_alignment_transaction(alignment_paths)
+
+    assert recovered.status is AlignmentApplicationStatus.RECOVERED
+    _assert_completed_recovery(alignment_paths, recovered)
+
+
+def test_recovery_after_both_tracks_were_replaced_before_sidecar_promotion(
+    alignment_paths: AlignmentTransactionPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_promote = transaction_module._promote_sidecar
+
+    def interrupted_promotion(paths: AlignmentTransactionPaths) -> None:
+        del paths
+        raise RuntimeError("simulated interruption before sidecar promotion")
+
+    monkeypatch.setattr(transaction_module, "_promote_sidecar", interrupted_promotion)
+    with pytest.raises(RuntimeError, match="before sidecar promotion"):
+        apply_alignment_transaction(
+            paths=alignment_paths,
+            reviewed_speaker2_shift_seconds=-0.00025,
+            applied_at=APPLIED_AT,
+        )
+    assert alignment_paths.pending_sidecar.is_file()
     assert alignment_paths.speaker1.backup.is_file()
     assert alignment_paths.speaker2.backup.is_file()
+    assert not alignment_paths.speaker1.staged.exists()
+    assert not alignment_paths.speaker2.staged.exists()
+    monkeypatch.setattr(transaction_module, "_promote_sidecar", original_promote)
+
+    recovered = recover_alignment_transaction(alignment_paths)
+
+    assert recovered.status is AlignmentApplicationStatus.RECOVERED
+    _assert_completed_recovery(alignment_paths, recovered)
+
+
+def test_rerun_recovers_after_final_sidecar_link_before_pending_unlink(
+    alignment_paths: AlignmentTransactionPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_link = transaction_module.os.link
+
+    def interrupted_link(source: Path, destination: Path) -> None:
+        original_link(source, destination)
+        raise RuntimeError("simulated interruption after final sidecar link")
+
+    monkeypatch.setattr(transaction_module.os, "link", interrupted_link)
+    with pytest.raises(RuntimeError, match="after final sidecar link"):
+        apply_alignment_transaction(
+            paths=alignment_paths,
+            reviewed_speaker2_shift_seconds=-0.00025,
+            applied_at=APPLIED_AT,
+        )
+    assert alignment_paths.final_sidecar.is_file()
+    assert alignment_paths.pending_sidecar.is_file()
+    monkeypatch.setattr(transaction_module.os, "link", original_link)
+
+    recovered = apply_alignment_transaction(
+        paths=alignment_paths,
+        reviewed_speaker2_shift_seconds=-0.00025,
+    )
+
+    assert recovered.status is AlignmentApplicationStatus.ALREADY_APPLIED
+    _assert_completed_recovery(alignment_paths, recovered)
 
 
 def test_backups_are_removed_only_after_database_reconciliation_confirmation(
@@ -195,4 +331,22 @@ def _assert_sidecar_matches_canonical(
         assert sha256_file(track_paths.canonical) == track_record.aligned_sha256
         assert (
             inspect_pcm_wave(track_paths.canonical).frame_count == track_record.aligned_frame_count
+        )
+
+
+def _assert_completed_recovery(
+    paths: AlignmentTransactionPaths,
+    result: AlignmentApplicationResult,
+) -> None:
+    _assert_sidecar_matches_canonical(paths, result.sidecar)
+    assert paths.final_sidecar.is_file()
+    assert not paths.pending_sidecar.exists()
+    assert not paths.speaker1.staged.exists()
+    assert not paths.speaker2.staged.exists()
+    assert sha256_file(paths.speaker1.backup) == result.sidecar.speaker1.original_sha256
+    assert sha256_file(paths.speaker2.backup) == result.sidecar.speaker2.original_sha256
+    with pytest.raises(ValueError, match="distinct alignment"):
+        apply_alignment_transaction(
+            paths=paths,
+            reviewed_speaker2_shift_seconds=0.00025,
         )
