@@ -341,6 +341,7 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -375,6 +376,41 @@ def test_staged_rollout_appends_each_call_and_result_before_continuing() -> None
     assert tool_results[1].outcome.content == "48"
     assert "Audit this completed candidate record" in generator.requests[-2][1].content
     assert "Audit the assistant messages" in generator.requests[-1][1].content
+
+
+def test_staged_rollout_skips_subjective_semantic_audits() -> None:
+    excluded_types = (
+        UserTurnScopeAssessmentEnvelope,
+        RecordQualityAssessmentEnvelope,
+        RecordGroundingAssessmentEnvelope,
+    )
+    values = tuple(
+        value for value in scripted_two_call_values() if type(value) not in excluded_types
+    )
+
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        generator = ScriptedGenerator(values)
+        generated = await generate_record(
+            scenario=two_call_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=False,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    ToolDialogueRecord.model_validate_json(record.model_dump_json())
+    assert request_count == 7
+    assert not generator.values
+    assert not any(
+        "Audit" in message.content for request in generator.requests for message in request
+    )
 
 
 def test_clarified_search_calls_automatically_after_resolving_query() -> None:
@@ -429,6 +465,7 @@ def test_clarified_search_calls_automatically_after_resolving_query() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generated.record
@@ -472,6 +509,7 @@ def test_record_quality_rejection_regenerates_the_entire_candidate() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -515,6 +553,7 @@ def test_grounding_rejection_regenerates_the_entire_candidate() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -570,6 +609,7 @@ def test_calculate_bridge_cannot_reveal_the_pending_result() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -621,6 +661,7 @@ def test_spoken_turns_over_one_hundred_words_are_regenerated() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -675,6 +716,7 @@ def test_calculate_response_must_preserve_the_exact_result() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -726,6 +768,7 @@ def test_user_scope_mismatch_regenerates_before_assistant_generation() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
         return generator, generated.record, generated.request_count
@@ -749,6 +792,7 @@ def test_dataset_generation_is_append_only_and_resumable(tmp_path: Path) -> None
             model_revision="test-revision",
             quantization="fp8",
             time_reference=TIME_REFERENCE,
+            semantic_audits_enabled=True,
         )
         first_generator = ScriptedGenerator(scripted_two_call_values())
         first = await generate_dataset(

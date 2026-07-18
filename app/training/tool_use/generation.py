@@ -109,6 +109,7 @@ class RolloutGenerationConfig(ToolUseBaseModel):
     model_revision: str
     quantization: str
     time_reference: AwareDatetime
+    semantic_audits_enabled: bool
     maximum_concurrency: int = Field(default=128, ge=1)
     maximum_semantic_attempts: int = Field(default=3, ge=1)
     maximum_record_attempts: int = Field(default=3, ge=1)
@@ -162,6 +163,7 @@ class GenerationRunManifest(ToolUseBaseModel):
     quantization: str
     time_reference: AwareDatetime
     prompt_revision: str
+    semantic_audits_enabled: bool
     planned_scenarios: int = Field(ge=0)
     previously_completed: int = Field(ge=0)
     accepted_records: int = Field(ge=0)
@@ -308,6 +310,7 @@ async def generate_dataset(
         quantization=config.quantization,
         time_reference=config.time_reference,
         prompt_revision=PROMPT_REVISION,
+        semantic_audits_enabled=config.semantic_audits_enabled,
         planned_scenarios=len(scenarios),
         previously_completed=len(already_completed),
         accepted_records=len(generated_records),
@@ -359,45 +362,21 @@ async def generate_record(
         request_count += candidate.request_count
         try:
             _validate_candidate_record(candidate.record)
-            critique_result = await generator.generate(
-                messages=record_quality_messages(scenario, candidate.record.messages),
-                response_type=RecordQualityAssessmentEnvelope,
-                random_seed=_request_seed(
-                    scenario.random_seed + record_attempt,
-                    len(scenario.turns),
-                    10_001,
-                ),
-                sampling_mode=TeacherSamplingMode.DETERMINISTIC,
-            )
-            usage = usage.add(
-                TokenUsage(
-                    prompt_tokens=critique_result.prompt_tokens,
-                    completion_tokens=critique_result.completion_tokens,
+            if config.semantic_audits_enabled:
+                audit_usage, audit_requests = await _audit_candidate_record(
+                    scenario=scenario,
+                    record=candidate.record,
+                    generator=generator,
+                    record_attempt=record_attempt,
                 )
-            )
-            request_count += 1
-            _validate_record_quality(critique_result.value.assessment)
-            grounding_result = await generator.generate(
-                messages=record_grounding_messages(scenario, candidate.record.messages),
-                response_type=RecordGroundingAssessmentEnvelope,
-                random_seed=_request_seed(
-                    scenario.random_seed + record_attempt,
-                    len(scenario.turns),
-                    10_002,
-                ),
-                sampling_mode=TeacherSamplingMode.DETERMINISTIC,
-            )
-            usage = usage.add(
-                TokenUsage(
-                    prompt_tokens=grounding_result.prompt_tokens,
-                    completion_tokens=grounding_result.completion_tokens,
-                )
-            )
-            request_count += 1
-            _validate_record_grounding(
-                candidate.record,
-                grounding_result.value.assessment,
-            )
+                usage = usage.add(audit_usage)
+                request_count += audit_requests
+        except GenerationAttemptError as error:
+            usage = usage.add(error.usage)
+            request_count += error.request_count
+            last_error = error
+            rejected_candidate_count += 1
+            continue
         except ValueError as error:
             last_error = error
             rejected_candidate_count += 1
@@ -413,6 +392,60 @@ async def generate_record(
         str(last_error),
         rejected_candidate_count=rejected_candidate_count,
     ) from last_error
+
+
+async def _audit_candidate_record(
+    scenario: ScenarioSpec,
+    record: ToolDialogueRecord,
+    generator: StructuredGenerator,
+    record_attempt: int,
+) -> tuple[TokenUsage, int]:
+    critique_result = await generator.generate(
+        messages=record_quality_messages(scenario, record.messages),
+        response_type=RecordQualityAssessmentEnvelope,
+        random_seed=_request_seed(
+            scenario.random_seed + record_attempt,
+            len(scenario.turns),
+            10_001,
+        ),
+        sampling_mode=TeacherSamplingMode.DETERMINISTIC,
+    )
+    critique_usage = TokenUsage(
+        prompt_tokens=critique_result.prompt_tokens,
+        completion_tokens=critique_result.completion_tokens,
+    )
+    try:
+        _validate_record_quality(critique_result.value.assessment)
+    except ValueError as error:
+        raise GenerationAttemptError(
+            str(error),
+            usage=critique_usage,
+            request_count=1,
+        ) from error
+    grounding_result = await generator.generate(
+        messages=record_grounding_messages(scenario, record.messages),
+        response_type=RecordGroundingAssessmentEnvelope,
+        random_seed=_request_seed(
+            scenario.random_seed + record_attempt,
+            len(scenario.turns),
+            10_002,
+        ),
+        sampling_mode=TeacherSamplingMode.DETERMINISTIC,
+    )
+    grounding_usage = TokenUsage(
+        prompt_tokens=grounding_result.prompt_tokens,
+        completion_tokens=grounding_result.completion_tokens,
+    )
+    usage = critique_usage.add(grounding_usage)
+    try:
+        _validate_record_grounding(record, grounding_result.value.assessment)
+    except ValueError as error:
+        raise GenerationAttemptError(
+            str(error),
+            usage=usage,
+            request_count=2,
+        ) from error
+    return usage, 2
 
 
 async def _generate_record_candidate(
@@ -442,6 +475,7 @@ async def _generate_record_candidate(
                 public_history=messages,
                 random_seed=_request_seed(scenario.random_seed + seed_salt, turn_index, 0),
                 maximum_attempts=config.maximum_semantic_attempts,
+                semantic_audits_enabled=config.semantic_audits_enabled,
             )
         except GenerationAttemptError as error:
             raise GenerationAttemptError(
@@ -599,6 +633,7 @@ async def _generate_scoped_user_turn(
     public_history: Sequence[ConversationMessage],
     random_seed: int,
     maximum_attempts: int,
+    semantic_audits_enabled: bool,
 ) -> tuple[GeneratedUserTurnEnvelope, TokenUsage, int]:
     usage = TokenUsage()
     request_count = 0
@@ -619,24 +654,25 @@ async def _generate_scoped_user_turn(
             )
             request_count += 1
             _validate_user_turn(result.value, scenario.speech_style)
-            assessment_result = await generator.generate(
-                messages=user_turn_scope_messages(public_history, result.value.turn.text),
-                response_type=UserTurnScopeAssessmentEnvelope,
-                random_seed=random_seed + attempt * 2 + 1,
-                sampling_mode=TeacherSamplingMode.DETERMINISTIC,
-            )
-            usage = usage.add(
-                TokenUsage(
-                    prompt_tokens=assessment_result.prompt_tokens,
-                    completion_tokens=assessment_result.completion_tokens,
+            if semantic_audits_enabled:
+                assessment_result = await generator.generate(
+                    messages=user_turn_scope_messages(public_history, result.value.turn.text),
+                    response_type=UserTurnScopeAssessmentEnvelope,
+                    random_seed=random_seed + attempt * 2 + 1,
+                    sampling_mode=TeacherSamplingMode.DETERMINISTIC,
                 )
-            )
-            request_count += 1
-            _validate_user_turn_scope(
-                assessment=assessment_result.value.assessment,
-                expected_tools=expected_tools,
-                response_mode=turn_plan.response_mode,
-            )
+                usage = usage.add(
+                    TokenUsage(
+                        prompt_tokens=assessment_result.prompt_tokens,
+                        completion_tokens=assessment_result.completion_tokens,
+                    )
+                )
+                request_count += 1
+                _validate_user_turn_scope(
+                    assessment=assessment_result.value.assessment,
+                    expected_tools=expected_tools,
+                    response_mode=turn_plan.response_mode,
+                )
         except ValueError as error:
             last_error = error
             continue

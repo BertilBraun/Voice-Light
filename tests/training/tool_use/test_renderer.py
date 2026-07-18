@@ -86,6 +86,7 @@ def test_qwen_renderer_masks_every_non_assistant_message() -> None:
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
 
@@ -117,6 +118,7 @@ def test_qwen_renderer_keeps_spoken_content_calls_and_string_results_separate() 
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
 
@@ -153,6 +155,7 @@ def test_pinned_qwen_template_preserves_tokens_and_returns_assistant_mask() -> N
                 model_revision="test-revision",
                 quantization="fp8",
                 time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=True,
             ),
         )
 

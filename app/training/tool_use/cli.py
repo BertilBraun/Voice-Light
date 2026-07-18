@@ -81,6 +81,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--limit", type=int)
     generate_parser.add_argument("--concurrency", type=int, default=128)
     generate_parser.add_argument("--semantic-attempts", type=int, default=3)
+    generate_parser.add_argument("--semantic-audits", action="store_true")
     generate_parser.add_argument("--record-attempts", type=int, default=3)
     generate_parser.add_argument("--http-attempts", type=int, default=3)
     generate_parser.add_argument("--timeout-seconds", type=float, default=180.0)
@@ -154,6 +155,7 @@ async def _generate(arguments: argparse.Namespace) -> None:
         model_revision=arguments.model_revision,
         quantization=arguments.quantization,
         time_reference=arguments.time_reference,
+        semantic_audits_enabled=arguments.semantic_audits,
         maximum_concurrency=arguments.concurrency,
         maximum_semantic_attempts=arguments.semantic_attempts,
         maximum_record_attempts=arguments.record_attempts,
