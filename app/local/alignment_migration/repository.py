@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 
 from app.local.alignment_migration.models import AlignmentSide
 from app.shared.asr import AsrModelId, TimestampedWord
-from app.shared.quality import METRIC_VERSION
+from app.shared.quality import METRIC_VERSION, AudioMetadata
 
 
 @dataclass(frozen=True)
@@ -26,13 +26,28 @@ class MigrationTrack:
     side: AlignmentSide
     storage_uri: str
     access_uri: Path
+    duration_seconds: float | None
+    sample_rate: int | None
+    channels: int | None
+    sample_count: int | None
     audio_sha256: str | None
+    audio_metadata: MigrationAudioMetadata
+
+
+@dataclass(frozen=True)
+class MigrationAudioMetadata:
+    duration_seconds: float
+    sample_rate: int
+    channels: int
+    sample_count: int | None
+    payload: AudioMetadata
 
 
 @dataclass(frozen=True)
 class MigrationSample:
     id: UUID
     external_id: str
+    duration_seconds: float | None
     tracks: tuple[MigrationTrack, MigrationTrack]
 
 
@@ -72,6 +87,12 @@ class LegacyTableCounts:
 
 
 @dataclass(frozen=True)
+class TrackHashConstraintState:
+    format_validated: bool
+    required_validated: bool
+
+
+@dataclass(frozen=True)
 class MigrationRepositorySnapshot:
     dataset: MigrationDataset
     samples: tuple[MigrationSample, ...]
@@ -82,6 +103,7 @@ class MigrationRepositorySnapshot:
     quality_result_count: int
     current_quality_external_ids: frozenset[str]
     synchronization_prediction_count: int
+    track_hash_constraints: TrackHashConstraintState
 
 
 @dataclass(frozen=True)
@@ -167,11 +189,23 @@ class AlignmentMigrationRepository:
             sample_rows = connection.execute(
                 f"""
                 SELECT samples.id AS sample_id, samples.external_id,
+                       samples.duration_seconds AS sample_duration_seconds,
                        sample_tracks.id AS track_id, sample_tracks.side,
                        sample_tracks.storage_uri, sample_tracks.access_uri,
+                       sample_tracks.duration_seconds AS track_duration_seconds,
+                       sample_tracks.sample_rate AS track_sample_rate,
+                       sample_tracks.channels AS track_channels,
+                       sample_tracks.sample_count AS track_sample_count,
+                       audio_metadata.duration_seconds AS metadata_duration_seconds,
+                       audio_metadata.sample_rate AS metadata_sample_rate,
+                       audio_metadata.channels AS metadata_channels,
+                       audio_metadata.sample_count AS metadata_sample_count,
+                       audio_metadata.payload AS metadata_payload,
                        {audio_hash_selection}
                 FROM samples
                 JOIN sample_tracks ON sample_tracks.sample_id = samples.id
+                JOIN audio_metadata
+                  ON audio_metadata.sample_track_id = sample_tracks.id
                 WHERE samples.dataset_id = %s
                 ORDER BY samples.external_id, sample_tracks.speaker_index
                 """,
@@ -241,6 +275,23 @@ class AlignmentMigrationRepository:
                 """,
                 (dataset.id, METRIC_VERSION),
             ).fetchall()
+            constraint_rows = connection.execute(
+                """
+                SELECT conname, convalidated
+                FROM pg_constraint
+                WHERE conrelid = 'sample_tracks'::regclass
+                  AND conname = ANY(%s)
+                """,
+                (
+                    [
+                        "sample_tracks_audio_sha256_format",
+                        "sample_tracks_audio_sha256_required",
+                    ],
+                ),
+            ).fetchall()
+            validated_constraint_names = {
+                _string(row["conname"]) for row in constraint_rows if bool(row["convalidated"])
+            }
         return MigrationRepositorySnapshot(
             dataset=dataset,
             samples=samples,
@@ -271,6 +322,14 @@ class AlignmentMigrationRepository:
                 _string(row["external_id"]) for row in current_quality_rows
             ),
             synchronization_prediction_count=_integer(state_row["prediction_count"]),
+            track_hash_constraints=TrackHashConstraintState(
+                format_validated=(
+                    "sample_tracks_audio_sha256_format" in validated_constraint_names
+                ),
+                required_validated=(
+                    "sample_tracks_audio_sha256_required" in validated_constraint_names
+                ),
+            ),
         )
 
     def reconcile_sample(self, reconciliation: SampleReconciliation) -> None:
@@ -339,7 +398,7 @@ class AlignmentMigrationRepository:
                     UPDATE audio_metadata
                     SET duration_seconds = %s, sample_rate = %s, channels = %s,
                         sample_count = %s,
-                        payload = payload || %s,
+                        payload = %s,
                         updated_at = now()
                     WHERE sample_track_id = %s
                     """,
@@ -464,33 +523,62 @@ def _sample_records(rows: list[dict[str, object]]) -> tuple[MigrationSample, ...
     records: list[MigrationSample] = []
     current_id: UUID | None = None
     current_external_id = ""
+    current_duration_seconds: float | None = None
     tracks: list[MigrationTrack] = []
     for row in rows:
         sample_id = _uuid(row["sample_id"])
         if current_id is not None and sample_id != current_id:
-            records.append(_sample_record(current_id, current_external_id, tracks))
+            records.append(
+                _sample_record(
+                    current_id,
+                    current_external_id,
+                    current_duration_seconds,
+                    tracks,
+                )
+            )
             tracks = []
         current_id = sample_id
         current_external_id = _string(row["external_id"])
+        current_duration_seconds = _optional_float(row["sample_duration_seconds"])
+        metadata_payload = _audio_metadata_payload(row["metadata_payload"])
         tracks.append(
             MigrationTrack(
                 id=_uuid(row["track_id"]),
                 side=AlignmentSide(_string(row["side"])),
                 storage_uri=_string(row["storage_uri"]),
                 access_uri=Path(_string(row["access_uri"])).resolve(strict=False),
+                duration_seconds=_optional_float(row["track_duration_seconds"]),
+                sample_rate=_optional_integer(row["track_sample_rate"]),
+                channels=_optional_integer(row["track_channels"]),
+                sample_count=_optional_integer(row["track_sample_count"]),
                 audio_sha256=(
                     _string(row["audio_sha256"]) if row["audio_sha256"] is not None else None
+                ),
+                audio_metadata=MigrationAudioMetadata(
+                    duration_seconds=_float(row["metadata_duration_seconds"]),
+                    sample_rate=_integer(row["metadata_sample_rate"]),
+                    channels=_integer(row["metadata_channels"]),
+                    sample_count=_optional_integer(row["metadata_sample_count"]),
+                    payload=metadata_payload,
                 ),
             )
         )
     if current_id is not None:
-        records.append(_sample_record(current_id, current_external_id, tracks))
+        records.append(
+            _sample_record(
+                current_id,
+                current_external_id,
+                current_duration_seconds,
+                tracks,
+            )
+        )
     return tuple(records)
 
 
 def _sample_record(
     sample_id: UUID,
     external_id: str,
+    duration_seconds: float | None,
     tracks: list[MigrationTrack],
 ) -> MigrationSample:
     if len(tracks) != 2:
@@ -504,6 +592,7 @@ def _sample_record(
     return MigrationSample(
         id=sample_id,
         external_id=external_id,
+        duration_seconds=duration_seconds,
         tracks=(ordered[0], ordered[1]),
     )
 
@@ -548,3 +637,22 @@ def _integer(value: object) -> int:
     if not isinstance(value, int):
         raise ValueError("Expected a database integer value.")
     return value
+
+
+def _optional_float(value: object) -> float | None:
+    return _float(value) if value is not None else None
+
+
+def _optional_integer(value: object) -> int | None:
+    return _integer(value) if value is not None else None
+
+
+def _audio_metadata_payload(value: object) -> AudioMetadata:
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, dict):
+        raise ValueError("Audio metadata payload must be a JSON object.")
+    expected_keys = {"duration_seconds", "sample_rate", "channels", "sample_count"}
+    if set(value) != expected_keys:
+        raise ValueError("Audio metadata payload does not have the exact expected shape.")
+    return AudioMetadata.model_validate(value)

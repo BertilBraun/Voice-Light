@@ -30,6 +30,7 @@ def main() -> None:
         case MigrationCommand.DRY_RUN:
             summary = service.dry_run()
         case MigrationCommand.APPLY:
+            service.dry_run()
             run_migrations(DATABASE_URL)
             summary = service.apply()
         case MigrationCommand.REGENERATE_QUALITY:

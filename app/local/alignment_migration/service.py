@@ -50,7 +50,7 @@ from app.local.ingestion.service import (
 )
 from app.local.synchronization_review.calibration import REVIEWED_ALIGNMENTS
 from app.shared.asr import AsrModelId, TimestampedWord
-from app.shared.quality import METRIC_VERSION
+from app.shared.quality import METRIC_VERSION, AudioMetadata
 from app.shared.storage.local import LocalStorageBackend
 
 INVALID_SAMPLE_IDS = frozenset(
@@ -191,7 +191,11 @@ class AlignmentMigrationService:
         expected_dataset_cache_counts = (
             {EXPECTED_RETAINED_TRANSCRIPT_COUNT + EXPECTED_INVALID_TRANSCRIPT_COUNT}
             if invalid_present
-            else {0, EXPECTED_RETAINED_TRANSCRIPT_COUNT}
+            else {
+                0,
+                EXPECTED_RETAINED_TRANSCRIPT_COUNT,
+                EXPECTED_RETAINED_TRANSCRIPT_COUNT + EXPECTED_INVALID_TRANSCRIPT_COUNT,
+            }
         )
         if len(cache.dataset_records) not in expected_dataset_cache_counts:
             raise ValueError(
@@ -275,38 +279,7 @@ class AlignmentMigrationService:
 
     def audit(self) -> MigrationAuditSummary:
         plan = self.preflight()
-        if plan.invalid_samples:
-            raise ValueError("Post-migration audit found invalid samples in PostgreSQL.")
-        sidecar_count = 0
-        for sample_plan in plan.retained:
-            paths = _transaction_paths(sample_plan.sample)
-            if not paths.final_sidecar.is_file():
-                raise ValueError(
-                    f"Post-migration alignment sidecar is missing: {paths.final_sidecar}"
-                )
-            if any(
-                path.exists()
-                for path in (
-                    paths.pending_sidecar,
-                    paths.speaker1.staged,
-                    paths.speaker1.backup,
-                    paths.speaker2.staged,
-                    paths.speaker2.backup,
-                )
-            ):
-                raise ValueError("Post-migration audit found transaction artifacts.")
-            sidecar = AlignmentSidecar.model_validate_json(
-                paths.final_sidecar.read_text(encoding="utf-8")
-            )
-            if sidecar.reviewed_speaker2_shift_seconds != sample_plan.shift_seconds:
-                raise ValueError("Post-migration sidecar has the wrong reviewed offset.")
-            for track, rewrite in (
-                (sample_plan.sample.tracks[0], sidecar.speaker1),
-                (sample_plan.sample.tracks[1], sidecar.speaker2),
-            ):
-                if sha256_file(track.access_uri) != rewrite.aligned_sha256:
-                    raise ValueError("Post-migration canonical audio hash is incorrect.")
-            sidecar_count += 1
+        _audit_post_migration_sources(plan=plan, sessions_root=self.sessions_root)
         if plan.cached_asr.dataset_records:
             raise ValueError("Post-migration audit found dataset cached ASR rows.")
         retained_ids = {sample.sample.external_id for sample in plan.retained}
@@ -326,7 +299,7 @@ class AlignmentMigrationService:
             raise ValueError("Post-migration audit found synchronization predictions.")
         return MigrationAuditSummary(
             retained_sample_count=len(plan.retained),
-            sidecar_count=sidecar_count,
+            sidecar_count=len(plan.retained),
             full_asr_transcript_count=len(plan.snapshot.transcripts),
             quality_result_count=plan.snapshot.quality_result_count,
             dataset_cached_asr_count=len(plan.cached_asr.dataset_records),
@@ -334,8 +307,7 @@ class AlignmentMigrationService:
 
     def regenerate_quality(self) -> MigrationQualitySummary:
         plan = self.preflight()
-        if plan.invalid_samples:
-            raise ValueError("Quality regeneration requires invalid samples to be deleted.")
+        _audit_post_migration_sources(plan=plan, sessions_root=self.sessions_root)
         if plan.cached_asr.dataset_records:
             raise ValueError("Quality regeneration requires the stale ASR cache to be deleted.")
         repository = Repository(self.repository.database_url)
@@ -348,6 +320,11 @@ class AlignmentMigrationService:
         retained_ids = {sample.sample.external_id for sample in plan.retained}
         if not completed <= retained_ids:
             raise ValueError("Current quality rows reference samples outside the retained set.")
+        if (
+            plan.snapshot.current_quality_external_ids != completed
+            or plan.snapshot.quality_result_count != len(completed)
+        ):
+            raise ValueError("Partial quality retry state is not exact and current.")
         regenerated_count = 0
         for sample_plan in plan.retained:
             if sample_plan.sample.external_id in completed:
@@ -478,7 +455,7 @@ class AlignmentMigrationService:
                         audio_sha256=source_hash,
                         duration_seconds=source_duration,
                         sample_rate=metadata.sample_rate,
-                        channels=metadata.channels,
+                        channels=metadata.channel_count,
                         sample_count=metadata.frame_count,
                         transcripts=(
                             transcript_reconciliations[0],
@@ -715,18 +692,15 @@ def _validate_transcript_coverage(
 
 
 def _validate_word_timestamps(record: FullAsrMigrationRecord) -> None:
-    previous_start = -1.0
     for word in record.words:
         if word.start_seconds is None or word.end_seconds is None:
             raise ValueError("Migration requires complete full-recording ASR timestamps.")
         if (
-            word.start_seconds < previous_start
-            or word.start_seconds < 0.0
+            word.start_seconds < 0.0
             or word.end_seconds < word.start_seconds
             or word.end_seconds > record.source_duration_seconds + 1e-6
         ):
             raise ValueError("Full-recording ASR timestamps are invalid.")
-        previous_start = word.start_seconds
 
 
 def _validate_sample_files(sample: MigrationSample, sessions_root: Path) -> None:
@@ -821,6 +795,146 @@ def _database_is_reconciled(
         ):
             return False
     return True
+
+
+def _audit_post_migration_sources(
+    plan: AlignmentMigrationPlan,
+    sessions_root: Path,
+) -> None:
+    if plan.invalid_samples:
+        raise ValueError("Post-migration source audit found invalid PostgreSQL samples.")
+    constraints = plan.snapshot.track_hash_constraints
+    if not constraints.format_validated or not constraints.required_validated:
+        raise ValueError("Post-migration sample-track hash constraints are not validated.")
+    root = sessions_root.resolve(strict=False)
+    expected_external_ids = {sample.sample.external_id for sample in plan.retained}
+    root_entries = tuple(root.iterdir())
+    if (
+        any(not entry.is_dir() for entry in root_entries)
+        or {entry.name for entry in root_entries} != expected_external_ids
+    ):
+        raise ValueError("Sessions root does not contain the exact retained directory set.")
+    for external_id in INVALID_SAMPLE_IDS:
+        stage = invalid_directory_stage(root, external_id)
+        if stage.canonical.exists() or stage.staged.exists():
+            raise ValueError("Post-migration source audit found an invalid sample directory.")
+    canonical_wav_count = 0
+    sidecar_count = 0
+    legacy_json_count = 0
+    for sample_plan in plan.retained:
+        sample = sample_plan.sample
+        paths = _transaction_paths(sample)
+        legacy_json = paths.final_sidecar.parent / f"{sample.external_id}.json"
+        expected_files = {
+            sample.tracks[0].access_uri.resolve(strict=False),
+            sample.tracks[1].access_uri.resolve(strict=False),
+            paths.final_sidecar.resolve(strict=False),
+            legacy_json.resolve(strict=False),
+        }
+        actual_entries = tuple(paths.final_sidecar.parent.iterdir())
+        if (
+            any(not entry.is_file() for entry in actual_entries)
+            or {entry.resolve(strict=False) for entry in actual_entries} != expected_files
+        ):
+            raise ValueError(
+                f"Sample {sample.external_id} does not have the exact post-migration files."
+            )
+        if any(track.access_uri.suffix.lower() != ".wav" for track in sample.tracks):
+            raise ValueError("Post-migration canonical tracks must be WAV files.")
+        if not paths.final_sidecar.is_file() or not legacy_json.is_file():
+            raise ValueError("Post-migration sidecar or legacy sample JSON is missing.")
+        if any(
+            path.exists()
+            for path in (
+                paths.pending_sidecar,
+                paths.speaker1.staged,
+                paths.speaker1.backup,
+                paths.speaker2.staged,
+                paths.speaker2.backup,
+            )
+        ):
+            raise ValueError("Post-migration source audit found transaction artifacts.")
+        sidecar = AlignmentSidecar.model_validate_json(
+            paths.final_sidecar.read_text(encoding="utf-8")
+        )
+        if sidecar.reviewed_speaker2_shift_seconds != sample_plan.shift_seconds:
+            raise ValueError("Post-migration sidecar has the wrong reviewed offset.")
+        _validate_existing_sidecar(sample=sample, sidecar=sidecar)
+        expected_sample_duration = 0.0
+        for track, rewrite in (
+            (sample.tracks[0], sidecar.speaker1),
+            (sample.tracks[1], sidecar.speaker2),
+        ):
+            if Path(track.storage_uri).resolve(strict=False) != track.access_uri.resolve(
+                strict=False
+            ):
+                raise ValueError("Post-migration storage and access paths disagree.")
+            metadata = inspect_pcm_wave(track.access_uri)
+            duration_seconds = metadata.frame_count / metadata.sample_rate
+            expected_payload = AudioMetadata(
+                duration_seconds=duration_seconds,
+                sample_rate=metadata.sample_rate,
+                channels=metadata.channel_count,
+                sample_count=metadata.frame_count,
+            )
+            if (
+                track.audio_sha256 != rewrite.aligned_sha256
+                or track.duration_seconds != duration_seconds
+                or track.sample_rate != metadata.sample_rate
+                or track.channels != metadata.channel_count
+                or track.sample_count != metadata.frame_count
+            ):
+                raise ValueError("Post-migration sample-track metadata is not canonical.")
+            stored_metadata = track.audio_metadata
+            if (
+                stored_metadata.duration_seconds != duration_seconds
+                or stored_metadata.sample_rate != metadata.sample_rate
+                or stored_metadata.channels != metadata.channel_count
+                or stored_metadata.sample_count != metadata.frame_count
+                or stored_metadata.payload != expected_payload
+            ):
+                raise ValueError("Post-migration audio_metadata is not canonical.")
+            records = tuple(
+                record for record in sample_plan.transcripts if record.sample_track_id == track.id
+            )
+            if len(records) != 2 or {record.model_id for record in records} != {
+                AsrModelId.PARAKEET_TDT,
+                AsrModelId.CANARY,
+            }:
+                raise ValueError("Post-migration track ASR model coverage is not exact.")
+            if any(
+                record.source_audio_sha256 != rewrite.aligned_sha256
+                or record.source_duration_seconds != duration_seconds
+                for record in records
+            ):
+                raise ValueError("Post-migration ASR source provenance is not canonical.")
+            if (
+                len(
+                    {
+                        (
+                            record.prepared_audio_sha256,
+                            record.prepared_duration_seconds,
+                        )
+                        for record in records
+                    }
+                )
+                != 1
+            ):
+                raise ValueError("Post-migration ASR prepared provenance disagrees by model.")
+            for record in records:
+                _validate_word_timestamps(record)
+            expected_sample_duration = max(expected_sample_duration, duration_seconds)
+            canonical_wav_count += 1
+        if sample.duration_seconds != expected_sample_duration:
+            raise ValueError("Post-migration sample duration is not canonical.")
+        sidecar_count += 1
+        legacy_json_count += 1
+    if (
+        canonical_wav_count != 330
+        or sidecar_count != EXPECTED_RETAINED_SAMPLE_COUNT
+        or legacy_json_count != EXPECTED_RETAINED_SAMPLE_COUNT
+    ):
+        raise ValueError("Post-migration filesystem cardinality is not exact.")
 
 
 def _four_transcripts(

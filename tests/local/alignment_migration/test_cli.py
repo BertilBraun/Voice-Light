@@ -11,6 +11,7 @@ from app.local.alignment_migration.models import MigrationQualitySummary
 
 class FakeMigrationService:
     calls: list[str] = []
+    events: list[str] = []
 
     def __init__(self, repository: str, sessions_root: Path) -> None:
         assert repository == "repository"
@@ -18,18 +19,22 @@ class FakeMigrationService:
 
     def dry_run(self) -> MigrationQualitySummary:
         self.calls.append("dry-run")
+        self.events.append("dry-run")
         return summary()
 
     def apply(self) -> MigrationQualitySummary:
         self.calls.append("apply")
+        self.events.append("apply")
         return summary()
 
     def regenerate_quality(self) -> MigrationQualitySummary:
         self.calls.append("regenerate-quality")
+        self.events.append("regenerate-quality")
         return summary()
 
     def audit(self) -> MigrationQualitySummary:
         self.calls.append("audit")
+        self.events.append("audit")
         return summary()
 
 
@@ -44,6 +49,7 @@ def test_cli_dispatches_every_migration_command(
 ) -> None:
     events: list[str] = []
     FakeMigrationService.calls = []
+    FakeMigrationService.events = events
     monkeypatch.setattr(
         cli,
         "AlignmentMigrationRepository",
@@ -59,8 +65,8 @@ def test_cli_dispatches_every_migration_command(
 
     cli.main()
 
-    assert FakeMigrationService.calls == [command]
-    assert events == (["migrations"] if command == "apply" else [])
+    assert FakeMigrationService.calls == (["dry-run", "apply"] if command == "apply" else [command])
+    assert events == (["dry-run", "migrations", "apply"] if command == "apply" else [command])
     assert '"regenerated_count": 0' in capsys.readouterr().out
 
 
