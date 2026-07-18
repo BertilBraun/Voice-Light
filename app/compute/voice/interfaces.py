@@ -40,11 +40,22 @@ class LanguageModel(Protocol):
     ) -> AsyncIterator[LanguageModelEvent]: ...
 
 
+class TextGenerator(Protocol):
+    async def generate_text(self, request: TextGenerationRequest) -> str: ...
+
+
 @dataclass(frozen=True)
 class LanguageModelRequest:
     assistant_generation_id: int
     messages: tuple[ModelMessage, ...]
     tools: tuple[ToolSpecification, ...]
+
+
+@dataclass(frozen=True)
+class TextGenerationRequest:
+    system_prompt: str
+    user_prompt: str
+    max_new_tokens: int
 
 
 class LanguageModelEventType(StrEnum):

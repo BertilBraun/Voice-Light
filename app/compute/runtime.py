@@ -17,6 +17,7 @@ from app.compute.voice.model_constants import (
 )
 from app.compute.voice.models import TransformersLanguageModel
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
+from app.compute.voice.search import SearchProvider, create_search_provider
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
 from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingProvider
 from app.compute.voice.tts_selection import create_speech_synthesizer
@@ -56,6 +57,11 @@ class ComputeRuntime:
         self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
         self.language_model: TransformersLanguageModel | None = None
         self.speech_synthesizer: SpeechSynthesizer | None = None
+        self.search_provider: SearchProvider | None = (
+            None
+            if voice_stack_settings is None
+            else create_search_provider(voice_stack_settings.search)
+        )
         self.loading_task: asyncio.Task[None] | None = None
 
     @property
@@ -103,6 +109,8 @@ class ComputeRuntime:
             await asyncio.to_thread(self.language_model.close)
         if self.speech_synthesizer is not None:
             await asyncio.to_thread(self.speech_synthesizer.close)
+        if self.search_provider is not None:
+            await self.search_provider.close()
         logger.info("compute runtime shutdown complete")
 
     def require_speech_understanding_provider(self) -> SpeechUnderstandingProvider:
@@ -124,6 +132,11 @@ class ComputeRuntime:
         if self.speech_synthesizer is None:
             raise RuntimeError("Speech synthesizer is not ready.")
         return self.speech_synthesizer
+
+    def require_search_provider(self) -> SearchProvider:
+        if self.search_provider is None:
+            raise RuntimeError("Search provider is not ready.")
+        return self.search_provider
 
     async def _load_models(self) -> None:
         await self._load_speech_detector()

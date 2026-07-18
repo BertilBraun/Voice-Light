@@ -13,6 +13,7 @@ from app.compute.voice.tools import (
     RuntimeToolRegistry,
     SearchArguments,
     SerializedToolCall,
+    StandardSearchHandler,
     ToolCall,
     ToolCallFailure,
     ToolCallFailureReason,
@@ -20,11 +21,28 @@ from app.compute.voice.tools import (
     ToolExecutionFailureReason,
     ToolName,
     create_runtime_tool_registry,
+    runtime_tool_specifications,
 )
 
 
+class StaticSearchAnswerer:
+    def __init__(self, answer: str) -> None:
+        self.answer_text = answer
+        self.queries: list[str] = []
+
+    async def answer(self, query: str) -> str:
+        self.queries.append(query)
+        return self.answer_text
+
+
+def create_test_tool_registry() -> RuntimeToolRegistry:
+    return create_runtime_tool_registry(
+        search_handler=StandardSearchHandler(StaticSearchAnswerer("test search answer"))
+    )
+
+
 def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
-    specifications = create_runtime_tool_registry().specifications
+    specifications = runtime_tool_specifications()
 
     assert tuple(specification.function.name for specification in specifications) == (
         ToolName.SEARCH,
@@ -33,9 +51,10 @@ def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
     )
 
 
-def test_search_returns_standard_placeholder_result() -> None:
+def test_search_returns_pipeline_answer() -> None:
     async def execute() -> None:
-        registry = create_runtime_tool_registry()
+        answerer = StaticSearchAnswerer("Berlin is currently sunny.")
+        registry = create_runtime_tool_registry(search_handler=StandardSearchHandler(answerer))
         validated = registry.validate(
             SerializedToolCall(
                 id="call-1",
@@ -47,9 +66,8 @@ def test_search_returns_standard_placeholder_result() -> None:
         assert isinstance(validated, ToolCall)
         assert validated.function.arguments == SearchArguments(query="current weather in Berlin")
         outcome = await registry.execute(validated)
-        assert outcome.result == (
-            'Search results for "current weather in Berlin" are not configured yet.'
-        )
+        assert outcome.result == "Berlin is currently sunny."
+        assert answerer.queries == ["current weather in Berlin"]
 
     asyncio.run(execute())
 
@@ -67,7 +85,7 @@ def test_search_returns_standard_placeholder_result() -> None:
 )
 def test_calculate_evaluates_basic_python_arithmetic(expression: str, expected: str) -> None:
     async def execute() -> None:
-        registry = create_runtime_tool_registry()
+        registry = create_test_tool_registry()
         validated = registry.validate(
             SerializedToolCall(
                 id="call-1",
@@ -94,7 +112,7 @@ def test_calculate_evaluates_basic_python_arithmetic(expression: str, expected: 
 )
 def test_calculate_rejects_non_arithmetic_or_excessive_expressions(expression: str) -> None:
     async def execute() -> None:
-        registry = create_runtime_tool_registry()
+        registry = create_test_tool_registry()
         validated = registry.validate(
             SerializedToolCall(
                 id="call-1",
@@ -122,7 +140,7 @@ def test_get_time_returns_local_iso_timestamp() -> None:
 
 
 def test_registry_rejects_unknown_tool() -> None:
-    registry = create_runtime_tool_registry()
+    registry = create_test_tool_registry()
 
     validated = registry.validate(
         SerializedToolCall(
@@ -145,7 +163,7 @@ def test_registry_rejects_unknown_tool() -> None:
     ),
 )
 def test_registry_rejects_invalid_arguments(name: str, arguments_json: str) -> None:
-    registry = create_runtime_tool_registry()
+    registry = create_test_tool_registry()
 
     validated = registry.validate(
         SerializedToolCall(

@@ -67,6 +67,7 @@ from app.compute.voice.schemas import (
     PlaybackStoppedEvent,
     TraceStamp,
 )
+from app.compute.voice.search import SearchPipeline, SearchResult
 from app.compute.voice.session import SessionPolicy, VoiceSession
 from app.compute.voice.speech_understanding import (
     CompositeSpeechUnderstandingProvider,
@@ -79,6 +80,7 @@ from app.compute.voice.tools import (
     SearchArguments,
     SearchToolHandler,
     SerializedToolCall,
+    StandardSearchHandler,
     ToolCallFailure,
     ToolCallFailureReason,
     ToolExecutionFailure,
@@ -88,7 +90,6 @@ from app.compute.voice.tools import (
     ToolLifecycle,
     ToolResultCommitStatus,
     ToolSuccess,
-    create_runtime_tool_registry,
 )
 
 SPEECH_CHUNK = b"\x01\x00" * 320
@@ -549,6 +550,12 @@ class CancellationResistantWeatherHandler:
             await asyncio.to_thread(self.release.wait)
         self.finished.set()
         return "London is 12 degrees and lightly cloudy."
+
+
+class UnconfiguredTestSearchHandler:
+    async def __call__(self, arguments: SearchArguments) -> str:
+        del arguments
+        raise RuntimeError("Search was not configured for this test.")
 
 
 def create_search_registry(search_handler: SearchToolHandler) -> RuntimeToolRegistry:
@@ -1232,6 +1239,80 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         cumulative_token_count=5,
     )
     assert language_model.second_pass_answer.endswith("in London.")
+
+
+def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() -> None:
+    raw_result_marker = "RAW_SEARCH_RESULT_PRIVATE"
+    summary_prompt_marker = "SUMMARY_EXCHANGE_PRIVATE"
+    final_tool_result = "London is cool and cloudy. Source: https://weather.example"
+
+    class PrivateSearchProvider:
+        async def search(
+            self,
+            query: str,
+            result_limit: int,
+        ) -> tuple[SearchResult, ...]:
+            del query, result_limit
+            return (
+                SearchResult(
+                    title="Weather report",
+                    url="https://weather.example",
+                    snippet=raw_result_marker,
+                ),
+            )
+
+        async def close(self) -> None:
+            return
+
+    class PrivateSearchSummarizer:
+        async def summarize(
+            self,
+            query: str,
+            results: tuple[SearchResult, ...],
+        ) -> str:
+            del query
+            assert results[0].snippet == raw_result_marker
+            private_summary_exchange = summary_prompt_marker
+            assert private_summary_exchange
+            return final_tool_result
+
+    language_model = ScriptedWeatherLanguageModel()
+    sessions: list[VoiceSession] = []
+    sink = InMemoryPlaybackSink()
+    search_handler = StandardSearchHandler(
+        SearchPipeline(PrivateSearchProvider(), PrivateSearchSummarizer())
+    )
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        created_sessions=sessions,
+        tool_executor=create_search_registry(search_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        wait_until(
+            lambda: (
+                len(language_model.requests) == 2
+                and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
+            )
+        )
+        websocket.send_json({"type": "session.stop"})
+
+    continuation_messages = language_model.requests[1].messages
+    serialized_messages = repr(continuation_messages)
+    assert final_tool_result in serialized_messages
+    assert raw_result_marker not in serialized_messages
+    assert summary_prompt_marker not in serialized_messages
+    assert all(
+        raw_result_marker not in message.content and summary_prompt_marker not in message.content
+        for message in sessions[0].conversation
+    )
 
 
 def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn() -> None:
@@ -3109,7 +3190,7 @@ def create_test_app(
             language_model=language_model,
             speech_synthesizer=speech_synthesizer,
             policy=policy,
-            tool_executor=tool_executor or create_runtime_tool_registry(),
+            tool_executor=tool_executor or create_search_registry(UnconfiguredTestSearchHandler()),
             playback_sink=playback_sink,
         )
         if created_sessions is not None:

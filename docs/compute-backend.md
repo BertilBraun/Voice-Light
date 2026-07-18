@@ -40,6 +40,24 @@ WebSocket is deliberately public for direct use by the browser.
 The compute server never accepts filesystem paths or shell commands from HTTP clients. Quality
 uploads are decoded in request-scoped temporary storage and deleted after the response.
 
+## Voice web search
+
+The voice agent's `search(query)` tool uses the Brave Web Search API. Set
+`VOICE_LIGHT_BRAVE_SEARCH_API_KEY` in `.env.compute` to a Brave Search subscription token. The
+voice stack still starts when this setting is absent, but an attempted search returns a clear tool
+failure until a key is configured.
+
+Each invocation requests at most five web results over a three-second HTTP timeout. The compute
+process normalizes and bounds each title, URL, and snippet, then submits only that bounded context
+to a separate deterministic pass through the already-loaded Qwen model with tools disabled. Raw
+provider payloads and the summarization prompt never enter the session conversation; only Qwen's
+bounded plain-text summary is committed through the normal tool-result message.
+
+This design adds one external network round trip and one serialized Qwen generation before the
+main post-tool response. It avoids an additional model copy and GPU concurrency hazards, but search
+turns will therefore be materially slower than calculator or local-time turns. The worker lease
+ensures the summarization pass cannot overlap another Qwen inference.
+
 ## ASR-only mode
 
 Set `VOICE_LIGHT_VOICE_STACK_ENABLED=false` to run the compute server only for batch ASR and

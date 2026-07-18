@@ -26,9 +26,11 @@ from app.compute.voice.interfaces import (
     LanguageModelToolCall,
     LanguageModelToolCallFailure,
     LanguageModelToolCallStarted,
+    TextGenerationRequest,
 )
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
+    GenerateTextLlmCommand,
     LlmAssistantMessage,
     LlmCancelledEvent,
     LlmEndEvent,
@@ -206,6 +208,35 @@ class TransformersLanguageModel:
         finally:
             await session.cancel()
 
+    async def generate_text(self, request: TextGenerationRequest) -> str:
+        session = QwenInvocationSession(
+            worker_manager=self.worker_manager,
+            request=request,
+            progress_timeout_seconds=QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS,
+            cancellation_timeout_seconds=QWEN_CANCELLATION_TIMEOUT_SECONDS,
+        )
+        generated_parts: list[str] = []
+        try:
+            async for event in session.stream_events():
+                match event:
+                    case LanguageModelTextDelta(text=text):
+                        generated_parts.append(text)
+                    case LanguageModelCompleted():
+                        pass
+                    case LanguageModelFailed(message=message):
+                        raise RuntimeError(message)
+                    case (
+                        LanguageModelToolCallStarted()
+                        | LanguageModelToolCall()
+                        | LanguageModelToolCallFailure()
+                    ):
+                        raise RuntimeError(
+                            "Qwen emitted a tool event during bounded text generation."
+                        )
+        finally:
+            await session.cancel()
+        return "".join(generated_parts)
+
     def close(self) -> None:
         self.worker_manager.close()
 
@@ -226,7 +257,7 @@ class QwenInvocationSession:
     def __init__(
         self,
         worker_manager: QwenWorkerManager,
-        request: LanguageModelRequest,
+        request: LanguageModelRequest | TextGenerationRequest,
         progress_timeout_seconds: float,
         cancellation_timeout_seconds: float,
     ) -> None:
@@ -340,16 +371,24 @@ class QwenInvocationSession:
             self.worker = lease.worker
             self.invocation_id = lease.invocation_id
             try:
-                self.worker.send(
-                    StartLlmCommand(
-                        invocation_id=lease.invocation_id,
-                        assistant_generation_id=self.request.assistant_generation_id,
-                        messages=tuple(
-                            _worker_message(message) for message in self.request.messages
-                        ),
-                        tools=self.request.tools,
-                    )
-                )
+                match self.request:
+                    case LanguageModelRequest():
+                        command: LlmWorkerCommand = StartLlmCommand(
+                            invocation_id=lease.invocation_id,
+                            assistant_generation_id=self.request.assistant_generation_id,
+                            messages=tuple(
+                                _worker_message(message) for message in self.request.messages
+                            ),
+                            tools=self.request.tools,
+                        )
+                    case TextGenerationRequest():
+                        command = GenerateTextLlmCommand(
+                            invocation_id=lease.invocation_id,
+                            system_prompt=self.request.system_prompt,
+                            user_prompt=self.request.user_prompt,
+                            max_new_tokens=self.request.max_new_tokens,
+                        )
+                self.worker.send(command)
             except Exception as error:
                 await self._fail_worker(error)
                 raise RuntimeError("Failed to start Qwen invocation.") from error

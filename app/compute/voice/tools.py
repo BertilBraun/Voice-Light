@@ -220,6 +220,10 @@ GetTimeToolHandler = Callable[[], Awaitable[str]]
 CurrentTimeProvider = Callable[[], datetime]
 
 
+class SearchAnswerer(Protocol):
+    async def answer(self, query: str) -> str: ...
+
+
 class ToolExecutor(Protocol):
     @property
     def specifications(self) -> tuple[ToolSpecification, ...]: ...
@@ -302,8 +306,11 @@ class RuntimeToolRegistry:
 
 
 class StandardSearchHandler:
+    def __init__(self, answerer: SearchAnswerer) -> None:
+        self.answerer = answerer
+
     async def __call__(self, arguments: SearchArguments) -> str:
-        return f'Search results for "{arguments.query}" are not configured yet.'
+        return await self.answerer.answer(arguments.query)
 
 
 class PythonArithmeticHandler:
@@ -320,12 +327,16 @@ class CurrentLocalTimeHandler:
         return self.current_time().isoformat(timespec="seconds")
 
 
-def create_runtime_tool_registry() -> RuntimeToolRegistry:
+def create_runtime_tool_registry(search_handler: SearchToolHandler) -> RuntimeToolRegistry:
     return RuntimeToolRegistry(
-        search_handler=StandardSearchHandler(),
+        search_handler=search_handler,
         calculate_handler=PythonArithmeticHandler(),
         get_time_handler=CurrentLocalTimeHandler(_current_local_time),
     )
+
+
+def runtime_tool_specifications() -> tuple[ToolSpecification, ...]:
+    return _tool_specifications()
 
 
 def _tool_specifications() -> tuple[ToolSpecification, ...]:

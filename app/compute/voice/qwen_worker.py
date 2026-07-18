@@ -26,6 +26,7 @@ from app.compute.voice.hermes_tool_parser import (
 )
 from app.compute.voice.llm_worker_protocol import (
     CancelLlmCommand,
+    GenerateTextLlmCommand,
     LlmAssistantMessage,
     LlmCancelledEvent,
     LlmEndEvent,
@@ -101,6 +102,7 @@ class QwenToolMessage(TypedDict):
 
 
 QwenChatMessage = QwenSystemMessage | QwenUserMessage | QwenAssistantMessage | QwenToolMessage
+QwenGenerationCommand = StartLlmCommand | GenerateTextLlmCommand
 
 
 class GenerationStreamer(Protocol):
@@ -153,7 +155,7 @@ class QwenRuntime:
 
     def stream_text(
         self,
-        command: StartLlmCommand,
+        command: QwenGenerationCommand,
         cancellation_event: threading.Event,
     ) -> Iterator[str]:
         prompt = render_qwen_prompt(self.tokenizer, command)
@@ -166,17 +168,29 @@ class QwenRuntime:
         generation_errors: list[Exception] = []
 
         def generate() -> None:
-            self.model.generate(
-                **model_inputs,
-                streamer=streamer,
-                stopping_criteria=StoppingCriteriaList(
-                    [CancellationStoppingCriteria(cancellation_event)]
-                ),
-                max_new_tokens=256,
-                do_sample=True,
-                temperature=0.6,
-                top_p=0.9,
-            )
+            match command:
+                case StartLlmCommand():
+                    self.model.generate(
+                        **model_inputs,
+                        streamer=streamer,
+                        stopping_criteria=StoppingCriteriaList(
+                            [CancellationStoppingCriteria(cancellation_event)]
+                        ),
+                        max_new_tokens=256,
+                        do_sample=True,
+                        temperature=0.6,
+                        top_p=0.9,
+                    )
+                case GenerateTextLlmCommand(max_new_tokens=max_new_tokens):
+                    self.model.generate(
+                        **model_inputs,
+                        streamer=streamer,
+                        stopping_criteria=StoppingCriteriaList(
+                            [CancellationStoppingCriteria(cancellation_event)]
+                        ),
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                    )
 
         model_thread = threading.Thread(
             target=_run_model_generation,
@@ -228,7 +242,7 @@ class QwenWorkerController:
 
     def _handle_command(self, command: LlmWorkerCommand) -> bool:
         match command:
-            case StartLlmCommand():
+            case StartLlmCommand() | GenerateTextLlmCommand():
                 self._start(command)
                 return False
             case CancelLlmCommand():
@@ -238,7 +252,7 @@ class QwenWorkerController:
                 self._shutdown()
                 return True
 
-    def _start(self, command: StartLlmCommand) -> None:
+    def _start(self, command: QwenGenerationCommand) -> None:
         with self.state_lock:
             if self.active_invocation is not None:
                 self._send_event(
@@ -286,29 +300,47 @@ class QwenWorkerController:
 
     def _generate(
         self,
-        command: StartLlmCommand,
+        command: QwenGenerationCommand,
         cancellation_event: threading.Event,
     ) -> None:
         terminal_event: LlmWorkerEvent | None = None
         raw_response_text = ""
-        parser = HermesToolCallParser(command.invocation_id)
         try:
-            for text_delta in self.runtime.stream_text(command, cancellation_event):
-                raw_response_text += text_delta
-                cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
-                for parser_event in parser.add_text(text_delta):
-                    self._send_parser_event(
-                        command.invocation_id,
-                        cumulative_token_count,
-                        parser_event,
-                    )
-            cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
-            for parser_event in parser.finish():
-                self._send_parser_event(
-                    command.invocation_id,
-                    cumulative_token_count,
-                    parser_event,
-                )
+            match command:
+                case StartLlmCommand():
+                    parser = HermesToolCallParser(command.invocation_id)
+                    for text_delta in self.runtime.stream_text(command, cancellation_event):
+                        raw_response_text += text_delta
+                        cumulative_token_count = self.runtime.count_response_tokens(
+                            raw_response_text
+                        )
+                        for parser_event in parser.add_text(text_delta):
+                            self._send_parser_event(
+                                command.invocation_id,
+                                cumulative_token_count,
+                                parser_event,
+                            )
+                    cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
+                    for parser_event in parser.finish():
+                        self._send_parser_event(
+                            command.invocation_id,
+                            cumulative_token_count,
+                            parser_event,
+                        )
+                case GenerateTextLlmCommand():
+                    for text_delta in self.runtime.stream_text(command, cancellation_event):
+                        raw_response_text += text_delta
+                        cumulative_token_count = self.runtime.count_response_tokens(
+                            raw_response_text
+                        )
+                        self._send_event(
+                            LlmSpokenTextDeltaEvent(
+                                invocation_id=command.invocation_id,
+                                text=text_delta,
+                                cumulative_token_count=cumulative_token_count,
+                            )
+                        )
+                    cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
             if cancellation_event.is_set():
                 terminal_event = LlmCancelledEvent(invocation_id=command.invocation_id)
             else:
@@ -432,13 +464,23 @@ def qwen_chat_messages(command: StartLlmCommand) -> list[QwenChatMessage]:
 
 def render_qwen_prompt(
     tokenizer: QwenChatTemplateTokenizer,
-    command: StartLlmCommand,
+    command: QwenGenerationCommand,
 ) -> str:
+    match command:
+        case StartLlmCommand():
+            messages = qwen_chat_messages(command)
+            tools = [specification.model_dump(mode="json") for specification in command.tools]
+        case GenerateTextLlmCommand(system_prompt=system_prompt, user_prompt=user_prompt):
+            messages = [
+                QwenSystemMessage(role="system", content=system_prompt),
+                QwenUserMessage(role="user", content=user_prompt),
+            ]
+            tools = []
     return tokenizer.apply_chat_template(
-        qwen_chat_messages(command),
+        messages,
         tokenize=False,
         add_generation_prompt=True,
-        tools=[specification.model_dump(mode="json") for specification in command.tools],
+        tools=tools,
         enable_thinking=False,
     )
 
