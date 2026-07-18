@@ -86,9 +86,7 @@ p {
   align-items: end;
   display: grid;
   gap: 12px;
-  grid-template-columns:
-    minmax(240px, 2fr) minmax(125px, 0.8fr) minmax(105px, 0.6fr) minmax(105px, 0.6fr)
-    minmax(145px, 0.8fr) auto auto auto;
+  grid-template-columns: minmax(240px, 2fr) repeat(4, minmax(120px, 1fr));
   padding: 16px;
 }
 
@@ -248,7 +246,7 @@ button.primary {
 #timeline {
   cursor: crosshair;
   display: block;
-  min-width: 980px;
+  min-width: 1100px;
   width: 100%;
 }
 
@@ -289,6 +287,11 @@ dd {
 
 .value-negative {
   color: #899397;
+}
+
+.value-masked {
+  color: #7b8588;
+  font-weight: 550;
 }
 
 .warning-card {

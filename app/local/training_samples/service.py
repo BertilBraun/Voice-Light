@@ -18,7 +18,7 @@ from app.local.training_samples.models import (
     PreviewPoint,
     PreviewSpan,
     PreviewWaveformPoint,
-    ReliabilitySource,
+    SupervisionMaskReason,
     TrainingFramePreview,
     TrainingSamplePreview,
     TrainingSampleQuality,
@@ -26,6 +26,7 @@ from app.local.training_samples.models import (
 )
 from app.shared.audio.wav import mono_samples
 from app.shared.quality import (
+    AnnotationEvidenceSource,
     AnnotationPoint,
     AnnotationSpan,
     ConnectionAnnotationTarget,
@@ -44,15 +45,35 @@ MAXIMUM_CANDIDATE_SILENCE_SECONDS = 2.0
 FUTURE_ACTIVITY_WINDOWS_MILLISECONDS = ((0, 200), (200, 500), (500, 1000), (1000, 1500))
 INTERESTING_RANDOM_LOCATION_COUNT = 24
 INTERESTING_ANCHOR_LIMIT = 64
+HIGH_CONFIDENCE = 0.8
+LOW_CONFIDENCE = 0.2
+FLOOR_TAKE_SUPERVISION_SECONDS = 0.5
+MAXIMUM_NON_FLOOR_FEEDBACK_SECONDS = 1.2
+MINIMUM_ASSISTANT_CONTINUATION_SECONDS = 0.3
+MINIMUM_COMPLETION_INACTIVITY_SECONDS = 1.5
+YIELD_AFTER_COMPLETION_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
 class DecisionBoundary:
     speech_offset_seconds: float
     candidate_end_seconds: float
-    yield_probability: float | None
     source: CandidateSource
-    event_distribution: EventTargetDistribution | None
+
+
+@dataclass(frozen=True)
+class ScalarSupervision:
+    target: float | None
+    valid: bool
+    mask_reason: SupervisionMaskReason | None
+
+
+@dataclass(frozen=True)
+class InteractionEventAnchor:
+    time_seconds: float
+    source: CandidateSource
+    distribution: EventTargetDistribution | None
+    mask_reason: SupervisionMaskReason | None
 
 
 @dataclass(frozen=True)
@@ -355,6 +376,11 @@ def build_frame_previews(
         assistant=assistant,
         annotation_end_seconds=annotation_end_seconds,
     )
+    event_anchors = _interaction_event_anchors(
+        user=user,
+        assistant=assistant,
+        annotation_end_seconds=annotation_end_seconds,
+    )
     frame_count = max(1, math.ceil((end_seconds - start_seconds) / FRAME_SECONDS))
     frames: list[TrainingFramePreview] = []
     for frame_index in range(frame_count):
@@ -362,36 +388,74 @@ def build_frame_previews(
             end_seconds,
             start_seconds + (frame_index + 0.5) * FRAME_SECONDS,
         )
+        supervised = time_seconds >= start_seconds + BURN_IN_SECONDS
         boundary = _active_boundary(time_seconds=time_seconds, boundaries=boundaries)
-        candidate = boundary is not None
-        yield_probability = _yield_probability_at(time_seconds=time_seconds, user=user)
-        event_valid = candidate and boundary.event_distribution is not None
+        event_anchor = _event_anchor_for_frame(
+            frame_index=frame_index,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            frame_count=frame_count,
+            anchors=event_anchors,
+        )
+        yield_supervision = _user_yield_supervision(
+            time_seconds=time_seconds,
+            supervised=supervised,
+            annotation_end_seconds=annotation_end_seconds,
+            user=user,
+            assistant=assistant,
+        )
+        floor_take_supervision = _user_floor_take_supervision(
+            time_seconds=time_seconds,
+            supervised=supervised,
+            user=user,
+            assistant=assistant,
+        )
+        event_distribution, event_valid, event_mask_reason = _interaction_event_supervision(
+            supervised=supervised,
+            anchor=event_anchor,
+        )
+        candidate = boundary is not None or event_anchor is not None
+        candidate_source = (
+            event_anchor.source
+            if event_anchor is not None
+            else boundary.source
+            if boundary is not None
+            else None
+        )
+        anchor_time_seconds = (
+            event_anchor.time_seconds
+            if event_anchor is not None
+            else boundary.speech_offset_seconds
+            if boundary is not None
+            else None
+        )
         frames.append(
             TrainingFramePreview(
                 frame_index=frame_index,
                 time_seconds=time_seconds,
                 relative_time_seconds=time_seconds - start_seconds,
-                supervised=time_seconds >= start_seconds + BURN_IN_SECONDS,
+                supervised=supervised,
                 assistant_speaking_input=_assistant_speaking_at(
                     time_seconds=time_seconds,
                     assistant=assistant,
                 ),
                 candidate=candidate,
-                candidate_source=boundary.source if boundary is not None else None,
+                candidate_source=candidate_source,
                 seconds_since_speech_offset=(
-                    time_seconds - boundary.speech_offset_seconds if boundary is not None else None
+                    time_seconds - anchor_time_seconds if anchor_time_seconds is not None else None
                 ),
-                yield_probability=yield_probability,
-                hold_probability=1.0 - yield_probability,
-                primary_reliability=None,
-                primary_reliability_source=ReliabilitySource.UNMEASURED,
-                primary_valid=True,
-                event_distribution=(boundary.event_distribution if boundary is not None else None),
-                event_reliability=None,
-                event_reliability_source=(ReliabilitySource.UNMEASURED if event_valid else None),
-                event_valid=event_valid,
+                user_yield_target=yield_supervision.target,
+                user_yield_valid=yield_supervision.valid,
+                user_yield_mask_reason=yield_supervision.mask_reason,
+                user_floor_take_target=floor_take_supervision.target,
+                user_floor_take_valid=floor_take_supervision.valid,
+                user_floor_take_mask_reason=floor_take_supervision.mask_reason,
+                interaction_event_distribution=event_distribution,
+                interaction_event_valid=event_valid,
+                interaction_event_mask_reason=event_mask_reason,
                 future_activity=_future_activity_targets(
                     time_seconds=time_seconds,
+                    supervised=supervised,
                     annotation_end_seconds=annotation_end_seconds,
                     user=user,
                 ),
@@ -400,10 +464,17 @@ def build_frame_previews(
     return tuple(frames)
 
 
-def _yield_probability_at(
+def _user_yield_supervision(
     time_seconds: float,
+    supervised: bool,
+    annotation_end_seconds: float,
     user: SpeakerConversationAnnotation,
-) -> float:
+    assistant: SpeakerConversationAnnotation,
+) -> ScalarSupervision:
+    if not supervised:
+        return _masked_scalar(SupervisionMaskReason.BURN_IN)
+    if _assistant_substantively_speaking_at(time_seconds, assistant):
+        return _masked_scalar(SupervisionMaskReason.ASSISTANT_HOLDS_FLOOR)
     active_segment = next(
         (
             segment
@@ -413,7 +484,9 @@ def _yield_probability_at(
         None,
     )
     if active_segment is not None:
-        return active_segment.keep_playing_confidence
+        if active_segment.evidence_source is AnnotationEvidenceSource.AUDIO_ACTIVITY:
+            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+        return _valid_scalar(0.0)
     active_connection = next(
         (
             connection
@@ -423,8 +496,90 @@ def _yield_probability_at(
         None,
     )
     if active_connection is not None:
-        return 1.0 - active_connection.merge_confidence
-    return 1.0
+        preceding_segment = _segment_ending_at(
+            time_seconds=active_connection.earlier_end_seconds,
+            segments=user.segment_targets,
+        )
+        if (
+            preceding_segment is None
+            or preceding_segment.evidence_source is not AnnotationEvidenceSource.TRANSCRIPT
+        ):
+            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+        if active_connection.merge_confidence >= HIGH_CONFIDENCE:
+            return _valid_scalar(0.0)
+        if active_connection.merge_confidence > LOW_CONFIDENCE:
+            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+        if preceding_segment.turn_confidence < HIGH_CONFIDENCE:
+            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+        return _valid_scalar(1.0)
+    preceding_segment = _previous_segment(time_seconds, user.segment_targets)
+    if preceding_segment is None:
+        return _masked_scalar(SupervisionMaskReason.BEFORE_USER_TURN)
+    if time_seconds >= preceding_segment.end_seconds + YIELD_AFTER_COMPLETION_SECONDS:
+        return _masked_scalar(SupervisionMaskReason.OUTSIDE_YIELD_WINDOW)
+    if (
+        preceding_segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+        and preceding_segment.turn_confidence >= HIGH_CONFIDENCE
+        and _completion_confirmed(
+            segment=preceding_segment,
+            user=user,
+            assistant=assistant,
+            annotation_end_seconds=annotation_end_seconds,
+        )
+    ):
+        return _valid_scalar(1.0)
+    if _completion_is_censored(
+        segment=preceding_segment,
+        user=user,
+        assistant=assistant,
+        annotation_end_seconds=annotation_end_seconds,
+    ):
+        return _masked_scalar(SupervisionMaskReason.CENSORED_ANNOTATION)
+    return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+
+
+def _user_floor_take_supervision(
+    time_seconds: float,
+    supervised: bool,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+) -> ScalarSupervision:
+    if not supervised:
+        return _masked_scalar(SupervisionMaskReason.BURN_IN)
+    assistant_segment = _assistant_substantive_segment_at(time_seconds, assistant)
+    if assistant_segment is None or not _assistant_speaking_at(time_seconds, assistant):
+        return _masked_scalar(SupervisionMaskReason.ASSISTANT_NOT_SPEAKING)
+    user_segment = next(
+        (
+            segment
+            for segment in user.segment_targets
+            if segment.start_seconds
+            <= time_seconds
+            < min(
+                segment.end_seconds,
+                segment.start_seconds + FLOOR_TAKE_SUPERVISION_SECONDS,
+            )
+            and assistant_segment.start_seconds <= segment.start_seconds
+        ),
+        None,
+    )
+    if user_segment is None:
+        return _masked_scalar(SupervisionMaskReason.OUTSIDE_OVERLAP_ONSET)
+    event_distribution = _overlap_event_distribution(
+        user_segment=user_segment,
+        assistant_segment=assistant_segment,
+    )
+    if event_distribution is None:
+        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+    return _valid_scalar(event_distribution.floor_take)
+
+
+def _valid_scalar(target: float) -> ScalarSupervision:
+    return ScalarSupervision(target=target, valid=True, mask_reason=None)
+
+
+def _masked_scalar(reason: SupervisionMaskReason) -> ScalarSupervision:
+    return ScalarSupervision(target=None, valid=False, mask_reason=reason)
 
 
 def _assistant_speaking_at(
@@ -435,6 +590,31 @@ def _assistant_speaking_at(
     inside_pause = _inside_span(time_seconds, assistant.pauses)
     inside_backchannel = _inside_span(time_seconds, assistant.backchannels)
     return (inside_turn and not inside_pause) or inside_backchannel
+
+
+def _assistant_substantively_speaking_at(
+    time_seconds: float,
+    assistant: SpeakerConversationAnnotation,
+) -> bool:
+    return _assistant_substantive_segment_at(
+        time_seconds, assistant
+    ) is not None and _assistant_speaking_at(time_seconds, assistant)
+
+
+def _assistant_substantive_segment_at(
+    time_seconds: float,
+    assistant: SpeakerConversationAnnotation,
+) -> SegmentAnnotationTarget | None:
+    return next(
+        (
+            segment
+            for segment in assistant.segment_targets
+            if segment.start_seconds <= time_seconds < segment.end_seconds
+            and segment.turn_confidence >= HIGH_CONFIDENCE
+            and segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+        ),
+        None,
+    )
 
 
 def _inside_span(time_seconds: float, spans: Sequence[AnnotationSpan]) -> bool:
@@ -485,42 +665,20 @@ def _decision_boundary(
         segment.end_seconds + MAXIMUM_CANDIDATE_SILENCE_SECONDS,
         next_activity_seconds,
     )
-    boundary_yield_probability: float | None
     source: CandidateSource
-    pause_probability = 0.0
     if connection is not None:
-        boundary_yield_probability = 1.0 - connection.merge_confidence
-        pause_probability = connection.pause_confidence
         source = CandidateSource.CONNECTION
     elif (
         next_assistant is not None
         or segment.end_seconds + MAXIMUM_CANDIDATE_SILENCE_SECONDS <= annotation_end_seconds
     ):
-        boundary_yield_probability = 1.0
         source = CandidateSource.SEGMENT_END
     else:
-        boundary_yield_probability = None
         source = CandidateSource.CENSORED
-    yield_probability = (
-        segment.turn_confidence * boundary_yield_probability
-        if boundary_yield_probability is not None
-        else None
-    )
-    event_distribution = (
-        _event_distribution(
-            segment=segment,
-            pause_probability=pause_probability,
-            boundary_yield_probability=boundary_yield_probability,
-        )
-        if boundary_yield_probability is not None
-        else None
-    )
     return DecisionBoundary(
         speech_offset_seconds=segment.end_seconds,
         candidate_end_seconds=max(segment.end_seconds + FRAME_SECONDS, candidate_end_seconds),
-        yield_probability=yield_probability,
         source=source,
-        event_distribution=event_distribution,
     )
 
 
@@ -549,6 +707,31 @@ def _next_segment_after(
     )
 
 
+def _previous_segment(
+    time_seconds: float,
+    segments: Sequence[SegmentAnnotationTarget],
+) -> SegmentAnnotationTarget | None:
+    return max(
+        (segment for segment in segments if segment.end_seconds <= time_seconds),
+        key=lambda segment: segment.end_seconds,
+        default=None,
+    )
+
+
+def _segment_ending_at(
+    time_seconds: float,
+    segments: Sequence[SegmentAnnotationTarget],
+) -> SegmentAnnotationTarget | None:
+    return next(
+        (
+            segment
+            for segment in segments
+            if abs(segment.end_seconds - time_seconds) <= FRAME_SECONDS
+        ),
+        None,
+    )
+
+
 def _active_boundary(
     time_seconds: float, boundaries: Sequence[DecisionBoundary]
 ) -> DecisionBoundary | None:
@@ -563,30 +746,237 @@ def _active_boundary(
     )
 
 
-def _event_distribution(
+def _interaction_event_anchors(
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    annotation_end_seconds: float,
+) -> tuple[InteractionEventAnchor, ...]:
+    anchors: list[InteractionEventAnchor] = []
+    for segment in user.segment_targets:
+        anchors.append(
+            _boundary_event_anchor(
+                segment=segment,
+                user=user,
+                assistant=assistant,
+                annotation_end_seconds=annotation_end_seconds,
+            )
+        )
+        assistant_segment = _assistant_substantive_segment_at(segment.start_seconds, assistant)
+        if assistant_segment is not None and _assistant_speaking_at(
+            segment.start_seconds, assistant
+        ):
+            distribution = _overlap_event_distribution(
+                user_segment=segment,
+                assistant_segment=assistant_segment,
+            )
+            anchors.append(
+                InteractionEventAnchor(
+                    time_seconds=segment.start_seconds,
+                    source=CandidateSource.OVERLAP_ONSET,
+                    distribution=distribution,
+                    mask_reason=(
+                        None
+                        if distribution is not None
+                        else SupervisionMaskReason.AMBIGUOUS_ANNOTATION
+                    ),
+                )
+            )
+    return tuple(anchors)
+
+
+def _boundary_event_anchor(
     segment: SegmentAnnotationTarget,
-    pause_probability: float,
-    boundary_yield_probability: float,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    annotation_end_seconds: float,
+) -> InteractionEventAnchor:
+    connection = _matching_connection(segment, user.connection_targets)
+    if segment.evidence_source is not AnnotationEvidenceSource.TRANSCRIPT:
+        source = (
+            CandidateSource.CONNECTION if connection is not None else CandidateSource.SEGMENT_END
+        )
+        return _masked_boundary_event(segment, source)
+    if connection is not None and connection.merge_confidence >= HIGH_CONFIDENCE:
+        return InteractionEventAnchor(
+            time_seconds=segment.end_seconds,
+            source=CandidateSource.CONNECTION,
+            distribution=_one_hot_event_distribution(continuation_pause=1.0),
+            mask_reason=None,
+        )
+    if connection is not None and connection.merge_confidence > LOW_CONFIDENCE:
+        return _masked_boundary_event(segment, CandidateSource.CONNECTION)
+    source = CandidateSource.CONNECTION if connection is not None else CandidateSource.SEGMENT_END
+    if segment.turn_confidence >= HIGH_CONFIDENCE and _completion_confirmed(
+        segment=segment,
+        user=user,
+        assistant=assistant,
+        annotation_end_seconds=annotation_end_seconds,
+    ):
+        return InteractionEventAnchor(
+            time_seconds=segment.end_seconds,
+            source=source,
+            distribution=_one_hot_event_distribution(turn_completion=1.0),
+            mask_reason=None,
+        )
+    if _completion_is_censored(
+        segment=segment,
+        user=user,
+        assistant=assistant,
+        annotation_end_seconds=annotation_end_seconds,
+    ):
+        return InteractionEventAnchor(
+            time_seconds=segment.end_seconds,
+            source=CandidateSource.CENSORED,
+            distribution=None,
+            mask_reason=SupervisionMaskReason.CENSORED_ANNOTATION,
+        )
+    return _masked_boundary_event(segment, source)
+
+
+def _masked_boundary_event(
+    segment: SegmentAnnotationTarget,
+    source: CandidateSource,
+) -> InteractionEventAnchor:
+    return InteractionEventAnchor(
+        time_seconds=segment.end_seconds,
+        source=source,
+        distribution=None,
+        mask_reason=SupervisionMaskReason.AMBIGUOUS_ANNOTATION,
+    )
+
+
+def _overlap_event_distribution(
+    user_segment: SegmentAnnotationTarget,
+    assistant_segment: SegmentAnnotationTarget,
+) -> EventTargetDistribution | None:
+    if (
+        user_segment.evidence_source is not AnnotationEvidenceSource.TRANSCRIPT
+        or assistant_segment.evidence_source is not AnnotationEvidenceSource.TRANSCRIPT
+    ):
+        return None
+    floor_take = (
+        user_segment.turn_confidence >= HIGH_CONFIDENCE
+        and user_segment.interruption_confidence >= HIGH_CONFIDENCE
+    )
+    non_floor_feedback = (
+        user_segment.keep_playing_confidence >= HIGH_CONFIDENCE
+        and user_segment.end_seconds - user_segment.start_seconds
+        <= MAXIMUM_NON_FLOOR_FEEDBACK_SECONDS
+        and assistant_segment.start_seconds <= user_segment.start_seconds
+        and assistant_segment.end_seconds
+        >= user_segment.end_seconds + MINIMUM_ASSISTANT_CONTINUATION_SECONDS
+    )
+    if floor_take == non_floor_feedback:
+        return None
+    if floor_take:
+        return _one_hot_event_distribution(floor_take=1.0)
+    return _one_hot_event_distribution(non_floor_feedback=1.0)
+
+
+def _one_hot_event_distribution(
+    turn_completion: float = 0.0,
+    continuation_pause: float = 0.0,
+    non_floor_feedback: float = 0.0,
+    floor_take: float = 0.0,
 ) -> EventTargetDistribution:
-    backchannel = segment.keep_playing_confidence
-    remaining = 1.0 - backchannel
-    interruption = min(remaining, segment.interruption_confidence)
-    remaining -= interruption
-    continuation_pause = remaining * pause_probability
-    remaining -= continuation_pause
-    turn_completion = remaining * boundary_yield_probability
-    other = remaining - turn_completion
     return EventTargetDistribution(
         turn_completion=turn_completion,
         continuation_pause=continuation_pause,
-        backchannel=backchannel,
-        interruption=interruption,
-        other=other,
+        non_floor_feedback=non_floor_feedback,
+        floor_take=floor_take,
     )
+
+
+def _completion_confirmed(
+    segment: SegmentAnnotationTarget,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    annotation_end_seconds: float,
+) -> bool:
+    next_user = _next_segment_after(segment.end_seconds, user.segment_targets)
+    next_assistant = _next_segment_after(segment.end_seconds, assistant.segment_targets)
+    if next_assistant is not None and (
+        next_user is None or next_assistant.start_seconds < next_user.start_seconds
+    ):
+        return True
+    inactivity_end_seconds = segment.end_seconds + MINIMUM_COMPLETION_INACTIVITY_SECONDS
+    return annotation_end_seconds >= inactivity_end_seconds and (
+        next_user is None or next_user.start_seconds >= inactivity_end_seconds
+    )
+
+
+def _completion_is_censored(
+    segment: SegmentAnnotationTarget,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    annotation_end_seconds: float,
+) -> bool:
+    next_user = _next_segment_after(segment.end_seconds, user.segment_targets)
+    next_assistant = _next_segment_after(segment.end_seconds, assistant.segment_targets)
+    return (
+        next_user is None
+        and next_assistant is None
+        and annotation_end_seconds < segment.end_seconds + MINIMUM_COMPLETION_INACTIVITY_SECONDS
+    )
+
+
+def _event_anchor_for_frame(
+    frame_index: int,
+    start_seconds: float,
+    end_seconds: float,
+    frame_count: int,
+    anchors: Sequence[InteractionEventAnchor],
+) -> InteractionEventAnchor | None:
+    matching_anchors = tuple(
+        anchor
+        for anchor in anchors
+        if start_seconds <= anchor.time_seconds <= end_seconds
+        and _causal_frame_index(anchor.time_seconds, start_seconds, frame_count) == frame_index
+    )
+    if not matching_anchors:
+        return None
+    if len(matching_anchors) == 1:
+        return matching_anchors[0]
+    source = (
+        CandidateSource.OVERLAP_ONSET
+        if any(anchor.source is CandidateSource.OVERLAP_ONSET for anchor in matching_anchors)
+        else matching_anchors[0].source
+    )
+    return InteractionEventAnchor(
+        time_seconds=min(anchor.time_seconds for anchor in matching_anchors),
+        source=source,
+        distribution=None,
+        mask_reason=SupervisionMaskReason.AMBIGUOUS_ANNOTATION,
+    )
+
+
+def _causal_frame_index(
+    time_seconds: float,
+    start_seconds: float,
+    frame_count: int,
+) -> int:
+    first_frame_time_seconds = start_seconds + FRAME_SECONDS / 2.0
+    unbounded_index = math.ceil((time_seconds - first_frame_time_seconds) / FRAME_SECONDS - 1e-9)
+    return min(frame_count - 1, max(0, unbounded_index))
+
+
+def _interaction_event_supervision(
+    supervised: bool,
+    anchor: InteractionEventAnchor | None,
+) -> tuple[EventTargetDistribution | None, bool, SupervisionMaskReason | None]:
+    if not supervised:
+        return None, False, SupervisionMaskReason.BURN_IN
+    if anchor is None:
+        return None, False, SupervisionMaskReason.NO_EVENT_ANCHOR
+    if anchor.distribution is None:
+        assert anchor.mask_reason is not None
+        return None, False, anchor.mask_reason
+    return anchor.distribution, True, None
 
 
 def _future_activity_targets(
     time_seconds: float,
+    supervised: bool,
     annotation_end_seconds: float,
     user: SpeakerConversationAnnotation,
 ) -> tuple[FutureActivityTarget, ...]:
@@ -595,14 +985,22 @@ def _future_activity_targets(
     for start_milliseconds, end_milliseconds in FUTURE_ACTIVITY_WINDOWS_MILLISECONDS:
         start = time_seconds + start_milliseconds / 1000.0
         end = time_seconds + end_milliseconds / 1000.0
-        valid = end <= annotation_end_seconds
-        active_fraction = _active_fraction(start, end, activity_spans) if valid else 0.0
+        horizon_available = end <= annotation_end_seconds
+        valid = supervised and horizon_available
+        mask_reason: SupervisionMaskReason | None
+        if not supervised:
+            mask_reason = SupervisionMaskReason.BURN_IN
+        elif not horizon_available:
+            mask_reason = SupervisionMaskReason.FUTURE_HORIZON_CENSORED
+        else:
+            mask_reason = None
         targets.append(
             FutureActivityTarget(
                 start_milliseconds=start_milliseconds,
                 end_milliseconds=end_milliseconds,
-                active=active_fraction >= 0.5 if valid else None,
+                occupancy=_active_fraction(start, end, activity_spans) if valid else None,
                 valid=valid,
+                mask_reason=mask_reason,
             )
         )
     return tuple(targets)
@@ -615,10 +1013,21 @@ def _active_fraction(
 ) -> float:
     duration_seconds = end_seconds - start_seconds
     assert duration_seconds > 0.0
-    active_seconds = sum(
-        max(0.0, min(end_seconds, span.end_seconds) - max(start_seconds, span.start_seconds))
+    clipped_intervals = sorted(
+        (
+            max(start_seconds, span.start_seconds),
+            min(end_seconds, span.end_seconds),
+        )
         for span in spans
+        if span.end_seconds > start_seconds and span.start_seconds < end_seconds
     )
+    active_seconds = 0.0
+    merged_end_seconds = start_seconds
+    for interval_start_seconds, interval_end_seconds in clipped_intervals:
+        if interval_end_seconds <= merged_end_seconds:
+            continue
+        active_seconds += interval_end_seconds - max(interval_start_seconds, merged_end_seconds)
+        merged_end_seconds = interval_end_seconds
     return min(1.0, active_seconds / duration_seconds)
 
 

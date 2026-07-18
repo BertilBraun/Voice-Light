@@ -21,20 +21,42 @@ const frameTime = document.querySelector("#frame-time");
 const frameDetails = document.querySelector("#frame-details");
 
 const rowDefinitions = [
-  ["User waveform", "waveform"],
-  ["INPUT · Assistant speaking", "assistant_speaking_input"],
-  ["Aux event candidate mask", "candidate"],
-  ["Primary p(YIELD)", "yield_probability"],
-  ["Primary p(HOLD)", "hold_probability"],
-  ["Candidate event: completion", "event_distribution.turn_completion"],
-  ["Candidate event: pause", "event_distribution.continuation_pause"],
-  ["Candidate event: backchannel", "event_distribution.backchannel"],
-  ["Candidate event: interruption", "event_distribution.interruption"],
-  ["Candidate event: other", "event_distribution.other"],
-  ["Future user activity 0–200 ms", "future_activity.0"],
-  ["Future user activity 200–500 ms", "future_activity.1"],
-  ["Future user activity 500–1000 ms", "future_activity.2"],
-  ["Future user activity 1000–1500 ms", "future_activity.3"],
+  { label: "User waveform", field: "waveform" },
+  { label: "INPUT · Assistant speaking", field: "assistant_speaking_input" },
+  {
+    label: "RUNTIME · p_user_yield",
+    field: "user_yield_target",
+    validField: "user_yield_valid",
+  },
+  {
+    label: "RUNTIME · p_user_floor_take",
+    field: "user_floor_take_target",
+    validField: "user_floor_take_valid",
+  },
+  {
+    label: "AUX event · completion",
+    field: "interaction_event_distribution.turn_completion",
+    validField: "interaction_event_valid",
+  },
+  {
+    label: "AUX event · continuation pause",
+    field: "interaction_event_distribution.continuation_pause",
+    validField: "interaction_event_valid",
+  },
+  {
+    label: "AUX event · non-floor feedback",
+    field: "interaction_event_distribution.non_floor_feedback",
+    validField: "interaction_event_valid",
+  },
+  {
+    label: "AUX event · floor take",
+    field: "interaction_event_distribution.floor_take",
+    validField: "interaction_event_valid",
+  },
+  { label: "AUX activity · 0–200 ms", field: "future_activity.0" },
+  { label: "AUX activity · 200–500 ms", field: "future_activity.1" },
+  { label: "AUX activity · 500–1000 ms", field: "future_activity.2" },
+  { label: "AUX activity · 1000–1500 ms", field: "future_activity.3" },
 ];
 
 let preview = null;
@@ -205,19 +227,20 @@ function renderSummary() {
   const assistantSpeakingFrames = preview.frames.filter(
     (frame) => frame.assistant_speaking_input,
   );
-  const candidateFrames = supervisedFrames.filter((frame) => frame.candidate);
-  const validPrimaryFrames = supervisedFrames.filter((frame) => frame.primary_valid);
-  const ambiguousFrames = validPrimaryFrames.filter(
-    (frame) => frame.yield_probability >= 0.25 && frame.yield_probability <= 0.75,
+  const validYieldFrames = preview.frames.filter((frame) => frame.user_yield_valid);
+  const validFloorTakeFrames = preview.frames.filter(
+    (frame) => frame.user_floor_take_valid,
   );
+  const eventFrames = preview.frames.filter((frame) => frame.interaction_event_valid);
   const meanYield =
-    validPrimaryFrames.length === 0
+    validYieldFrames.length === 0
       ? null
-      : validPrimaryFrames.reduce((total, frame) => total + frame.yield_probability, 0) /
-        validPrimaryFrames.length;
-  const missingReliability = validPrimaryFrames.filter(
-    (frame) => frame.primary_reliability === null,
+      : validYieldFrames.reduce((total, frame) => total + frame.user_yield_target, 0) /
+        validYieldFrames.length;
+  const floorTakePositives = validFloorTakeFrames.filter(
+    (frame) => frame.user_floor_take_target >= 0.5,
   ).length;
+  const eventCounts = interactionEventCounts(eventFrames);
   summary.replaceChildren(
     ...definitionRows([
       ["Overall quality", optionalScore(preview.quality.total_score)],
@@ -235,19 +258,54 @@ function renderSummary() {
       ["Frame interval", `${Math.round(preview.frame_seconds * 1000)} ms`],
       ["Supervised frames", String(supervisedFrames.length)],
       ["Assistant-speaking input", percentage(assistantSpeakingFrames.length, preview.frames.length)],
-      ["Aux event candidate frames", String(candidateFrames.length)],
-      ["Valid primary targets", String(validPrimaryFrames.length)],
+      ["Valid yield frames", String(validYieldFrames.length)],
       ["Mean p(YIELD)", meanYield === null ? "—" : meanYield.toFixed(3)],
-      ["Ambiguous primary frames", String(ambiguousFrames.length)],
-      ["Reliability unmeasured", String(missingReliability)],
+      ["Valid floor-take frames", String(validFloorTakeFrames.length)],
+      ["Floor-take positive frames", String(floorTakePositives)],
+      ["Valid event anchors", String(eventFrames.length)],
+      ["Completion / continuation", `${eventCounts.turnCompletion} / ${eventCounts.continuationPause}`],
+      ["Feedback / floor take", `${eventCounts.nonFloorFeedback} / ${eventCounts.floorTake}`],
     ]),
   );
+}
+
+function interactionEventCounts(frames) {
+  const counts = {
+    turnCompletion: 0,
+    continuationPause: 0,
+    nonFloorFeedback: 0,
+    floorTake: 0,
+  };
+  frames.forEach((frame) => {
+    const distribution = frame.interaction_event_distribution;
+    if (distribution === null) {
+      return;
+    }
+    const maximum = Math.max(
+      distribution.turn_completion,
+      distribution.continuation_pause,
+      distribution.non_floor_feedback,
+      distribution.floor_take,
+    );
+    if (distribution.turn_completion === maximum) {
+      counts.turnCompletion += 1;
+    } else if (distribution.continuation_pause === maximum) {
+      counts.continuationPause += 1;
+    } else if (distribution.non_floor_feedback === maximum) {
+      counts.nonFloorFeedback += 1;
+    } else {
+      counts.floorTake += 1;
+    }
+  });
+  return counts;
 }
 
 function drawTimeline() {
   const devicePixelRatio = window.devicePixelRatio || 1;
   const displayWidth = Math.max(980, timeline.clientWidth);
-  const displayHeight = 660;
+  const rowHeight = 36;
+  const rowGap = 6;
+  const displayHeight = 58 + rowDefinitions.length * (rowHeight + rowGap);
   timeline.width = Math.round(displayWidth * devicePixelRatio);
   timeline.height = Math.round(displayHeight * devicePixelRatio);
   const context = timeline.getContext("2d");
@@ -257,38 +315,50 @@ function drawTimeline() {
     return;
   }
 
-  const left = 190;
+  const left = 245;
   const right = 16;
   const top = 36;
-  const rowHeight = 36;
-  const rowGap = 6;
   const plotWidth = displayWidth - left - right;
   const burnRatio = (preview.burn_in_end_seconds - preview.start_seconds) / preview.input_duration_seconds;
-  context.fillStyle = "#eef1f2";
-  context.fillRect(left, top - 16, plotWidth * burnRatio, displayHeight - top + 2);
-  context.fillStyle = "#68767b";
-  context.font = "11px sans-serif";
-  context.fillText("4 s burn-in · loss masked", left + 8, top - 5);
 
-  rowDefinitions.forEach(([label, field], rowIndex) => {
+  rowDefinitions.forEach(({ label, field, validField }, rowIndex) => {
     const rowTop = top + rowIndex * (rowHeight + rowGap);
     context.fillStyle = rowIndex % 2 === 0 ? "#f7f9f8" : "#f1f4f3";
     context.fillRect(left, rowTop, plotWidth, rowHeight);
     context.fillStyle = "#48575c";
     context.font =
-      field === "yield_probability" || field === "assistant_speaking_input"
+      field === "user_yield_target" ||
+      field === "user_floor_take_target" ||
+      field === "assistant_speaking_input"
         ? "bold 12px sans-serif"
         : "12px sans-serif";
     context.fillText(label, 8, rowTop + 23);
     if (field === "waveform") {
       drawWaveform(context, left, rowTop, plotWidth, rowHeight);
     } else {
-      drawTargetFrames(context, field, left, rowTop, plotWidth, rowHeight);
+      drawTargetFrames(context, field, validField, left, rowTop, plotWidth, rowHeight);
     }
   });
 
+  drawBurnInOverlay(context, left, top, plotWidth, displayHeight, burnRatio);
   drawTimeAxis(context, left, plotWidth, displayHeight);
   drawCursor(context, left, plotWidth, top, displayHeight);
+}
+
+function drawBurnInOverlay(context, left, top, width, height, burnRatio) {
+  const burnWidth = width * burnRatio;
+  context.fillStyle = "rgba(117, 131, 136, 0.13)";
+  context.fillRect(left, top - 16, burnWidth, height - top + 2);
+  context.strokeStyle = "#879397";
+  context.setLineDash([3, 3]);
+  context.beginPath();
+  context.moveTo(left + burnWidth, top - 16);
+  context.lineTo(left + burnWidth, height - 18);
+  context.stroke();
+  context.setLineDash([]);
+  context.fillStyle = "#5d6b70";
+  context.font = "11px sans-serif";
+  context.fillText("4 s burn-in · all losses masked", left + 8, top - 5);
 }
 
 function drawWaveform(context, left, top, width, height) {
@@ -305,10 +375,15 @@ function drawWaveform(context, left, top, width, height) {
   });
 }
 
-function drawTargetFrames(context, field, left, top, width, height) {
+function drawTargetFrames(context, field, validField, left, top, width, height) {
   const frameWidth = width / preview.frames.length;
   preview.frames.forEach((frame, index) => {
-    const value = targetValue(frame, field);
+    const target = targetValue(frame, field, validField);
+    if (!target.valid) {
+      drawMaskedFrame(context, left + index * frameWidth, top, frameWidth, height);
+      return;
+    }
+    const value = target.value;
     if (value === null) {
       return;
     }
@@ -327,18 +402,38 @@ function drawTargetFrames(context, field, left, top, width, height) {
   });
 }
 
-function targetValue(frame, field) {
-  if (field === "candidate") {
-    return frame.candidate;
+function drawMaskedFrame(context, left, top, width, height) {
+  context.fillStyle = "#e2e7e5";
+  context.fillRect(left, top + 3, Math.max(1, width + 0.2), height - 6);
+  if (width < 2.5) {
+    return;
   }
-  if (field.startsWith("event_distribution.")) {
-    return frame.event_distribution?.[field.split(".")[1]] ?? null;
-  }
+  context.strokeStyle = "#c5cecb";
+  context.lineWidth = 0.6;
+  context.beginPath();
+  context.moveTo(left, top + height - 3);
+  context.lineTo(left + Math.max(1, width), top + 3);
+  context.stroke();
+}
+
+function targetValue(frame, field, validField) {
   if (field.startsWith("future_activity.")) {
     const target = frame.future_activity[Number(field.split(".")[1])];
-    return target?.valid === true ? target.active : null;
+    return {
+      value: target?.occupancy ?? null,
+      valid: target?.valid === true,
+    };
   }
-  return frame[field] ?? null;
+  if (field.startsWith("interaction_event_distribution.")) {
+    return {
+      value: frame.interaction_event_distribution?.[field.split(".")[1]] ?? null,
+      valid: frame.interaction_event_valid,
+    };
+  }
+  return {
+    value: frame[field] ?? null,
+    valid: validField === undefined || frame[validField] === true,
+  };
 }
 
 function drawTimeAxis(context, left, width, height) {
@@ -384,19 +479,27 @@ function renderSelectedFrame(frame) {
       ["Candidate", booleanLabel(frame.candidate)],
       ["Candidate source", frame.candidate_source ?? "—"],
       ["Since user speech offset", optionalSeconds(frame.seconds_since_speech_offset)],
-      ["Primary target p(YIELD)", optionalProbability(frame.yield_probability)],
-      ["Primary target p(HOLD)", optionalProbability(frame.hold_probability)],
-      ["Primary target valid", booleanLabel(frame.primary_valid)],
-      ["Primary reliability", optionalProbability(frame.primary_reliability)],
-      ["Reliability source", frame.primary_reliability_source ?? "—"],
+      ["p_user_yield target", maskedProbability(
+        frame.user_yield_target,
+        frame.user_yield_valid,
+        frame.user_yield_mask_reason,
+      )],
+      ["p_user_floor_take target", maskedProbability(
+        frame.user_floor_take_target,
+        frame.user_floor_take_valid,
+        frame.user_floor_take_mask_reason,
+      )],
+      ["Event target mask", maskLabel(
+        frame.interaction_event_valid,
+        frame.interaction_event_mask_reason,
+      )],
       ["Event: completion", eventProbability(frame, "turn_completion")],
       ["Event: continuation pause", eventProbability(frame, "continuation_pause")],
-      ["Event: backchannel", eventProbability(frame, "backchannel")],
-      ["Event: interruption", eventProbability(frame, "interruption")],
-      ["Event: other", eventProbability(frame, "other")],
+      ["Event: non-floor feedback", eventProbability(frame, "non_floor_feedback")],
+      ["Event: floor take", eventProbability(frame, "floor_take")],
       ...frame.future_activity.map((target) => [
         `Future user activity ${target.start_milliseconds}–${target.end_milliseconds} ms`,
-        target.valid ? booleanLabel(target.active) : "MASKED",
+        maskedProbability(target.occupancy, target.valid, target.mask_reason),
       ]),
     ]),
   );
@@ -412,6 +515,8 @@ function definitionRows(entries) {
       definition.className = "value-positive";
     } else if (value === "NO" || value === "LISTEN") {
       definition.className = "value-negative";
+    } else if (value.startsWith("MASKED")) {
+      definition.className = "value-masked";
     }
     return [term, definition];
   });
@@ -422,7 +527,7 @@ function selectFrameAtEvent(event) {
     return;
   }
   const rect = timeline.getBoundingClientRect();
-  const left = 190;
+  const left = 245;
   const right = 16;
   const plotWidth = rect.width - left - right;
   const x = event.clientX - rect.left;
@@ -547,6 +652,21 @@ function optionalProbability(value) {
   return value === null ? "UNMEASURED" : value.toFixed(3);
 }
 
+function maskedProbability(value, valid, maskReason) {
+  return valid ? optionalProbability(value) : `MASKED · ${prettyMaskReason(maskReason)}`;
+}
+
+function maskLabel(valid, maskReason) {
+  return valid ? "VALID" : `MASKED · ${prettyMaskReason(maskReason)}`;
+}
+
+function prettyMaskReason(maskReason) {
+  if (maskReason === null) {
+    return "unspecified";
+  }
+  return maskReason.replaceAll("_", " ");
+}
+
 function optionalScore(value) {
   return value === null ? "—" : value.toFixed(3);
 }
@@ -564,7 +684,10 @@ function optionalSeconds(value) {
 }
 
 function eventProbability(frame, field) {
-  return frame.event_distribution === null ? "—" : frame.event_distribution[field].toFixed(3);
+  if (!frame.interaction_event_valid || frame.interaction_event_distribution === null) {
+    return "—";
+  }
+  return frame.interaction_event_distribution[field].toFixed(3);
 }
 
 function percentage(count, total) {

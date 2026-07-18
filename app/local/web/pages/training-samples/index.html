@@ -12,7 +12,7 @@
         <div>
           <a class="back-link" href="/">← Voice Light</a>
           <h1>Training sample lab</h1>
-          <p>Inspect the exact 20-second crop and soft candidate targets before dataset generation.</p>
+          <p>Inspect the exact 20-second crop, target values, and loss masks before training.</p>
         </div>
         <div id="status" class="status">Loading annotated samples…</div>
       </header>
@@ -80,14 +80,14 @@
         <div class="timeline-header">
           <div>
             <h2>Frame preview</h2>
-            <p>Click the timeline to seek. Future activity means future selected-user speech.</p>
+            <p>Click or scrub to inspect the target and mask assigned to an individual frame.</p>
           </div>
           <div class="legend">
             <span><i class="burn"></i>Burn-in</span>
             <span><i class="condition"></i>Known assistant-state input</span>
-            <span><i class="positive"></i>Hard positive</span>
-            <span><i class="probability"></i>Higher probability</span>
-            <span><i class="masked"></i>Masked / unavailable</span>
+            <span><i class="positive"></i>Valid target</span>
+            <span><i class="probability"></i>Higher target value</span>
+            <span><i class="masked"></i>Loss masked</span>
           </div>
         </div>
         <div class="canvas-shell">
@@ -108,23 +108,22 @@
       </section>
 
       <section class="panel info-card">
-        <h2>Future user activity</h2>
+        <h2>What this crop trains</h2>
         <p>
-          This auxiliary target is calculated on every frame, not only candidate frames. Each bin is
-          active when annotated user speech or a user backchannel covers at least half of its future
-          time window; bins beyond the annotated recording boundary are masked.
+          <code>p_user_yield</code> and <code>p_user_floor_take</code> are the two runtime outputs.
+          Yield is supervised only where the user-floor context is interpretable. Floor-take is
+          supervised only during the first 500 ms of a selected-user overlap with substantive
+          assistant speech. Every other frame is visibly masked rather than treated as a negative.
         </p>
       </section>
 
       <section class="panel warning-card">
-        <h2>Target probability and reliability are separate</h2>
+        <h2>Auxiliary supervision</h2>
         <p>
-          HOLD/YIELD is dense on every frame: ordinary user speech is HOLD, ordinary non-user time is
-          YIELD, backchannels remain YIELD, and gaps between user segments use their continuous
-          continuation belief. The candidate mask applies only to the event-class auxiliary target.
-          <code>primary_reliability</code> remains an independent weight and is currently
-          <strong>unmeasured</strong>. Assistant playback is a separate known conditioning input, not a
-          target and not frozen-encoder audio.
+          Future activity is a soft occupancy fraction for four future horizons, not a hard
+          speech/no-speech label. The interaction event is one categorical four-class target placed
+          on one causal anchor frame. Ambiguous boundaries, censored horizons, ineligible contexts,
+          padding, and the four-second recurrent burn-in contribute no loss.
         </p>
       </section>
     </main>

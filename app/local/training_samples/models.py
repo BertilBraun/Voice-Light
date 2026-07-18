@@ -23,12 +23,21 @@ class PreviewEventType(StrEnum):
 class CandidateSource(StrEnum):
     CONNECTION = "connection"
     SEGMENT_END = "segment_end"
+    OVERLAP_ONSET = "overlap_onset"
     CENSORED = "censored"
 
 
-class ReliabilitySource(StrEnum):
-    ANNOTATED = "annotated"
-    UNMEASURED = "unmeasured"
+class SupervisionMaskReason(StrEnum):
+    BURN_IN = "Burn-in recurrent-state warm-up"
+    ASSISTANT_HOLDS_FLOOR = "Assistant holds the floor"
+    ASSISTANT_NOT_SPEAKING = "Assistant is not substantively speaking"
+    BEFORE_USER_TURN = "No target-user turn has begun"
+    AMBIGUOUS_ANNOTATION = "Annotation confidence is ambiguous"
+    CENSORED_ANNOTATION = "Required future annotation is unavailable"
+    OUTSIDE_YIELD_WINDOW = "Outside an eligible user-yield region"
+    OUTSIDE_OVERLAP_ONSET = "Outside the first 500 ms of an overlap onset"
+    NO_EVENT_ANCHOR = "No interaction event is anchored to this frame"
+    FUTURE_HORIZON_CENSORED = "Future activity horizon exceeds annotated audio"
 
 
 class TrainingSampleSelectionMode(StrEnum):
@@ -39,16 +48,16 @@ class TrainingSampleSelectionMode(StrEnum):
 class EventTargetDistribution(FrozenBaseModel):
     turn_completion: float
     continuation_pause: float
-    backchannel: float
-    interruption: float
-    other: float
+    non_floor_feedback: float
+    floor_take: float
 
 
 class FutureActivityTarget(FrozenBaseModel):
     start_milliseconds: int
     end_milliseconds: int
-    active: bool | None
+    occupancy: float | None
     valid: bool
+    mask_reason: SupervisionMaskReason | None
 
 
 class PreviewWaveformPoint(FrozenBaseModel):
@@ -79,15 +88,15 @@ class TrainingFramePreview(FrozenBaseModel):
     candidate: bool
     candidate_source: CandidateSource | None
     seconds_since_speech_offset: float | None
-    yield_probability: float | None
-    hold_probability: float | None
-    primary_reliability: float | None
-    primary_reliability_source: ReliabilitySource | None
-    primary_valid: bool
-    event_distribution: EventTargetDistribution | None
-    event_reliability: float | None
-    event_reliability_source: ReliabilitySource | None
-    event_valid: bool
+    user_yield_target: float | None
+    user_yield_valid: bool
+    user_yield_mask_reason: SupervisionMaskReason | None
+    user_floor_take_target: float | None
+    user_floor_take_valid: bool
+    user_floor_take_mask_reason: SupervisionMaskReason | None
+    interaction_event_distribution: EventTargetDistribution | None
+    interaction_event_valid: bool
+    interaction_event_mask_reason: SupervisionMaskReason | None
     future_activity: tuple[FutureActivityTarget, ...]
 
 
