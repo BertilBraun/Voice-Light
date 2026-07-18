@@ -10,6 +10,7 @@ from app.shared.asr import TimestampedWord
 
 CANARY_CHUNK_DURATION_SECONDS = 30.0
 CANARY_CHUNK_OVERLAP_SECONDS = 1.0
+CANARY_INFERENCE_BATCH_SIZE = 4
 PARAKEET_CHUNK_DURATION_SECONDS = 30.0
 PARAKEET_CHUNK_OVERLAP_SECONDS = 1.0
 PARAKEET_INFERENCE_BATCH_SIZE = 8
@@ -72,6 +73,18 @@ def canary_audio_chunks(
             break
         start_seconds += step_duration_seconds
     return tuple(chunks)
+
+
+def canary_chunk_batches(
+    chunks: tuple[CanaryAudioChunk, ...],
+    batch_size: int = CANARY_INFERENCE_BATCH_SIZE,
+) -> tuple[tuple[CanaryAudioChunk, ...], ...]:
+    if batch_size <= 0:
+        raise ValueError("Canary inference batch size must be positive.")
+    return tuple(
+        chunks[start_index : start_index + batch_size]
+        for start_index in range(0, len(chunks), batch_size)
+    )
 
 
 def global_canary_chunk_words(

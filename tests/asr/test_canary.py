@@ -5,8 +5,10 @@ import pytest
 from app.compute.asr.chunking import (
     CANARY_CHUNK_DURATION_SECONDS,
     CANARY_CHUNK_OVERLAP_SECONDS,
+    CANARY_INFERENCE_BATCH_SIZE,
     CanaryAudioChunk,
     canary_audio_chunks,
+    canary_chunk_batches,
     global_canary_chunk_words,
 )
 from app.shared.asr import TimestampedWord
@@ -72,6 +74,25 @@ def test_canary_audio_chunks_do_not_add_empty_exact_boundary_chunk() -> None:
             is_final=True,
         ),
     )
+
+
+def test_canary_chunks_are_grouped_into_bounded_inference_batches() -> None:
+    chunks = canary_audio_chunks(audio_duration_seconds=300.0)
+
+    batches = canary_chunk_batches(chunks)
+
+    assert len(batches) == 3
+    assert len(batches[0]) == CANARY_INFERENCE_BATCH_SIZE
+    assert len(batches[1]) == CANARY_INFERENCE_BATCH_SIZE
+    assert len(batches[2]) == len(chunks) - 2 * CANARY_INFERENCE_BATCH_SIZE
+    assert tuple(chunk for batch in batches for chunk in batch) == chunks
+
+
+def test_canary_chunk_batches_reject_non_positive_batch_size() -> None:
+    chunks = canary_audio_chunks(audio_duration_seconds=30.0)
+
+    with pytest.raises(ValueError):
+        canary_chunk_batches(chunks, batch_size=0)
 
 
 @pytest.mark.parametrize(
