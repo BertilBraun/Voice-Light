@@ -107,7 +107,7 @@ $sshArguments = @(
 $tunnelProcess = Start-Process -FilePath 'ssh.exe' -ArgumentList $sshArguments -WindowStyle Hidden -PassThru
 Set-Content -LiteralPath $tunnelPidPath -Value $tunnelProcess.Id
 
-for ($attempt = 1; $attempt -le 120; $attempt++) {
+for ($attempt = 1; $attempt -le 600; $attempt++) {
     if ($tunnelProcess.HasExited) {
         throw "The SSH tunnel exited with code $($tunnelProcess.ExitCode)."
     }

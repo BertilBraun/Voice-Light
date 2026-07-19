@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import signal
 import subprocess
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -71,7 +74,8 @@ QWEN_PYTHON_PATH: Final = REPOSITORY_ROOT / "deployment/compute/vllm/.venv/bin/p
 QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS: Final = 10.0
 QWEN_CANCELLATION_TIMEOUT_SECONDS: Final = 2.0
 QWEN_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
-QWEN_WORKER_START_TIMEOUT_SECONDS: Final = 180.0
+QWEN_WORKER_START_TIMEOUT_SECONDS: Final = 360.0
+QWEN_PROCESS_GROUP_STOP_POLL_SECONDS: Final = 0.05
 
 
 class QwenWorker(Protocol):
@@ -134,6 +138,7 @@ class QwenWorkerProcess:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            start_new_session=True,
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -177,14 +182,27 @@ class QwenWorkerProcess:
         self._close_streams()
 
     def terminate(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=QWEN_WORKER_STOP_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=QWEN_WORKER_STOP_TIMEOUT_SECONDS)
+        self._signal_process_group(signal.SIGTERM)
+        if not self._wait_for_process_group_exit(QWEN_WORKER_STOP_TIMEOUT_SECONDS):
+            self._signal_process_group(signal.SIGKILL)
+        self.process.wait(timeout=QWEN_WORKER_STOP_TIMEOUT_SECONDS)
         self._close_streams()
+
+    def _signal_process_group(self, termination_signal: signal.Signals) -> None:
+        try:
+            os.killpg(self.process.pid, termination_signal)
+        except ProcessLookupError:
+            pass
+
+    def _wait_for_process_group_exit(self, timeout_seconds: float) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(self.process.pid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(QWEN_PROCESS_GROUP_STOP_POLL_SECONDS)
+        return False
 
     def _close_streams(self) -> None:
         self.input_stream.close()

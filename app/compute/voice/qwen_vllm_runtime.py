@@ -42,7 +42,7 @@ class QwenVllmRuntime:
             max_model_len=configuration.maximum_model_length,
             gpu_memory_utilization=configuration.gpu_memory_utilization,
             max_num_seqs=1,
-            enable_chunked_prefill=False,
+            enable_chunked_prefill=True,
             enable_prefix_caching=True,
             generation_config="vllm",
             disable_log_stats=True,
