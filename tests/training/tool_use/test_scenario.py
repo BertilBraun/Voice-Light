@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+import pytest
+
 from app.training.tool_use.scenario import (
     AssistantResponseMode,
     PlannedOutcome,
@@ -10,6 +12,7 @@ from app.training.tool_use.scenario import (
     ScenarioSpec,
     SearchFlow,
     SegmentBucket,
+    TeacherLedConversationKind,
     UtteranceForm,
     sample_scenarios,
 )
@@ -36,17 +39,37 @@ def test_scenario_sampling_is_reproducible_and_group_split_is_stable() -> None:
     )
 
 
-def test_teacher_led_profile_supplies_only_a_loose_four_turn_brief() -> None:
+@pytest.mark.parametrize(
+    ("profile", "expected_family", "expected_kind"),
+    (
+        (
+            ScenarioSamplingProfile.TEACHER_LED_TOOL_USE,
+            "teacher_led_tool_use",
+            TeacherLedConversationKind.TOOL_RICH,
+        ),
+        (
+            ScenarioSamplingProfile.TEACHER_LED_NO_TOOL,
+            "teacher_led_no_tool",
+            TeacherLedConversationKind.NO_TOOL,
+        ),
+    ),
+)
+def test_teacher_led_profile_supplies_only_a_loose_four_turn_brief(
+    profile: ScenarioSamplingProfile,
+    expected_family: str,
+    expected_kind: TeacherLedConversationKind,
+) -> None:
     scenarios = sample_scenarios(
         count=24,
         random_seed=19,
-        profile=ScenarioSamplingProfile.TEACHER_LED_TOOL_USE,
+        profile=profile,
     )
 
     assert all(
         scenario.generation_mode is ScenarioGenerationMode.TEACHER_LED for scenario in scenarios
     )
-    assert all(scenario.family == "teacher_led_tool_use" for scenario in scenarios)
+    assert all(scenario.family == expected_family for scenario in scenarios)
+    assert all(scenario.teacher_led_kind is expected_kind for scenario in scenarios)
     assert all(len(scenario.turns) == 4 for scenario in scenarios)
     assert all(not turn.tool_steps for scenario in scenarios for turn in scenario.turns)
     assert len({scenario.topic for scenario in scenarios}) >= 8

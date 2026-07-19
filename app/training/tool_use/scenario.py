@@ -61,11 +61,17 @@ class ScenarioSamplingProfile(StrEnum):
     BUCKET_CALIBRATION = "bucket_calibration"
     SEARCH_CALIBRATION = "search_calibration"
     TEACHER_LED_TOOL_USE = "teacher_led_tool_use"
+    TEACHER_LED_NO_TOOL = "teacher_led_no_tool"
 
 
 class ScenarioGenerationMode(StrEnum):
     PLANNED = "planned"
     TEACHER_LED = "teacher_led"
+
+
+class TeacherLedConversationKind(StrEnum):
+    TOOL_RICH = "tool_rich"
+    NO_TOOL = "no_tool"
 
 
 class SegmentBucket(StrEnum):
@@ -110,17 +116,22 @@ class ScenarioSpec(ToolUseBaseModel):
     split: DatasetSplit
     leakage_group_id: str
     generation_mode: ScenarioGenerationMode = ScenarioGenerationMode.PLANNED
+    teacher_led_kind: TeacherLedConversationKind | None = None
 
     @model_validator(mode="after")
     def validate_turns(self) -> ScenarioSpec:
         if not self.turns:
             raise ValueError("A scenario must contain at least one user turn.")
         if self.generation_mode is ScenarioGenerationMode.TEACHER_LED:
+            if self.teacher_led_kind is None:
+                raise ValueError("Teacher-led scenarios require a conversation kind.")
             if any(turn.tool_steps for turn in self.turns):
                 raise ValueError("Teacher-led scenarios cannot prescribe tool steps.")
             if any(turn.response_mode is not AssistantResponseMode.ANSWER for turn in self.turns):
                 raise ValueError("Teacher-led scenarios cannot prescribe response modes.")
             return self
+        if self.teacher_led_kind is not None:
+            raise ValueError("Planned scenarios cannot define a teacher-led conversation kind.")
         if any(len(turn.tool_steps) > 3 for turn in self.turns):
             raise ValueError("A scenario turn may contain at most three sequential tool calls.")
         for turn_index, turn in enumerate(self.turns):
@@ -387,6 +398,57 @@ TEACHER_LED_CONVERSATION_BRIEFS = (
     ),
 )
 
+TEACHER_LED_NO_TOOL_BRIEFS = (
+    (
+        "Help the user rewrite a short message they provide. Let later turns adjust its warmth, "
+        "length, directness, or wording without introducing external facts."
+    ),
+    (
+        "Talk through a low-stakes choice using only the tradeoffs and preferences the user "
+        "provides. Let their priorities shift naturally across later turns."
+    ),
+    (
+        "Brainstorm a meal or snack from ingredients and constraints supplied by the user. Let "
+        "later turns remove an ingredient, change the mood, or simplify the idea."
+    ),
+    (
+        "Help organize a small personal task using only details the user supplies. Let later turns "
+        "add a constraint, reject a suggestion, or ask for a smaller first step."
+    ),
+    (
+        "Explain or rephrase an idea the user describes, then adapt the explanation after a "
+        "natural reaction or request for a different level of detail."
+    ),
+    (
+        "Summarize or reshape a short piece of text supplied in the conversation. Let later turns "
+        "change the audience, tone, or emphasis."
+    ),
+    (
+        "Brainstorm names, titles, or phrasing from a theme supplied by the user, then refine the "
+        "options through reactions and narrower preferences."
+    ),
+    (
+        "Help the user prepare for an ordinary conversation by drafting what they might say. Let "
+        "later turns make it more casual, firmer, kinder, or shorter."
+    ),
+    (
+        "Recommend between fictional or fully described options using only the user's stated "
+        "preferences. Let later turns reveal a new preference and revise the recommendation."
+    ),
+    (
+        "Help create a simple checklist from conditions and goals the user states explicitly. Let "
+        "later turns trim, reorder, or personalize it."
+    ),
+    (
+        "Continue a casual reflective conversation in which the user wants help thinking through "
+        "a minor frustration. Stay practical and use only what the user says."
+    ),
+    (
+        "Help improve a small creative idea supplied by the user. Let the user react, correct the "
+        "direction, and ask for one or two refinements."
+    ),
+)
+
 SPEECH_STYLE_WEIGHTS: tuple[tuple[SpeechStyle, float], ...] = (
     (SpeechStyle.CLEAN, 0.25),
     (SpeechStyle.CASUAL, 0.35),
@@ -477,6 +539,16 @@ def sample_scenarios(
                 )
             )
             continue
+        if profile is ScenarioSamplingProfile.TEACHER_LED_NO_TOOL:
+            scenarios.append(
+                _sample_teacher_led_no_tool_scenario(
+                    index=index,
+                    random_seed=random_seed,
+                    scenario_seed=scenario_seed,
+                    generator=scenario_generator,
+                )
+            )
+            continue
         template = _sample_template(scenario_generator)
         length_band = _sample_length_band(template, scenario_generator)
         speech_style = _weighted_choice(scenario_generator, SPEECH_STYLE_WEIGHTS)
@@ -536,6 +608,45 @@ def _sample_teacher_led_tool_use_scenario(
         split=_split_for_group(leakage_group_id),
         leakage_group_id=leakage_group_id,
         generation_mode=ScenarioGenerationMode.TEACHER_LED,
+        teacher_led_kind=TeacherLedConversationKind.TOOL_RICH,
+    )
+
+
+def _sample_teacher_led_no_tool_scenario(
+    index: int,
+    random_seed: int,
+    scenario_seed: int,
+    generator: random.Random,
+) -> ScenarioSpec:
+    brief = generator.choice(TEACHER_LED_NO_TOOL_BRIEFS)
+    speech_style = _weighted_choice(generator, SPEECH_STYLE_WEIGHTS)
+    leakage_group_id = (
+        "teacher-led-no-tool-" + hashlib.sha256(brief.encode("utf-8")).hexdigest()[:16]
+    )
+    turns = tuple(
+        AssistantTurnPlan(
+            user_instruction=(
+                "Continue the same coherent conversation naturally using only information already "
+                "supplied in the conversation."
+            ),
+            tool_steps=(),
+            follow_up_kind=FollowUpKind.NONE,
+            utterance_form=UtteranceForm.CONTEXT_FIRST,
+        )
+        for _ in range(4)
+    )
+    return ScenarioSpec(
+        scenario_id=f"scenario-{random_seed}-{index:06d}",
+        random_seed=scenario_seed,
+        family="teacher_led_no_tool",
+        topic=brief,
+        length_band=LengthBand.LONG,
+        speech_style=speech_style,
+        turns=turns,
+        split=_split_for_group(leakage_group_id),
+        leakage_group_id=leakage_group_id,
+        generation_mode=ScenarioGenerationMode.TEACHER_LED,
+        teacher_led_kind=TeacherLedConversationKind.NO_TOOL,
     )
 
 

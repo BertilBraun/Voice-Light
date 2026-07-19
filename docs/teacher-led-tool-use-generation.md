@@ -18,6 +18,12 @@ make as many dependent calls as the request naturally requires. The controller r
 only if it reaches eight consecutive calls without a final response; this is a runaway guard, not
 a limit disclosed to or optimized by the teacher.
 
+The complementary `teacher_led_no_tool` profile uses the same four-turn teacher-led rollout but
+supplies loose briefs for rewriting, preference-based decisions, brainstorming, explanation, and
+planning from user-provided context. Runtime tools remain available, but the conversation is
+designed to remain answerable without them. Keeping this as a separate profile makes the tool-rich
+and no-tool proportions explicit when assembling a training corpus.
+
 Semantic audits remain optional. The default experiment uses only structured-output parsing,
 canonical schema validation, safe calculation, bounded turn length, and causal call/result order.
 Generated metadata describes the calls that actually occurred rather than a predetermined plan.
@@ -52,3 +58,13 @@ uv run python -m app.training.tool_use.cli generate `
 
 Do not enable `--semantic-audits` for the first sample experiment. Review the raw records so the
 teacher's unaided strengths and failure modes remain visible.
+
+Create a no-tool comparison set by changing the output directory and profile:
+
+```powershell
+uv run python -m app.training.tool_use.cli plan `
+  data\tool-use\teacher-led-no-tool-smoke\scenarios.jsonl `
+  --count 20 `
+  --seed 20260720 `
+  --profile teacher_led_no_tool
+```

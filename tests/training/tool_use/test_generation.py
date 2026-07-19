@@ -12,6 +12,10 @@ from app.training.tool_use.generation import (
     generate_dataset,
     generate_record,
 )
+from app.training.tool_use.prompts import (
+    teacher_led_assistant_step_messages,
+    teacher_led_user_turn_messages,
+)
 from app.training.tool_use.protocol import (
     AssistantGroundingFinding,
     AssistantStepEnvelope,
@@ -42,6 +46,7 @@ from app.training.tool_use.scenario import (
     PlannedToolStep,
     ScenarioGenerationMode,
     ScenarioSpec,
+    TeacherLedConversationKind,
     ToolName,
     UtteranceForm,
 )
@@ -164,6 +169,7 @@ def teacher_led_scenario() -> ScenarioSpec:
         split=DatasetSplit.TRAIN,
         leakage_group_id="teacher-led-city-population",
         generation_mode=ScenarioGenerationMode.TEACHER_LED,
+        teacher_led_kind=TeacherLedConversationKind.TOOL_RICH,
     )
 
 
@@ -193,6 +199,30 @@ def clarified_search_scenario() -> ScenarioSpec:
         split=DatasetSplit.TRAIN,
         leakage_group_id="clarified-search-test",
     )
+
+
+def test_teacher_led_no_tool_prompts_keep_requests_answerable_from_context() -> None:
+    scenario = teacher_led_scenario().model_copy(
+        update={
+            "family": "teacher_led_no_tool",
+            "teacher_led_kind": TeacherLedConversationKind.NO_TOOL,
+        }
+    )
+
+    first_user_prompt = teacher_led_user_turn_messages(
+        scenario=scenario,
+        turn_index=0,
+        public_history=(),
+    )[1].content
+    assistant_prompt = teacher_led_assistant_step_messages(
+        scenario=scenario,
+        public_history=(),
+    )[1].content
+
+    assert "Supply every detail" in first_user_prompt
+    assert "Do not request current time" in first_user_prompt
+    assert "Normally give a final spoken response" in assistant_prompt
+    assert "Do not call a tool merely because one is available" in assistant_prompt
 
 
 def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:

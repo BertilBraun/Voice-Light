@@ -9,6 +9,7 @@ from app.training.tool_use.scenario import (
     AssistantTurnPlan,
     ScenarioGenerationMode,
     ScenarioSpec,
+    TeacherLedConversationKind,
     ToolName,
     UtteranceForm,
 )
@@ -19,7 +20,7 @@ from app.training.tool_use.schema import (
     UserMessage,
 )
 
-PROMPT_REVISION = "teacher-led-conversations-v20"
+PROMPT_REVISION = "teacher-led-conversations-v21"
 
 TEACHER_SYSTEM_PROMPT = """\
 You create natural English voice-assistant training examples.
@@ -280,19 +281,11 @@ def teacher_led_user_turn_messages(
 ) -> tuple[TeacherChatMessage, ...]:
     turn_number = turn_index + 1
     total_turns = len(scenario.turns)
-    if turn_index == 0:
-        turn_guidance = (
-            "Open with a concrete, casual reason for asking and a clear request. The request "
-            "should naturally need current or externally verified information."
-        )
-    else:
-        turn_guidance = (
-            "Continue as the same user in direct response to the assistant's latest audible "
-            "answer. Follow up, compare, narrow, correct, or refer back elliptically. Preserve "
-            "what the conversation was comparing even when the user does not repeat the metric. "
-            "Do not change to an unrelated topic. If the assistant asked whether it should look "
-            "something up and the user wants that, answer clearly and continue the request."
-        )
+    turn_guidance = _teacher_led_user_turn_guidance(
+        conversation_kind=scenario.teacher_led_kind,
+        turn_index=turn_index,
+    )
+    conversation_guidance = _teacher_led_conversation_guidance(scenario.teacher_led_kind)
     request = f"""\
 Create only the next user utterance.
 
@@ -303,9 +296,7 @@ This is user turn {turn_number} of {total_turns}.
 Requested speech style: {scenario.speech_style.value}
 {turn_guidance}
 
-Across the whole conversation, allow several factual lookups and, when natural, one dependent
-comparison or calculation. Do not force a lookup into every turn. Do not supply the external facts
-the user is asking for.
+{conversation_guidance}
 
 Audible conversation so far:
 {_audible_history_json(public_history)}
@@ -320,6 +311,7 @@ def teacher_led_assistant_step_messages(
     scenario: ScenarioSpec,
     public_history: Sequence[ConversationMessage],
 ) -> tuple[TeacherChatMessage, ...]:
+    conversation_guidance = _teacher_led_assistant_guidance(scenario.teacher_led_kind)
     request = f"""\
 Create only the next assistant step.
 
@@ -338,6 +330,8 @@ Available tools:
 - calculate(expression): evaluates basic numeric arithmetic
 - get_time(): returns the current local timestamp
 
+{conversation_guidance}
+
 For a tool action, emit exactly one call with a short natural spoken bridge. Never merely promise
 to search, check, calculate, or look something up in a final response. If the user's request is
 clear, do not ask permission before calling. After a tool result, use that result directly or make
@@ -352,6 +346,78 @@ Complete conversation history:
         TeacherChatMessage(role="system", content=TEACHER_LED_SYSTEM_PROMPT),
         TeacherChatMessage(role="user", content=request),
     )
+
+
+def _teacher_led_user_turn_guidance(
+    conversation_kind: TeacherLedConversationKind | None,
+    turn_index: int,
+) -> str:
+    assert conversation_kind is not None
+    match (conversation_kind, turn_index):
+        case (TeacherLedConversationKind.TOOL_RICH, 0):
+            return (
+                "Open with a concrete, casual reason for asking and a clear request. The request "
+                "should naturally need current or externally verified information."
+            )
+        case (TeacherLedConversationKind.NO_TOOL, 0):
+            return (
+                "Open with a concrete, casual situation and a clear request. Supply every detail, "
+                "preference, option, or piece of text the assistant needs in the utterance itself."
+            )
+        case (TeacherLedConversationKind.TOOL_RICH, _):
+            return (
+                "Continue as the same user in direct response to the assistant's latest audible "
+                "answer. Follow up, compare, narrow, correct, or refer back elliptically. Preserve "
+                "what the conversation was comparing even when the user does not repeat the "
+                "metric. Do not change to an unrelated topic. If the assistant asked whether it "
+                "should look something up and the user wants that, answer clearly and continue "
+                "the request."
+            )
+        case (TeacherLedConversationKind.NO_TOOL, _):
+            return (
+                "Continue as the same user in direct response to the assistant's latest audible "
+                "answer. React, refine, reject, correct, or add a preference naturally. Keep the "
+                "same task and do not introduce a need for current, local, external, or calculated "
+                "information."
+            )
+
+
+def _teacher_led_conversation_guidance(
+    conversation_kind: TeacherLedConversationKind | None,
+) -> str:
+    assert conversation_kind is not None
+    match conversation_kind:
+        case TeacherLedConversationKind.TOOL_RICH:
+            return (
+                "Across the whole conversation, allow several factual lookups and, when natural, "
+                "one dependent comparison or calculation. Do not force a lookup into every turn. "
+                "Do not supply the external facts the user is asking for."
+            )
+        case TeacherLedConversationKind.NO_TOOL:
+            return (
+                "Keep the whole conversation answerable from user-supplied content, preferences, "
+                "and ordinary reasoning or creative transformation. Do not request current time, "
+                "schedules, prices, availability, recent events, local facts, external lookup, or "
+                "exact arithmetic."
+            )
+
+
+def _teacher_led_assistant_guidance(
+    conversation_kind: TeacherLedConversationKind | None,
+) -> str:
+    assert conversation_kind is not None
+    match conversation_kind:
+        case TeacherLedConversationKind.TOOL_RICH:
+            return (
+                "This is a tool-rich conversation. Choose calls only from the actual information "
+                "need, and use no call when the current turn is already answerable."
+            )
+        case TeacherLedConversationKind.NO_TOOL:
+            return (
+                "This conversation is designed to stay answerable from the user's own content and "
+                "preferences. Normally give a final spoken response without calling a tool. Do not "
+                "call a tool merely because one is available."
+            )
 
 
 def user_turn_scope_messages(
