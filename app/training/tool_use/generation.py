@@ -53,6 +53,7 @@ from app.training.tool_use.scenario import (
     PlannedToolStep,
     ScenarioGenerationMode,
     ScenarioSpec,
+    TeacherLedConversationKind,
     ToolName,
 )
 from app.training.tool_use.schema import (
@@ -702,6 +703,34 @@ async def _generate_teacher_led_record_candidate(
                 speech_style=scenario.speech_style,
             )
         )
+
+        assert scenario.teacher_led_kind is not None
+        if scenario.teacher_led_kind is TeacherLedConversationKind.NO_TOOL:
+            final_result, final_usage, final_requests = await _generate_validated(
+                generator=generator,
+                response_type=FinalResponseStepEnvelope,
+                messages=teacher_led_assistant_step_messages(
+                    scenario=scenario,
+                    public_history=messages,
+                ),
+                random_seed=_request_seed(
+                    scenario.random_seed + seed_salt,
+                    turn_index,
+                    1,
+                ),
+                maximum_attempts=config.maximum_semantic_attempts,
+                validator=lambda envelope: _validate_teacher_led_assistant_step(envelope.step),
+            )
+            usage = usage.add(final_usage)
+            request_count += final_requests
+            message_index += 1
+            messages.append(
+                AssistantMessage(
+                    message_id=f"{scenario.scenario_id}-message-{message_index}",
+                    audible_text=final_result.step.audible_text,
+                )
+            )
+            continue
 
         turn_completed = False
         for tool_round_index in range(config.teacher_led_runaway_call_guard):

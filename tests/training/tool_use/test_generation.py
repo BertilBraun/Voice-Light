@@ -226,6 +226,56 @@ def test_teacher_led_no_tool_prompts_keep_requests_answerable_from_context() -> 
     assert "Do not call search, calculate, or get_time" in assistant_prompt
 
 
+def test_teacher_led_no_tool_rollout_requests_only_final_responses() -> None:
+    scenario = teacher_led_scenario().model_copy(
+        update={
+            "family": "teacher_led_no_tool",
+            "teacher_led_kind": TeacherLedConversationKind.NO_TOOL,
+        }
+    )
+    values: tuple[ToolUseBaseModel, ...] = tuple(
+        value
+        for turn_index in range(4)
+        for value in (
+            GeneratedUserTurnEnvelope(
+                turn=GeneratedUserTurn(
+                    text=f"Here is self-contained turn {turn_index + 1}.",
+                    speech_style=SpeechStyle.CASUAL,
+                )
+            ),
+            FinalResponseStepEnvelope(
+                step=FinalResponseStep(audible_text=f"Here is direct response {turn_index + 1}.")
+            ),
+        )
+    )
+
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        generator = ScriptedGenerator(values)
+        generated = await generate_record(
+            scenario=scenario,
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=False,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert request_count == 8
+    assert not generator.values
+    assert record.metadata.scenario.tool_need == "not_needed"
+    assert all(
+        not message.tool_calls
+        for message in record.messages
+        if isinstance(message, AssistantMessage)
+    )
+
+
 def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
     return (
         GeneratedUserTurnEnvelope(
