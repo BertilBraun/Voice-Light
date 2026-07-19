@@ -31,6 +31,7 @@ from app.compute.voice.tts_selection import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+VLLM_PYTHON_PATH = REPOSITORY_ROOT / "deployment/compute/vllm/.venv/bin/python"
 MINIMUM_GPU_MEMORY_BYTES = 10 * 1024**3
 
 
@@ -44,6 +45,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     )
     validate_nvidia_gpu()
     validate_imports()
+    validate_vllm_environment()
     if options.download_models:
         download_required_models(speech_synthesis_settings)
         smoke_test_tts(speech_synthesis_settings)
@@ -88,6 +90,14 @@ def validate_imports() -> None:
     ):
         importlib.import_module(module_name)
     print("Runtime import smoke tests passed.")
+
+
+def validate_vllm_environment() -> None:
+    subprocess.run(
+        [VLLM_PYTHON_PATH, "-c", "import vllm"],
+        check=True,
+    )
+    print("vLLM runtime import smoke test passed.")
 
 
 def download_required_models(settings: SpeechSynthesisSettings) -> None:

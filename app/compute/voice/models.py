@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import logging
 import subprocess
-import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -52,8 +51,11 @@ from app.compute.voice.llm_worker_protocol import (
 from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_ADAPTER_NAME,
     LANGUAGE_MODEL_ADAPTER_REVISION,
+    LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
     LANGUAGE_MODEL_NAME,
     LANGUAGE_MODEL_REVISION,
+    QWEN_MAXIMUM_MODEL_LENGTH,
+    SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
     SEARCH_SUMMARIZER_MODEL_NAME,
     SEARCH_SUMMARIZER_MODEL_REVISION,
 )
@@ -64,7 +66,8 @@ from app.compute.voice.qwen_config import (
 from app.compute.voice.subprocess_start import read_worker_start_event
 
 logger = logging.getLogger(__name__)
-QWEN_PYTHON_PATH: Final = Path(sys.executable)
+REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[3]
+QWEN_PYTHON_PATH: Final = REPOSITORY_ROOT / "deployment/compute/vllm/.venv/bin/python"
 QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS: Final = 10.0
 QWEN_CANCELLATION_TIMEOUT_SECONDS: Final = 2.0
 QWEN_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
@@ -104,11 +107,15 @@ class QwenWorkerProcess:
         command = [
             python_path.as_posix(),
             "-m",
-            "app.compute.voice.qwen_worker",
+            "app.compute.voice.qwen_vllm_worker",
             "--model",
             configuration.model.model_name,
             "--revision",
             configuration.model.model_revision,
+            "--gpu-memory-utilization",
+            str(configuration.model.gpu_memory_utilization),
+            "--maximum-model-length",
+            str(configuration.model.maximum_model_length),
         ]
         adapter = configuration.model.adapter
         if adapter is not None:
@@ -236,7 +243,7 @@ class RestartingQwenWorkerManager:
             worker.close()
 
 
-class TransformersLanguageModel:
+class VllmLanguageModel:
     def __init__(
         self,
         python_path: Path = QWEN_PYTHON_PATH,
@@ -251,6 +258,8 @@ class TransformersLanguageModel:
                         repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
                         revision=LANGUAGE_MODEL_ADAPTER_REVISION,
                     ),
+                    gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
+                    maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
                 ),
                 component_name="Qwen language model",
             ),
@@ -279,7 +288,7 @@ class TransformersLanguageModel:
         self.worker_manager.close()
 
 
-class TransformersTextGenerator:
+class VllmTextGenerator:
     def __init__(
         self,
         python_path: Path = QWEN_PYTHON_PATH,
@@ -291,6 +300,8 @@ class TransformersTextGenerator:
                     model_name=SEARCH_SUMMARIZER_MODEL_NAME,
                     model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
                     adapter=None,
+                    gpu_memory_utilization=SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
+                    maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
                 ),
                 component_name="Qwen search summarizer",
             ),

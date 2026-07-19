@@ -30,11 +30,11 @@ child processes own their CUDA models. No voice state survives disconnection.
 
 The conversational worker runs the published
 [`BertilBraun/qwen3-1.7b-voice-light-tool-use-lora`](https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-lora)
-PEFT adapter at immutable revision `2c834fa6398fe342f390752ffa295511190b7376` on
+LoRA adapter at immutable revision `2c834fa6398fe342f390752ffa295511190b7376` on
 `Qwen/Qwen3-1.7B` revision `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e`. Bootstrap
-downloads both pinned repositories. The worker attaches the adapter with `PeftModel.from_pretrained`
-and leaves the base weights unmerged. The separate Qwen3-0.6B search summarizer remains on its
-unmodified checkpoint.
+downloads both pinned repositories. vLLM attaches the adapter at request time and leaves the base
+weights unmerged. The separate Qwen3-0.6B search summarizer remains on its unmodified checkpoint
+and continues to handle every search summary.
 
 The Supervisor parent command remains:
 
@@ -45,23 +45,28 @@ exec .venv/bin/python -m app.compute.server
 It starts the conversational child with the effective command:
 
 ```bash
-/workspace/Voice-Light/.venv/bin/python -m app.compute.voice.qwen_worker \
+/workspace/Voice-Light/deployment/compute/vllm/.venv/bin/python \
+  -m app.compute.voice.qwen_vllm_worker \
   --model Qwen/Qwen3-1.7B \
   --revision 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e \
   --adapter BertilBraun/qwen3-1.7b-voice-light-tool-use-lora \
-  --adapter-revision 2c834fa6398fe342f390752ffa295511190b7376
+  --adapter-revision 2c834fa6398fe342f390752ffa295511190b7376 \
+  --gpu-memory-utilization 0.38 \
+  --maximum-model-length 4096
 ```
 
-This is a direct Transformers/PEFT runtime, not an OpenAI-compatible model server. Voice Light
-therefore has no request-level `model` setting to switch: every conversational invocation uses the
-attached adapter, while the typed worker configuration omits it for search summarization.
-`enable_thinking=False` remains in the pinned Qwen chat-template call, and generated tool syntax
-continues through the existing incremental Hermes parser.
+This uses vLLM's embedded asynchronous engine behind Voice Light's typed subprocess protocol; it
+does not expose an OpenAI-compatible server. The conversational worker always supplies its LoRA
+request, while the independently hosted summarizer never does. Both engines use paged KV caches
+and automatic prefix caching. They are capped at a 4096-token context because the live voice and
+bounded-search prompts do not need the checkpoints' full context, leaving predictable room for
+ASR and TTS on the 12 GB deployment GPU. The conversational engine may reserve 38 percent of GPU
+memory and the summarizer 17 percent. `enable_thinking=False` remains in the pinned Qwen
+chat-template call, and generated tool syntax continues through the existing incremental Hermes
+parser.
 
-If the worker is later replaced with vLLM, start it with an explicit alias such as
-`--lora-modules voice-light-tool-use=/models/qwen3-1.7b-voice-light-tool-use-lora`; OpenAI-compatible
-requests must then use `"model": "voice-light-tool-use"`. Using the base repository ID in that
-field selects the base model instead of the adapter.
+vLLM is locked in `deployment/compute/vllm/uv.lock` and installed into its own environment. This
+keeps its Torch and `aiohttp` constraints separate from the root Moshi/TTS environment.
 
 The adapter was trained from the published
 [`BertilBraun/voice-light-tool-use-synthetic`](https://huggingface.co/datasets/BertilBraun/voice-light-tool-use-synthetic)

@@ -26,12 +26,19 @@ from app.compute.voice.llm_worker_protocol import (
 from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_ADAPTER_NAME,
     LANGUAGE_MODEL_ADAPTER_REVISION,
+    LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
     LANGUAGE_MODEL_NAME,
     LANGUAGE_MODEL_REVISION,
+    QWEN_MAXIMUM_MODEL_LENGTH,
+    SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
     SEARCH_SUMMARIZER_MODEL_NAME,
     SEARCH_SUMMARIZER_MODEL_REVISION,
 )
-from app.compute.voice.models import QwenWorkerConfiguration, QwenWorkerProcess
+from app.compute.voice.models import (
+    QWEN_PYTHON_PATH,
+    QwenWorkerConfiguration,
+    QwenWorkerProcess,
+)
 from app.compute.voice.qwen_config import QwenAdapterConfiguration, QwenModelConfiguration
 from app.compute.voice.search import (
     MAXIMUM_SEARCH_SUMMARY_TOKENS,
@@ -92,12 +99,14 @@ def benchmark_conversation_worker() -> WorkerBenchmarkResult:
                 repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
                 revision=LANGUAGE_MODEL_ADAPTER_REVISION,
             ),
+            gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
+            maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
         ),
         component_name="Qwen language model",
     )
     worker, startup_seconds = start_worker(configuration)
     try:
-        gpu_memory_mb = worker_gpu_memory_mb(worker.process.pid)
+        gpu_memory_mb = active_gpu_memory_mb()
         messages: list[LlmUserMessage | LlmAssistantMessage] = []
         trials: list[WorkerBenchmarkTrial] = []
         user_prompts = (
@@ -143,12 +152,14 @@ def benchmark_search_worker() -> WorkerBenchmarkResult:
             model_name=SEARCH_SUMMARIZER_MODEL_NAME,
             model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
             adapter=None,
+            gpu_memory_utilization=SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
+            maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
         ),
         component_name="Qwen search summarizer",
     )
     worker, startup_seconds = start_worker(configuration)
     try:
-        gpu_memory_mb = worker_gpu_memory_mb(worker.process.pid)
+        gpu_memory_mb = active_gpu_memory_mb()
         trials = tuple(
             run_trial(
                 worker=worker,
@@ -177,7 +188,7 @@ def start_worker(
     configuration: QwenWorkerConfiguration,
 ) -> tuple[QwenWorkerProcess, float]:
     started_at = time.perf_counter()
-    worker = QwenWorkerProcess(Path(".venv/bin/python"), configuration)
+    worker = QwenWorkerProcess(QWEN_PYTHON_PATH, configuration)
     return worker, time.perf_counter() - started_at
 
 
@@ -264,7 +275,7 @@ def percentile(values: tuple[float, ...], quantile: float) -> float:
     return ordered_values[rank - 1]
 
 
-def worker_gpu_memory_mb(process_id: int) -> int:
+def active_gpu_memory_mb() -> int:
     completed = subprocess.run(
         [
             "nvidia-smi",
@@ -275,11 +286,14 @@ def worker_gpu_memory_mb(process_id: int) -> int:
         capture_output=True,
         text=True,
     )
-    for line in completed.stdout.splitlines():
-        process_text, memory_text = (part.strip() for part in line.split(",", maxsplit=1))
-        if int(process_text) == process_id:
-            return int(memory_text)
-    raise RuntimeError(f"nvidia-smi did not report Qwen worker process {process_id}.")
+    memory_values = tuple(
+        int(line.split(",", maxsplit=1)[1].strip())
+        for line in completed.stdout.splitlines()
+        if line.strip()
+    )
+    if not memory_values:
+        raise RuntimeError("nvidia-smi did not report an active Qwen inference process.")
+    return sum(memory_values)
 
 
 def search_cases() -> tuple[tuple[str, tuple[SearchResult, ...]], ...]:

@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import queue
-import threading
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
 from typing import Literal
 
-import pytest
-
-import app.compute.voice.qwen_worker as qwen_worker_module
 from app.compute.voice.llm_worker_protocol import (
+    CancelLlmCommand,
     GenerateTextLlmCommand,
     LlmAssistantMessage,
+    LlmCancelledEvent,
     LlmEndEvent,
     LlmSpokenTextDeltaEvent,
     LlmToolMessage,
@@ -19,15 +17,11 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerEvent,
     StartLlmCommand,
 )
-from app.compute.voice.qwen_config import (
-    QwenAdapterConfiguration,
-    QwenModelConfiguration,
-)
 from app.compute.voice.qwen_worker import (
     LANGUAGE_MODEL_SYSTEM_PROMPT,
+    GeneratedTextDelta,
     QwenChatMessage,
     QwenGenerationCommand,
-    QwenRuntime,
     QwenWorkerController,
     qwen_chat_messages,
     render_qwen_prompt,
@@ -42,20 +36,36 @@ from app.compute.voice.tools import (
 )
 
 
-class ImmediateQwenRuntime(QwenRuntime):
+class ImmediateQwenRuntime:
     def __init__(self) -> None:
         return
 
-    def stream_text(
+    async def stream_text(
         self,
         command: QwenGenerationCommand,
-        cancellation_event: threading.Event,
-    ) -> Iterator[str]:
-        del command, cancellation_event
-        yield "ready"
+    ) -> AsyncIterator[GeneratedTextDelta]:
+        del command
+        yield GeneratedTextDelta(text="ready", cumulative_token_count=5)
 
-    def count_response_tokens(self, text: str) -> int:
-        return len(text)
+    def close(self) -> None:
+        return
+
+
+class BlockingQwenRuntime:
+    def __init__(self) -> None:
+        self.waiting = asyncio.Event()
+
+    async def stream_text(
+        self,
+        command: QwenGenerationCommand,
+    ) -> AsyncIterator[GeneratedTextDelta]:
+        del command
+        yield GeneratedTextDelta(text="partial", cumulative_token_count=2)
+        self.waiting.set()
+        await asyncio.Future()
+
+    def close(self) -> None:
+        return
 
 
 class RecordingQwenWorkerController(QwenWorkerController):
@@ -90,192 +100,6 @@ class RecordingChatTemplateTokenizer:
         self.add_generation_prompt = add_generation_prompt
         self.enable_thinking = enable_thinking
         return "rendered prompt"
-
-
-class LoadedModel:
-    def __init__(self) -> None:
-        self.selected_device: str | None = None
-
-    def to(self, device: str) -> LoadedModel:
-        self.selected_device = device
-        return self
-
-
-@dataclass(frozen=True)
-class SelectedQwenRuntime:
-    configuration: QwenModelConfiguration
-
-
-def test_worker_main_loads_the_explicit_model_revision(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected_runtimes: list[SelectedQwenRuntime] = []
-
-    def select_runtime(configuration: QwenModelConfiguration) -> SelectedQwenRuntime:
-        runtime = SelectedQwenRuntime(configuration)
-        selected_runtimes.append(runtime)
-        return runtime
-
-    class RecordingController:
-        def __init__(self, runtime: SelectedQwenRuntime) -> None:
-            self.runtime = runtime
-
-        def run(self) -> None:
-            assert self.runtime == selected_runtimes[-1]
-
-    monkeypatch.setattr(qwen_worker_module, "QwenRuntime", select_runtime)
-    monkeypatch.setattr(qwen_worker_module, "QwenWorkerController", RecordingController)
-
-    qwen_worker_module.main(
-        [
-            "--model",
-            "Qwen/Qwen3-0.6B",
-            "--revision",
-            "pinned-revision",
-        ]
-    )
-
-    assert selected_runtimes == [
-        SelectedQwenRuntime(
-            configuration=QwenModelConfiguration(
-                model_name="Qwen/Qwen3-0.6B",
-                model_revision="pinned-revision",
-                adapter=None,
-            )
-        )
-    ]
-
-
-def test_qwen_runtime_attaches_pinned_adapter_before_moving_to_cuda(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    base_model = LoadedModel()
-    adapter_model = LoadedModel()
-    tokenizer_calls: list[tuple[str, str]] = []
-    base_model_calls: list[tuple[str, str]] = []
-    adapter_calls: list[tuple[LoadedModel, str, str, bool]] = []
-
-    class RecordingTokenizerFactory:
-        @staticmethod
-        def from_pretrained(model_name: str, revision: str) -> object:
-            tokenizer_calls.append((model_name, revision))
-            return object()
-
-    class RecordingModelFactory:
-        @staticmethod
-        def from_pretrained(
-            model_name: str,
-            revision: str,
-            *,
-            dtype: object,
-            attn_implementation: str,
-        ) -> LoadedModel:
-            assert dtype is qwen_worker_module.torch.bfloat16
-            assert attn_implementation == "sdpa"
-            base_model_calls.append((model_name, revision))
-            return base_model
-
-    class RecordingPeftModel:
-        @staticmethod
-        def from_pretrained(
-            selected_base_model: LoadedModel,
-            repository_id: str,
-            *,
-            revision: str,
-            is_trainable: bool,
-        ) -> LoadedModel:
-            adapter_calls.append(
-                (
-                    selected_base_model,
-                    repository_id,
-                    revision,
-                    is_trainable,
-                )
-            )
-            return adapter_model
-
-    monkeypatch.setattr(qwen_worker_module, "AutoTokenizer", RecordingTokenizerFactory)
-    monkeypatch.setattr(qwen_worker_module, "AutoModelForCausalLM", RecordingModelFactory)
-    monkeypatch.setattr(qwen_worker_module, "PeftModel", RecordingPeftModel)
-
-    runtime = QwenRuntime(
-        QwenModelConfiguration(
-            model_name="Qwen/Qwen3-1.7B",
-            model_revision="base-revision",
-            adapter=QwenAdapterConfiguration(
-                repository_id="owner/tool-use-adapter",
-                revision="adapter-revision",
-            ),
-        )
-    )
-
-    assert tokenizer_calls == [("Qwen/Qwen3-1.7B", "base-revision")]
-    assert base_model_calls == [("Qwen/Qwen3-1.7B", "base-revision")]
-    assert adapter_calls == [
-        (
-            base_model,
-            "owner/tool-use-adapter",
-            "adapter-revision",
-            False,
-        )
-    ]
-    assert base_model.selected_device is None
-    assert adapter_model.selected_device == "cuda"
-    assert runtime.model is adapter_model
-
-
-def test_worker_main_loads_the_explicit_adapter_revision(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected_configurations: list[QwenModelConfiguration] = []
-
-    class RecordingController:
-        def __init__(self, configuration: QwenModelConfiguration) -> None:
-            selected_configurations.append(configuration)
-
-        def run(self) -> None:
-            return
-
-    monkeypatch.setattr(qwen_worker_module, "QwenRuntime", lambda configuration: configuration)
-    monkeypatch.setattr(qwen_worker_module, "QwenWorkerController", RecordingController)
-
-    qwen_worker_module.main(
-        [
-            "--model",
-            "Qwen/Qwen3-1.7B",
-            "--revision",
-            "base-revision",
-            "--adapter",
-            "owner/tool-use-adapter",
-            "--adapter-revision",
-            "adapter-revision",
-        ]
-    )
-
-    assert selected_configurations == [
-        QwenModelConfiguration(
-            model_name="Qwen/Qwen3-1.7B",
-            model_revision="base-revision",
-            adapter=QwenAdapterConfiguration(
-                repository_id="owner/tool-use-adapter",
-                revision="adapter-revision",
-            ),
-        )
-    ]
-
-
-def test_worker_main_rejects_unpinned_adapter() -> None:
-    with pytest.raises(SystemExit):
-        qwen_worker_module.main(
-            [
-                "--model",
-                "Qwen/Qwen3-1.7B",
-                "--revision",
-                "base-revision",
-                "--adapter",
-                "owner/tool-use-adapter",
-            ]
-        )
 
 
 def test_tool_prompt_requires_spoken_bridge_before_call() -> None:
@@ -421,63 +245,106 @@ def test_qwen_text_generation_prompt_is_isolated_and_has_no_tools() -> None:
 
 
 def test_terminal_event_means_worker_accepts_next_invocation() -> None:
-    controller = RecordingQwenWorkerController()
+    async def run_invocations() -> None:
+        controller = RecordingQwenWorkerController()
 
-    controller._start(
-        StartLlmCommand(
+        controller._start(
+            StartLlmCommand(
+                invocation_id=1,
+                assistant_generation_id=9,
+                messages=(),
+                tools=(),
+            )
+        )
+        first_invocation = controller.active_invocation
+        assert first_invocation is not None
+        await first_invocation.task
+        assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
             invocation_id=1,
-            assistant_generation_id=9,
-            messages=(),
-            tools=(),
+            text="ready",
+            cumulative_token_count=5,
         )
-    )
-    assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
-        invocation_id=1,
-        text="ready",
-        cumulative_token_count=5,
-    )
-    assert controller.events.get(timeout=1) == LlmEndEvent(
-        invocation_id=1,
-        cumulative_token_count=5,
-    )
+        assert controller.events.get(timeout=1) == LlmEndEvent(
+            invocation_id=1,
+            cumulative_token_count=5,
+        )
 
-    controller._start(
-        StartLlmCommand(
-            invocation_id=2,
-            assistant_generation_id=9,
-            messages=(),
-            tools=(),
+        controller._start(
+            StartLlmCommand(
+                invocation_id=2,
+                assistant_generation_id=9,
+                messages=(),
+                tools=(),
+            )
         )
-    )
-    assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
-        invocation_id=2,
-        text="ready",
-        cumulative_token_count=5,
-    )
-    assert controller.events.get(timeout=1) == LlmEndEvent(
-        invocation_id=2,
-        cumulative_token_count=5,
-    )
+        second_invocation = controller.active_invocation
+        assert second_invocation is not None
+        await second_invocation.task
+        assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
+            invocation_id=2,
+            text="ready",
+            cumulative_token_count=5,
+        )
+        assert controller.events.get(timeout=1) == LlmEndEvent(
+            invocation_id=2,
+            cumulative_token_count=5,
+        )
+
+    asyncio.run(run_invocations())
 
 
 def test_text_generation_bypasses_tool_call_parser() -> None:
-    controller = RecordingQwenWorkerController()
+    async def generate_text() -> None:
+        controller = RecordingQwenWorkerController()
 
-    controller._start(
-        GenerateTextLlmCommand(
-            invocation_id=3,
-            system_prompt="Summarize.",
-            user_prompt="Results.",
-            max_new_tokens=20,
+        controller._start(
+            GenerateTextLlmCommand(
+                invocation_id=3,
+                system_prompt="Summarize.",
+                user_prompt="Results.",
+                max_new_tokens=20,
+            )
         )
-    )
+        active_invocation = controller.active_invocation
+        assert active_invocation is not None
+        await active_invocation.task
 
-    assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
-        invocation_id=3,
-        text="ready",
-        cumulative_token_count=5,
-    )
-    assert controller.events.get(timeout=1) == LlmEndEvent(
-        invocation_id=3,
-        cumulative_token_count=5,
-    )
+        assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
+            invocation_id=3,
+            text="ready",
+            cumulative_token_count=5,
+        )
+        assert controller.events.get(timeout=1) == LlmEndEvent(
+            invocation_id=3,
+            cumulative_token_count=5,
+        )
+
+    asyncio.run(generate_text())
+
+
+def test_cancellation_stops_generation_and_releases_worker() -> None:
+    async def cancel_generation() -> None:
+        runtime = BlockingQwenRuntime()
+        controller = RecordingQwenWorkerController()
+        controller.runtime = runtime
+        controller._start(
+            GenerateTextLlmCommand(
+                invocation_id=4,
+                system_prompt="Summarize.",
+                user_prompt="Results.",
+                max_new_tokens=20,
+            )
+        )
+        await runtime.waiting.wait()
+
+        await controller._cancel(CancelLlmCommand(invocation_id=4))
+
+        assert controller.events.get(timeout=1) == LlmSpokenTextDeltaEvent(
+            invocation_id=4,
+            text="partial",
+            cumulative_token_count=2,
+        )
+        assert controller.events.get(timeout=1) == LlmCancelledEvent(invocation_id=4)
+        assert controller.active_invocation is None
+
+    asyncio.run(cancel_generation())

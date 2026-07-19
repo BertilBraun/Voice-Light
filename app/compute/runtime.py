@@ -15,7 +15,7 @@ from app.compute.voice.model_constants import (
     NEMOTRON_ASR_MODEL_NAME,
     NEMOTRON_ASR_MODEL_REVISION,
 )
-from app.compute.voice.models import TransformersLanguageModel, TransformersTextGenerator
+from app.compute.voice.models import VllmLanguageModel, VllmTextGenerator
 from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
 from app.compute.voice.search import SearchProvider, create_search_provider
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
@@ -56,8 +56,8 @@ class ComputeRuntime:
         self.voice_session_admission = SingleVoiceSessionAdmission()
         self.speech_understanding_provider: SpeechUnderstandingProvider | None = None
         self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
-        self.language_model: TransformersLanguageModel | None = None
-        self.search_text_generator: TransformersTextGenerator | None = None
+        self.language_model: VllmLanguageModel | None = None
+        self.search_text_generator: VllmTextGenerator | None = None
         self.speech_synthesizer: SpeechSynthesizer | None = None
         self.search_provider: SearchProvider | None = (
             None
@@ -127,12 +127,12 @@ class ComputeRuntime:
             raise RuntimeError("Speech detector is not ready.")
         return self.speech_detector_factory
 
-    def require_language_model(self) -> TransformersLanguageModel:
+    def require_language_model(self) -> VllmLanguageModel:
         if self.language_model is None:
             raise RuntimeError("Language model is not ready.")
         return self.language_model
 
-    def require_search_text_generator(self) -> TransformersTextGenerator:
+    def require_search_text_generator(self) -> VllmTextGenerator:
         if self.search_text_generator is None:
             raise RuntimeError("Search summarizer is not ready.")
         return self.search_text_generator
@@ -179,7 +179,7 @@ class ComputeRuntime:
     async def _load_language_model(self) -> None:
         model = await self._timed_load(
             self.language_model_stage,
-            TransformersLanguageModel,
+            VllmLanguageModel,
         )
         if model is not None:
             self.language_model = model
@@ -187,7 +187,7 @@ class ComputeRuntime:
     async def _load_search_text_generator(self) -> None:
         generator = await self._timed_load(
             self.search_summarizer_stage,
-            TransformersTextGenerator,
+            VllmTextGenerator,
         )
         if generator is not None:
             self.search_text_generator = generator

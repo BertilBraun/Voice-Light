@@ -1,22 +1,11 @@
 from __future__ import annotations
 
-import argparse
+import asyncio
 import logging
 import sys
-import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Literal, NotRequired, Protocol, TypedDict
-
-import torch
-from peft import PeftModel
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    StoppingCriteria,
-    StoppingCriteriaList,
-    TextIteratorStreamer,
-)
+from typing import Literal, NotRequired, Protocol, TextIO, TypedDict
 
 from app.compute.voice.hermes_tool_parser import (
     HermesParserEvent,
@@ -48,10 +37,6 @@ from app.compute.voice.llm_worker_protocol import (
 )
 from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_SYSTEM_PROMPT,
-)
-from app.compute.voice.qwen_config import (
-    QwenAdapterConfiguration,
-    QwenModelConfiguration,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,10 +79,6 @@ QwenChatMessage = QwenSystemMessage | QwenUserMessage | QwenAssistantMessage | Q
 QwenGenerationCommand = StartLlmCommand | GenerateTextLlmCommand
 
 
-class GenerationStreamer(Protocol):
-    def on_finalized_text(self, text: str, stream_end: bool = False) -> None: ...
-
-
 class QwenChatTemplateTokenizer(Protocol):
     def apply_chat_template(
         self,
@@ -110,221 +91,114 @@ class QwenChatTemplateTokenizer(Protocol):
     ) -> str: ...
 
 
-class CancellationStoppingCriteria(StoppingCriteria):
-    def __init__(self, cancellation_event: threading.Event) -> None:
-        self.cancellation_event = cancellation_event
-
-    def __call__(
-        self,
-        input_ids: torch.LongTensor,
-        scores: torch.FloatTensor,
-        **generation_arguments: torch.Tensor,
-    ) -> torch.BoolTensor:
-        del scores, generation_arguments
-        return torch.full(
-            (input_ids.shape[0],),
-            self.cancellation_event.is_set(),
-            device=input_ids.device,
-            dtype=torch.bool,
-        )
+@dataclass(frozen=True)
+class GeneratedTextDelta:
+    text: str
+    cumulative_token_count: int
 
 
-class QwenRuntime:
-    def __init__(self, configuration: QwenModelConfiguration) -> None:
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            configuration.model_name,
-            revision=configuration.model_revision,
-        )
-        base_model = AutoModelForCausalLM.from_pretrained(
-            configuration.model_name,
-            revision=configuration.model_revision,
-            dtype=torch.bfloat16,
-            attn_implementation="sdpa",
-        )
-        match configuration.adapter:
-            case None:
-                self.model = base_model.to("cuda")
-            case QwenAdapterConfiguration(repository_id=repository_id, revision=revision):
-                self.model = PeftModel.from_pretrained(
-                    base_model,
-                    repository_id,
-                    revision=revision,
-                    is_trainable=False,
-                ).to("cuda")
-                logger.info(
-                    "activated Qwen adapter %s at revision %s",
-                    repository_id,
-                    revision,
-                )
-
+class QwenTextRuntime(Protocol):
     def stream_text(
         self,
         command: QwenGenerationCommand,
-        cancellation_event: threading.Event,
-    ) -> Iterator[str]:
-        prompt = render_qwen_prompt(self.tokenizer, command)
-        model_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-        streamer = TextIteratorStreamer(
-            self.tokenizer,
-            skip_prompt=True,
-            skip_special_tokens=True,
-        )
-        generation_errors: list[Exception] = []
+    ) -> AsyncIterator[GeneratedTextDelta]: ...
 
-        def generate() -> None:
-            match command:
-                case StartLlmCommand():
-                    self.model.generate(
-                        **model_inputs,
-                        streamer=streamer,
-                        stopping_criteria=StoppingCriteriaList(
-                            [CancellationStoppingCriteria(cancellation_event)]
-                        ),
-                        max_new_tokens=256,
-                        do_sample=True,
-                        temperature=0.6,
-                        top_p=0.9,
-                    )
-                case GenerateTextLlmCommand(max_new_tokens=max_new_tokens):
-                    self.model.generate(
-                        **model_inputs,
-                        streamer=streamer,
-                        stopping_criteria=StoppingCriteriaList(
-                            [CancellationStoppingCriteria(cancellation_event)]
-                        ),
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                    )
-
-        model_thread = threading.Thread(
-            target=_run_model_generation,
-            args=(generate, streamer, generation_errors),
-            daemon=True,
-            name=f"qwen-model-{command.invocation_id}",
-        )
-        model_thread.start()
-        stream_completed = False
-        try:
-            yield from streamer
-            stream_completed = True
-            if generation_errors:
-                raise RuntimeError(
-                    f"Qwen model generation failed: {generation_errors[0]}"
-                ) from generation_errors[0]
-        finally:
-            if not stream_completed:
-                cancellation_event.set()
-            model_thread.join()
-
-    def count_response_tokens(self, text: str) -> int:
-        return len(self.tokenizer.encode(text, add_special_tokens=False))
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
 class ActiveWorkerInvocation:
     invocation_id: int
-    cancellation_event: threading.Event
-    thread: threading.Thread
+    task: asyncio.Task[None]
 
 
 class QwenWorkerController:
-    def __init__(self, runtime: QwenRuntime) -> None:
+    def __init__(
+        self,
+        runtime: QwenTextRuntime,
+        output_stream: TextIO = sys.stdout,
+    ) -> None:
         self.runtime = runtime
-        self.output_lock = threading.Lock()
-        self.state_lock = threading.Lock()
+        self.output_stream = output_stream
         self.active_invocation: ActiveWorkerInvocation | None = None
 
-    def run(self) -> None:
+    async def run(self) -> None:
         self._send_event(LlmWorkerReadyEvent())
-        for line in sys.stdin:
+        while line := await asyncio.to_thread(sys.stdin.readline):
             try:
                 command = llm_worker_command_adapter.validate_json(line)
-                if self._handle_command(command):
+                if await self._handle_command(command):
                     return
             except Exception:
                 logger.exception("Qwen worker command handling failed")
+        await self._shutdown()
 
-    def _handle_command(self, command: LlmWorkerCommand) -> bool:
+    async def _handle_command(self, command: LlmWorkerCommand) -> bool:
         match command:
             case StartLlmCommand() | GenerateTextLlmCommand():
                 self._start(command)
                 return False
             case CancelLlmCommand():
-                self._cancel(command)
+                await self._cancel(command)
                 return False
             case ShutdownLlmCommand():
-                self._shutdown()
+                await self._shutdown()
                 return True
 
     def _start(self, command: QwenGenerationCommand) -> None:
-        with self.state_lock:
-            if self.active_invocation is not None:
-                self._send_event(
-                    LlmWorkerErrorEvent(
-                        invocation_id=command.invocation_id,
-                        message="Qwen worker already has an active invocation.",
-                    )
+        if self.active_invocation is not None:
+            self._send_event(
+                LlmWorkerErrorEvent(
+                    invocation_id=command.invocation_id,
+                    message="Qwen worker already has an active invocation.",
                 )
-                return
-            cancellation_event = threading.Event()
-            invocation_thread = threading.Thread(
-                target=self._generate,
-                args=(command, cancellation_event),
-                daemon=True,
-                name=f"qwen-stream-{command.invocation_id}",
             )
-            self.active_invocation = ActiveWorkerInvocation(
-                invocation_id=command.invocation_id,
-                cancellation_event=cancellation_event,
-                thread=invocation_thread,
+            return
+        invocation_task = asyncio.create_task(
+            self._generate(command),
+            name=f"qwen-stream-{command.invocation_id}",
+        )
+        self.active_invocation = ActiveWorkerInvocation(
+            invocation_id=command.invocation_id,
+            task=invocation_task,
+        )
+
+    async def _cancel(self, command: CancelLlmCommand) -> None:
+        active_invocation = self.active_invocation
+        if active_invocation is None or active_invocation.invocation_id != command.invocation_id:
+            logger.warning(
+                "ignoring Qwen cancellation for inactive invocation: invocation=%d",
+                command.invocation_id,
             )
-            invocation_thread.start()
+            return
+        active_invocation.task.cancel()
+        await active_invocation.task
 
-    def _cancel(self, command: CancelLlmCommand) -> None:
-        with self.state_lock:
-            active_invocation = self.active_invocation
-            if (
-                active_invocation is None
-                or active_invocation.invocation_id != command.invocation_id
-            ):
-                logger.warning(
-                    "ignoring Qwen cancellation for inactive invocation: invocation=%d",
-                    command.invocation_id,
-                )
-                return
-            active_invocation.cancellation_event.set()
-
-    def _shutdown(self) -> None:
-        with self.state_lock:
-            active_invocation = self.active_invocation
-            if active_invocation is not None:
-                active_invocation.cancellation_event.set()
+    async def _shutdown(self) -> None:
+        active_invocation = self.active_invocation
         if active_invocation is not None:
-            active_invocation.thread.join()
+            active_invocation.task.cancel()
+            await active_invocation.task
+        self.runtime.close()
 
-    def _generate(
+    async def _generate(
         self,
         command: QwenGenerationCommand,
-        cancellation_event: threading.Event,
     ) -> None:
         terminal_event: LlmWorkerEvent | None = None
-        raw_response_text = ""
+        cumulative_token_count = 0
         try:
             match command:
                 case StartLlmCommand():
                     parser = HermesToolCallParser(command.invocation_id)
-                    for text_delta in self.runtime.stream_text(command, cancellation_event):
-                        raw_response_text += text_delta
-                        cumulative_token_count = self.runtime.count_response_tokens(
-                            raw_response_text
-                        )
-                        for parser_event in parser.add_text(text_delta):
+                    async for delta in self.runtime.stream_text(command):
+                        cumulative_token_count = delta.cumulative_token_count
+                        for parser_event in parser.add_text(delta.text):
                             self._send_parser_event(
                                 command.invocation_id,
                                 cumulative_token_count,
                                 parser_event,
                             )
-                    cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
                     for parser_event in parser.finish():
                         self._send_parser_event(
                             command.invocation_id,
@@ -332,26 +206,21 @@ class QwenWorkerController:
                             parser_event,
                         )
                 case GenerateTextLlmCommand():
-                    for text_delta in self.runtime.stream_text(command, cancellation_event):
-                        raw_response_text += text_delta
-                        cumulative_token_count = self.runtime.count_response_tokens(
-                            raw_response_text
-                        )
+                    async for delta in self.runtime.stream_text(command):
+                        cumulative_token_count = delta.cumulative_token_count
                         self._send_event(
                             LlmSpokenTextDeltaEvent(
                                 invocation_id=command.invocation_id,
-                                text=text_delta,
+                                text=delta.text,
                                 cumulative_token_count=cumulative_token_count,
                             )
                         )
-                    cumulative_token_count = self.runtime.count_response_tokens(raw_response_text)
-            if cancellation_event.is_set():
-                terminal_event = LlmCancelledEvent(invocation_id=command.invocation_id)
-            else:
-                terminal_event = LlmEndEvent(
-                    invocation_id=command.invocation_id,
-                    cumulative_token_count=cumulative_token_count,
-                )
+            terminal_event = LlmEndEvent(
+                invocation_id=command.invocation_id,
+                cumulative_token_count=cumulative_token_count,
+            )
+        except asyncio.CancelledError:
+            terminal_event = LlmCancelledEvent(invocation_id=command.invocation_id)
         except Exception as error:
             logger.exception("Qwen generation failed: invocation=%d", command.invocation_id)
             terminal_event = LlmWorkerErrorEvent(
@@ -359,13 +228,12 @@ class QwenWorkerController:
                 message=str(error),
             )
         finally:
-            with self.state_lock:
-                active_invocation = self.active_invocation
-                if (
-                    active_invocation is not None
-                    and active_invocation.invocation_id == command.invocation_id
-                ):
-                    self.active_invocation = None
+            active_invocation = self.active_invocation
+            if (
+                active_invocation is not None
+                and active_invocation.invocation_id == command.invocation_id
+            ):
+                self.active_invocation = None
             if terminal_event is not None:
                 self._send_event(terminal_event)
 
@@ -410,21 +278,8 @@ class QwenWorkerController:
                 )
 
     def _send_event(self, event: LlmWorkerEvent) -> None:
-        with self.output_lock:
-            sys.stdout.write(event.model_dump_json() + "\n")
-            sys.stdout.flush()
-
-
-def _run_model_generation(
-    generate: Callable[[], None],
-    streamer: GenerationStreamer,
-    generation_errors: list[Exception],
-) -> None:
-    try:
-        generate()
-    except Exception as error:
-        generation_errors.append(error)
-        streamer.on_finalized_text("", stream_end=True)
+        self.output_stream.write(event.model_dump_json() + "\n")
+        self.output_stream.flush()
 
 
 def _qwen_chat_message(
@@ -487,36 +342,3 @@ def render_qwen_prompt(
         tools=tools,
         enable_thinking=False,
     )
-
-
-def main(arguments: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--revision", required=True)
-    parser.add_argument("--adapter")
-    parser.add_argument("--adapter-revision")
-    options = parser.parse_args(arguments)
-    if (options.adapter is None) != (options.adapter_revision is None):
-        parser.error("--adapter and --adapter-revision must be provided together")
-    adapter = (
-        None
-        if options.adapter is None
-        else QwenAdapterConfiguration(
-            repository_id=options.adapter,
-            revision=options.adapter_revision,
-        )
-    )
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    QwenWorkerController(
-        QwenRuntime(
-            QwenModelConfiguration(
-                model_name=options.model,
-                model_revision=options.revision,
-                adapter=adapter,
-            )
-        )
-    ).run()
-
-
-if __name__ == "__main__":
-    main()

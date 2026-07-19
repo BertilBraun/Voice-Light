@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import logging
-import threading
 from dataclasses import dataclass
 from enum import StrEnum
-
-import torch
 
 from app.compute.voice.hermes_tool_parser import (
     HermesSpokenText,
@@ -15,21 +12,33 @@ from app.compute.voice.hermes_tool_parser import (
 )
 from app.compute.voice.llm_worker_protocol import (
     LlmAssistantMessage,
+    LlmEndEvent,
+    LlmSpokenTextDeltaEvent,
+    LlmToolCallEvent,
+    LlmToolCallFailureEvent,
+    LlmToolCallStartedEvent,
     LlmToolMessage,
     LlmUserMessage,
+    LlmWorkerErrorEvent,
     StartLlmCommand,
 )
 from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_ADAPTER_NAME,
     LANGUAGE_MODEL_ADAPTER_REVISION,
+    LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
     LANGUAGE_MODEL_NAME,
     LANGUAGE_MODEL_REVISION,
+    QWEN_MAXIMUM_MODEL_LENGTH,
+)
+from app.compute.voice.models import (
+    QWEN_PYTHON_PATH,
+    QwenWorkerConfiguration,
+    QwenWorkerProcess,
 )
 from app.compute.voice.qwen_config import (
     QwenAdapterConfiguration,
     QwenModelConfiguration,
 )
-from app.compute.voice.qwen_worker import QwenRuntime
 from app.compute.voice.tools import (
     CalculateArguments,
     CalculateToolCallFunction,
@@ -77,20 +86,26 @@ class ToolUseSmokeReport(FrozenBaseModel):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    runtime = QwenRuntime(
-        QwenModelConfiguration(
+    configuration = QwenWorkerConfiguration(
+        model=QwenModelConfiguration(
             model_name=LANGUAGE_MODEL_NAME,
             model_revision=LANGUAGE_MODEL_REVISION,
             adapter=QwenAdapterConfiguration(
                 repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
                 revision=LANGUAGE_MODEL_ADAPTER_REVISION,
             ),
+            gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
+            maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+        ),
+        component_name="Qwen language model",
+    )
+    worker = QwenWorkerProcess(QWEN_PYTHON_PATH, configuration)
+    try:
+        observations = tuple(
+            _run_worker_smoke_request(worker, smoke_request) for smoke_request in _smoke_requests()
         )
-    )
-    observations = tuple(
-        _run_smoke_request(runtime, smoke_request, random_seed=17 + request_index)
-        for request_index, smoke_request in enumerate(_smoke_requests())
-    )
+    finally:
+        worker.close()
     report = ToolUseSmokeReport(
         base_model=LANGUAGE_MODEL_NAME,
         base_revision=LANGUAGE_MODEL_REVISION,
@@ -106,13 +121,9 @@ def main() -> None:
 
 
 def _run_smoke_request(
-    runtime: QwenRuntime,
+    generated_text: str,
     smoke_request: SmokeRequest,
-    random_seed: int,
 ) -> SmokeObservation:
-    torch.manual_seed(random_seed)
-    torch.cuda.manual_seed_all(random_seed)
-    generated_text = "".join(runtime.stream_text(smoke_request.command, threading.Event()))
     parser = HermesToolCallParser(smoke_request.command.invocation_id)
     parser_events = (*parser.add_text(generated_text), *parser.finish())
     spoken_text = "".join(
@@ -148,6 +159,49 @@ def _run_smoke_request(
             and not parser_failures
             and not validation_failures
         ),
+    )
+
+
+def _run_worker_smoke_request(
+    worker: QwenWorkerProcess,
+    smoke_request: SmokeRequest,
+) -> SmokeObservation:
+    spoken_parts: list[str] = []
+    generated_tools: list[str] = []
+    failures: list[str] = []
+    registry = create_runtime_tool_registry(_unused_search)
+    worker.send(smoke_request.command)
+    while True:
+        event = worker.read_event()
+        match event:
+            case LlmSpokenTextDeltaEvent(text=text):
+                spoken_parts.append(text)
+            case LlmToolCallStartedEvent():
+                pass
+            case LlmToolCallEvent(request=request):
+                generated_tools.append(request.name)
+                validated_call = registry.validate(request)
+                if isinstance(validated_call, ToolCallFailure):
+                    failures.append(validated_call.message)
+            case LlmToolCallFailureEvent(failure=failure):
+                failures.append(failure.message)
+            case LlmEndEvent():
+                break
+            case LlmWorkerErrorEvent(message=message):
+                raise RuntimeError(f"Tool-use smoke generation failed: {message}")
+            case _:
+                raise RuntimeError("Tool-use smoke generation returned an unexpected event.")
+    spoken_text = "".join(spoken_parts).strip()
+    expected_tools = (
+        () if smoke_request.expected_tool is None else (smoke_request.expected_tool.value,)
+    )
+    return SmokeObservation(
+        case=smoke_request.case,
+        generated_text=spoken_text,
+        spoken_text=spoken_text,
+        generated_tools=tuple(generated_tools),
+        parser_failures=tuple(failures),
+        passed=(bool(spoken_text) and tuple(generated_tools) == expected_tools and not failures),
     )
 
 

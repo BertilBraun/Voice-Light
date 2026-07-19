@@ -52,6 +52,7 @@ fi
 
 uv python install 3.12
 uv sync --frozen --python 3.12 --extra compute
+bash deployment/compute/install_vllm.sh
 
 mkdir -p .cache/compute/huggingface .cache/compute/torch logs/compute run/compute
 if [[ ! -f .env.compute ]]; then

@@ -4,8 +4,11 @@ LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-1.7B"
 LANGUAGE_MODEL_REVISION: Final = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 LANGUAGE_MODEL_ADAPTER_NAME: Final = "BertilBraun/qwen3-1.7b-voice-light-tool-use-lora"
 LANGUAGE_MODEL_ADAPTER_REVISION: Final = "2c834fa6398fe342f390752ffa295511190b7376"
+LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION: Final = 0.38
 SEARCH_SUMMARIZER_MODEL_NAME: Final = "Qwen/Qwen3-0.6B"
 SEARCH_SUMMARIZER_MODEL_REVISION: Final = "c1899de289a04d12100db370d81485cdf75e47ca"
+SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION: Final = 0.17
+QWEN_MAXIMUM_MODEL_LENGTH: Final = 4_096
 LANGUAGE_MODEL_SYSTEM_PROMPT: Final = (
     "You are a conversational voice agent. Respond naturally and directly to the user's latest "
     "message. Use the complete conversation history as context and do not repeat earlier answers. "

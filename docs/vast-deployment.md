@@ -22,7 +22,8 @@ current branch, transfers that exact revision without requiring Git credentials 
 and then performs the following operations:
 
 1. Clones or fast-forwards `/workspace/Voice-Light`.
-2. Installs system packages, Python 3.12, and the locked compute dependencies.
+2. Installs system packages, Python 3.12, the locked compute dependencies, and the isolated locked
+   vLLM environment.
 3. Creates a fresh `.env.compute` token when the instance does not already have one.
 4. Downloads and validates the required models, the pinned conversational LoRA adapter, and the
    CUDA environment.
@@ -61,7 +62,8 @@ bash deployment/compute/start.sh
 
 Bootstrap prints a cache line containing the adapter repository and immutable revision. After the
 service starts, `/var/log/portal/voice-light-compute.log` contains an `activated Qwen adapter`
-record. The Qwen child process command also includes both `--adapter` and `--adapter-revision`.
+record. The conversational vLLM child process command also includes both `--adapter` and
+`--adapter-revision`; the search summarizer has neither argument.
 
 Run the behavioral smoke test only in an exclusive window. It loads the same Qwen base and adapter
 as production, so first stop the Supervisor service to avoid loading a second copy. The shell trap

@@ -31,8 +31,11 @@ from app.compute.voice.llm_worker_protocol import (
 from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_ADAPTER_NAME,
     LANGUAGE_MODEL_ADAPTER_REVISION,
+    LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
     LANGUAGE_MODEL_NAME,
     LANGUAGE_MODEL_REVISION,
+    QWEN_MAXIMUM_MODEL_LENGTH,
+    SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
     SEARCH_SUMMARIZER_MODEL_NAME,
     SEARCH_SUMMARIZER_MODEL_REVISION,
 )
@@ -42,8 +45,8 @@ from app.compute.voice.models import (
     QwenWorkerConfiguration,
     QwenWorkerLease,
     RestartingQwenWorkerManager,
-    TransformersLanguageModel,
-    TransformersTextGenerator,
+    VllmLanguageModel,
+    VllmTextGenerator,
 )
 from app.compute.voice.qwen_config import (
     QwenAdapterConfiguration,
@@ -117,7 +120,7 @@ class FakeQwenWorkerManager:
         failed_worker.terminate()
 
 
-class BoundedTextLanguageModel(TransformersLanguageModel):
+class BoundedTextLanguageModel(VllmLanguageModel):
     def __init__(self, worker_manager: FakeQwenWorkerManager) -> None:
         self.worker_manager = worker_manager
 
@@ -349,6 +352,8 @@ def test_qwen_spawn_failure_releases_manager_lock(
             model_name="test/model",
             model_revision="test-revision",
             adapter=None,
+            gpu_memory_utilization=0.5,
+            maximum_model_length=1_024,
         ),
         component_name="test Qwen",
     )
@@ -392,8 +397,8 @@ def test_conversation_and_search_models_use_distinct_workers_and_locks(
 
     monkeypatch.setattr(language_models, "QwenWorkerProcess", create_worker)
 
-    language_model = TransformersLanguageModel()
-    search_generator = TransformersTextGenerator()
+    language_model = VllmLanguageModel()
+    search_generator = VllmTextGenerator()
 
     assert configurations == [
         QwenWorkerConfiguration(
@@ -404,6 +409,8 @@ def test_conversation_and_search_models_use_distinct_workers_and_locks(
                     repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
                     revision=LANGUAGE_MODEL_ADAPTER_REVISION,
                 ),
+                gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
+                maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
             ),
             component_name="Qwen language model",
         ),
@@ -412,6 +419,8 @@ def test_conversation_and_search_models_use_distinct_workers_and_locks(
                 model_name=SEARCH_SUMMARIZER_MODEL_NAME,
                 model_revision=SEARCH_SUMMARIZER_MODEL_REVISION,
                 adapter=None,
+                gpu_memory_utilization=SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
+                maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
             ),
             component_name="Qwen search summarizer",
         ),
