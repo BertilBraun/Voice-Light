@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pydantic import Field
@@ -24,11 +25,6 @@ from app.compute.voice.llm_worker_protocol import (
     StartLlmCommand,
 )
 from app.compute.voice.model_constants import (
-    LANGUAGE_MODEL_ADAPTER_NAME,
-    LANGUAGE_MODEL_ADAPTER_REVISION,
-    LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
-    LANGUAGE_MODEL_NAME,
-    LANGUAGE_MODEL_REVISION,
     QWEN_MAXIMUM_MODEL_LENGTH,
     SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
     SEARCH_SUMMARIZER_MODEL_NAME,
@@ -39,7 +35,10 @@ from app.compute.voice.models import (
     QwenWorkerConfiguration,
     QwenWorkerProcess,
 )
-from app.compute.voice.qwen_config import QwenAdapterConfiguration, QwenModelConfiguration
+from app.compute.voice.qwen_config import (
+    QwenModelConfiguration,
+    language_model_configuration_from_environment,
+)
 from app.compute.voice.search import (
     MAXIMUM_SEARCH_SUMMARY_TOKENS,
     SEARCH_SUMMARIZER_SYSTEM_PROMPT,
@@ -91,19 +90,7 @@ def run_benchmark(runtime_label: str) -> QwenWorkerBenchmarkReport:
 
 
 def benchmark_conversation_worker() -> WorkerBenchmarkResult:
-    configuration = QwenWorkerConfiguration(
-        model=QwenModelConfiguration(
-            model_name=LANGUAGE_MODEL_NAME,
-            model_revision=LANGUAGE_MODEL_REVISION,
-            adapter=QwenAdapterConfiguration(
-                repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
-                revision=LANGUAGE_MODEL_ADAPTER_REVISION,
-            ),
-            gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
-            maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
-        ),
-        component_name="Qwen language model",
-    )
+    configuration = conversation_worker_configuration(os.environ)
     worker, startup_seconds = start_worker(configuration)
     try:
         gpu_memory_mb = active_gpu_memory_mb()
@@ -132,6 +119,15 @@ def benchmark_conversation_worker() -> WorkerBenchmarkResult:
         )
     finally:
         worker.close()
+
+
+def conversation_worker_configuration(
+    environment: Mapping[str, str],
+) -> QwenWorkerConfiguration:
+    return QwenWorkerConfiguration(
+        model=language_model_configuration_from_environment(environment),
+        component_name="Qwen language model",
+    )
 
 
 def conversation_command(
