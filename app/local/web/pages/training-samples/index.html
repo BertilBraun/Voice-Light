@@ -87,7 +87,8 @@
             <span><i class="condition"></i>Known assistant-state input</span>
             <span><i class="positive"></i>Valid target</span>
             <span><i class="probability"></i>Higher target value</span>
-            <span><i class="masked"></i>Loss masked</span>
+            <span><i class="uncertain"></i>Uncertain / censored</span>
+            <span><i class="inactive"></i>No auxiliary event anchor</span>
           </div>
         </div>
         <div class="canvas-shell">
@@ -132,16 +133,17 @@
       <section class="panel info-card">
         <h2>What this crop trains</h2>
         <p>
-          <code>p_user_has_floor</code> is a dense state estimate over the complete user-owned turn,
-          including continuation pauses. <code>p_user_yield</code> is valid only while that state is
-          true and predicts whether the confirmed turn ends within 500 ms. Ambiguous or unsupported
-          semantic regions are visibly masked instead of becoming false negatives.
+          <code>p_user_has_floor</code> is a soft state estimate built directly from the detector's
+          turn and connection probabilities, including continuation pauses.
+          <code>p_user_yield</code> predicts that the user will not hold the floor 500 ms ahead. It
+          stays supervised after a release, so a missed pre-end threshold can still recover.
         </p>
         <p>
           At runtime, the assistant-floor phase reads <code>p_user_has_floor</code> to hand control
           to the user. Once the user owns the floor, the user-floor phase reads
           <code>p_user_yield</code> to release it; the floor-state output does not veto that
-          transition.
+          transition. Only recurrent burn-in, censored lookahead, and unsupported standalone
+          audio-only regions remove runtime loss.
         </p>
       </section>
 
@@ -151,8 +153,9 @@
           Future activity is a soft occupancy fraction for four future horizons, not a hard
           speech/no-speech label. The interaction event is one categorical four-class auxiliary
           target placed on one causal anchor frame; its floor-take class is not a runtime state.
-          Ambiguous boundaries, censored horizons, ineligible contexts, padding, and the four-second
-          recurrent burn-in contribute no loss.
+          Frames without an event anchor are intentionally absent from this sparse auxiliary loss;
+          they are shown as empty rather than as uncertain data. Ambiguous anchors, censored
+          horizons, padding, and the four-second recurrent burn-in contribute no loss.
         </p>
       </section>
     </main>

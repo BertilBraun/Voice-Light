@@ -31,7 +31,6 @@ class CandidateSource(StrEnum):
 
 class SupervisionMaskReason(StrEnum):
     BURN_IN = "Burn-in recurrent-state warm-up"
-    USER_DOES_NOT_HOLD_FLOOR = "Target user does not hold the floor"
     AMBIGUOUS_ANNOTATION = "Annotation confidence is ambiguous"
     CENSORED_ANNOTATION = "Required future annotation is unavailable"
     NO_EVENT_ANCHOR = "No interaction event is anchored to this frame"

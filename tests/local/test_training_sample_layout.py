@@ -44,7 +44,7 @@ def test_burn_in_masks_every_training_head() -> None:
     )
 
 
-def test_user_yield_predicts_completion_within_500_milliseconds_only_while_user_has_floor() -> None:
+def test_user_yield_predicts_floor_availability_in_500_milliseconds() -> None:
     user = _speaker_annotation(
         side=SpeakerSide.SPEAKER2,
         speech_segments=(AnnotationSpan(start_seconds=4.2, end_seconds=5.2, text="answer"),),
@@ -68,11 +68,8 @@ def test_user_yield_predicts_completion_within_500_milliseconds_only_while_user_
     assert speech_frame.user_has_floor_target == pytest.approx(1.0)
     assert approaching_completion_frame.user_yield_valid
     assert approaching_completion_frame.user_yield_target == pytest.approx(1.0)
-    assert not post_completion_frame.user_yield_valid
-    assert (
-        post_completion_frame.user_yield_mask_reason
-        is SupervisionMaskReason.USER_DOES_NOT_HOLD_FLOOR
-    )
+    assert post_completion_frame.user_yield_valid
+    assert post_completion_frame.user_yield_target == pytest.approx(1.0)
     assert post_completion_frame.user_has_floor_target == pytest.approx(0.0)
     assert post_completion_frame.interaction_event_valid
     assert post_completion_frame.interaction_event_distribution is not None
@@ -81,7 +78,7 @@ def test_user_yield_predicts_completion_within_500_milliseconds_only_while_user_
     )
 
 
-def test_detector_turn_point_confirms_yield_when_post_turn_silence_is_censored() -> None:
+def test_user_yield_masks_only_when_its_future_floor_horizon_is_censored() -> None:
     segment = _segment_target(start_seconds=4.2, end_seconds=5.2)
     speech_segments = (
         AnnotationSpan(
@@ -90,19 +87,7 @@ def test_detector_turn_point_confirms_yield_when_post_turn_silence_is_censored()
             text=segment.text,
         ),
     )
-    confirmed_frames = build_frame_previews(
-        start_seconds=0.0,
-        end_seconds=5.6,
-        annotation_end_seconds=5.6,
-        user=_speaker_annotation(
-            side=SpeakerSide.SPEAKER2,
-            speech_segments=speech_segments,
-            segment_targets=(segment,),
-            turns=(_turn_point(segment.end_seconds),),
-        ),
-        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
-    )
-    censored_frames = build_frame_previews(
+    frames = build_frame_previews(
         start_seconds=0.0,
         end_seconds=5.6,
         annotation_end_seconds=5.6,
@@ -114,16 +99,16 @@ def test_detector_turn_point_confirms_yield_when_post_turn_silence_is_censored()
         assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
     )
 
-    confirmed_frame = _frame_at(confirmed_frames, 4.84)
-    censored_frame = _frame_at(censored_frames, 4.84)
+    available_frame = _frame_at(frames, 4.84)
+    censored_frame = _frame_at(frames, 5.24)
 
-    assert confirmed_frame.user_yield_valid
-    assert confirmed_frame.user_yield_target == pytest.approx(1.0)
+    assert available_frame.user_yield_valid
+    assert available_frame.user_yield_target == pytest.approx(1.0)
     assert not censored_frame.user_yield_valid
-    assert censored_frame.user_yield_mask_reason is SupervisionMaskReason.CENSORED_ANNOTATION
+    assert censored_frame.user_yield_mask_reason is SupervisionMaskReason.FUTURE_HORIZON_CENSORED
 
 
-def test_high_confidence_connection_is_continuation_and_ambiguous_connection_is_masked() -> None:
+def test_connection_probability_softly_supervises_floor_state_and_yield() -> None:
     continuation_user = _user_with_connection(merge_confidence=0.9)
     ambiguous_user = _user_with_connection(merge_confidence=0.5)
     assistant = _speaker_annotation(side=SpeakerSide.SPEAKER1)
@@ -147,22 +132,52 @@ def test_high_confidence_connection_is_continuation_and_ambiguous_connection_is_
 
     assert continuation_frame.candidate_source is CandidateSource.CONNECTION
     assert continuation_frame.user_has_floor_valid
-    assert continuation_frame.user_has_floor_target == pytest.approx(1.0)
+    assert continuation_frame.user_has_floor_target == pytest.approx(0.9)
     assert continuation_frame.user_yield_valid
-    assert continuation_frame.user_yield_target == pytest.approx(0.0)
+    assert continuation_frame.user_yield_target == pytest.approx(0.1)
     assert continuation_frame.interaction_event_valid
     assert continuation_frame.interaction_event_distribution is not None
     assert continuation_frame.interaction_event_distribution.continuation_pause == pytest.approx(
         1.0
     )
-    assert not ambiguous_frame.user_yield_valid
-    assert ambiguous_frame.user_yield_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
-    assert not ambiguous_frame.user_has_floor_valid
-    assert ambiguous_frame.user_has_floor_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
+    assert ambiguous_frame.user_yield_valid
+    assert ambiguous_frame.user_yield_target == pytest.approx(0.5)
+    assert ambiguous_frame.user_has_floor_valid
+    assert ambiguous_frame.user_has_floor_target == pytest.approx(0.5)
     assert not ambiguous_frame.interaction_event_valid
     assert (
         ambiguous_frame.interaction_event_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
     )
+
+
+def test_connection_state_supervision_covers_untranscribed_activity_inside_pause() -> None:
+    user = _user_with_connection(merge_confidence=0.75)
+    user = user.model_copy(
+        update={
+            "segment_targets": (
+                *user.segment_targets,
+                _segment_target(
+                    start_seconds=5.3,
+                    end_seconds=5.7,
+                    evidence_source=AnnotationEvidenceSource.AUDIO_ACTIVITY,
+                ),
+            )
+        }
+    )
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=8.0,
+        annotation_end_seconds=8.0,
+        user=user,
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    pause_frame = _frame_at(frames, 5.44)
+
+    assert pause_frame.user_has_floor_valid
+    assert pause_frame.user_has_floor_target == pytest.approx(0.75)
+    assert pause_frame.user_yield_valid
+    assert pause_frame.user_yield_target == pytest.approx(0.25)
 
 
 @pytest.mark.parametrize(
@@ -314,7 +329,7 @@ def test_audio_activity_segment_only_trains_future_activity() -> None:
     )
 
 
-def test_low_turn_confidence_masks_no_connection_completion() -> None:
+def test_uncertain_transcript_softly_supervises_runtime_heads() -> None:
     user = _speaker_annotation(
         side=SpeakerSide.SPEAKER2,
         speech_segments=(AnnotationSpan(start_seconds=4.2, end_seconds=5.2, text="maybe"),),
@@ -335,16 +350,11 @@ def test_low_turn_confidence_masks_no_connection_completion() -> None:
     )
     post_speech_frame = _frame_at(frames, 5.24)
 
-    assert not post_speech_frame.user_yield_valid
-    assert (
-        post_speech_frame.user_yield_mask_reason is SupervisionMaskReason.USER_DOES_NOT_HOLD_FLOOR
-    )
+    assert post_speech_frame.user_yield_valid
+    assert post_speech_frame.user_yield_target == pytest.approx(1.0)
     ambiguous_speech_frame = _frame_at(frames, 4.44)
-    assert not ambiguous_speech_frame.user_has_floor_valid
-    assert (
-        ambiguous_speech_frame.user_has_floor_mask_reason
-        is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
-    )
+    assert ambiguous_speech_frame.user_has_floor_valid
+    assert ambiguous_speech_frame.user_has_floor_target == pytest.approx(0.5)
     assert not post_speech_frame.interaction_event_valid
 
 

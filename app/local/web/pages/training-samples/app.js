@@ -23,6 +23,8 @@ const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
 const frameDetails = document.querySelector("#frame-details");
+const NO_EVENT_ANCHOR_REASON = "No interaction event is anchored to this frame";
+const BURN_IN_REASON = "Burn-in recurrent-state warm-up";
 
 const rowDefinitions = [
   { label: "User waveform", field: "waveform" },
@@ -258,10 +260,10 @@ function renderSummary() {
   const assistantSpeakingFrames = preview.frames.filter(
     (frame) => frame.assistant_speaking_input,
   );
-  const validHasFloorFrames = preview.frames.filter(
+  const validHasFloorFrames = supervisedFrames.filter(
     (frame) => frame.user_has_floor_valid,
   );
-  const validYieldFrames = preview.frames.filter((frame) => frame.user_yield_valid);
+  const validYieldFrames = supervisedFrames.filter((frame) => frame.user_yield_valid);
   const eventFrames = preview.frames.filter((frame) => frame.interaction_event_valid);
   const hasFloorPositives = validHasFloorFrames.filter(
     (frame) => frame.user_has_floor_target >= 0.5,
@@ -290,10 +292,10 @@ function renderSummary() {
       ["Frame interval", `${Math.round(preview.frame_seconds * 1000)} ms`],
       ["Supervised frames", String(supervisedFrames.length)],
       ["Assistant-speaking input", percentage(assistantSpeakingFrames.length, preview.frames.length)],
-      ["Valid floor-state frames", String(validHasFloorFrames.length)],
-      ["User-owned floor frames", String(hasFloorPositives)],
-      ["Valid conditional-yield frames", String(validYieldFrames.length)],
-      ["Yield-within-500-ms frames", String(yieldSoonPositives)],
+      ["Runtime floor supervision", supervisionCoverage(validHasFloorFrames, supervisedFrames)],
+      ["Floor target ≥ 0.5", String(hasFloorPositives)],
+      ["Runtime yield supervision", supervisionCoverage(validYieldFrames, supervisedFrames)],
+      ["Floor available in 500 ms ≥ 0.5", String(yieldSoonPositives)],
       ["Valid event anchors", String(eventFrames.length)],
       ["Completion / continuation", `${eventCounts.turnCompletion} / ${eventCounts.continuationPause}`],
       ["Feedback / floor take", `${eventCounts.nonFloorFeedback} / ${eventCounts.floorTake}`],
@@ -519,7 +521,14 @@ function drawTargetFrames(context, field, validField, left, top, width, height) 
   preview.frames.forEach((frame, index) => {
     const target = targetValue(frame, field, validField);
     if (!target.valid) {
-      drawMaskedFrame(context, left + index * frameWidth, top, frameWidth, height);
+      drawMaskedFrame(
+        context,
+        left + index * frameWidth,
+        top,
+        frameWidth,
+        height,
+        target.maskReason,
+      );
       return;
     }
     const value = target.value;
@@ -541,13 +550,17 @@ function drawTargetFrames(context, field, validField, left, top, width, height) 
   });
 }
 
-function drawMaskedFrame(context, left, top, width, height) {
-  context.fillStyle = "#e2e7e5";
+function drawMaskedFrame(context, left, top, width, height, maskReason) {
+  if (maskReason === NO_EVENT_ANCHOR_REASON) {
+    return;
+  }
+  const isBurnIn = maskReason === BURN_IN_REASON;
+  context.fillStyle = isBurnIn ? "#e2e7e5" : "#f5e7bf";
   context.fillRect(left, top + 3, Math.max(1, width + 0.2), height - 6);
   if (width < 2.5) {
     return;
   }
-  context.strokeStyle = "#c5cecb";
+  context.strokeStyle = isBurnIn ? "#c5cecb" : "#c39328";
   context.lineWidth = 0.6;
   context.beginPath();
   context.moveTo(left, top + height - 3);
@@ -561,17 +574,26 @@ function targetValue(frame, field, validField) {
     return {
       value: target?.occupancy ?? null,
       valid: target?.valid === true,
+      maskReason: target?.mask_reason ?? null,
     };
   }
   if (field.startsWith("interaction_event_distribution.")) {
     return {
       value: frame.interaction_event_distribution?.[field.split(".")[1]] ?? null,
       valid: frame.interaction_event_valid,
+      maskReason: frame.interaction_event_mask_reason,
     };
   }
+  const maskReasonField =
+    field === "user_has_floor_target"
+      ? "user_has_floor_mask_reason"
+      : field === "user_yield_target"
+        ? "user_yield_mask_reason"
+        : null;
   return {
     value: frame[field] ?? null,
     valid: validField === undefined || frame[validField] === true,
+    maskReason: maskReasonField === null ? null : frame[maskReasonField],
   };
 }
 
@@ -794,11 +816,21 @@ function optionalProbability(value) {
 }
 
 function maskedProbability(value, valid, maskReason) {
-  return valid ? optionalProbability(value) : `MASKED · ${prettyMaskReason(maskReason)}`;
+  if (valid) {
+    return optionalProbability(value);
+  }
+  return maskReason === NO_EVENT_ANCHOR_REASON
+    ? "NOT AN EVENT ANCHOR"
+    : `MASKED · ${prettyMaskReason(maskReason)}`;
 }
 
 function maskLabel(valid, maskReason) {
-  return valid ? "VALID" : `MASKED · ${prettyMaskReason(maskReason)}`;
+  if (valid) {
+    return "VALID";
+  }
+  return maskReason === NO_EVENT_ANCHOR_REASON
+    ? "NOT AN EVENT ANCHOR"
+    : `MASKED · ${prettyMaskReason(maskReason)}`;
 }
 
 function prettyMaskReason(maskReason) {
@@ -833,6 +865,10 @@ function eventProbability(frame, field) {
 
 function percentage(count, total) {
   return total === 0 ? "0.0%" : `${((100 * count) / total).toFixed(1)}%`;
+}
+
+function supervisionCoverage(validFrames, supervisedFrames) {
+  return `${validFrames.length} / ${supervisedFrames.length} (${percentage(validFrames.length, supervisedFrames.length)})`;
 }
 
 function formatDuration(totalSeconds) {

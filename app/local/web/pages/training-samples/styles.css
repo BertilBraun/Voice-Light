@@ -236,8 +236,19 @@ button.primary {
   background: linear-gradient(90deg, #eef6f4, #146b63);
 }
 
-.legend .masked {
-  background: repeating-linear-gradient(135deg, #fff, #fff 3px, #cbd3d1 3px, #cbd3d1 5px);
+.legend .uncertain {
+  background: repeating-linear-gradient(
+    135deg,
+    #f8edce,
+    #f8edce 3px,
+    #c39328 3px,
+    #c39328 5px
+  );
+}
+
+.legend .inactive {
+  background: #f7f9f8;
+  border-color: #dce3e1;
 }
 
 .annotation-legend {
