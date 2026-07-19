@@ -319,11 +319,11 @@ async def run_benchmark(
             [
                 await benchmark_case(
                     synthesizer=synthesizer,
-                    benchmark_case=benchmark_case,
+                    benchmark_case=case,
                     runs=configuration.runs_per_case,
                     output_directory=output_directory,
                 )
-                for benchmark_case in cases
+                for case in cases
             ]
         )
         first_measured_trials = tuple(result.first_measured for result in results)

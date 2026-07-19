@@ -26,6 +26,7 @@ from deployment.compute.benchmark_voxtream import (
     normalized_variant,
     parse_load_command,
     percentile,
+    run_benchmark,
     synthesis_words,
 )
 
@@ -233,3 +234,44 @@ def test_absolute_python_path_does_not_dereference_virtual_environment_symlink(
     assert absolute_path_preserving_symlinks(virtual_environment_python) != (
         virtual_environment_python.resolve()
     )
+
+
+def test_run_benchmark_executes_cases_without_shadowing_case_function(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    synthesizer = FakeSpeechSynthesizer(
+        pcm_bytes=b"\x00\x00\x01\x00\x02\x00\x03\x00",
+        sample_rate=16_000,
+    )
+    configuration = VoxtreamBenchmarkConfiguration(
+        variant="test",
+        condition="idle",
+        runs_per_case=1,
+        compile_model=False,
+        cache_prompt_in_memory=False,
+        python_path=str(tmp_path / "python"),
+        config_path=str(tmp_path / "generator.json"),
+        config_sha256="0" * 64,
+        prompt_audio_path=str(tmp_path / "prompt.wav"),
+        prompt_audio_sha256="1" * 64,
+        load_command=None,
+        load_startup_seconds=0.0,
+        load_ready_file=None,
+        load_ready_timeout_seconds=1.0,
+    )
+    monkeypatch.setattr(
+        "deployment.compute.benchmark_voxtream.create_synthesizer",
+        lambda benchmark_configuration: synthesizer,
+    )
+
+    report = asyncio.run(
+        run_benchmark(
+            configuration=configuration,
+            cases=(VoxtreamBenchmarkCase(name="short", text="Hello."),),
+            output_directory=tmp_path,
+        )
+    )
+
+    assert len(report.results) == 1
+    assert report.results[0].case.name == "short"
