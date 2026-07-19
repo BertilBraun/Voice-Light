@@ -152,6 +152,8 @@ def test_transcript_turn_uses_word_timings_clipped_to_analysis_duration() -> Non
     transcript_turn = _transcript_turn(
         turn=turn,
         max_duration_seconds=2.0,
+        speaker="Speaker1",
+        offset_seconds=0.0,
     )
 
     assert transcript_turn == TranscriptTurn(

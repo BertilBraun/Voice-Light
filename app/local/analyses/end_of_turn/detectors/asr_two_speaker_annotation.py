@@ -5,7 +5,7 @@ from pathlib import Path
 from threading import Lock
 
 from app.local.analyses.asr.models import AsrModelMode
-from app.local.analyses.asr.service import analyze_asr
+from app.local.analyses.asr.service import IngestedAsrTranscriptSource, analyze_asr
 from app.local.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.local.analyses.end_of_turn.cache import LeastRecentlyUsedCache
 from app.local.analyses.end_of_turn.conversation_scoring import (
@@ -23,6 +23,7 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
 )
 from app.local.analyses.end_of_turn.service import BaselineResult, SpeechSegment
 from app.local.asr.client import HttpRemoteAsrClient
+from app.local.asr.full_recording_repository import FullRecordingAsrRepository
 from app.local.asr.repository import AsrTranscriptRepository
 from app.local.asr.service import AsrTranscriptCache, RemoteAsrClientFactory
 from app.local.asr.transcript import SpeakerTrack, Word
@@ -55,9 +56,11 @@ class AsrTwoSpeakerTranscriptSource:
     def __init__(
         self,
         cache: AsrTranscriptCache,
+        ingested_transcript_source: IngestedAsrTranscriptSource,
         remote_client_factory: RemoteAsrClientFactory,
     ) -> None:
         self.cache = cache
+        self.ingested_transcript_source = ingested_transcript_source
         self.remote_client_factory = remote_client_factory
         self._transcript_pair_cache = LeastRecentlyUsedCache[
             AsrTranscriptPairCacheKey, AsrTranscriptPair
@@ -94,6 +97,7 @@ class AsrTwoSpeakerTranscriptSource:
             selected_models=(ASR_MODEL_MODE,),
             reference_words=(),
             cache=self.cache,
+            ingested_transcript_source=self.ingested_transcript_source,
             remote_client_factory=self.remote_client_factory,
         )
         speaker2_response = analyze_asr(
@@ -102,6 +106,7 @@ class AsrTwoSpeakerTranscriptSource:
             selected_models=(ASR_MODEL_MODE,),
             reference_words=(),
             cache=self.cache,
+            ingested_transcript_source=self.ingested_transcript_source,
             remote_client_factory=self.remote_client_factory,
         )
         if len(speaker1_response.runs) != 1 or len(speaker2_response.runs) != 1:
@@ -174,6 +179,7 @@ def asr_two_speaker_annotation_detectors() -> tuple[
 ]:
     transcript_source = AsrTwoSpeakerTranscriptSource(
         cache=AsrTranscriptRepository(database_url=DATABASE_URL),
+        ingested_transcript_source=FullRecordingAsrRepository(database_url=DATABASE_URL),
         remote_client_factory=remote_asr_client,
     )
     return (
@@ -204,6 +210,7 @@ def _asr_two_speaker_annotation_detector(
 ) -> AsrTwoSpeakerAnnotationDetector:
     source = transcript_source or AsrTwoSpeakerTranscriptSource(
         cache=AsrTranscriptRepository(database_url=DATABASE_URL),
+        ingested_transcript_source=FullRecordingAsrRepository(database_url=DATABASE_URL),
         remote_client_factory=remote_asr_client,
     )
     return AsrTwoSpeakerAnnotationDetector(

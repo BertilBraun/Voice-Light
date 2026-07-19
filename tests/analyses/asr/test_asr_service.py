@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.local.analyses.asr.models import AsrModelMode
 from app.local.analyses.asr.service import (
+    clipped_ingested_transcript,
     filtered_remote_dependencies,
     remote_model_ids_for_selected_modes,
     transcription_result_from_cached_asr,
@@ -46,6 +47,29 @@ def test_transcription_result_from_cached_asr_preserves_words_and_runtime() -> N
     assert transcription.inference_time_seconds == 1.2
     assert transcription.real_time_factor == 0.75
     assert transcription.peak_gpu_memory_mb == 1000.0
+
+
+def test_clipped_ingested_transcript_matches_analysis_audio_duration() -> None:
+    transcript = AsrTranscriptResult(
+        model_id=AsrModelId.PARAKEET_TDT,
+        text="inside boundary outside",
+        words=(
+            TimestampedWord(text="inside", start_seconds=1.0, end_seconds=1.5),
+            TimestampedWord(text="boundary", start_seconds=1.8, end_seconds=2.2),
+            TimestampedWord(text="outside", start_seconds=2.5, end_seconds=3.0),
+        ),
+    )
+
+    clipped = clipped_ingested_transcript(
+        transcript=transcript,
+        maximum_duration_seconds=2.0,
+    )
+
+    assert clipped.text == "inside boundary"
+    assert clipped.words == (
+        TimestampedWord(text="inside", start_seconds=1.0, end_seconds=1.5),
+        TimestampedWord(text="boundary", start_seconds=1.8, end_seconds=2.0),
+    )
 
 
 def test_remote_model_ids_expand_merged_consensus_dependencies() -> None:

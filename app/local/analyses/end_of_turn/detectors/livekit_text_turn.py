@@ -19,6 +19,7 @@ from transformers.tokenization_utils_base import BatchEncoding
 
 from app.local.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.local.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
+from app.local.data.transcript_alignment import TranscriptAlignment, transcript_alignment
 from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS, read_mono_wave_audio
 
 MODEL_REPOSITORY = "livekit/turn-detector"
@@ -229,6 +230,7 @@ def _load_transcript_for_wave(speaker_path: Path) -> Transcript:
     turns = _transcript_turns(
         metadata=metadata,
         max_duration_seconds=capped_duration_seconds,
+        alignment=transcript_alignment(metadata_path=metadata_path),
     )
     return Transcript(
         language_name=language_name,
@@ -262,17 +264,22 @@ def _speaker_label_from_wave_path(speaker_path: Path) -> str:
 def _transcript_turns(
     metadata: Mapping[str, object],
     max_duration_seconds: float,
+    alignment: TranscriptAlignment,
 ) -> list[TranscriptTurn]:
     raw_turns = _required_sequence(source=metadata, key="speakerTranscript")
     transcript_turns: list[TranscriptTurn] = []
     for raw_turn in raw_turns:
         turn = _required_mapping(value=raw_turn, name="speakerTranscript[]")
-        start_seconds = _required_number(source=turn, key="startTime")
+        speaker = _required_string(source=turn, key="speaker")
+        offset_seconds = alignment.offset_seconds(speaker=speaker)
+        start_seconds = _required_number(source=turn, key="startTime") + offset_seconds
         if start_seconds >= max_duration_seconds:
             continue
         transcript_turn = _transcript_turn(
             turn=turn,
             max_duration_seconds=max_duration_seconds,
+            speaker=speaker,
+            offset_seconds=offset_seconds,
         )
         if transcript_turn.text:
             transcript_turns.append(transcript_turn)
@@ -282,15 +289,20 @@ def _transcript_turns(
 def _transcript_turn(
     turn: Mapping[str, object],
     max_duration_seconds: float,
+    speaker: str,
+    offset_seconds: float,
 ) -> TranscriptTurn:
     words = _transcript_words(
         turn=turn,
         max_duration_seconds=max_duration_seconds,
+        offset_seconds=offset_seconds,
     )
-    speaker = _required_string(source=turn, key="speaker")
     fallback_text = _required_string(source=turn, key="text")
-    start_seconds = _required_number(source=turn, key="startTime")
-    end_seconds = min(_required_number(source=turn, key="endTime"), max_duration_seconds)
+    start_seconds = _required_number(source=turn, key="startTime") + offset_seconds
+    end_seconds = min(
+        _required_number(source=turn, key="endTime") + offset_seconds,
+        max_duration_seconds,
+    )
     if words:
         text = " ".join(word.text for word in words)
         return TranscriptTurn(
@@ -312,15 +324,19 @@ def _transcript_turn(
 def _transcript_words(
     turn: Mapping[str, object],
     max_duration_seconds: float,
+    offset_seconds: float,
 ) -> list[TranscriptWord]:
     raw_words = _optional_sequence(source=turn, key="words")
     words: list[TranscriptWord] = []
     for raw_word in raw_words:
         word = _required_mapping(value=raw_word, name="words[]")
-        start_seconds = _required_number(source=word, key="startTime")
+        start_seconds = _required_number(source=word, key="startTime") + offset_seconds
         if start_seconds >= max_duration_seconds:
             continue
-        end_seconds = min(_required_number(source=word, key="endTime"), max_duration_seconds)
+        end_seconds = min(
+            _required_number(source=word, key="endTime") + offset_seconds,
+            max_duration_seconds,
+        )
         words.append(
             TranscriptWord(
                 text=_required_string(source=word, key="text"),

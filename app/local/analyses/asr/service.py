@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 from pathlib import Path
+from typing import Protocol
 
 from app.local.analyses.asr.catalog import (
     REMOTE_ASR_MODEL_MODES,
@@ -36,6 +37,7 @@ from app.local.analyses.asr.models import (
 from app.local.asr.service import AsrTranscriptCache, RemoteAsrClientFactory, cached_asr_transcripts
 from app.local.asr.transcript import ReferenceTranscript, SpeakerTrack, TranscriptionResult, Word
 from app.local.data.sessions import SpeakerName, session_audio_path
+from app.local.db.models import TrackSide
 from app.shared.asr import (
     CANARY_IDENTIFIER,
     NEMOTRON_3_5_IDENTIFIER,
@@ -52,12 +54,22 @@ from app.shared.storage.local import LocalStorageBackend
 CROSSTALK_FILTER_CONFIG = CrosstalkFilterConfig()
 
 
+class IngestedAsrTranscriptSource(Protocol):
+    def get_current_transcripts(
+        self,
+        sample_external_id: str,
+        side: TrackSide,
+        model_ids: tuple[AsrModelId, ...],
+    ) -> tuple[AsrTranscriptResult, ...]: ...
+
+
 def analyze_asr(
     session_id: str,
     speaker_track: SpeakerTrack,
     selected_models: tuple[AsrModelMode, ...],
     reference_words: tuple[Word, ...],
     cache: AsrTranscriptCache,
+    ingested_transcript_source: IngestedAsrTranscriptSource,
     remote_client_factory: RemoteAsrClientFactory,
     source_audio_path: Path | None = None,
     other_audio_path: Path | None = None,
@@ -77,11 +89,31 @@ def analyze_asr(
         ).metadata.duration_seconds
         model_infos = available_asr_models()
         requested_model_ids = remote_model_ids_for_selected_modes(selected_models)
-        cached_response = cached_asr_transcripts(
-            audio_path=analysis_audio_path,
-            requested_models=requested_model_ids,
-            cache=cache,
-            remote_client_factory=remote_client_factory,
+        ingested_transcripts = clipped_ingested_transcripts(
+            transcripts=ingested_transcript_source.get_current_transcripts(
+                sample_external_id=session_id,
+                side=track_side(speaker_track),
+                model_ids=requested_model_ids,
+            ),
+            maximum_duration_seconds=analyzed_duration_seconds,
+        )
+        ingested_model_ids = {transcript.model_id for transcript in ingested_transcripts}
+        missing_model_ids = tuple(
+            model_id for model_id in requested_model_ids if model_id not in ingested_model_ids
+        )
+        cached_transcripts = (
+            cached_asr_transcripts(
+                audio_path=analysis_audio_path,
+                requested_models=missing_model_ids,
+                cache=cache,
+                remote_client_factory=remote_client_factory,
+            ).results
+            if missing_model_ids
+            else ()
+        )
+        transcripts = ordered_asr_transcripts(
+            requested_model_ids=requested_model_ids,
+            transcripts=(*ingested_transcripts, *cached_transcripts),
         )
         dependency_runs = tuple(
             asr_model_run(
@@ -91,7 +123,7 @@ def analyze_asr(
                 ),
                 transcript=transcript_for_model(
                     model_id=model_id,
-                    results=cached_response.results,
+                    results=transcripts,
                 ),
                 audio_path=analysis_audio_path,
                 speaker_track=speaker_track,
@@ -249,6 +281,60 @@ def other_speaker_name_for_track(speaker_track: SpeakerTrack) -> SpeakerName:
             return SpeakerName.SPEAKER2
         case SpeakerTrack.SPEAKER2:
             return SpeakerName.SPEAKER1
+
+
+def track_side(speaker_track: SpeakerTrack) -> TrackSide:
+    match speaker_track:
+        case SpeakerTrack.SPEAKER1:
+            return TrackSide.SPEAKER1
+        case SpeakerTrack.SPEAKER2:
+            return TrackSide.SPEAKER2
+
+
+def clipped_ingested_transcripts(
+    transcripts: tuple[AsrTranscriptResult, ...],
+    maximum_duration_seconds: float,
+) -> tuple[AsrTranscriptResult, ...]:
+    return tuple(
+        clipped_ingested_transcript(
+            transcript=transcript,
+            maximum_duration_seconds=maximum_duration_seconds,
+        )
+        for transcript in transcripts
+    )
+
+
+def clipped_ingested_transcript(
+    transcript: AsrTranscriptResult,
+    maximum_duration_seconds: float,
+) -> AsrTranscriptResult:
+    words = tuple(
+        word.model_copy(
+            update={
+                "end_seconds": min(word.end_seconds, maximum_duration_seconds)
+                if word.end_seconds is not None
+                else None
+            }
+        )
+        for word in transcript.words
+        if word.start_seconds is None or word.start_seconds < maximum_duration_seconds
+    )
+    return transcript.model_copy(
+        update={
+            "text": " ".join(word.text for word in words),
+            "words": words,
+        }
+    )
+
+
+def ordered_asr_transcripts(
+    requested_model_ids: tuple[AsrModelId, ...],
+    transcripts: tuple[AsrTranscriptResult, ...],
+) -> tuple[AsrTranscriptResult, ...]:
+    return tuple(
+        transcript_for_model(model_id=model_id, results=transcripts)
+        for model_id in requested_model_ids
+    )
 
 
 def transcript_for_model(

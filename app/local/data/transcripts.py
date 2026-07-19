@@ -5,6 +5,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from app.local.data.transcript_alignment import transcript_alignment
+
 
 @dataclass(frozen=True)
 class TranscriptTurn:
@@ -22,14 +24,17 @@ def read_transcript_turns(metadata_path: Path) -> list[TranscriptTurn]:
     raw_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata = _required_mapping(value=raw_metadata, name=str(metadata_path))
     raw_turns = _required_sequence(source=metadata, key="speakerTranscript")
+    alignment = transcript_alignment(metadata_path=metadata_path)
     transcript_turns: list[TranscriptTurn] = []
     for raw_turn in raw_turns:
         turn = _required_mapping(value=raw_turn, name="speakerTranscript[]")
+        speaker = _required_string(source=turn, key="speaker")
+        offset_seconds = alignment.offset_seconds(speaker=speaker)
         transcript_turn = TranscriptTurn(
-            speaker=_required_string(source=turn, key="speaker"),
+            speaker=speaker,
             text=_required_string(source=turn, key="text"),
-            start_seconds=_required_number(source=turn, key="startTime"),
-            end_seconds=_required_number(source=turn, key="endTime"),
+            start_seconds=_required_number(source=turn, key="startTime") + offset_seconds,
+            end_seconds=_required_number(source=turn, key="endTime") + offset_seconds,
         )
         if transcript_turn.text:
             transcript_turns.append(transcript_turn)

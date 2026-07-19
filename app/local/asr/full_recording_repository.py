@@ -88,6 +88,38 @@ class FullRecordingAsrRepository:
             speaker2=speaker2[0],
         )
 
+    def get_current_transcripts(
+        self,
+        sample_external_id: str,
+        side: TrackSide,
+        model_ids: Sequence[AsrModelId],
+    ) -> tuple[AsrTranscriptResult, ...]:
+        if not model_ids:
+            return ()
+        with self.connection() as connection:
+            rows = connection.execute(
+                transcript_select_query(
+                    """
+                    WHERE samples.external_id = %s
+                      AND sample_tracks.side = %s
+                      AND transcripts.source_audio_sha256 = sample_tracks.audio_sha256
+                      AND transcripts.model_id = ANY(%s)
+                    """
+                ),
+                (
+                    sample_external_id,
+                    side.value,
+                    [model_id.value for model_id in model_ids],
+                ),
+            ).fetchall()
+        records = tuple(transcript_record(row) for row in rows)
+        result_by_model_id = {
+            record.model_id: transcript_result_from_record(record) for record in records
+        }
+        return tuple(
+            result_by_model_id[model_id] for model_id in model_ids if model_id in result_by_model_id
+        )
+
     def upsert_transcript(
         self,
         sample_track_id: UUID,
@@ -212,6 +244,19 @@ def transcript_record(row: dict[str, object]) -> FullRecordingAsrTranscriptRecor
         error=optional_string_from_row(row["error"]),
         created_at=datetime_from_row(row["created_at"]),
         updated_at=datetime_from_row(row["updated_at"]),
+    )
+
+
+def transcript_result_from_record(
+    record: FullRecordingAsrTranscriptRecord,
+) -> AsrTranscriptResult:
+    return AsrTranscriptResult(
+        model_id=record.model_id,
+        text=record.transcript_text,
+        words=record.words,
+        processing_time_seconds=record.processing_time_seconds,
+        runtime=record.runtime,
+        error=record.error,
     )
 
 

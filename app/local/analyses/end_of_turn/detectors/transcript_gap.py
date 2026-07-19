@@ -14,6 +14,7 @@ from app.local.analyses.end_of_turn.service import (
     PauseSpan,
     SpeechSegment,
 )
+from app.local.data.transcript_alignment import TranscriptAlignment, transcript_alignment
 from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
 
 JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -209,19 +210,22 @@ def _parse_session_transcript(
     if not speaker_transcripts_array:
         raise ValueError(f"Missing speakerTranscript entries in metadata: {metadata_path}")
 
+    alignment = transcript_alignment(metadata_path=metadata_path)
+    legacy_duration_seconds = _required_float(
+        value=_required_field(source=metadata_object, field_name="durationSeconds"),
+        field_name="durationSeconds",
+    )
     return SessionTranscript(
         name=_required_string(
             value=_required_field(source=metadata_object, field_name="name"),
             field_name="name",
         ),
-        duration_seconds=_required_float(
-            value=_required_field(source=metadata_object, field_name="durationSeconds"),
-            field_name="durationSeconds",
-        ),
+        duration_seconds=alignment.aligned_duration_seconds or legacy_duration_seconds,
         speaker_transcripts=[
             _parse_speaker_transcript(
                 speaker_transcript_value=speaker_transcript_value,
                 speaker_transcript_index=speaker_transcript_index,
+                alignment=alignment,
             )
             for speaker_transcript_index, speaker_transcript_value in enumerate(
                 speaker_transcripts_array
@@ -233,6 +237,7 @@ def _parse_session_transcript(
 def _parse_speaker_transcript(
     speaker_transcript_value: JsonValue,
     speaker_transcript_index: int,
+    alignment: TranscriptAlignment,
 ) -> SpeakerTranscript:
     field_prefix = f"speakerTranscript[{speaker_transcript_index}]"
     speaker_transcript_object = _required_object(
@@ -247,16 +252,19 @@ def _parse_speaker_transcript(
         value=words_value,
         field_name=f"{field_prefix}.words",
     )
+    speaker = _required_string(
+        value=_required_field(source=speaker_transcript_object, field_name="speaker"),
+        field_name=f"{field_prefix}.speaker",
+    )
+    offset_seconds = alignment.offset_seconds(speaker=speaker)
     return SpeakerTranscript(
-        speaker=_required_string(
-            value=_required_field(source=speaker_transcript_object, field_name="speaker"),
-            field_name=f"{field_prefix}.speaker",
-        ),
+        speaker=speaker,
         words=[
             _parse_transcript_word(
                 word_value=word_value,
                 word_index=word_index,
                 field_prefix=field_prefix,
+                offset_seconds=offset_seconds,
             )
             for word_index, word_value in enumerate(words_array)
         ],
@@ -267,14 +275,15 @@ def _parse_transcript_word(
     word_value: JsonValue,
     word_index: int,
     field_prefix: str,
+    offset_seconds: float,
 ) -> TranscriptWord:
     word_field_prefix = f"{field_prefix}.words[{word_index}]"
     word_object = _required_object(value=word_value, field_name=word_field_prefix)
-    start_seconds = _required_float(
+    start_seconds = offset_seconds + _required_float(
         value=_required_field(source=word_object, field_name="startTime"),
         field_name=f"{word_field_prefix}.startTime",
     )
-    end_seconds = _required_float(
+    end_seconds = offset_seconds + _required_float(
         value=_required_field(source=word_object, field_name="endTime"),
         field_name=f"{word_field_prefix}.endTime",
     )

@@ -9,6 +9,7 @@ from app.local.analyses.asr.models import (
     AsrModelMode,
     AsrModelRun,
 )
+from app.local.analyses.asr.service import IngestedAsrTranscriptSource
 from app.local.analyses.end_of_turn.detectors import asr_two_speaker_annotation as asr_annotation
 from app.local.analyses.end_of_turn.detectors.asr_two_speaker_annotation import (
     ASR_MODEL_MODE,
@@ -70,9 +71,10 @@ def test_detector_requests_cached_union_for_both_speakers(
         selected_models: tuple[AsrModelMode, ...],
         reference_words: tuple[Word, ...],
         cache: AsrTranscriptCache,
+        ingested_transcript_source: IngestedAsrTranscriptSource,
         remote_client_factory: RemoteAsrClientFactory,
     ) -> AsrAnalysisResponse:
-        del reference_words, cache, remote_client_factory
+        del reference_words, cache, ingested_transcript_source, remote_client_factory
         assert session_id == "session"
         assert selected_models == (ASR_MODEL_MODE,)
         requested_tracks.append(speaker_track)
@@ -112,9 +114,17 @@ def test_paired_detectors_share_transcripts_and_mark_speaker2_interruption_onset
         selected_models: tuple[AsrModelMode, ...],
         reference_words: tuple[Word, ...],
         cache: AsrTranscriptCache,
+        ingested_transcript_source: IngestedAsrTranscriptSource,
         remote_client_factory: RemoteAsrClientFactory,
     ) -> AsrAnalysisResponse:
-        del session_id, selected_models, reference_words, cache, remote_client_factory
+        del (
+            session_id,
+            selected_models,
+            reference_words,
+            cache,
+            ingested_transcript_source,
+            remote_client_factory,
+        )
         requested_tracks.append(speaker_track)
         words = (
             (Word(text="speaking", start_seconds=0.2, end_seconds=1.5),)

@@ -16,6 +16,7 @@ from app.local.analyses.end_of_turn.service import (
     PauseSpan,
     SpeechSegment,
 )
+from app.local.data.transcript_alignment import TranscriptAlignment, transcript_alignment
 from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
 
 JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -166,20 +167,34 @@ def _read_transcript_turns(metadata_path: Path) -> list[TranscriptTurn]:
         value=_required_field(source=metadata_object, field_name="speakerTranscript"),
         field_name="speakerTranscript",
     )
+    alignment = transcript_alignment(metadata_path=metadata_path)
     return [
-        _parse_transcript_turn(turn_value=turn_value, turn_index=turn_index)
+        _parse_transcript_turn(
+            turn_value=turn_value,
+            turn_index=turn_index,
+            alignment=alignment,
+        )
         for turn_index, turn_value in enumerate(speaker_transcripts)
     ]
 
 
-def _parse_transcript_turn(turn_value: JsonValue, turn_index: int) -> TranscriptTurn:
+def _parse_transcript_turn(
+    turn_value: JsonValue,
+    turn_index: int,
+    alignment: TranscriptAlignment,
+) -> TranscriptTurn:
     field_prefix = f"speakerTranscript[{turn_index}]"
     turn_object = _required_object(value=turn_value, field_name=field_prefix)
-    start_seconds = _required_float(
+    speaker = _required_string(
+        value=_required_field(source=turn_object, field_name="speaker"),
+        field_name=f"{field_prefix}.speaker",
+    )
+    offset_seconds = alignment.offset_seconds(speaker=speaker)
+    start_seconds = offset_seconds + _required_float(
         value=_required_field(source=turn_object, field_name="startTime"),
         field_name=f"{field_prefix}.startTime",
     )
-    end_seconds = _required_float(
+    end_seconds = offset_seconds + _required_float(
         value=_required_field(source=turn_object, field_name="endTime"),
         field_name=f"{field_prefix}.endTime",
     )
@@ -191,10 +206,7 @@ def _parse_transcript_turn(turn_value: JsonValue, turn_index: int) -> Transcript
         field_name=f"{field_prefix}.words",
     )
     return TranscriptTurn(
-        speaker=_required_string(
-            value=_required_field(source=turn_object, field_name="speaker"),
-            field_name=f"{field_prefix}.speaker",
-        ),
+        speaker=speaker,
         text=_required_string(
             value=_required_field(source=turn_object, field_name="text"),
             field_name=f"{field_prefix}.text",
@@ -206,6 +218,7 @@ def _parse_transcript_turn(turn_value: JsonValue, turn_index: int) -> Transcript
                 word_value=word_value,
                 word_index=word_index,
                 field_prefix=field_prefix,
+                offset_seconds=offset_seconds,
             )
             for word_index, word_value in enumerate(words)
         ],
@@ -216,14 +229,15 @@ def _parse_transcript_word(
     word_value: JsonValue,
     word_index: int,
     field_prefix: str,
+    offset_seconds: float,
 ) -> TranscriptWord:
     word_field_prefix = f"{field_prefix}.words[{word_index}]"
     word_object = _required_object(value=word_value, field_name=word_field_prefix)
-    start_seconds = _required_float(
+    start_seconds = offset_seconds + _required_float(
         value=_required_field(source=word_object, field_name="startTime"),
         field_name=f"{word_field_prefix}.startTime",
     )
-    end_seconds = _required_float(
+    end_seconds = offset_seconds + _required_float(
         value=_required_field(source=word_object, field_name="endTime"),
         field_name=f"{word_field_prefix}.endTime",
     )

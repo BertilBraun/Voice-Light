@@ -33,6 +33,14 @@ let playbackObjectUrl = null;
 let waveformPeaks = [];
 let timelineDurationSeconds = 0;
 const sentenceGapSeconds = 0.3;
+const DEFAULT_MODEL_MODES = new Set([
+  "parakeet_tdt_0_6b_v3",
+  "parakeet_tdt_0_6b_v3_crosstalk_filtered",
+  "canary_1b_v2",
+  "canary_1b_v2_crosstalk_filtered",
+  "parakeet_canary_consensus",
+  "parakeet_canary_union_crosstalk_filtered",
+]);
 
 runButton.addEventListener("click", runAnalysis);
 modelSettingsButton.addEventListener("click", openModelSettingsModal);
@@ -74,7 +82,11 @@ async function loadInitialOptions() {
     }),
   );
   renderModelOptions();
-  selectedModelModes = new Set(models.map((model) => model.mode));
+  selectedModelModes = new Set(
+    models
+      .filter((model) => DEFAULT_MODEL_MODES.has(model.mode))
+      .map((model) => model.mode),
+  );
   stagedModelModes = new Set(selectedModelModes);
   updateModelSettingsSummary();
   setModelSettingsButtonsEnabled(models.length > 0);

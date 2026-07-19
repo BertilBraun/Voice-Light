@@ -128,6 +128,21 @@ def test_read_transcript_turns_loads_session_speakers() -> None:
     assert transcript_turns[1].speaker == "Speaker2"
 
 
+def test_read_transcript_turns_applies_physical_alignment_sidecar() -> None:
+    transcript_turns = read_transcript_turns(
+        metadata_path=Path("data/luel/sessions/pmt_284/pmt_284.json")
+    )
+
+    assert transcript_turns[0].speaker == "Speaker1"
+    assert transcript_turns[0].start_seconds == pytest.approx(7.46)
+    first_speaker2_turn = next(
+        transcript_turn
+        for transcript_turn in transcript_turns
+        if transcript_turn.speaker == "Speaker2"
+    )
+    assert first_speaker2_turn.start_seconds == pytest.approx(1.04)
+
+
 def test_capped_wave_bytes_serves_browser_seekable_pcm16() -> None:
     wave_bytes = capped_wave_bytes(Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav"))
 
