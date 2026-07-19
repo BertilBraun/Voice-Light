@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Misalignment Lab - Voice Light</title>
-    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=1" />
+    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=2" />
   </head>
   <body>
     <main>
@@ -13,12 +13,17 @@
           <a class="back-link" href="/training/sample-lab">&larr; Training sample lab</a>
           <h1>Misalignment lab</h1>
           <p>
-            Rapidly triage raw, zero-shift 20-second clips chosen from interaction-dense moments
-            near the ends of conversations.
+            Triage raw clips or compare conservative piecewise repair estimates for quarantined
+            conversations.
           </p>
         </div>
         <div id="queue-position" class="queue-position">Loading queue...</div>
       </header>
+
+      <nav class="mode-switch" aria-label="Misalignment lab mode">
+        <button id="triage-mode" type="button">Review new clips</button>
+        <button id="repair-mode" type="button">Test quarantine repairs</button>
+      </nav>
 
       <section class="panel progress-panel">
         <div>
@@ -48,10 +53,24 @@
             <h2 id="candidate-time"></h2>
             <p id="candidate-reason"></p>
           </div>
-          <span class="raw-badge">Raw tracks - shift 0.0 s</span>
+          <span id="shift-badge" class="raw-badge">Raw tracks - shift 0.0 s</span>
         </section>
 
         <section class="panel playback-panel">
+          <div id="comparison-controls" class="comparison-controls" hidden>
+            <div>
+              <strong>Speaker 2 alignment</strong>
+              <span id="repair-evidence"></span>
+            </div>
+            <div class="comparison-buttons">
+              <button id="original-shift" type="button" aria-pressed="true">
+                Original 0.0 s <kbd>O</kbd>
+              </button>
+              <button id="predicted-shift" type="button" aria-pressed="false">
+                Predicted <span id="predicted-shift-label"></span> <kbd>P</kbd>
+              </button>
+            </div>
+          </div>
           <div class="playback-controls">
             <button id="play" type="button" class="primary">Start / replay both</button>
             <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Clip position" />
@@ -86,12 +105,12 @@
         </section>
 
         <section class="panel decision-panel">
-          <h3>Do the two raw tracks plausibly share one timeline?</h3>
-          <p>
+          <h3 id="decision-title">Do the two raw tracks plausibly share one timeline?</h3>
+          <p id="decision-description">
             One likely-misaligned judgment quarantines the whole recording immediately. No audio
             is rewritten and no offset is applied.
           </p>
-          <div class="decision-buttons">
+          <div id="triage-decisions" class="decision-buttons">
             <button id="aligned" type="button" class="aligned">
               Plausibly aligned <kbd>A</kbd>
             </button>
@@ -100,6 +119,17 @@
             </button>
             <button id="unsure" type="button">
               Skip / unsure <kbd>U</kbd>
+            </button>
+          </div>
+          <div id="repair-decisions" class="decision-buttons" hidden>
+            <button id="repair-plausible" type="button" class="aligned">
+              Prediction sounds plausible <kbd>F</kbd>
+            </button>
+            <button id="repair-rejected" type="button" class="misaligned">
+              Prediction does not fix it <kbd>N</kbd>
+            </button>
+            <button id="repair-unsure" type="button">
+              Unsure <kbd>U</kbd>
             </button>
           </div>
         </section>
@@ -115,6 +145,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="/pages/misalignment-lab/app.js?v=1"></script>
+    <script type="module" src="/pages/misalignment-lab/app.js?v=2"></script>
   </body>
 </html>

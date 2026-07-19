@@ -14,6 +14,9 @@ from app.local.misalignment_lab.models import (
     MisalignmentJudgmentRequest,
     MisalignmentJudgmentResponse,
     MisalignmentQueueResponse,
+    MisalignmentRepairJudgmentRequest,
+    MisalignmentRepairJudgmentResponse,
+    MisalignmentRepairQueueResponse,
 )
 from app.local.misalignment_lab.repository import MisalignmentLabRepository
 from app.local.misalignment_lab.service import (
@@ -21,8 +24,10 @@ from app.local.misalignment_lab.service import (
     DEFAULT_QUEUE_SIZE,
     build_misalignment_preview,
     build_misalignment_queue,
+    build_misalignment_repair_queue,
     eligible_annotated_session_count,
     misalignment_progress,
+    misalignment_repair_progress,
     validate_judgment_candidate,
 )
 from app.local.synchronization_review.audit import SYNCHRONIZATION_AUDIT_PATH
@@ -59,6 +64,21 @@ def misalignment_queue(
             judgments=judgments,
             seed=seed,
             limit=limit,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/repair-queue")
+def misalignment_repair_queue(response: Response) -> MisalignmentRepairQueueResponse:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        reviews = judgment_repository()
+        return build_misalignment_repair_queue(
+            dashboard_samples=_all_dashboard_samples(sample_repository()),
+            audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            judgments=reviews.list_judgments(),
+            repair_judgments=reviews.list_repair_judgments(),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -111,6 +131,54 @@ def save_misalignment_judgment(
             progress=misalignment_progress(
                 judgments=judgments,
                 eligible_session_count=eligible_annotated_session_count(samples),
+            ),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/repair-judgments")
+def save_misalignment_repair_judgment(
+    request: MisalignmentRepairJudgmentRequest,
+    response: Response,
+) -> MisalignmentRepairJudgmentResponse:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        samples = _all_dashboard_samples(sample_repository())
+        reviews = judgment_repository()
+        repair_queue = build_misalignment_repair_queue(
+            dashboard_samples=samples,
+            audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            judgments=reviews.list_judgments(),
+            repair_judgments=reviews.list_repair_judgments(),
+        )
+        repair_candidate = next(
+            (
+                candidate
+                for candidate in repair_queue.candidates
+                if candidate.candidate.sample_id == request.sample_id
+            ),
+            None,
+        )
+        if repair_candidate is None:
+            raise ValueError("No conservative repair estimate exists for this session.")
+        if repair_candidate.candidate.candidate_id != request.candidate_id:
+            raise ValueError("Repair candidate does not match the quarantined review.")
+        estimate = repair_candidate.repair_estimate
+        if (
+            estimate.estimator_version != request.estimator_version
+            or abs(estimate.predicted_second_part_shift_seconds - request.predicted_shift_seconds)
+            > 1e-6
+        ):
+            raise ValueError("Repair estimate is stale; reload the repair queue.")
+        stored = reviews.save_repair_judgment(request=request)
+        repair_judgments = reviews.list_repair_judgments()
+        return MisalignmentRepairJudgmentResponse(
+            stored=stored,
+            progress=misalignment_repair_progress(
+                quarantined_session_count=(repair_queue.progress.quarantined_session_count),
+                repair_candidate_count=repair_queue.progress.repair_candidate_count,
+                repair_judgments=repair_judgments,
             ),
         )
     except ValueError as error:

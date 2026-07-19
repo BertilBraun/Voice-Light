@@ -5,6 +5,8 @@ from psycopg.rows import dict_row
 
 from app.local.misalignment_lab.models import (
     MisalignmentJudgmentRequest,
+    MisalignmentRepairJudgmentRequest,
+    MisalignmentRepairStoredJudgment,
     MisalignmentStoredJudgment,
 )
 
@@ -70,3 +72,58 @@ class MisalignmentLabRepository:
         if row is None:
             raise ValueError(f"Sample not found: {request.sample_id}")
         return MisalignmentStoredJudgment.model_validate(row)
+
+    def list_repair_judgments(self) -> tuple[MisalignmentRepairStoredJudgment, ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                  misalignment_lab_repair_reviews.*,
+                  samples.external_id
+                FROM misalignment_lab_repair_reviews
+                JOIN samples ON samples.id = misalignment_lab_repair_reviews.sample_id
+                ORDER BY misalignment_lab_repair_reviews.created_at, sample_id
+                """
+            ).fetchall()
+        return tuple(MisalignmentRepairStoredJudgment.model_validate(row) for row in rows)
+
+    def save_repair_judgment(
+        self,
+        request: MisalignmentRepairJudgmentRequest,
+    ) -> MisalignmentRepairStoredJudgment:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                WITH stored AS (
+                  INSERT INTO misalignment_lab_repair_reviews (
+                    sample_id,
+                    candidate_id,
+                    predicted_shift_seconds,
+                    estimator_version,
+                    judgment,
+                    updated_at
+                  )
+                  VALUES (%s, %s, %s, %s, %s, now())
+                  ON CONFLICT (sample_id) DO UPDATE
+                  SET candidate_id = EXCLUDED.candidate_id,
+                      predicted_shift_seconds = EXCLUDED.predicted_shift_seconds,
+                      estimator_version = EXCLUDED.estimator_version,
+                      judgment = EXCLUDED.judgment,
+                      updated_at = now()
+                  RETURNING *
+                )
+                SELECT stored.*, samples.external_id
+                FROM stored
+                JOIN samples ON samples.id = stored.sample_id
+                """,
+                (
+                    request.sample_id,
+                    request.candidate_id,
+                    request.predicted_shift_seconds,
+                    request.estimator_version,
+                    request.judgment.value,
+                ),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Sample not found: {request.sample_id}")
+        return MisalignmentRepairStoredJudgment.model_validate(row)

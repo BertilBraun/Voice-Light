@@ -23,6 +23,12 @@ class MisalignmentJudgment(StrEnum):
     UNSURE = "unsure"
 
 
+class MisalignmentRepairJudgment(StrEnum):
+    PLAUSIBLE = "plausible"
+    NOT_PLAUSIBLE = "not_plausible"
+    UNSURE = "unsure"
+
+
 class InteractionWindowMetrics(FrozenBaseModel):
     alternating_speaker_boundaries: int
     rapid_speaker_boundaries: int
@@ -64,8 +70,28 @@ class MisalignmentCandidatePreview(FrozenBaseModel):
     annotation_version: str
     speaker1_waveform: tuple[PreviewWaveformPoint, ...]
     speaker2_waveform: tuple[PreviewWaveformPoint, ...]
+    predicted_speaker2_waveform: tuple[PreviewWaveformPoint, ...] | None
     speaker1: MisalignmentWindowAnnotation
     speaker2: MisalignmentWindowAnnotation
+    predicted_speaker2: MisalignmentWindowAnnotation | None
+    repair_estimate: MisalignmentRepairEstimate | None
+
+
+class MisalignmentRepairEstimate(FrozenBaseModel):
+    estimator_version: str
+    first_part_shift_seconds: float
+    predicted_second_part_shift_seconds: float
+    shift_change_seconds: float
+    change_interval_start_seconds: float
+    change_interval_end_seconds: float
+    conservative_first_part_end_seconds: float
+    conservative_second_part_start_seconds: float
+    stable_second_part_start_seconds: float
+    stable_second_part_end_seconds: float
+    stable_second_part_duration_seconds: float
+    supporting_window_count: int
+    shift_spread_seconds: float
+    confidence_score: float
 
 
 class MisalignmentLabProgress(FrozenBaseModel):
@@ -82,6 +108,37 @@ class MisalignmentQueueResponse(FrozenBaseModel):
     requested_count: int
     candidates: tuple[MisalignmentCandidateSummary, ...]
     progress: MisalignmentLabProgress
+
+
+class MisalignmentRepairStoredJudgment(FrozenBaseModel):
+    sample_id: UUID
+    candidate_id: UUID
+    external_id: str
+    predicted_shift_seconds: float
+    estimator_version: str
+    judgment: MisalignmentRepairJudgment
+    created_at: datetime
+    updated_at: datetime
+
+
+class MisalignmentRepairCandidate(FrozenBaseModel):
+    candidate: MisalignmentCandidateSummary
+    repair_estimate: MisalignmentRepairEstimate
+    stored_judgment: MisalignmentRepairStoredJudgment | None
+
+
+class MisalignmentRepairProgress(FrozenBaseModel):
+    quarantined_session_count: int
+    repair_candidate_count: int
+    reviewed_repair_count: int
+    plausible_repair_count: int
+    rejected_repair_count: int
+    unsure_repair_count: int
+
+
+class MisalignmentRepairQueueResponse(FrozenBaseModel):
+    candidates: tuple[MisalignmentRepairCandidate, ...]
+    progress: MisalignmentRepairProgress
 
 
 class MisalignmentJudgmentRequest(FrozenBaseModel):
@@ -109,3 +166,16 @@ class MisalignmentJudgmentResponse(FrozenBaseModel):
     stored: MisalignmentStoredJudgment
     session_quarantined: bool
     progress: MisalignmentLabProgress
+
+
+class MisalignmentRepairJudgmentRequest(FrozenBaseModel):
+    sample_id: UUID
+    candidate_id: UUID
+    predicted_shift_seconds: float
+    estimator_version: str = Field(min_length=1, max_length=200)
+    judgment: MisalignmentRepairJudgment
+
+
+class MisalignmentRepairJudgmentResponse(FrozenBaseModel):
+    stored: MisalignmentRepairStoredJudgment
+    progress: MisalignmentRepairProgress

@@ -22,6 +22,18 @@ p { color: #5a666b; }
 }
 .page-header p { margin-bottom: 0; max-width: 760px; }
 .queue-position { color: #5a666b; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mode-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+.mode-switch button[aria-pressed="true"],
+.comparison-buttons button[aria-pressed="true"] {
+  background: #146b63;
+  border-color: #146b63;
+  color: #fff;
+}
 .panel {
   background: #fff;
   border: 1px solid #d3dadd;
@@ -60,6 +72,22 @@ button.primary { background: #146b63; border-color: #146b63; color: #fff; }
 .clock { font-variant-numeric: tabular-nums; min-width: 112px; text-align: right; }
 .playback-status { font-size: 13px; margin: 8px 0 0; }
 .playback-status.warning { color: #8a4b0f; }
+.comparison-controls {
+  align-items: center;
+  border-bottom: 1px solid #e1e6e8;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+}
+.comparison-controls > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+.comparison-controls span { color: #5a666b; font-size: 13px; }
+.comparison-buttons { display: flex; gap: 8px; }
+.comparison-buttons span { color: inherit; font-size: inherit; }
 .tracks { display: grid; gap: 13px; margin-top: 16px; }
 .track { border: 1px solid #d7dde5; border-radius: 8px; padding: 10px 12px; }
 .track-heading { align-items: baseline; display: flex; justify-content: space-between; }
@@ -89,9 +117,12 @@ dd { font-variant-numeric: tabular-nums; }
 
 @media (max-width: 750px) {
   .page-header, .candidate-header { align-items: flex-start; flex-direction: column; }
+  .mode-switch { display: grid; grid-template-columns: 1fr; }
   .progress-panel { grid-template-columns: 1fr 1fr; }
   .decision-buttons { grid-template-columns: 1fr; }
   .playback-controls { align-items: stretch; flex-wrap: wrap; }
+  .comparison-controls { align-items: stretch; flex-direction: column; }
+  .comparison-buttons { display: grid; grid-template-columns: 1fr; }
   #seek { flex-basis: 100%; order: 3; }
   dl { grid-template-columns: 1fr; }
   dd { padding-top: 0; }

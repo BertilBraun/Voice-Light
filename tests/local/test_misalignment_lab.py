@@ -22,7 +22,14 @@ from app.local.misalignment_lab.models import (
 from app.local.misalignment_lab.service import (
     _candidate_starts,
     build_misalignment_queue,
+    estimate_piecewise_repair,
     interaction_window_metrics,
+)
+from app.local.synchronization_review.models import (
+    SynchronizationAuditKind,
+    SynchronizationAuditResult,
+    SynchronizationAuditWindow,
+    SynchronizationEvidenceSource,
 )
 from app.shared.quality import (
     AnnotationEvidenceSource,
@@ -58,6 +65,11 @@ def misalignment_lab_assets() -> Iterator[tuple[str, str]]:
         "quarantines the whole recording",
         "raw waveform",
         "end of turn",
+        "Test quarantine repairs",
+        "Original 0.0 s",
+        "Predicted",
+        "Prediction sounds plausible",
+        "Prediction does not fix it",
     ),
 )
 def test_misalignment_lab_exposes_rapid_triage_controls(
@@ -85,6 +97,10 @@ def test_misalignment_lab_exposes_rapid_triage_controls(
         "Playing both raw tracks on one AudioContext clock",
         "loadCandidate(state.index + 1, true)",
         "/pages/shared/annotation-timeline.js",
+        "/api/misalignment-lab/repair-queue",
+        "/api/misalignment-lab/repair-judgments",
+        "speaker2Predicted",
+        "setComparisonShift",
     ),
 )
 def test_misalignment_lab_uses_zero_shift_shared_clock_and_auto_advance(
@@ -236,6 +252,46 @@ def test_aligned_judgment_avoids_exact_snippet_without_quarantining_session() ->
     assert later.candidates[0].sample_id == reviewed.sample_id
     assert later.candidates[0].candidate_id != reviewed.candidate_id
     assert later.progress.quarantined_session_count == 0
+
+
+def test_piecewise_repair_estimate_requires_stable_distinct_second_part() -> None:
+    sample_id = uuid4()
+    estimate = estimate_piecewise_repair(
+        audit_result=_audit_result(
+            sample_id=sample_id,
+            suffix_shifts=(4.0, 4.2, 4.3, 4.1, 4.2, 4.4),
+        )
+    )
+
+    assert estimate is not None
+    assert estimate.first_part_shift_seconds == 0.0
+    assert estimate.predicted_second_part_shift_seconds == 4.2
+    assert estimate.shift_change_seconds == 4.2
+    assert estimate.supporting_window_count == 6
+    assert estimate.stable_second_part_duration_seconds == 480.0
+    assert estimate.conservative_first_part_end_seconds == 240.0
+    assert estimate.conservative_second_part_start_seconds == 780.0
+
+
+@pytest.mark.parametrize(
+    "suffix_shifts",
+    (
+        (4.0, 4.1, 4.2),
+        (0.3, 0.4, 0.2, 0.3, 0.4),
+        (4.0, 5.5, 4.0, 5.5, 4.0),
+    ),
+)
+def test_piecewise_repair_estimate_rejects_insufficient_or_unstable_suffix(
+    suffix_shifts: tuple[float, ...],
+) -> None:
+    estimate = estimate_piecewise_repair(
+        audit_result=_audit_result(
+            sample_id=uuid4(),
+            suffix_shifts=suffix_shifts,
+        )
+    )
+
+    assert estimate is None
 
 
 def _dashboard_sample(external_id: str, dense_late_exchange: bool) -> DashboardSample:
@@ -427,4 +483,66 @@ def _stored_judgment(
         queue_seed="test",
         created_at=now,
         updated_at=now,
+    )
+
+
+def _audit_result(
+    sample_id: UUID,
+    suffix_shifts: tuple[float, ...],
+) -> SynchronizationAuditResult:
+    prefix = tuple(
+        _audit_window(
+            start_seconds=float(index * 60),
+            shift_seconds=0.0,
+            accepted=False,
+            confidence_score=0.0,
+        )
+        for index in range(5)
+    )
+    suffix = tuple(
+        _audit_window(
+            start_seconds=600.0 + float(index * 60),
+            shift_seconds=shift_seconds,
+            accepted=True,
+            confidence_score=0.9,
+        )
+        for index, shift_seconds in enumerate(suffix_shifts)
+    )
+    return SynchronizationAuditResult(
+        sample_id=sample_id,
+        external_id="pmt_test",
+        kind=SynchronizationAuditKind.TEMPORAL_CHANGE,
+        anomaly_score=0.9,
+        strongest_window_start_seconds=600.0,
+        strongest_window_end_seconds=780.0,
+        strongest_shift_seconds=suffix_shifts[0],
+        temporal_shift_range_seconds=abs(suffix_shifts[0]),
+        summary="test",
+        windows=(*prefix, *suffix),
+    )
+
+
+def _audit_window(
+    start_seconds: float,
+    shift_seconds: float,
+    accepted: bool,
+    confidence_score: float,
+) -> SynchronizationAuditWindow:
+    return SynchronizationAuditWindow(
+        start_seconds=start_seconds,
+        end_seconds=start_seconds + 180.0,
+        estimated_b_shift_seconds=shift_seconds,
+        confidence_score=confidence_score,
+        bad_state_improvement=0.02 if accepted else 0.0,
+        competing_margin=0.01,
+        basin_width_seconds=0.12,
+        persistence_window_count=4 if accepted else 0,
+        agreeing_transcript_sources=(
+            SynchronizationEvidenceSource.PARAKEET,
+            SynchronizationEvidenceSource.CANARY,
+        )
+        if accepted
+        else (),
+        accepted=accepted,
+        maximum_lag_boundary=False,
     )

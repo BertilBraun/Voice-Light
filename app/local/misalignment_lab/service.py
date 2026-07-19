@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,13 +17,21 @@ from app.local.misalignment_lab.models import (
     MisalignmentJudgment,
     MisalignmentLabProgress,
     MisalignmentQueueResponse,
+    MisalignmentRepairCandidate,
+    MisalignmentRepairEstimate,
+    MisalignmentRepairJudgment,
+    MisalignmentRepairProgress,
+    MisalignmentRepairQueueResponse,
+    MisalignmentRepairStoredJudgment,
     MisalignmentStoredJudgment,
     MisalignmentWindowAnnotation,
 )
 from app.local.synchronization_review.models import (
     SynchronizationAuditReport,
     SynchronizationAuditResult,
+    SynchronizationAuditWindow,
 )
+from app.local.training_samples.models import PreviewWaveformPoint
 from app.local.training_samples.service import waveform_window
 from app.shared.quality import (
     AnnotationEvidenceSource,
@@ -44,6 +53,16 @@ MAXIMUM_ALTERNATION_GAP_SECONDS = 6.0
 WAVEFORM_POINT_COUNT = 1000
 DEFAULT_QUEUE_SEED = "misalignment-lab-v1"
 DEFAULT_QUEUE_SIZE = 50
+REPAIR_ESTIMATOR_VERSION = "piecewise-stable-suffix-v1"
+REPAIR_MINIMUM_WINDOW_CONFIDENCE = 0.65
+REPAIR_MINIMUM_PERSISTENCE_WINDOWS = 3
+REPAIR_MAXIMUM_NEIGHBOR_GAP_SECONDS = 180.0
+REPAIR_SHIFT_TOLERANCE_SECONDS = 1.25
+REPAIR_MINIMUM_SUFFIX_WINDOWS = 4
+REPAIR_MINIMUM_SUFFIX_DURATION_SECONDS = 300.0
+REPAIR_BASELINE_SHIFT_TOLERANCE_SECONDS = 0.75
+REPAIR_MINIMUM_PREFIX_WINDOWS = 3
+REPAIR_MINIMUM_SHIFT_CHANGE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -129,6 +148,165 @@ def build_misalignment_queue(
     )
 
 
+def build_misalignment_repair_queue(
+    dashboard_samples: Sequence[DashboardSample],
+    audit_report: SynchronizationAuditReport | None,
+    judgments: Sequence[MisalignmentStoredJudgment],
+    repair_judgments: Sequence[MisalignmentRepairStoredJudgment],
+) -> MisalignmentRepairQueueResponse:
+    quarantined_by_sample_id = {
+        judgment.sample_id: judgment
+        for judgment in judgments
+        if judgment.judgment is MisalignmentJudgment.LIKELY_MISALIGNED
+    }
+    audit_by_sample_id = (
+        {result.sample_id: result for result in audit_report.results}
+        if audit_report is not None
+        else {}
+    )
+    dashboard_by_sample_id = {sample.sample.id: sample for sample in dashboard_samples}
+    repair_judgment_by_sample_id = {judgment.sample_id: judgment for judgment in repair_judgments}
+    candidates: list[MisalignmentRepairCandidate] = []
+    for sample_id, quarantine_judgment in quarantined_by_sample_id.items():
+        dashboard_sample = dashboard_by_sample_id.get(sample_id)
+        audit_result = audit_by_sample_id.get(sample_id)
+        if dashboard_sample is None or audit_result is None:
+            continue
+        annotated_sample = _annotated_sample(dashboard_sample)
+        if annotated_sample is None:
+            continue
+        estimate = estimate_piecewise_repair(audit_result=audit_result)
+        if estimate is None:
+            continue
+        candidate = next(
+            (
+                ranked
+                for ranked in _ranked_windows(
+                    annotated_sample=annotated_sample,
+                    audit_result=audit_result,
+                )
+                if ranked.candidate_id == quarantine_judgment.candidate_id
+            ),
+            None,
+        )
+        if candidate is None:
+            continue
+        candidates.append(
+            MisalignmentRepairCandidate(
+                candidate=candidate,
+                repair_estimate=estimate,
+                stored_judgment=repair_judgment_by_sample_id.get(sample_id),
+            )
+        )
+    ordered = tuple(
+        sorted(
+            candidates,
+            key=lambda repair_candidate: (
+                repair_candidate.repair_estimate.confidence_score,
+                repair_candidate.repair_estimate.stable_second_part_duration_seconds,
+                abs(repair_candidate.repair_estimate.shift_change_seconds),
+                repair_candidate.candidate.external_id,
+            ),
+            reverse=True,
+        )
+    )
+    return MisalignmentRepairQueueResponse(
+        candidates=ordered,
+        progress=misalignment_repair_progress(
+            quarantined_session_count=len(quarantined_by_sample_id),
+            repair_candidate_count=len(ordered),
+            repair_judgments=repair_judgments,
+        ),
+    )
+
+
+def estimate_piecewise_repair(
+    audit_result: SynchronizationAuditResult,
+) -> MisalignmentRepairEstimate | None:
+    reliable_windows = tuple(
+        window
+        for window in audit_result.windows
+        if window.accepted
+        and not window.maximum_lag_boundary
+        and window.confidence_score >= REPAIR_MINIMUM_WINDOW_CONFIDENCE
+        and window.persistence_window_count >= REPAIR_MINIMUM_PERSISTENCE_WINDOWS
+    )
+    if not reliable_windows:
+        return None
+    suffix = _stable_final_suffix(windows=reliable_windows)
+    if (
+        len(suffix) < REPAIR_MINIMUM_SUFFIX_WINDOWS
+        or suffix[-1].end_seconds - suffix[0].start_seconds < REPAIR_MINIMUM_SUFFIX_DURATION_SECONDS
+    ):
+        return None
+    suffix_shift = statistics.median(window.estimated_b_shift_seconds for window in suffix)
+    prefix_candidates = tuple(
+        window
+        for window in audit_result.windows
+        if not window.maximum_lag_boundary
+        and window.end_seconds <= suffix[0].start_seconds
+        and abs(window.estimated_b_shift_seconds) <= REPAIR_BASELINE_SHIFT_TOLERANCE_SECONDS
+    )
+    prefix = _stable_final_prefix(windows=prefix_candidates)
+    if len(prefix) < REPAIR_MINIMUM_PREFIX_WINDOWS:
+        return None
+    prefix_shift = statistics.median(window.estimated_b_shift_seconds for window in prefix)
+    shift_change = suffix_shift - prefix_shift
+    if abs(shift_change) < REPAIR_MINIMUM_SHIFT_CHANGE_SECONDS:
+        return None
+    suffix_shifts = tuple(window.estimated_b_shift_seconds for window in suffix)
+    shift_spread = max(suffix_shifts) - min(suffix_shifts)
+    confidence = _repair_confidence(
+        suffix=suffix,
+        shift_spread_seconds=shift_spread,
+    )
+    prefix_midpoint = (prefix[-1].start_seconds + prefix[-1].end_seconds) / 2.0
+    suffix_midpoint = (suffix[0].start_seconds + suffix[0].end_seconds) / 2.0
+    return MisalignmentRepairEstimate(
+        estimator_version=REPAIR_ESTIMATOR_VERSION,
+        first_part_shift_seconds=round(prefix_shift, 2),
+        predicted_second_part_shift_seconds=round(suffix_shift, 2),
+        shift_change_seconds=round(shift_change, 2),
+        change_interval_start_seconds=round(prefix_midpoint, 3),
+        change_interval_end_seconds=round(suffix_midpoint, 3),
+        conservative_first_part_end_seconds=prefix[-1].start_seconds,
+        conservative_second_part_start_seconds=suffix[0].end_seconds,
+        stable_second_part_start_seconds=suffix[0].start_seconds,
+        stable_second_part_end_seconds=suffix[-1].end_seconds,
+        stable_second_part_duration_seconds=round(
+            suffix[-1].end_seconds - suffix[0].start_seconds,
+            3,
+        ),
+        supporting_window_count=len(suffix),
+        shift_spread_seconds=round(shift_spread, 2),
+        confidence_score=round(confidence, 3),
+    )
+
+
+def misalignment_repair_progress(
+    quarantined_session_count: int,
+    repair_candidate_count: int,
+    repair_judgments: Sequence[MisalignmentRepairStoredJudgment],
+) -> MisalignmentRepairProgress:
+    reviewed_sample_ids = {judgment.sample_id for judgment in repair_judgments}
+    return MisalignmentRepairProgress(
+        quarantined_session_count=quarantined_session_count,
+        repair_candidate_count=repair_candidate_count,
+        reviewed_repair_count=len(reviewed_sample_ids),
+        plausible_repair_count=sum(
+            judgment.judgment is MisalignmentRepairJudgment.PLAUSIBLE
+            for judgment in repair_judgments
+        ),
+        rejected_repair_count=sum(
+            judgment.judgment is MisalignmentRepairJudgment.NOT_PLAUSIBLE
+            for judgment in repair_judgments
+        ),
+        unsure_repair_count=sum(
+            judgment.judgment is MisalignmentRepairJudgment.UNSURE for judgment in repair_judgments
+        ),
+    )
+
+
 def build_misalignment_preview(
     dashboard_sample: DashboardSample,
     audit_report: SynchronizationAuditReport | None,
@@ -176,11 +354,37 @@ def build_misalignment_preview(
         end_seconds=candidate.window_end_seconds,
         point_count=WAVEFORM_POINT_COUNT,
     )
+    repair_estimate = (
+        estimate_piecewise_repair(audit_result=audit_result) if audit_result is not None else None
+    )
+    predicted_speaker2_waveform: tuple[PreviewWaveformPoint, ...] | None = None
+    predicted_speaker2: MisalignmentWindowAnnotation | None = None
+    if repair_estimate is not None:
+        predicted_shift = repair_estimate.predicted_second_part_shift_seconds
+        predicted_source_start = candidate.window_start_seconds - predicted_shift
+        predicted_source_end = candidate.window_end_seconds - predicted_shift
+        if predicted_source_start >= 0.0:
+            _, predicted_speaker2_waveform = waveform_window(
+                path=speaker2_path,
+                start_seconds=predicted_source_start,
+                end_seconds=predicted_source_end,
+                point_count=WAVEFORM_POINT_COUNT,
+            )
+            predicted_speaker2 = _shift_window_annotation(
+                annotation=_window_annotation(
+                    annotation=annotated_sample.annotation.speaker2,
+                    side=SpeakerSide.SPEAKER2,
+                    start_seconds=predicted_source_start,
+                    end_seconds=predicted_source_end,
+                ),
+                shift_seconds=predicted_shift,
+            )
     return MisalignmentCandidatePreview(
         candidate=candidate,
         annotation_version=annotated_sample.annotation.annotation_version,
         speaker1_waveform=speaker1_waveform,
         speaker2_waveform=speaker2_waveform,
+        predicted_speaker2_waveform=predicted_speaker2_waveform,
         speaker1=_window_annotation(
             annotation=annotated_sample.annotation.speaker1,
             side=SpeakerSide.SPEAKER1,
@@ -193,6 +397,8 @@ def build_misalignment_preview(
             start_seconds=candidate.window_start_seconds,
             end_seconds=candidate.window_end_seconds,
         ),
+        predicted_speaker2=predicted_speaker2,
+        repair_estimate=repair_estimate,
     )
 
 
@@ -552,6 +758,47 @@ def _weighted_shuffle_key(
     return -math.log(uniform) / candidate.sampling_weight
 
 
+def _stable_final_suffix(
+    windows: Sequence[SynchronizationAuditWindow],
+) -> tuple[SynchronizationAuditWindow, ...]:
+    suffix = [windows[-1]]
+    for window in reversed(windows[:-1]):
+        if suffix[0].start_seconds - window.start_seconds > REPAIR_MAXIMUM_NEIGHBOR_GAP_SECONDS:
+            break
+        suffix_median = statistics.median(item.estimated_b_shift_seconds for item in suffix)
+        if abs(window.estimated_b_shift_seconds - suffix_median) > REPAIR_SHIFT_TOLERANCE_SECONDS:
+            break
+        suffix.insert(0, window)
+    return tuple(suffix)
+
+
+def _stable_final_prefix(
+    windows: Sequence[SynchronizationAuditWindow],
+) -> tuple[SynchronizationAuditWindow, ...]:
+    if not windows:
+        return ()
+    prefix = [windows[-1]]
+    for window in reversed(windows[:-1]):
+        if prefix[0].start_seconds - window.start_seconds > REPAIR_MAXIMUM_NEIGHBOR_GAP_SECONDS:
+            break
+        prefix.insert(0, window)
+    return tuple(prefix)
+
+
+def _repair_confidence(
+    suffix: Sequence[SynchronizationAuditWindow],
+    shift_spread_seconds: float,
+) -> float:
+    stability = 1.0 - min(1.0, shift_spread_seconds / 1.5)
+    coverage_seconds = suffix[-1].end_seconds - suffix[0].start_seconds
+    coverage = min(1.0, coverage_seconds / 900.0)
+    transcript_agreement = statistics.mean(
+        len(window.agreeing_transcript_sources) / 2.0 for window in suffix
+    )
+    support = min(1.0, len(suffix) / 8.0)
+    return 0.30 * stability + 0.25 * coverage + 0.25 * transcript_agreement + 0.20 * support
+
+
 def _timed_segments(
     side: SpeakerSide,
     targets: Sequence[SegmentAnnotationTarget],
@@ -660,6 +907,69 @@ def _window_annotation(
             if target.later_start_seconds >= start_seconds
             and target.earlier_end_seconds <= end_seconds
         ),
+    )
+
+
+def _shift_window_annotation(
+    annotation: MisalignmentWindowAnnotation,
+    shift_seconds: float,
+) -> MisalignmentWindowAnnotation:
+    return annotation.model_copy(
+        update={
+            "speech_segments": tuple(
+                span.model_copy(
+                    update={
+                        "start_seconds": span.start_seconds + shift_seconds,
+                        "end_seconds": span.end_seconds + shift_seconds,
+                    }
+                )
+                for span in annotation.speech_segments
+            ),
+            "pauses": tuple(
+                span.model_copy(
+                    update={
+                        "start_seconds": span.start_seconds + shift_seconds,
+                        "end_seconds": span.end_seconds + shift_seconds,
+                    }
+                )
+                for span in annotation.pauses
+            ),
+            "backchannels": tuple(
+                span.model_copy(
+                    update={
+                        "start_seconds": span.start_seconds + shift_seconds,
+                        "end_seconds": span.end_seconds + shift_seconds,
+                    }
+                )
+                for span in annotation.backchannels
+            ),
+            "turns": tuple(
+                point.model_copy(update={"time_seconds": point.time_seconds + shift_seconds})
+                for point in annotation.turns
+            ),
+            "interruptions": tuple(
+                point.model_copy(update={"time_seconds": point.time_seconds + shift_seconds})
+                for point in annotation.interruptions
+            ),
+            "segment_targets": tuple(
+                target.model_copy(
+                    update={
+                        "start_seconds": target.start_seconds + shift_seconds,
+                        "end_seconds": target.end_seconds + shift_seconds,
+                    }
+                )
+                for target in annotation.segment_targets
+            ),
+            "connection_targets": tuple(
+                target.model_copy(
+                    update={
+                        "earlier_end_seconds": (target.earlier_end_seconds + shift_seconds),
+                        "later_start_seconds": (target.later_start_seconds + shift_seconds),
+                    }
+                )
+                for target in annotation.connection_targets
+            ),
+        }
     )
 
 
