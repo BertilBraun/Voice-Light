@@ -21,6 +21,8 @@ class SpeechSynthesisSettings:
     voxtream_python_path: Path
     voxtream_config_path: Path
     voxtream_prompt_audio_path: Path
+    voxtream_compile: bool
+    voxtream_prompt_memory_cache: bool
 
     @classmethod
     def from_environment(
@@ -62,6 +64,16 @@ class SpeechSynthesisSettings:
                     voxtream_source_root / "assets" / "audio" / "english_female.wav",
                 )
             ),
+            voxtream_compile=_read_boolean(
+                environment,
+                "VOICE_LIGHT_VOXTREAM_COMPILE",
+                default=True,
+            ),
+            voxtream_prompt_memory_cache=_read_boolean(
+                environment,
+                "VOICE_LIGHT_VOXTREAM_PROMPT_MEMORY_CACHE",
+                default=True,
+            ),
         )
 
 
@@ -77,9 +89,28 @@ def create_speech_synthesizer(settings: SpeechSynthesisSettings) -> SpeechSynthe
                 python_path=settings.voxtream_python_path,
                 config_path=settings.voxtream_config_path,
                 prompt_audio_path=settings.voxtream_prompt_audio_path,
+                compile_model=settings.voxtream_compile,
+                cache_prompt_in_memory=settings.voxtream_prompt_memory_cache,
             )
 
 
 def _require_file(path: Path, description: str) -> None:
     if not path.is_file():
         raise ValueError(f"{description} does not exist: {path}")
+
+
+def _read_boolean(
+    environment: Mapping[str, str],
+    name: str,
+    default: bool,
+) -> bool:
+    value = environment.get(name)
+    if value is None:
+        return default
+    match value.lower():
+        case "1" | "true":
+            return True
+        case "0" | "false":
+            return False
+        case _:
+            raise ValueError(f"{name} must be true or false.")

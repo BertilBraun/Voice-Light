@@ -20,6 +20,8 @@ class VoxtreamSpeechSynthesizer(SubprocessSpeechSynthesizer):
         python_path: Path,
         config_path: Path,
         prompt_audio_path: Path,
+        compile_model: bool,
+        cache_prompt_in_memory: bool,
     ) -> None:
         super().__init__(
             SubprocessTtsConfiguration(
@@ -31,6 +33,12 @@ class VoxtreamSpeechSynthesizer(SubprocessSpeechSynthesizer):
                     str(config_path),
                     "--prompt-audio",
                     str(prompt_audio_path),
+                    "--compile" if compile_model else "--no-compile",
+                    (
+                        "--cache-prompt-in-memory"
+                        if cache_prompt_in_memory
+                        else "--no-cache-prompt-in-memory"
+                    ),
                 ),
                 generation_progress_timeout_seconds=(VOXTREAM_GENERATION_PROGRESS_TIMEOUT_SECONDS),
                 cancel_timeout_seconds=VOXTREAM_CANCEL_TIMEOUT_SECONDS,

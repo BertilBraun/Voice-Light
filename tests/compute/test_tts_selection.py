@@ -37,6 +37,41 @@ def test_speech_synthesis_settings_default_to_kyutai(tmp_path: Path) -> None:
     assert settings.voxtream_python_path == (
         tmp_path / ".cache" / "compute" / "voxtream" / ".venv" / "bin" / "python"
     )
+    assert settings.voxtream_compile
+    assert settings.voxtream_prompt_memory_cache
+
+
+def test_speech_synthesis_settings_allow_disabling_voxtream_optimizations(
+    tmp_path: Path,
+) -> None:
+    settings = SpeechSynthesisSettings.from_environment(
+        {
+            "VOICE_LIGHT_VOXTREAM_COMPILE": "false",
+            "VOICE_LIGHT_VOXTREAM_PROMPT_MEMORY_CACHE": "0",
+        },
+        tmp_path,
+    )
+
+    assert not settings.voxtream_compile
+    assert not settings.voxtream_prompt_memory_cache
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    (
+        "VOICE_LIGHT_VOXTREAM_COMPILE",
+        "VOICE_LIGHT_VOXTREAM_PROMPT_MEMORY_CACHE",
+    ),
+)
+def test_speech_synthesis_settings_reject_invalid_voxtream_booleans(
+    environment_name: str,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match=environment_name):
+        SpeechSynthesisSettings.from_environment(
+            {environment_name: "sometimes"},
+            tmp_path,
+        )
 
 
 def test_speech_synthesis_settings_reject_unknown_backend(tmp_path: Path) -> None:
@@ -84,14 +119,24 @@ def test_voxtream_selection_passes_isolated_paths(
     for path in (python_path, config_path, prompt_audio_path):
         path.touch()
     expected_synthesizer = FakeSpeechSynthesizer.create()
-    received_paths: list[tuple[Path, Path, Path]] = []
+    received_configuration: list[tuple[Path, Path, Path, bool, bool]] = []
 
     def create_voxtream(
         python_path: Path,
         config_path: Path,
         prompt_audio_path: Path,
+        compile_model: bool,
+        cache_prompt_in_memory: bool,
     ) -> FakeSpeechSynthesizer:
-        received_paths.append((python_path, config_path, prompt_audio_path))
+        received_configuration.append(
+            (
+                python_path,
+                config_path,
+                prompt_audio_path,
+                compile_model,
+                cache_prompt_in_memory,
+            )
+        )
         return expected_synthesizer
 
     monkeypatch.setattr(
@@ -103,10 +148,12 @@ def test_voxtream_selection_passes_isolated_paths(
         voxtream_python_path=python_path,
         voxtream_config_path=config_path,
         voxtream_prompt_audio_path=prompt_audio_path,
+        voxtream_compile=False,
+        voxtream_prompt_memory_cache=False,
     )
 
     assert create_speech_synthesizer(settings) is expected_synthesizer
-    assert received_paths == [(python_path, config_path, prompt_audio_path)]
+    assert received_configuration == [(python_path, config_path, prompt_audio_path, False, False)]
 
 
 def test_kyutai_synthesizer_implements_close() -> None:

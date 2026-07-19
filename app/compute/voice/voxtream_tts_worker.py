@@ -67,7 +67,13 @@ _GenerationInput = _QueuedWord | _InputMarker
 
 
 class VoxtreamWorkerRuntime:
-    def __init__(self, config_path: Path, prompt_audio_path: Path) -> None:
+    def __init__(
+        self,
+        config_path: Path,
+        prompt_audio_path: Path,
+        compile_model: bool,
+        cache_prompt_in_memory: bool,
+    ) -> None:
         if not config_path.is_file():
             raise ValueError(f"VoXtream configuration does not exist: {config_path}")
         if not prompt_audio_path.is_file():
@@ -78,7 +84,11 @@ class VoxtreamWorkerRuntime:
         self.configuration = configuration
         self.prompt_audio_path = prompt_audio_path
         set_seed()
-        self.generator = SpeechGenerator(configuration)
+        self.generator = SpeechGenerator(
+            configuration,
+            compile=compile_model,
+            cache_prompt_in_memory=cache_prompt_in_memory,
+        )
         self._warmup()
 
     @property
@@ -325,6 +335,16 @@ def main(arguments: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--prompt-audio", type=Path, required=True)
+    parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--cache-prompt-in-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     options = parser.parse_args(arguments)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     protocol_output_stream = sys.stdout
@@ -332,6 +352,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
     runtime = VoxtreamWorkerRuntime(
         config_path=options.config,
         prompt_audio_path=options.prompt_audio,
+        compile_model=options.compile,
+        cache_prompt_in_memory=options.cache_prompt_in_memory,
     )
     VoxtreamWorkerController(runtime, protocol_output_stream).run()
 

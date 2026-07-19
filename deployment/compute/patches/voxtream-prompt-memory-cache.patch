@@ -1,0 +1,71 @@
+diff --git a/voxtream/generator.py b/voxtream/generator.py
+--- a/voxtream/generator.py
++++ b/voxtream/generator.py
+@@ -11,6 +11,10 @@ from silero_vad import load_silero_vad
+ torch.set_float32_matmul_precision("medium")
+ torch._inductor.config.fx_graph_cache = True
+ 
++from app.compute.voice.voxtream_prompt_cache import (
++    VoxtreamPromptCache,
++    VoxtreamPromptCacheKey,
++)
+ from voxtream.config import SpeechGeneratorConfig
+ from voxtream.utils.generator import (
+     DTYPE_MAP,
+@@ -45,10 +49,14 @@ class SpeechGenerator:
+         config: SpeechGeneratorConfig,
+         spk_rate_config: Dict[str, Dict[str, list | float]] = None,
+         compile: bool = False,
++        cache_prompt_in_memory: bool = False,
+     ):
+         self.config = config
+         self.logger = logging.getLogger("voxtream")
+         self.spk_rate_config = spk_rate_config
++        self._prompt_cache = (
++            VoxtreamPromptCache() if cache_prompt_in_memory else None
++        )
+ 
+         device = "cuda" if torch.cuda.is_available() else "cpu"
+         dtype = DTYPE_MAP[device]
+@@ -157,18 +165,35 @@ class SpeechGenerator:
+         )
+         apply_vad = self.config.apply_vad if apply_vad is None else apply_vad
+ 
++        prompt_arguments = self.ctx.prompt_kwargs(
++            enhance_prompt=enhance_prompt,
++            apply_vad=apply_vad,
++        )
++        if self._prompt_cache is None:
++            prepared_prompt = prepare_prompt(
++                prompt_audio_path=prompt_audio_path,
++                **prompt_arguments,
++            )
++        else:
++            prepared_prompt = self._prompt_cache.get_or_prepare(
++                key=VoxtreamPromptCacheKey(
++                    prompt_audio_path=prompt_audio_path.resolve(),
++                    enhance_prompt=enhance_prompt,
++                    apply_vad=apply_vad,
++                ),
++                prepare=lambda: prepare_prompt(
++                    prompt_audio_path=prompt_audio_path,
++                    **prompt_arguments,
++                ),
++            )
++
+         (
+             mimi_codes,
+             spk_embedding,
+             prompt_phone_tokens,
+             prompt_phone_tokens_to_embed,
+             punct_del_indices,
+-        ) = prepare_prompt(
+-            prompt_audio_path=prompt_audio_path,
+-            **self.ctx.prompt_kwargs(
+-                enhance_prompt=enhance_prompt, apply_vad=apply_vad
+-            ),
+-        )
++        ) = prepared_prompt
+ 
+         phone_emb_indices = prompt_phone_tokens_to_embed
+ 

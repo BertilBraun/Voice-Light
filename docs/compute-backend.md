@@ -151,7 +151,8 @@ cancellation deadline, progress watchdog, and exclusive worker lease.
   first-word-to-PCM latency.
 - `voxtream` uses VoXtream2 at pinned revision
   `8ec2d62159dae4716ae7058827244a962d40603c`. It consumes words while emitting audio and uses
-  phoneme progress for conservative word-completion boundaries. The fixed prompt is cached.
+  phoneme progress for conservative word-completion boundaries. The fixed prompt is cached in GPU
+  memory, and the model is compiled during worker startup.
 
 VoXtream requires older Torch, Transformers, Hugging Face Hub, and related dependencies. Bootstrap
 therefore installs it in `.cache/compute/voxtream/.venv`; those packages never enter the main
@@ -166,6 +167,9 @@ bash deployment/compute/start.sh
 ```
 
 Switch the value back to `kyutai` and restart to restore the original synthesizer.
+
+`VOICE_LIGHT_VOXTREAM_COMPILE` and `VOICE_LIGHT_VOXTREAM_PROMPT_MEMORY_CACHE` default to `true`.
+Set either value to `false` and restart the service to run controlled baseline comparisons.
 
 `uv run python -m deployment.compute.benchmark_tts --runs 5` measures cold/warm first-chunk
 latency, first-word-to-audio latency, delayed-stream LM and Mimi decode time, model-step count,
