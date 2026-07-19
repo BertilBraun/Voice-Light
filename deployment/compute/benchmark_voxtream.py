@@ -21,6 +21,7 @@ from app.compute.voice.interfaces import (
     SynthesizedAudioChunk,
     VoxtreamSynthesisFirstAudioMetrics,
 )
+from app.compute.voice.voxtream_speaking_rate import FinalPhraseSlowdown
 from app.compute.voice.voxtream_tts import VoxtreamSpeechSynthesizer
 from app.shared.base_model import FrozenBaseModel
 
@@ -105,8 +106,12 @@ class VoxtreamBenchmarkConfiguration(FrozenBaseModel):
     python_path: str
     config_path: str
     config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    speaking_rate_config_path: str | None
+    speaking_rate_config_sha256: str | None = Field(pattern=r"^[0-9a-f]{64}$")
     prompt_audio_path: str
     prompt_audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    final_slowdown_syllables_per_second: float | None = Field(gt=0.0)
+    final_slowdown_word_count: int = Field(gt=0)
     load_command: tuple[str, ...] | None
     load_startup_seconds: float = Field(ge=0.0)
     load_ready_file: str | None
@@ -206,6 +211,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--python", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--speaking-rate-config", type=Path)
     parser.add_argument("--prompt-audio", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--variant", required=True)
@@ -227,6 +233,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument("--final-slowdown-syllables-per-second", type=float)
+    parser.add_argument("--final-slowdown-word-count", type=int, default=4)
     parser.add_argument(
         "--load-command-json",
         help=(
@@ -248,6 +256,21 @@ def main(arguments: Sequence[str] | None = None) -> None:
         raise ValueError("--load-startup-seconds cannot be negative.")
     if options.load_ready_timeout_seconds <= 0:
         raise ValueError("--load-ready-timeout-seconds must be positive.")
+    if (options.speaking_rate_config is None) != (
+        options.final_slowdown_syllables_per_second is None
+    ):
+        raise ValueError(
+            "--speaking-rate-config and --final-slowdown-syllables-per-second "
+            "must be provided together."
+        )
+    final_phrase_slowdown = (
+        None
+        if options.final_slowdown_syllables_per_second is None
+        else FinalPhraseSlowdown(
+            syllables_per_second=options.final_slowdown_syllables_per_second,
+            word_count=options.final_slowdown_word_count,
+        )
+    )
 
     variant = normalized_variant(options.variant)
     output_directory = options.output_root / variant
@@ -263,8 +286,22 @@ def main(arguments: Sequence[str] | None = None) -> None:
         python_path=str(absolute_path_preserving_symlinks(options.python)),
         config_path=str(options.config.resolve()),
         config_sha256=sha256_file(options.config),
+        speaking_rate_config_path=(
+            None
+            if options.speaking_rate_config is None
+            else str(options.speaking_rate_config.resolve())
+        ),
+        speaking_rate_config_sha256=(
+            None
+            if options.speaking_rate_config is None
+            else sha256_file(options.speaking_rate_config)
+        ),
         prompt_audio_path=str(options.prompt_audio.resolve()),
         prompt_audio_sha256=sha256_file(options.prompt_audio),
+        final_slowdown_syllables_per_second=(
+            None if final_phrase_slowdown is None else final_phrase_slowdown.syllables_per_second
+        ),
+        final_slowdown_word_count=options.final_slowdown_word_count,
         load_command=load_command,
         load_startup_seconds=options.load_startup_seconds,
         load_ready_file=(
@@ -358,6 +395,19 @@ def create_synthesizer(
         prompt_audio_path=Path(configuration.prompt_audio_path),
         compile_model=configuration.compile_model,
         cache_prompt_in_memory=configuration.cache_prompt_in_memory,
+        speaking_rate_config_path=(
+            None
+            if configuration.speaking_rate_config_path is None
+            else Path(configuration.speaking_rate_config_path)
+        ),
+        final_phrase_slowdown=(
+            None
+            if configuration.final_slowdown_syllables_per_second is None
+            else FinalPhraseSlowdown(
+                syllables_per_second=(configuration.final_slowdown_syllables_per_second),
+                word_count=configuration.final_slowdown_word_count,
+            )
+        ),
     )
 
 

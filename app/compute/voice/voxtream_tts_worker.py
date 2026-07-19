@@ -11,10 +11,12 @@ from collections import deque
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
+from itertools import repeat
 from pathlib import Path
 from typing import TextIO, TypedDict, cast
 
 import numpy as np
+from pydantic import TypeAdapter
 from voxtream.config import SpeechGeneratorConfig
 from voxtream.generator import SpeechGenerator
 from voxtream.utils.generator import set_seed, text_generator
@@ -40,10 +42,16 @@ from app.compute.voice.voxtream_alignment import (
     VoxtreamPendingWordBoundary,
     release_started_word_boundaries,
 )
+from app.compute.voice.voxtream_speaking_rate import (
+    FinalPhraseSlowdown,
+    FinalPhraseSpeakingRate,
+)
 
 logger = logging.getLogger(__name__)
 VOXTREAM_WARMUP_TEXT = "Warmup."
 PCM_MAXIMUM = 32_767.0
+SpeakingRateConfiguration = dict[str, dict[str, list[int] | float]]
+speaking_rate_configuration_adapter = TypeAdapter(SpeakingRateConfiguration)
 
 
 class VoxtreamProgressMetadata(TypedDict):
@@ -73,19 +81,38 @@ class VoxtreamWorkerRuntime:
         prompt_audio_path: Path,
         compile_model: bool,
         cache_prompt_in_memory: bool,
+        speaking_rate_config_path: Path | None,
+        final_phrase_slowdown: FinalPhraseSlowdown | None,
     ) -> None:
         if not config_path.is_file():
             raise ValueError(f"VoXtream configuration does not exist: {config_path}")
         if not prompt_audio_path.is_file():
             raise ValueError(f"VoXtream prompt audio does not exist: {prompt_audio_path}")
+        if (speaking_rate_config_path is None) != (final_phrase_slowdown is None):
+            raise ValueError(
+                "VoXtream speaking-rate configuration and final slowdown must be enabled together."
+            )
+        if speaking_rate_config_path is not None and not speaking_rate_config_path.is_file():
+            raise ValueError(
+                f"VoXtream speaking-rate configuration does not exist: {speaking_rate_config_path}"
+            )
         with config_path.open(encoding="utf-8") as config_stream:
             configuration = SpeechGeneratorConfig(**json.load(config_stream))
+        speaking_rate_configuration = (
+            None
+            if speaking_rate_config_path is None
+            else speaking_rate_configuration_adapter.validate_json(
+                speaking_rate_config_path.read_text(encoding="utf-8")
+            )
+        )
         configuration.cache_prompt = True
         self.configuration = configuration
         self.prompt_audio_path = prompt_audio_path
+        self.final_phrase_slowdown = final_phrase_slowdown
         set_seed()
         self.generator = SpeechGenerator(
             configuration,
+            spk_rate_config=speaking_rate_configuration,
             compile=compile_model,
             cache_prompt_in_memory=cache_prompt_in_memory,
         )
@@ -101,6 +128,15 @@ class VoxtreamWorkerRuntime:
             text=text_generator(VOXTREAM_WARMUP_TEXT),
         )
         for _ in stream:
+            pass
+        if self.final_phrase_slowdown is None:
+            return
+        controlled_stream = self.generator.generate_stream(
+            prompt_audio_path=self.prompt_audio_path,
+            text=text_generator(VOXTREAM_WARMUP_TEXT),
+            speaking_rate=repeat(self.final_phrase_slowdown.syllables_per_second),
+        )
+        for _ in controlled_stream:
             pass
 
 
@@ -120,12 +156,19 @@ class VoxtreamGeneration:
         self.first_text_requested_at: float | None = None
         self.first_word_yielded_at: float | None = None
         self.input_finished = False
+        self.speaking_rate = (
+            None
+            if runtime.final_phrase_slowdown is None
+            else FinalPhraseSpeakingRate(runtime.final_phrase_slowdown)
+        )
 
     def add_word(self, command: TtsWordCommand) -> None:
         if self.input_finished:
             raise ValueError("Cannot add VoXtream text after input has finished.")
         if self.first_word_received_at is None:
             self.first_word_received_at = time.perf_counter()
+        if self.speaking_rate is not None:
+            self.speaking_rate.register_word()
         self.input_queue.put(
             _QueuedWord(
                 sequence_number=command.sequence_number,
@@ -138,6 +181,8 @@ class VoxtreamGeneration:
         if self.input_finished:
             raise ValueError("VoXtream input may only be finished once.")
         self.input_finished = True
+        if self.speaking_rate is not None:
+            self.speaking_rate.finish_input()
         self.input_queue.put(_InputMarker.FINISH)
 
     def cancel(self) -> None:
@@ -152,6 +197,7 @@ class VoxtreamGeneration:
         stream = self.runtime.generator.generate_stream(
             prompt_audio_path=self.runtime.prompt_audio_path,
             text=self._stream_text(),
+            speaking_rate=None if self.speaking_rate is None else self.speaking_rate.values(),
             return_progress=True,
         )
         for output in stream:
@@ -208,6 +254,8 @@ class VoxtreamGeneration:
                     self.emit(TtsWordProcessedEvent(sequence_number=item.sequence_number))
                     if self.first_word_yielded_at is None:
                         self.first_word_yielded_at = time.perf_counter()
+                    if self.speaking_rate is not None:
+                        self.speaking_rate.mark_word_yielded()
                     yield item.text
                 case _InputMarker.FINISH | _InputMarker.CANCEL:
                     return
@@ -345,7 +393,25 @@ def main(arguments: Sequence[str] | None = None) -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument("--speaking-rate-config", type=Path)
+    parser.add_argument("--final-slowdown-syllables-per-second", type=float)
+    parser.add_argument("--final-slowdown-word-count", type=int, default=4)
     options = parser.parse_args(arguments)
+    if (options.speaking_rate_config is None) != (
+        options.final_slowdown_syllables_per_second is None
+    ):
+        raise ValueError(
+            "--speaking-rate-config and --final-slowdown-syllables-per-second "
+            "must be provided together."
+        )
+    final_phrase_slowdown = (
+        None
+        if options.final_slowdown_syllables_per_second is None
+        else FinalPhraseSlowdown(
+            syllables_per_second=options.final_slowdown_syllables_per_second,
+            word_count=options.final_slowdown_word_count,
+        )
+    )
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     protocol_output_stream = sys.stdout
     sys.stdout = sys.stderr
@@ -354,6 +420,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
         prompt_audio_path=options.prompt_audio,
         compile_model=options.compile,
         cache_prompt_in_memory=options.cache_prompt_in_memory,
+        speaking_rate_config_path=options.speaking_rate_config,
+        final_phrase_slowdown=final_phrase_slowdown,
     )
     VoxtreamWorkerController(runtime, protocol_output_stream).run()
 

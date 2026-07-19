@@ -27,9 +27,13 @@ def test_liveness_is_public_and_readiness_requires_authentication(tmp_path: Path
                     backend=SpeechSynthesisBackend.KYUTAI,
                     voxtream_python_path=tmp_path / "voxtream-python",
                     voxtream_config_path=tmp_path / "voxtream-config.json",
+                    voxtream_speaking_rate_config_path=(
+                        tmp_path / "voxtream-speaking-rate-config.json"
+                    ),
                     voxtream_prompt_audio_path=tmp_path / "voice.wav",
                     voxtream_compile=True,
                     voxtream_prompt_memory_cache=True,
+                    voxtream_final_phrase_slowdown=None,
                 ),
             ),
         )

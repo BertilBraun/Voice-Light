@@ -15,6 +15,7 @@ from app.compute.voice.interfaces import (
     SynthesizedAudioChunk,
     VoxtreamSynthesisFirstAudioMetrics,
 )
+from app.compute.voice.voxtream_speaking_rate import FinalPhraseSlowdown
 from deployment.compute.benchmark_voxtream import (
     BenchmarkPhase,
     ManagedLoadProcess,
@@ -185,8 +186,12 @@ def test_create_synthesizer_preserves_virtual_environment_python_path(
         python_path=str(python_path),
         config_path=str(tmp_path / "generator.json"),
         config_sha256="0" * 64,
+        speaking_rate_config_path=None,
+        speaking_rate_config_sha256=None,
         prompt_audio_path=str(tmp_path / "prompt.wav"),
         prompt_audio_sha256="1" * 64,
+        final_slowdown_syllables_per_second=None,
+        final_slowdown_word_count=4,
         load_command=None,
         load_startup_seconds=0.0,
         load_ready_file=None,
@@ -201,8 +206,17 @@ def test_create_synthesizer_preserves_virtual_environment_python_path(
         prompt_audio_path: Path,
         compile_model: bool,
         cache_prompt_in_memory: bool,
+        speaking_rate_config_path: Path | None,
+        final_phrase_slowdown: FinalPhraseSlowdown | None,
     ) -> FakeSpeechSynthesizer:
-        del config_path, prompt_audio_path, compile_model, cache_prompt_in_memory
+        del (
+            config_path,
+            prompt_audio_path,
+            compile_model,
+            cache_prompt_in_memory,
+            speaking_rate_config_path,
+            final_phrase_slowdown,
+        )
         received_python_paths.append(python_path)
         return FakeSpeechSynthesizer(pcm_bytes=b"\x00\x00", sample_rate=16_000)
 
@@ -253,8 +267,12 @@ def test_run_benchmark_executes_cases_without_shadowing_case_function(
         python_path=str(tmp_path / "python"),
         config_path=str(tmp_path / "generator.json"),
         config_sha256="0" * 64,
+        speaking_rate_config_path=None,
+        speaking_rate_config_sha256=None,
         prompt_audio_path=str(tmp_path / "prompt.wav"),
         prompt_audio_sha256="1" * 64,
+        final_slowdown_syllables_per_second=None,
+        final_slowdown_word_count=4,
         load_command=None,
         load_startup_seconds=0.0,
         load_ready_file=None,

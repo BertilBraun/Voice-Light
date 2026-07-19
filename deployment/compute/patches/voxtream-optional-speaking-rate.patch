@@ -1,0 +1,101 @@
+diff --git a/voxtream/generator.py b/voxtream/generator.py
+--- a/voxtream/generator.py
++++ b/voxtream/generator.py
+@@ -146,7 +146,7 @@ class SpeechGenerator:
+         self,
+         prompt_audio_path: Path,
+         text: str | Generator[str, None, None],
+-        speaking_rate: Iterator[float] = None,
++        speaking_rate: Iterator[float | None] = None,
+         enhance_prompt: bool = None,
+         apply_vad: bool = None,
+         return_progress: bool = False,
+@@ -211,15 +211,14 @@ class SpeechGenerator:
+             state_counter={},
+         )
+         spk_rate_state = SpeakingRateRuntimeState(cfg_gamma=self.config.cfg_gamma)
+-        if speaking_rate is None:
+-            (
+-                spk_rate_state.cur_spk_rate_cnt,
+-                spk_rate_state.spk_rate_window_frames,
+-                spk_rate_state.spk_rate_history,
+-            ) = init_current_duration_state(
+-                config=self.config,
+-                device=self.ctx.device,
+-            )
++        (
++            spk_rate_state.cur_spk_rate_cnt,
++            spk_rate_state.spk_rate_window_frames,
++            spk_rate_state.spk_rate_history,
++        ) = init_current_duration_state(
++            config=self.config,
++            device=self.ctx.device,
++        )
+ 
+         self._ensure_mimi_streaming()
+ 
+diff --git a/voxtream/utils/generator/runtime.py b/voxtream/utils/generator/runtime.py
+--- a/voxtream/utils/generator/runtime.py
++++ b/voxtream/utils/generator/runtime.py
+@@ -153,7 +153,7 @@ def init_current_duration_state(
+ 
+ 
+ def update_speaking_rate_params(
+-    speaking_rate: Iterator[float] | None,
++    speaking_rate: Iterator[float | None] | None,
+     speaking_rate_config: Dict[str, Dict[str, list | float]],
+     state: SpeakingRateRuntimeState,
+     config: SpeechGeneratorConfig,
+@@ -164,13 +164,17 @@ def update_speaking_rate_params(
+         return state
+ 
+     try:
+-        current_speaking_rate = float(next(speaking_rate))
++        requested_speaking_rate = next(speaking_rate)
+     except StopIteration as exc:
+         raise ValueError(
+             "speaking_rate generator must yield indefinitely. "
+             "For a fixed speaking rate, use an iterator that repeats one value."
+         ) from exc
+ 
++    if requested_speaking_rate is None:
++        return state
++
++    current_speaking_rate = float(requested_speaking_rate)
+     if current_speaking_rate == state.last_speaking_rate:
+         return state
+ 
+@@ -183,16 +187,24 @@ def update_speaking_rate_params(
+     )
+ 
+     if state.target_spk_rate_cnt is None:
+-        (
+-            state.target_spk_rate_cnt,
+-            state.cur_spk_rate_cnt,
+-            state.spk_rate_window_frames,
+-            state.spk_rate_history,
+-        ) = init_spk_rate_state(
+-            config=config,
+-            target_spk_rate_cnt=duration_state,
+-            device=device,
++        initial_target_spk_rate_cnt = torch.tensor(
++            duration_state,
++            dtype=torch.int64,
++            device=device,
+         )
++        if state.cur_spk_rate_cnt is None:
++            (
++                state.target_spk_rate_cnt,
++                state.cur_spk_rate_cnt,
++                state.spk_rate_window_frames,
++                state.spk_rate_history,
++            ) = init_spk_rate_state(
++                config=config,
++                target_spk_rate_cnt=duration_state,
++                device=device,
++            )
++        else:
++            state.target_spk_rate_cnt = initial_target_spk_rate_cnt
+     else:
+         updated_target_spk_rate_cnt = torch.tensor(
+             duration_state,

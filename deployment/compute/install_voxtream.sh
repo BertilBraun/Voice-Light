@@ -7,6 +7,7 @@ source_root="${voxtream_root}/source"
 python_path="${voxtream_root}/.venv/bin/python"
 revision="8ec2d62159dae4716ae7058827244a962d40603c"
 prompt_cache_patch="${repository_root}/deployment/compute/patches/voxtream-prompt-memory-cache.patch"
+optional_speaking_rate_patch="${repository_root}/deployment/compute/patches/voxtream-optional-speaking-rate.patch"
 
 mkdir -p "$voxtream_root"
 if [[ ! -d "${source_root}/.git" ]]; then
@@ -18,6 +19,10 @@ git -C "$source_root" checkout --detach "$revision"
 if ! git -C "$source_root" apply --reverse --check "$prompt_cache_patch" >/dev/null 2>&1; then
   git -C "$source_root" apply --check "$prompt_cache_patch"
   git -C "$source_root" apply "$prompt_cache_patch"
+fi
+if ! git -C "$source_root" apply --reverse --check "$optional_speaking_rate_patch" >/dev/null 2>&1; then
+  git -C "$source_root" apply --check "$optional_speaking_rate_patch"
+  git -C "$source_root" apply "$optional_speaking_rate_patch"
 fi
 git -C "$source_root" lfs install --local
 git -C "$source_root" lfs pull

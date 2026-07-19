@@ -47,6 +47,7 @@ def test_voxtream_uses_a_pinned_isolated_environment() -> None:
     assert 'voxtream_root="${repository_root}/.cache/compute/voxtream"' in installation_script
     assert 'python_path="${voxtream_root}/.venv/bin/python"' in installation_script
     assert "voxtream-prompt-memory-cache.patch" in installation_script
+    assert "voxtream-optional-speaking-rate.patch" in installation_script
     assert 'git -C "$source_root" apply' in installation_script
     assert "uv pip install" in installation_script
 
