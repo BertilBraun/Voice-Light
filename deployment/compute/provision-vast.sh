@@ -26,5 +26,9 @@ else
 fi
 
 cd "$repository_path"
+supervisor_status="$(supervisorctl status voice-light-compute 2>/dev/null || true)"
+if [[ "$supervisor_status" == voice-light-compute* ]]; then
+  supervisorctl stop voice-light-compute
+fi
 bash deployment/compute/bootstrap.sh
 bash deployment/compute/install-service.sh

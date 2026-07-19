@@ -59,6 +59,9 @@ def test_vast_provisioning_installs_supervisor_service() -> None:
         encoding="utf-8"
     )
 
+    stop_index = provisioning_script.index("supervisorctl stop voice-light-compute")
+    bootstrap_index = provisioning_script.index("bash deployment/compute/bootstrap.sh")
+    assert stop_index < bootstrap_index
     assert "bash deployment/compute/bootstrap.sh" in provisioning_script
     assert "bash deployment/compute/install-service.sh" in provisioning_script
     assert "supervisorctl update" in service_script
