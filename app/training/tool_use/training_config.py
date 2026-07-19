@@ -56,7 +56,7 @@ def pilot_training_config(
         random_seed=20260729,
         logical_epochs=8,
         minimum_user_turns=8,
-        maximum_user_turns=16,
+        maximum_user_turns=12,
         maximum_sequence_tokens=4096,
         per_device_batch_size=2,
         gradient_accumulation_steps=8,
