@@ -6,7 +6,11 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+from app.local.backchannel_review import router as backchannel_review_router
+from app.local.backchannel_review.models import BackchannelReviewCandidate
+from app.local.backchannel_review.router import _candidate_page
 from app.local.backchannel_review.service import find_ambiguous_backchannel_candidates
+from app.local.db.models import DashboardSample, SampleListFilter
 from app.local.main import app
 from app.shared.quality import (
     AnnotationEvidenceSource,
@@ -19,6 +23,19 @@ from app.shared.quality import (
 )
 
 SAMPLE_ID = UUID("5b41194e-c7ba-4bd2-a0c4-a572e972004c")
+
+
+class FakeBackchannelRepository:
+    def __init__(self, samples: list[DashboardSample]) -> None:
+        self.samples = samples
+        self.requested_offsets: list[int] = []
+
+    def list_dashboard_samples(
+        self,
+        sample_filter: SampleListFilter,
+    ) -> list[DashboardSample]:
+        self.requested_offsets.append(sample_filter.offset)
+        return self.samples[sample_filter.offset : sample_filter.offset + sample_filter.limit]
 
 
 @pytest.fixture(scope="module")
@@ -55,10 +72,10 @@ def test_backchannel_review_exposes_required_context(
 
 
 def test_next_button_autoplays_new_candidate(backchannel_review_script: str) -> None:
-    assert (
-        'elements.next.addEventListener("click", () => showCandidate(state.index + 1, true));'
-        in backchannel_review_script
+    assert 'elements.next.addEventListener("click", () => void showNextCandidate(true));' in (
+        backchannel_review_script
     )
+    assert "await loadNextCandidatePage();" in backchannel_review_script
     assert "if (autoplay) {" in backchannel_review_script
     assert "void play();" in backchannel_review_script
 
@@ -138,6 +155,60 @@ def test_candidate_window_stays_ten_seconds_at_annotation_end() -> None:
 
     assert candidate.window_start_seconds == pytest.approx(10.0)
     assert candidate.window_end_seconds == pytest.approx(20.0)
+
+
+def test_candidate_page_stops_after_bounded_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _candidate()
+    samples = [DashboardSample.model_construct() for _ in range(20)]
+    fake_repository = FakeBackchannelRepository(samples=samples)
+
+    def repeated_candidates(
+        dashboard_sample: DashboardSample,
+    ) -> tuple[BackchannelReviewCandidate, ...]:
+        del dashboard_sample
+        return (candidate,) * 10
+
+    monkeypatch.setattr(
+        backchannel_review_router,
+        "_candidates_for_sample",
+        repeated_candidates,
+    )
+
+    page = _candidate_page(
+        sample_repository=fake_repository,
+        offset=40,
+        limit=20,
+    )
+
+    assert len(page.candidates) == 20
+    assert page.offset == 40
+    assert page.next_offset == 60
+    assert fake_repository.requested_offsets == [0]
+
+
+def _candidate() -> BackchannelReviewCandidate:
+    annotation = _conversation_annotation(
+        duration_seconds=20.0,
+        speaker1=_speaker_annotation(
+            side=SpeakerSide.SPEAKER1,
+            segments=(
+                _segment(2.0, 3.0, "before"),
+                _segment(4.0, 5.0, "after"),
+            ),
+            connections=(_connection(3.0, 4.0, merge_confidence=0.82),),
+        ),
+        speaker2=_speaker_annotation(
+            side=SpeakerSide.SPEAKER2,
+            segments=(_segment(3.2, 3.6, "yes"),),
+        ),
+    )
+    return find_ambiguous_backchannel_candidates(
+        sample_id=SAMPLE_ID,
+        external_id="sample-a",
+        annotation=annotation,
+    )[0]
 
 
 def _segment(

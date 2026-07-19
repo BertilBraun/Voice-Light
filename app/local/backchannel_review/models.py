@@ -40,3 +40,5 @@ class BackchannelReviewCandidate(FrozenBaseModel):
 
 class BackchannelReviewListResponse(FrozenBaseModel):
     candidates: tuple[BackchannelReviewCandidate, ...]
+    offset: int
+    next_offset: int | None

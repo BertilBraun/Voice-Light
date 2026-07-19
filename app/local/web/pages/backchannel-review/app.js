@@ -6,7 +6,10 @@ const state = {
   players: [],
   playing: false,
   seeking: false,
+  nextOffset: 0,
+  loadingMore: false,
 };
+const CANDIDATE_PAGE_SIZE = 50;
 
 const elements = {
   position: document.querySelector("#position"),
@@ -28,7 +31,7 @@ const elements = {
 };
 
 elements.previous.addEventListener("click", () => showCandidate(state.index - 1));
-elements.next.addEventListener("click", () => showCandidate(state.index + 1, true));
+elements.next.addEventListener("click", () => void showNextCandidate(true));
 elements.play.addEventListener("click", () => {
   if (state.playing) {
     pause();
@@ -46,7 +49,7 @@ elements.seek.addEventListener("change", () => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "ArrowRight") {
-    showCandidate(state.index + 1);
+    void showNextCandidate(false);
   } else if (event.key === "ArrowLeft") {
     showCandidate(state.index - 1);
   } else if (event.key === " " && event.target === document.body) {
@@ -60,12 +63,7 @@ void loadCandidates();
 
 async function loadCandidates() {
   try {
-    const response = await fetch("/api/backchannel-review/candidates");
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.detail || `Candidate request failed (${response.status})`);
-    }
-    state.candidates = payload.candidates;
+    await loadNextCandidatePage();
     if (state.candidates.length === 0) {
       showEmpty("No merged connections with an intervening transcribed speaker were found.");
       return;
@@ -74,6 +72,36 @@ async function loadCandidates() {
   } catch (error) {
     showEmpty(error instanceof Error ? error.message : "Could not load candidates.");
   }
+}
+
+async function loadNextCandidatePage() {
+  if (state.nextOffset === null || state.loadingMore) {
+    return;
+  }
+  state.loadingMore = true;
+  try {
+    const query = new URLSearchParams({
+      offset: String(state.nextOffset),
+      limit: String(CANDIDATE_PAGE_SIZE),
+    });
+    const response = await fetch(`/api/backchannel-review/candidates?${query.toString()}`);
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `Candidate request failed (${response.status})`);
+    }
+    state.candidates.push(...payload.candidates);
+    state.nextOffset = payload.next_offset;
+  } finally {
+    state.loadingMore = false;
+  }
+}
+
+async function showNextCandidate(autoplay) {
+  const nextIndex = state.index + 1;
+  if (nextIndex >= state.candidates.length && state.nextOffset !== null) {
+    await loadNextCandidatePage();
+  }
+  showCandidate(nextIndex, autoplay);
 }
 
 function showEmpty(message) {
@@ -93,7 +121,9 @@ function showCandidate(index, autoplay = false) {
   pause();
   elements.emptyState.hidden = true;
   elements.review.hidden = false;
-  elements.position.textContent = `${index + 1} / ${state.candidates.length}`;
+  const candidateCountSuffix = state.nextOffset === null ? "" : "+";
+  elements.position.textContent =
+    `${index + 1} / ${state.candidates.length}${candidateCountSuffix}`;
   elements.sampleName.textContent = candidate.external_id;
   elements.candidateTitle.textContent = `${speakerLabel(candidate.possible_backchannel_side)} inside ${speakerLabel(candidate.floor_holder_side)}'s pause`;
   elements.previous.disabled = index === 0;

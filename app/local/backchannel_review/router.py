@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Protocol
+
+from fastapi import APIRouter, HTTPException, Query
 
 from app.local.backchannel_review.models import (
     BackchannelReviewCandidate,
@@ -13,7 +15,16 @@ from app.local.db.repository import Repository
 from app.shared.quality import METRIC_VERSION, QualityResult
 
 router = APIRouter(prefix="/api/backchannel-review", tags=["backchannel-review"])
-SAMPLE_PAGE_SIZE = 200
+SAMPLE_PAGE_SIZE = 10
+DEFAULT_CANDIDATE_PAGE_SIZE = 50
+MAXIMUM_CANDIDATE_PAGE_SIZE = 200
+
+
+class DashboardSampleRepository(Protocol):
+    def list_dashboard_samples(
+        self,
+        sample_filter: SampleListFilter,
+    ) -> list[DashboardSample]: ...
 
 
 def repository() -> Repository:
@@ -23,38 +34,62 @@ def repository() -> Repository:
 
 
 @router.get("/candidates")
-def list_backchannel_review_candidates() -> BackchannelReviewListResponse:
+def list_backchannel_review_candidates(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(
+        default=DEFAULT_CANDIDATE_PAGE_SIZE,
+        ge=1,
+        le=MAXIMUM_CANDIDATE_PAGE_SIZE,
+    ),
+) -> BackchannelReviewListResponse:
     try:
-        candidates = tuple(
-            sorted(
-                (
-                    candidate
-                    for dashboard_sample in _all_dashboard_samples(repository())
-                    for candidate in _candidates_for_sample(dashboard_sample)
-                ),
+        return _candidate_page(
+            sample_repository=repository(),
+            offset=offset,
+            limit=limit,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def _candidate_page(
+    sample_repository: DashboardSampleRepository,
+    offset: int,
+    limit: int,
+) -> BackchannelReviewListResponse:
+    selected_candidates: list[BackchannelReviewCandidate] = []
+    candidate_index = 0
+    sample_offset = 0
+    while True:
+        page = sample_repository.list_dashboard_samples(
+            SampleListFilter(limit=SAMPLE_PAGE_SIZE, offset=sample_offset)
+        )
+        for dashboard_sample in page:
+            candidates = sorted(
+                _candidates_for_sample(dashboard_sample),
                 key=lambda candidate: (
                     candidate.external_id,
                     candidate.possible_backchannel.start_seconds,
                     candidate.floor_holder_side.value,
                 ),
             )
-        )
-        return BackchannelReviewListResponse(candidates=candidates)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-
-def _all_dashboard_samples(sample_repository: Repository) -> tuple[DashboardSample, ...]:
-    samples: list[DashboardSample] = []
-    offset = 0
-    while True:
-        page = sample_repository.list_dashboard_samples(
-            SampleListFilter(limit=SAMPLE_PAGE_SIZE, offset=offset)
-        )
-        samples.extend(page)
+            for candidate in candidates:
+                if candidate_index >= offset:
+                    selected_candidates.append(candidate)
+                    if len(selected_candidates) > limit:
+                        return BackchannelReviewListResponse(
+                            candidates=tuple(selected_candidates[:limit]),
+                            offset=offset,
+                            next_offset=offset + limit,
+                        )
+                candidate_index += 1
         if len(page) < SAMPLE_PAGE_SIZE:
-            return tuple(samples)
-        offset += SAMPLE_PAGE_SIZE
+            return BackchannelReviewListResponse(
+                candidates=tuple(selected_candidates),
+                offset=offset,
+                next_offset=None,
+            )
+        sample_offset += SAMPLE_PAGE_SIZE
 
 
 def _candidates_for_sample(
