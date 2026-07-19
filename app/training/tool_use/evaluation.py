@@ -48,7 +48,6 @@ from app.training.tool_use.training_config import (
     QWEN3_1_7B_MODEL_IDENTIFIER,
     QWEN3_1_7B_REVISION,
 )
-from app.training.tool_use.training_data import assign_proof_of_concept_splits
 
 
 class EvaluationCaseKind(StrEnum):
@@ -131,12 +130,14 @@ def run_generation_evaluation(
         raise ValueError(f"Evaluation output directory is not empty: {output_directory}")
     output_directory.mkdir(parents=True, exist_ok=True)
     source_records = read_records(records_path)
-    assigned_records = assign_proof_of_concept_splits(
-        source_records=source_records,
-        holdout_record_count=80,
-        random_seed=20260729,
+    holdout_record_count = sum(
+        record.metadata.split.name is DatasetSplit.VALIDATION for record in source_records
     )
-    cases = heldout_generation_cases(assigned_records)
+    if holdout_record_count == 0:
+        raise ValueError("Generation evaluation requires validation records.")
+    cases = heldout_generation_cases(source_records)
+    if not cases:
+        raise ValueError("Validation records produced no generation evaluation cases.")
     tokenizer = AutoTokenizer.from_pretrained(
         QWEN3_1_7B_MODEL_IDENTIFIER,
         revision=QWEN3_1_7B_REVISION,
@@ -173,7 +174,7 @@ def run_generation_evaluation(
         model_identifier=QWEN3_1_7B_MODEL_IDENTIFIER,
         model_revision=QWEN3_1_7B_REVISION,
         adapter_path=adapter_path,
-        holdout_record_count=80,
+        holdout_record_count=holdout_record_count,
         case_count=len(cases),
         random_seeds=random_seeds,
         maximum_new_tokens=256,
