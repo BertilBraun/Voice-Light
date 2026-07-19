@@ -40,6 +40,7 @@ from app.training.tool_use.scenario import (
     AssistantTurnPlan,
     FollowUpKind,
     PlannedToolStep,
+    ScenarioGenerationMode,
     ScenarioSpec,
     ToolName,
     UtteranceForm,
@@ -137,6 +138,32 @@ def calculate_scenario() -> ScenarioSpec:
         ),
         split=DatasetSplit.TRAIN,
         leakage_group_id="calculate-test",
+    )
+
+
+def teacher_led_scenario() -> ScenarioSpec:
+    return ScenarioSpec(
+        scenario_id="scenario-test-teacher-led",
+        random_seed=67,
+        family="teacher_led_tool_use",
+        topic=(
+            "Compare the population of two cities and preserve the comparison metric in "
+            "follow-up questions."
+        ),
+        length_band=LengthBand.LONG,
+        speech_style=SpeechStyle.CASUAL,
+        turns=tuple(
+            AssistantTurnPlan(
+                user_instruction="Continue the same conversation naturally.",
+                tool_steps=(),
+                follow_up_kind=FollowUpKind.NONE,
+                utterance_form=UtteranceForm.CONTEXT_FIRST,
+            )
+            for _ in range(4)
+        ),
+        split=DatasetSplit.TRAIN,
+        leakage_group_id="teacher-led-city-population",
+        generation_mode=ScenarioGenerationMode.TEACHER_LED,
     )
 
 
@@ -411,6 +438,108 @@ def test_staged_rollout_skips_subjective_semantic_audits() -> None:
     assert not any(
         "Audit" in message.content for request in generator.requests for message in request
     )
+
+
+def test_teacher_led_rollout_chooses_tools_and_preserves_causal_results() -> None:
+    values: tuple[ToolUseBaseModel, ...] = (
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="How many people live in London these days?",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="I’ll check London’s latest figure.",
+                call=SearchCall(query="current population of London"),
+            )
+        ),
+        SyntheticSearchResultEnvelope(
+            result=SyntheticSearchResult(content="London has 9.0 million residents.")
+        ),
+        AssistantStepEnvelope(
+            step=FinalResponseStep(audible_text="London has about 9.0 million residents.")
+        ),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="And how does that compare with New York?",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="I’ll get New York’s matching figure.",
+                call=SearchCall(query="current population of New York City"),
+            )
+        ),
+        SyntheticSearchResultEnvelope(
+            result=SyntheticSearchResult(content="New York City has 8.3 million residents.")
+        ),
+        AssistantStepEnvelope(
+            step=FinalResponseStep(
+                audible_text="New York City has 8.3 million, so London is larger."
+            )
+        ),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="Roughly how many more people is that?",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="I’ll work out the difference.",
+                call=CalculateCall(expression="9000000 - 8300000"),
+            )
+        ),
+        AssistantStepEnvelope(
+            step=FinalResponseStep(audible_text="London has roughly 700,000 more residents.")
+        ),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="That’s closer than I expected.",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        AssistantStepEnvelope(
+            step=FinalResponseStep(
+                audible_text=(
+                    "Yeah, they’re much closer in population than their reputations suggest."
+                )
+            )
+        ),
+    )
+
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord, int]:
+        generator = ScriptedGenerator(values)
+        generated = await generate_record(
+            scenario=teacher_led_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=False,
+            ),
+        )
+        return generator, generated.record, generated.request_count
+
+    generator, record, request_count = asyncio.run(exercise())
+
+    assert request_count == 13
+    assert not generator.values
+    assert "Choose the action yourself" in generator.requests[1][1].content
+    assert "London has about 9.0 million residents." in generator.requests[4][1].content
+    assert '"kind": "tool_result"' not in generator.requests[4][1].content
+    assert "New York City has 8.3 million residents." in generator.requests[7][1].content
+    assert record.metadata.scenario.expected_tool_names == (
+        "search",
+        "search",
+        "calculate",
+    )
+    assert record.metadata.scenario.tool_need == "multiple_required"
+    assert record.metadata.scenario.user_turn_count == 4
 
 
 def test_clarified_search_calls_automatically_after_resolving_query() -> None:

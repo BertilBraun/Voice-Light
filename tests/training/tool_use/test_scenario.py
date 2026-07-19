@@ -5,6 +5,7 @@ from collections import Counter
 from app.training.tool_use.scenario import (
     AssistantResponseMode,
     PlannedOutcome,
+    ScenarioGenerationMode,
     ScenarioSamplingProfile,
     ScenarioSpec,
     SearchFlow,
@@ -33,6 +34,22 @@ def test_scenario_sampling_is_reproducible_and_group_split_is_stable() -> None:
         ScenarioSpec.model_validate_json(scenario.model_dump_json()) == scenario
         for scenario in first
     )
+
+
+def test_teacher_led_profile_supplies_only_a_loose_four_turn_brief() -> None:
+    scenarios = sample_scenarios(
+        count=24,
+        random_seed=19,
+        profile=ScenarioSamplingProfile.TEACHER_LED_TOOL_USE,
+    )
+
+    assert all(
+        scenario.generation_mode is ScenarioGenerationMode.TEACHER_LED for scenario in scenarios
+    )
+    assert all(scenario.family == "teacher_led_tool_use" for scenario in scenarios)
+    assert all(len(scenario.turns) == 4 for scenario in scenarios)
+    assert all(not turn.tool_steps for scenario in scenarios for turn in scenario.turns)
+    assert len({scenario.topic for scenario in scenarios}) >= 8
 
 
 def test_scenario_sampling_approximates_approved_tool_round_distribution() -> None:

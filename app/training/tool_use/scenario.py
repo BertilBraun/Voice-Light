@@ -60,6 +60,12 @@ class ScenarioSamplingProfile(StrEnum):
     LONG_MIXED = "long_mixed"
     BUCKET_CALIBRATION = "bucket_calibration"
     SEARCH_CALIBRATION = "search_calibration"
+    TEACHER_LED_TOOL_USE = "teacher_led_tool_use"
+
+
+class ScenarioGenerationMode(StrEnum):
+    PLANNED = "planned"
+    TEACHER_LED = "teacher_led"
 
 
 class SegmentBucket(StrEnum):
@@ -103,11 +109,18 @@ class ScenarioSpec(ToolUseBaseModel):
     turns: tuple[AssistantTurnPlan, ...]
     split: DatasetSplit
     leakage_group_id: str
+    generation_mode: ScenarioGenerationMode = ScenarioGenerationMode.PLANNED
 
     @model_validator(mode="after")
     def validate_turns(self) -> ScenarioSpec:
         if not self.turns:
             raise ValueError("A scenario must contain at least one user turn.")
+        if self.generation_mode is ScenarioGenerationMode.TEACHER_LED:
+            if any(turn.tool_steps for turn in self.turns):
+                raise ValueError("Teacher-led scenarios cannot prescribe tool steps.")
+            if any(turn.response_mode is not AssistantResponseMode.ANSWER for turn in self.turns):
+                raise ValueError("Teacher-led scenarios cannot prescribe response modes.")
+            return self
         if any(len(turn.tool_steps) > 3 for turn in self.turns):
             raise ValueError("A scenario turn may contain at most three sequential tool calls.")
         for turn_index, turn in enumerate(self.turns):
@@ -323,6 +336,57 @@ TOPIC_VARIANTS = (
     "personal scheduling",
 )
 
+TEACHER_LED_CONVERSATION_BRIEFS = (
+    (
+        "Compare the population of two well-known cities. Let later user turns refer back to the "
+        "population without restating the full question, and include a useful comparison."
+    ),
+    (
+        "Compare the physical size of two cities, then naturally follow up about population or "
+        "density so the conversation depends on earlier facts."
+    ),
+    (
+        "Look up a recent sports result, then let the user correct the team, season, or event and "
+        "continue with the corrected subject."
+    ),
+    (
+        "Look up the current price of a product, then continue into a quantity, discount, or "
+        "budget comparison that may need arithmetic."
+    ),
+    (
+        "Discuss a current public event. Let the user narrow the location or date and ask a "
+        "follow-up that relies on the earlier result."
+    ),
+    (
+        "Plan a simple trip using current transport information, followed by one natural "
+        "correction or comparison between two options."
+    ),
+    (
+        "Look up one current fact about a film, musician, or book release, then continue with a "
+        "pronoun-based follow-up and a changed detail."
+    ),
+    (
+        "Discuss opening hours or availability for a real place, then let the user refine which "
+        "day, branch, or location they meant."
+    ),
+    (
+        "Start with the current local time and naturally continue into how much time remains "
+        "before a clearly stated same-day deadline."
+    ),
+    (
+        "Compare two current technology facts or products across several turns, preserving the "
+        "comparison subject when the user uses short follow-ups."
+    ),
+    (
+        "Look up a current fact about a country or city, then ask how it compares with another "
+        "place without repeating the original metric."
+    ),
+    (
+        "Resolve a casual factual disagreement, then let the user revise what they meant and ask "
+        "for one related comparison or calculation."
+    ),
+)
+
 SPEECH_STYLE_WEIGHTS: tuple[tuple[SpeechStyle, float], ...] = (
     (SpeechStyle.CLEAN, 0.25),
     (SpeechStyle.CASUAL, 0.35),
@@ -403,6 +467,16 @@ def sample_scenarios(
                 )
             )
             continue
+        if profile is ScenarioSamplingProfile.TEACHER_LED_TOOL_USE:
+            scenarios.append(
+                _sample_teacher_led_tool_use_scenario(
+                    index=index,
+                    random_seed=random_seed,
+                    scenario_seed=scenario_seed,
+                    generator=scenario_generator,
+                )
+            )
+            continue
         template = _sample_template(scenario_generator)
         length_band = _sample_length_band(template, scenario_generator)
         speech_style = _weighted_choice(scenario_generator, SPEECH_STYLE_WEIGHTS)
@@ -428,6 +502,41 @@ def sample_scenarios(
             )
         )
     return tuple(scenarios)
+
+
+def _sample_teacher_led_tool_use_scenario(
+    index: int,
+    random_seed: int,
+    scenario_seed: int,
+    generator: random.Random,
+) -> ScenarioSpec:
+    brief = generator.choice(TEACHER_LED_CONVERSATION_BRIEFS)
+    speech_style = _weighted_choice(generator, SPEECH_STYLE_WEIGHTS)
+    leakage_group_id = "teacher-led-" + hashlib.sha256(brief.encode("utf-8")).hexdigest()[:16]
+    turns = tuple(
+        AssistantTurnPlan(
+            user_instruction=(
+                "Continue the same coherent conversation naturally. The teacher chooses the "
+                "specific user intent and whether the assistant needs a supplied tool."
+            ),
+            tool_steps=(),
+            follow_up_kind=FollowUpKind.NONE,
+            utterance_form=UtteranceForm.CONTEXT_FIRST,
+        )
+        for _ in range(4)
+    )
+    return ScenarioSpec(
+        scenario_id=f"scenario-{random_seed}-{index:06d}",
+        random_seed=scenario_seed,
+        family="teacher_led_tool_use",
+        topic=brief,
+        length_band=LengthBand.LONG,
+        speech_style=speech_style,
+        turns=turns,
+        split=_split_for_group(leakage_group_id),
+        leakage_group_id=leakage_group_id,
+        generation_mode=ScenarioGenerationMode.TEACHER_LED,
+    )
 
 
 def _sample_search_calibration_scenario(

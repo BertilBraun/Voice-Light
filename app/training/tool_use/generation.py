@@ -17,6 +17,8 @@ from app.training.tool_use.prompts import (
     record_grounding_messages,
     record_quality_messages,
     synthetic_search_messages,
+    teacher_led_assistant_step_messages,
+    teacher_led_user_turn_messages,
     user_turn_messages,
     user_turn_scope_messages,
 )
@@ -49,6 +51,7 @@ from app.training.tool_use.scenario import (
     AssistantTurnPlan,
     PlannedOutcome,
     PlannedToolStep,
+    ScenarioGenerationMode,
     ScenarioSpec,
     ToolName,
 )
@@ -114,6 +117,7 @@ class RolloutGenerationConfig(ToolUseBaseModel):
     maximum_semantic_attempts: int = Field(default=3, ge=1)
     maximum_record_attempts: int = Field(default=3, ge=1)
     bridge_word_limit: int = Field(default=8, ge=1)
+    maximum_teacher_led_tool_calls_per_turn: int = Field(default=2, ge=1, le=3)
     system_instruction: str = (
         "Speak naturally. Use supplied tools only when needed. Never invent a pending result."
     )
@@ -454,6 +458,14 @@ async def _generate_record_candidate(
     config: RolloutGenerationConfig,
     seed_salt: int,
 ) -> GeneratedRecord:
+    if scenario.generation_mode is ScenarioGenerationMode.TEACHER_LED:
+        return await _generate_teacher_led_record_candidate(
+            scenario=scenario,
+            generator=generator,
+            config=config,
+            seed_salt=seed_salt,
+        )
+
     tools = runtime_tool_definitions()
     messages: list[ConversationMessage] = [
         SystemMessage(
@@ -611,6 +623,178 @@ async def _generate_record_candidate(
                 if config.semantic_audits_enabled
                 else (lambda envelope: None)
             ),
+        )
+        usage = usage.add(final_usage)
+        request_count += final_requests
+        message_index += 1
+        messages.append(
+            AssistantMessage(
+                message_id=f"{scenario.scenario_id}-message-{message_index}",
+                audible_text=final_result.step.audible_text,
+            )
+        )
+
+    metadata = _record_metadata(
+        scenario=scenario,
+        tools=tools,
+        messages=tuple(messages),
+        config=config,
+    )
+    record = ToolDialogueRecord(
+        record_id=scenario.scenario_id,
+        tools=tools,
+        messages=tuple(messages),
+        metadata=metadata,
+    )
+    return GeneratedRecord(
+        record=record,
+        usage=usage,
+        request_count=request_count,
+        rejected_candidate_count=0,
+    )
+
+
+async def _generate_teacher_led_record_candidate(
+    scenario: ScenarioSpec,
+    generator: StructuredGenerator,
+    config: RolloutGenerationConfig,
+    seed_salt: int,
+) -> GeneratedRecord:
+    tools = runtime_tool_definitions()
+    messages: list[ConversationMessage] = [
+        SystemMessage(
+            message_id=f"{scenario.scenario_id}-system",
+            text=config.system_instruction,
+        )
+    ]
+    usage = TokenUsage()
+    request_count = 0
+    call_index = 0
+    message_index = 0
+
+    for turn_index in range(len(scenario.turns)):
+        user_result, user_usage, user_requests = await _generate_validated(
+            generator=generator,
+            response_type=GeneratedUserTurnEnvelope,
+            messages=teacher_led_user_turn_messages(
+                scenario=scenario,
+                turn_index=turn_index,
+                public_history=messages,
+            ),
+            random_seed=_request_seed(
+                scenario.random_seed + seed_salt,
+                turn_index,
+                0,
+            ),
+            maximum_attempts=config.maximum_semantic_attempts,
+            validator=lambda envelope: _validate_user_turn(
+                envelope,
+                scenario.speech_style,
+            ),
+        )
+        usage = usage.add(user_usage)
+        request_count += user_requests
+        message_index += 1
+        messages.append(
+            UserMessage(
+                message_id=f"{scenario.scenario_id}-message-{message_index}",
+                text=user_result.turn.text,
+                speech_style=scenario.speech_style,
+            )
+        )
+
+        turn_completed = False
+        for tool_round_index in range(config.maximum_teacher_led_tool_calls_per_turn):
+            remaining_tool_calls = config.maximum_teacher_led_tool_calls_per_turn - tool_round_index
+            assistant_result, assistant_usage, assistant_requests = await _generate_validated(
+                generator=generator,
+                response_type=AssistantStepEnvelope,
+                messages=teacher_led_assistant_step_messages(
+                    scenario=scenario,
+                    public_history=messages,
+                    remaining_tool_calls=remaining_tool_calls,
+                ),
+                random_seed=_request_seed(
+                    scenario.random_seed + seed_salt,
+                    turn_index,
+                    tool_round_index + 1,
+                ),
+                maximum_attempts=config.maximum_semantic_attempts,
+                validator=lambda envelope: _validate_teacher_led_assistant_step(envelope.step),
+            )
+            usage = usage.add(assistant_usage)
+            request_count += assistant_requests
+            match assistant_result.step:
+                case FinalResponseStep(audible_text=audible_text):
+                    message_index += 1
+                    messages.append(
+                        AssistantMessage(
+                            message_id=(f"{scenario.scenario_id}-message-{message_index}"),
+                            audible_text=audible_text,
+                        )
+                    )
+                    turn_completed = True
+                    break
+                case ToolActionStep(call=generated_call, audible_text=audible_text):
+                    pass
+
+            call_index += 1
+            call_id = f"{scenario.scenario_id}-call-{call_index}"
+            message_index += 1
+            messages.append(
+                AssistantMessage(
+                    message_id=f"{scenario.scenario_id}-message-{message_index}",
+                    audible_text=audible_text,
+                    tool_calls=(_canonical_tool_call(call_id, generated_call),),
+                )
+            )
+            outcome, tool_usage, tool_requests = await _execute_tool(
+                planned_step=PlannedToolStep(
+                    tool_name=generated_call_tool_name(generated_call),
+                    outcome=PlannedOutcome.SUCCESS,
+                ),
+                call=generated_call,
+                generator=generator,
+                random_seed=_request_seed(
+                    scenario.random_seed + seed_salt,
+                    turn_index,
+                    tool_round_index + 101,
+                ),
+                maximum_attempts=config.maximum_semantic_attempts,
+                time_reference=config.time_reference,
+                public_history=messages,
+                constrain_time_before_deadline=False,
+                semantic_audits_enabled=config.semantic_audits_enabled,
+            )
+            usage = usage.add(tool_usage)
+            request_count += tool_requests
+            message_index += 1
+            messages.append(
+                ToolResultMessage(
+                    message_id=f"{scenario.scenario_id}-message-{message_index}",
+                    call_id=call_id,
+                    outcome=outcome,
+                )
+            )
+
+        if turn_completed:
+            continue
+
+        final_result, final_usage, final_requests = await _generate_validated(
+            generator=generator,
+            response_type=FinalResponseStepEnvelope,
+            messages=teacher_led_assistant_step_messages(
+                scenario=scenario,
+                public_history=messages,
+                remaining_tool_calls=0,
+            ),
+            random_seed=_request_seed(
+                scenario.random_seed + seed_salt,
+                turn_index,
+                999,
+            ),
+            maximum_attempts=config.maximum_semantic_attempts,
+            validator=lambda envelope: _validate_teacher_led_assistant_step(envelope.step),
         )
         usage = usage.add(final_usage)
         request_count += final_requests
@@ -828,6 +1012,18 @@ def _validate_structural_tool_action(
                     pass
         case FinalResponseStep():
             raise ValueError(f"Expected {expected_tool_name.value} tool action.")
+
+
+def _validate_teacher_led_assistant_step(step: AssistantStep) -> None:
+    if len(step.audible_text.split()) > MAXIMUM_SPOKEN_TURN_WORDS:
+        raise ValueError("Generated assistant response exceeds 100 words.")
+    if contains_protocol_markup(step.audible_text):
+        raise ValueError("Generated assistant text contains protocol markup.")
+    match step:
+        case ToolActionStep(call=CalculateCall(expression=expression)):
+            calculate_expression(expression)
+        case FinalResponseStep() | ToolActionStep():
+            pass
 
 
 async def _execute_tool(
@@ -1149,9 +1345,20 @@ def _record_metadata(
     messages: tuple[ConversationMessage, ...],
     config: RolloutGenerationConfig,
 ) -> RecordMetadata:
-    expected_steps = tuple(step for turn in scenario.turns for step in turn.tool_steps)
-    expected_names = tuple(step.tool_name.value for step in expected_steps)
-    outcomes = tuple(step.outcome.value for step in expected_steps)
+    if scenario.generation_mode is ScenarioGenerationMode.TEACHER_LED:
+        expected_names = tuple(
+            tool_call.tool_name
+            for message in messages
+            if isinstance(message, AssistantMessage)
+            for tool_call in message.tool_calls
+        )
+        outcomes = tuple(
+            message.outcome.status for message in messages if isinstance(message, ToolResultMessage)
+        )
+    else:
+        expected_steps = tuple(step for turn in scenario.turns for step in turn.tool_steps)
+        expected_names = tuple(step.tool_name.value for step in expected_steps)
+        outcomes = tuple(step.outcome.value for step in expected_steps)
     content_hash = hashlib.sha256(
         canonical_json(
             RecordHashPayload(
@@ -1175,9 +1382,9 @@ def _record_metadata(
             family=scenario.family,
             tool_need=(
                 "not_needed"
-                if not expected_steps
+                if not expected_names
                 else "required"
-                if len(expected_steps) == 1
+                if len(expected_names) == 1
                 else "multiple_required"
             ),
             expected_tool_names=expected_names,

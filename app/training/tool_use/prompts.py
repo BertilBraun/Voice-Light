@@ -7,13 +7,19 @@ from app.training.tool_use.protocol import TeacherChatMessage
 from app.training.tool_use.scenario import (
     AssistantResponseMode,
     AssistantTurnPlan,
+    ScenarioGenerationMode,
     ScenarioSpec,
     ToolName,
     UtteranceForm,
 )
-from app.training.tool_use.schema import ConversationMessage, ToolResultMessage
+from app.training.tool_use.schema import (
+    AssistantMessage,
+    ConversationMessage,
+    ToolResultMessage,
+    UserMessage,
+)
 
-PROMPT_REVISION = "constructive-advice-v19"
+PROMPT_REVISION = "teacher-led-conversations-v20"
 
 TEACHER_SYSTEM_PROMPT = """\
 You create natural English voice-assistant training examples.
@@ -140,6 +146,14 @@ action outside search, calculate, and get_time, including media playback, bookin
 messaging, navigation, device control, and file operations. A statement about the user's own
 plans is supported. Return only the requested schema-constrained object."""
 
+TEACHER_LED_SYSTEM_PROMPT = """\
+Create one step of a coherent, natural English voice-assistant conversation.
+The conversation should feel improvised rather than like a benchmark or a scripted demonstration.
+Maintain the subject, entities, quantities, corrections, and pronoun references established in
+the audible history. Short fragments, reactions, and self-corrections are welcome when natural.
+Do not mention datasets, prompts, schemas, tools, function calls, or synthetic generation.
+Return only the requested schema-constrained object."""
+
 
 def user_turn_messages(
     scenario: ScenarioSpec,
@@ -259,6 +273,88 @@ timestamp's hour and minute from the deadline's hour and minute."""
     )
 
 
+def teacher_led_user_turn_messages(
+    scenario: ScenarioSpec,
+    turn_index: int,
+    public_history: Sequence[ConversationMessage],
+) -> tuple[TeacherChatMessage, ...]:
+    turn_number = turn_index + 1
+    total_turns = len(scenario.turns)
+    if turn_index == 0:
+        turn_guidance = (
+            "Open with a concrete, casual reason for asking and a clear request. The request "
+            "should naturally need current or externally verified information."
+        )
+    else:
+        turn_guidance = (
+            "Continue as the same user in direct response to the assistant's latest audible "
+            "answer. Follow up, compare, narrow, correct, or refer back elliptically. Preserve "
+            "what the conversation was comparing even when the user does not repeat the metric. "
+            "Do not change to an unrelated topic. If the assistant asked whether it should look "
+            "something up and the user wants that, answer clearly and continue the request."
+        )
+    request = f"""\
+Create only the next user utterance.
+
+Loose conversation brief:
+{scenario.topic}
+
+This is user turn {turn_number} of {total_turns}.
+Requested speech style: {scenario.speech_style.value}
+{turn_guidance}
+
+Across the whole conversation, allow several factual lookups and, when natural, one dependent
+comparison or calculation. Do not force a lookup into every turn. Do not supply the external facts
+the user is asking for.
+
+Audible conversation so far:
+{_audible_history_json(public_history)}
+"""
+    return (
+        TeacherChatMessage(role="system", content=TEACHER_LED_SYSTEM_PROMPT),
+        TeacherChatMessage(role="user", content=request),
+    )
+
+
+def teacher_led_assistant_step_messages(
+    scenario: ScenarioSpec,
+    public_history: Sequence[ConversationMessage],
+    remaining_tool_calls: int,
+) -> tuple[TeacherChatMessage, ...]:
+    request = f"""\
+Create only the next assistant step.
+
+Loose conversation brief:
+{scenario.topic}
+
+Choose the action yourself from the conversation:
+- Give a final spoken response when the request is answerable from the conversation.
+- Call search immediately for a current, changing, local, or externally verified fact that is not
+  already present.
+- Call calculate for exact arithmetic, including a comparison derived from known numbers.
+- Call get_time when the current local date or time is required.
+
+Available tools:
+- search(query): returns one concise search-result string
+- calculate(expression): evaluates basic numeric arithmetic
+- get_time(): returns the current local timestamp
+
+At most {remaining_tool_calls} additional tool calls are available for this user turn. For a tool
+action, emit exactly one call with a short natural spoken bridge. Never merely promise to search,
+check, calculate, or look something up in a final response. If the user's request is clear, do not
+ask permission before calling. After a tool result, use that result directly or make another call
+only when it is genuinely needed. Preserve the metric, entity, and correction implied by short
+follow-ups. Do not answer a pending lookup from memory.
+
+Complete conversation history:
+{_history_json(public_history)}
+"""
+    return (
+        TeacherChatMessage(role="system", content=TEACHER_LED_SYSTEM_PROMPT),
+        TeacherChatMessage(role="user", content=request),
+    )
+
+
 def user_turn_scope_messages(
     public_history: Sequence[ConversationMessage],
     candidate_text: str,
@@ -303,23 +399,32 @@ def record_quality_messages(
     scenario: ScenarioSpec,
     public_history: Sequence[ConversationMessage],
 ) -> tuple[TeacherChatMessage, ...]:
-    planned_turns = [
-        {
-            "turn_index": index,
-            "user_instruction": turn.user_instruction,
-            "planned_tools": [step.tool_name.value for step in turn.tool_steps],
-            "planned_outcomes": [step.outcome.value for step in turn.tool_steps],
-            "response_mode": turn.response_mode.value,
-        }
-        for index, turn in enumerate(scenario.turns)
-    ]
+    planned_turns = (
+        "The teacher freely chose each user turn and assistant action. Judge tool need from the "
+        "actual conversation rather than from a predetermined plan."
+        if scenario.generation_mode is ScenarioGenerationMode.TEACHER_LED
+        else json.dumps(
+            [
+                {
+                    "turn_index": index,
+                    "user_instruction": turn.user_instruction,
+                    "planned_tools": [step.tool_name.value for step in turn.tool_steps],
+                    "planned_outcomes": [step.outcome.value for step in turn.tool_steps],
+                    "response_mode": turn.response_mode.value,
+                }
+                for index, turn in enumerate(scenario.turns)
+            ],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     request = f"""\
-Audit this completed candidate record against its deterministic plan.
+Audit this completed candidate record.
 
 Scenario family: {scenario.family}
 Topic: {scenario.topic}
-Planned turns:
-{json.dumps(planned_turns, ensure_ascii=False, indent=2)}
+Generation guidance:
+{planned_turns}
 
 Candidate public conversation:
 {_history_json(public_history)}
@@ -447,4 +552,17 @@ def _tool_sequence_guidance(
 
 def _history_json(public_history: Sequence[ConversationMessage]) -> str:
     values = [message.model_dump(mode="json") for message in public_history]
+    return json.dumps(values, ensure_ascii=False, indent=2)
+
+
+def _audible_history_json(public_history: Sequence[ConversationMessage]) -> str:
+    values: list[dict[str, str]] = []
+    for message in public_history:
+        match message:
+            case UserMessage(text=text):
+                values.append({"role": "user", "content": text})
+            case AssistantMessage(audible_text=audible_text):
+                values.append({"role": "assistant", "content": audible_text})
+            case _:
+                pass
     return json.dumps(values, ensure_ascii=False, indent=2)
