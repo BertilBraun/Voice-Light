@@ -68,7 +68,7 @@ class VllmResponseMessage(ToolUseBaseModel):
     annotations: tuple[JsonValue, ...] | None
     audio: JsonValue | None
     function_call: JsonValue | None
-    tool_calls: tuple[JsonValue, ...]
+    tool_calls: tuple[JsonValue, ...] = ()
     reasoning: str | None
 
 
@@ -79,6 +79,7 @@ class VllmResponseChoice(ToolUseBaseModel):
     logprobs: JsonValue | None
     stop_reason: str | int | None
     token_ids: tuple[int, ...] | None
+    routed_experts: JsonValue | None = None
 
 
 class VllmUsage(ToolUseBaseModel):
@@ -100,6 +101,8 @@ class VllmChatCompletionResponse(ToolUseBaseModel):
     prompt_logprobs: JsonValue | None
     prompt_token_ids: tuple[int, ...] | None
     kv_transfer_params: JsonValue | None
+    prompt_text: str | None = None
+    metrics: JsonValue | None = None
 
 
 class VllmRequestLogEntry(ToolUseBaseModel):

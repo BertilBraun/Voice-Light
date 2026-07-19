@@ -93,13 +93,13 @@ def test_vllm_client_sends_json_schema_and_disables_thinking(
                             "annotations": None,
                             "audio": None,
                             "function_call": None,
-                            "tool_calls": [],
                             "reasoning": None,
                         },
                         "finish_reason": "stop",
                         "logprobs": None,
                         "stop_reason": None,
                         "token_ids": None,
+                        "routed_experts": None,
                     }
                 ],
                 "service_tier": None,
@@ -113,6 +113,8 @@ def test_vllm_client_sends_json_schema_and_disables_thinking(
                 "prompt_logprobs": None,
                 "prompt_token_ids": None,
                 "kv_transfer_params": None,
+                "prompt_text": None,
+                "metrics": None,
             },
         )
 
