@@ -109,6 +109,8 @@ class VoxtreamBenchmarkConfiguration(FrozenBaseModel):
     prompt_audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     load_command: tuple[str, ...] | None
     load_startup_seconds: float = Field(ge=0.0)
+    load_ready_file: str | None
+    load_ready_timeout_seconds: float = Field(gt=0.0)
     worker_performs_startup_warmup: bool = True
 
 
@@ -123,17 +125,56 @@ class VoxtreamBenchmarkReport(FrozenBaseModel):
 
 
 class ManagedLoadProcess:
-    def __init__(self, command: tuple[str, ...], startup_seconds: float) -> None:
+    def __init__(
+        self,
+        command: tuple[str, ...],
+        startup_seconds: float,
+        ready_file: Path | None,
+        ready_timeout_seconds: float,
+    ) -> None:
         if not command:
             raise ValueError("The concurrent load command cannot be empty.")
         self.command = command
         self.startup_seconds = startup_seconds
+        self.ready_file = ready_file
+        self.ready_timeout_seconds = ready_timeout_seconds
         self.process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
         if self.process is not None:
             raise AssertionError("The concurrent load process may only be started once.")
+        if self.ready_file is not None and self.ready_file.exists():
+            raise ValueError(f"The load readiness file already exists: {self.ready_file}")
         self.process = subprocess.Popen(self.command)
+        try:
+            if self.ready_file is not None:
+                self._wait_until_ready()
+                return
+            self._wait_for_startup_delay()
+        except BaseException:
+            self.close()
+            raise
+
+    def _wait_until_ready(self) -> None:
+        assert self.process is not None
+        assert self.ready_file is not None
+        deadline = time.monotonic() + self.ready_timeout_seconds
+        while time.monotonic() < deadline:
+            return_code = self.process.poll()
+            if return_code is not None:
+                raise RuntimeError(
+                    f"Concurrent load command exited before readiness with code {return_code}."
+                )
+            if self.ready_file.is_file():
+                return
+            time.sleep(min(0.1, deadline - time.monotonic()))
+        raise TimeoutError(
+            f"Concurrent load command did not create {self.ready_file} within "
+            f"{self.ready_timeout_seconds:.1f} seconds."
+        )
+
+    def _wait_for_startup_delay(self) -> None:
+        assert self.process is not None
         deadline = time.monotonic() + self.startup_seconds
         while time.monotonic() < deadline:
             return_code = self.process.poll()
@@ -153,7 +194,7 @@ class ManagedLoadProcess:
             return
         self.process.terminate()
         try:
-            self.process.wait(timeout=10.0)
+            self.process.wait(timeout=30.0)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=10.0)
@@ -194,15 +235,25 @@ def main(arguments: Sequence[str] | None = None) -> None:
         ),
     )
     parser.add_argument("--load-startup-seconds", type=float, default=0.0)
+    parser.add_argument(
+        "--load-ready-file",
+        type=Path,
+        help="Wait for this file instead of relying on --load-startup-seconds.",
+    )
+    parser.add_argument("--load-ready-timeout-seconds", type=float, default=420.0)
     options = parser.parse_args(arguments)
     if options.runs < 1:
         raise ValueError("--runs must be at least 1.")
     if options.load_startup_seconds < 0:
         raise ValueError("--load-startup-seconds cannot be negative.")
+    if options.load_ready_timeout_seconds <= 0:
+        raise ValueError("--load-ready-timeout-seconds must be positive.")
 
     variant = normalized_variant(options.variant)
     output_directory = options.output_root / variant
     load_command = parse_load_command(options.load_command_json)
+    if options.load_ready_file is not None and load_command is None:
+        raise ValueError("--load-ready-file requires --load-command-json.")
     configuration = VoxtreamBenchmarkConfiguration(
         variant=variant,
         condition=options.condition,
@@ -216,6 +267,10 @@ def main(arguments: Sequence[str] | None = None) -> None:
         prompt_audio_sha256=sha256_file(options.prompt_audio),
         load_command=load_command,
         load_startup_seconds=options.load_startup_seconds,
+        load_ready_file=(
+            None if options.load_ready_file is None else str(options.load_ready_file.resolve())
+        ),
+        load_ready_timeout_seconds=options.load_ready_timeout_seconds,
     )
     cases = tuple(VoxtreamBenchmarkCase(name=name, text=text) for name, text in DEFAULT_CASES)
     report = asyncio.run(
@@ -244,6 +299,12 @@ async def run_benchmark(
         else ManagedLoadProcess(
             command=configuration.load_command,
             startup_seconds=configuration.load_startup_seconds,
+            ready_file=(
+                None
+                if configuration.load_ready_file is None
+                else Path(configuration.load_ready_file)
+            ),
+            ready_timeout_seconds=configuration.load_ready_timeout_seconds,
         )
     )
     if load_process is not None:

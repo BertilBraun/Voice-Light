@@ -17,6 +17,7 @@ from app.compute.voice.interfaces import (
 )
 from deployment.compute.benchmark_voxtream import (
     BenchmarkPhase,
+    ManagedLoadProcess,
     VoxtreamBenchmarkCase,
     benchmark_case,
     normalized_variant,
@@ -145,6 +146,20 @@ def test_load_command_is_a_shell_free_json_array() -> None:
     )
     with pytest.raises(ValueError, match="JSON string array"):
         parse_load_command('{"command": "python"}')
+
+
+def test_managed_load_rejects_stale_readiness_file(tmp_path: Path) -> None:
+    ready_file = tmp_path / "ready.json"
+    ready_file.write_text("stale", encoding="utf-8")
+    load_process = ManagedLoadProcess(
+        command=("python", "-m", "load_generator"),
+        startup_seconds=0.0,
+        ready_file=ready_file,
+        ready_timeout_seconds=1.0,
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        load_process.start()
 
 
 def test_percentile_interpolates_small_benchmark_samples() -> None:
