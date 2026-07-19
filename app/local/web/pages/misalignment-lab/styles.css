@@ -1,0 +1,98 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f4f5f2;
+  color: #1e2528;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+main { margin: 0 auto; max-width: 1120px; padding: 28px 22px 52px; }
+h1 { font-size: 30px; margin: 6px 0 8px; }
+h2 { margin: 3px 0 5px; }
+h3, p { margin-top: 0; }
+p { color: #5a666b; }
+.back-link { color: #146b63; text-decoration: none; }
+.page-header, .candidate-header, .playback-controls {
+  align-items: center;
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+}
+.page-header p { margin-bottom: 0; max-width: 760px; }
+.queue-position { color: #5a666b; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.panel {
+  background: #fff;
+  border: 1px solid #d3dadd;
+  border-radius: 10px;
+  margin-top: 18px;
+  padding: 20px;
+}
+.progress-panel { display: grid; gap: 12px; grid-template-columns: repeat(4, 1fr); }
+.progress-panel > div { background: #f7f8f6; border-radius: 7px; padding: 11px 14px; }
+.progress-panel .label { color: #5a666b; display: block; font-size: 12px; }
+.progress-panel strong { display: block; font-size: 22px; margin-top: 2px; }
+.eyebrow { color: #5a666b; font-size: 13px; text-transform: uppercase; }
+.candidate-header p { margin-bottom: 0; }
+.raw-badge {
+  background: #e8f3f1;
+  border: 1px solid #9bc7c2;
+  border-radius: 999px;
+  color: #105b54;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+button {
+  background: #fff;
+  border: 1px solid #b9c2c6;
+  border-radius: 7px;
+  cursor: pointer;
+  min-height: 40px;
+  padding: 8px 15px;
+}
+button:hover:not(:disabled) { border-color: #146b63; }
+button:disabled { cursor: default; opacity: .48; }
+button.primary { background: #146b63; border-color: #146b63; color: #fff; }
+#seek { flex: 1; }
+.clock { font-variant-numeric: tabular-nums; min-width: 112px; text-align: right; }
+.playback-status { font-size: 13px; margin: 8px 0 0; }
+.playback-status.warning { color: #8a4b0f; }
+.tracks { display: grid; gap: 13px; margin-top: 16px; }
+.track { border: 1px solid #d7dde5; border-radius: 8px; padding: 10px 12px; }
+.track-heading { align-items: baseline; display: flex; justify-content: space-between; }
+.track-heading span { color: #5a666b; font-size: 12px; }
+canvas { cursor: pointer; display: block; height: 132px; width: 100%; }
+.legend { color: #5a666b; display: flex; flex-wrap: wrap; font-size: 12px; gap: 16px; margin-top: 12px; }
+.legend span { align-items: center; display: flex; gap: 5px; }
+.legend i { display: inline-block; height: 10px; width: 18px; }
+.wave-swatch { background: #385c72; }
+.turn-swatch { background: #b9dcd8; border: 1px solid #146b63; }
+.keep-swatch { background: #d8c9f0; border: 1px solid #6c3eb4; }
+.pause-swatch { background: rgba(224, 173, 42, .55); border-bottom: 3px solid #146b63; }
+.eot-swatch { border-left: 2px solid #c2322d; }
+.decision-panel { border-color: #aebbb8; }
+.decision-panel p { margin-bottom: 14px; }
+.decision-buttons { display: grid; gap: 12px; grid-template-columns: 1fr 1fr 1fr; }
+.decision-buttons button { font-size: 16px; font-weight: 700; min-height: 54px; }
+.decision-buttons .aligned { background: #e7f4ef; border-color: #6dac98; color: #165946; }
+.decision-buttons .misaligned { background: #fff0ed; border-color: #db8b7b; color: #8e2f20; }
+kbd { background: rgba(255, 255, 255, .7); border: 1px solid currentColor; border-radius: 3px; float: right; font-size: 11px; padding: 2px 5px; }
+dl { display: grid; gap: 0 20px; grid-template-columns: 220px 1fr; margin: 0; }
+dt, dd { border-bottom: 1px solid #e5e8e7; margin: 0; padding: 8px 0; }
+dt { color: #5a666b; }
+dd { font-variant-numeric: tabular-nums; }
+.note { font-size: 13px; margin: 15px 0 0; }
+.empty-state { color: #5a666b; }
+
+@media (max-width: 750px) {
+  .page-header, .candidate-header { align-items: flex-start; flex-direction: column; }
+  .progress-panel { grid-template-columns: 1fr 1fr; }
+  .decision-buttons { grid-template-columns: 1fr; }
+  .playback-controls { align-items: stretch; flex-wrap: wrap; }
+  #seek { flex-basis: 100%; order: 3; }
+  dl { grid-template-columns: 1fr; }
+  dd { padding-top: 0; }
+}

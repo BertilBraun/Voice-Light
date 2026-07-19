@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Misalignment Lab - Voice Light</title>
+    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=1" />
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <div>
+          <a class="back-link" href="/training/sample-lab">&larr; Training sample lab</a>
+          <h1>Misalignment lab</h1>
+          <p>
+            Rapidly triage raw, zero-shift 20-second clips chosen from interaction-dense moments
+            near the ends of conversations.
+          </p>
+        </div>
+        <div id="queue-position" class="queue-position">Loading queue...</div>
+      </header>
+
+      <section class="panel progress-panel">
+        <div>
+          <span class="label">Reviewed</span>
+          <strong id="reviewed-count">0</strong>
+        </div>
+        <div>
+          <span class="label">Plausibly aligned</span>
+          <strong id="aligned-count">0</strong>
+        </div>
+        <div>
+          <span class="label">Quarantined sessions</span>
+          <strong id="quarantined-count">0</strong>
+        </div>
+        <div>
+          <span class="label">Unsure</span>
+          <strong id="unsure-count">0</strong>
+        </div>
+      </section>
+
+      <section id="empty-state" class="panel empty-state" hidden></section>
+
+      <section id="review" hidden>
+        <section class="panel candidate-header">
+          <div>
+            <span id="sample-name" class="eyebrow"></span>
+            <h2 id="candidate-time"></h2>
+            <p id="candidate-reason"></p>
+          </div>
+          <span class="raw-badge">Raw tracks - shift 0.0 s</span>
+        </section>
+
+        <section class="panel playback-panel">
+          <div class="playback-controls">
+            <button id="play" type="button" class="primary">Start / replay both</button>
+            <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Clip position" />
+            <span id="clock" class="clock">0:00.0 / 0:20.0</span>
+          </div>
+          <p id="playback-status" class="playback-status">
+            Both WAV windows are decoded and scheduled on one audio clock.
+          </p>
+          <div id="tracks" class="tracks">
+            <article class="track">
+              <div class="track-heading">
+                <strong>Speaker 1</strong>
+                <span id="speaker1-events"></span>
+              </div>
+              <canvas id="speaker1-timeline" height="132"></canvas>
+            </article>
+            <article class="track">
+              <div class="track-heading">
+                <strong>Speaker 2</strong>
+                <span id="speaker2-events"></span>
+              </div>
+              <canvas id="speaker2-timeline" height="132"></canvas>
+            </article>
+          </div>
+          <div class="legend">
+            <span><i class="wave-swatch"></i>raw waveform</span>
+            <span><i class="turn-swatch"></i>turn-favoring segment</span>
+            <span><i class="keep-swatch"></i>backchannel / keep-playing</span>
+            <span><i class="pause-swatch"></i>pause / connection</span>
+            <span><i class="eot-swatch"></i>end of turn</span>
+          </div>
+        </section>
+
+        <section class="panel decision-panel">
+          <h3>Do the two raw tracks plausibly share one timeline?</h3>
+          <p>
+            One likely-misaligned judgment quarantines the whole recording immediately. No audio
+            is rewritten and no offset is applied.
+          </p>
+          <div class="decision-buttons">
+            <button id="aligned" type="button" class="aligned">
+              Plausibly aligned <kbd>A</kbd>
+            </button>
+            <button id="misaligned" type="button" class="misaligned">
+              Likely misaligned <kbd>M</kbd>
+            </button>
+            <button id="unsure" type="button">
+              Skip / unsure <kbd>U</kbd>
+            </button>
+          </div>
+        </section>
+
+        <section class="panel detail-panel">
+          <h3>Why this clip was sampled</h3>
+          <dl id="candidate-details"></dl>
+          <p class="note">
+            Synchronization estimators only influence sampling probability. The decision is based
+            on what you hear and see here; VAD and ASR agreement is not treated as independent
+            proof.
+          </p>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/pages/misalignment-lab/app.js?v=1"></script>
+  </body>
+</html>

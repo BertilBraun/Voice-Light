@@ -16,6 +16,7 @@ from app.local.config import WEB_ROOT
 from app.local.dashboard.router import router as dataset_dashboard_router
 from app.local.data.sessions import SessionEntry, SpeakerName, list_sessions, session_audio_path
 from app.local.future_work.router import router as future_work_router
+from app.local.misalignment_lab.router import router as misalignment_lab_router
 from app.local.synchronization_review.router import router as synchronization_review_router
 from app.local.training_samples.router import router as training_samples_router
 from app.shared.audio.wav import capped_wave_bytes
@@ -37,6 +38,7 @@ app.include_router(training_samples_router)
 app.include_router(backchannel_review_router)
 app.include_router(synchronization_review_router)
 app.include_router(future_work_router)
+app.include_router(misalignment_lab_router)
 app.mount("/pages", StaticFiles(directory=WEB_ROOT / "pages"), name="pages")
 
 
@@ -100,6 +102,14 @@ def backchannel_review_page() -> FileResponse:
 def synchronization_review_page() -> FileResponse:
     return FileResponse(
         WEB_ROOT / "pages" / "synchronization-review" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/training/misalignment-lab")
+def misalignment_lab_page() -> FileResponse:
+    return FileResponse(
+        WEB_ROOT / "pages" / "misalignment-lab" / "index.html",
         headers={"Cache-Control": "no-store"},
     )
 

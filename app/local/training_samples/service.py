@@ -116,13 +116,13 @@ def build_training_sample_preview(
     assistant_track = _track(dashboard_sample, assistant_side)
     user_track_path = _track_path(user_track)
     assistant_track_path = _track_path(assistant_track)
-    sample_rate, waveform = _waveform_window(
+    sample_rate, waveform = waveform_window(
         path=user_track_path,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
         point_count=WAVEFORM_POINT_COUNT,
     )
-    assistant_sample_rate, assistant_waveform = _waveform_window(
+    assistant_sample_rate, assistant_waveform = waveform_window(
         path=assistant_track_path,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
@@ -1148,7 +1148,7 @@ def _preview_connection_targets(
     )
 
 
-def _waveform_window(
+def waveform_window(
     path: Path,
     start_seconds: float,
     end_seconds: float,
