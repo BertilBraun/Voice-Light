@@ -117,7 +117,7 @@ class RolloutGenerationConfig(ToolUseBaseModel):
     maximum_semantic_attempts: int = Field(default=3, ge=1)
     maximum_record_attempts: int = Field(default=3, ge=1)
     bridge_word_limit: int = Field(default=8, ge=1)
-    maximum_teacher_led_tool_calls_per_turn: int = Field(default=2, ge=1, le=3)
+    teacher_led_runaway_call_guard: int = Field(default=8, ge=1, le=32)
     system_instruction: str = (
         "Speak naturally. Use supplied tools only when needed. Never invent a pending result."
     )
@@ -704,15 +704,13 @@ async def _generate_teacher_led_record_candidate(
         )
 
         turn_completed = False
-        for tool_round_index in range(config.maximum_teacher_led_tool_calls_per_turn):
-            remaining_tool_calls = config.maximum_teacher_led_tool_calls_per_turn - tool_round_index
+        for tool_round_index in range(config.teacher_led_runaway_call_guard):
             assistant_result, assistant_usage, assistant_requests = await _generate_validated(
                 generator=generator,
                 response_type=AssistantStepEnvelope,
                 messages=teacher_led_assistant_step_messages(
                     scenario=scenario,
                     public_history=messages,
-                    remaining_tool_calls=remaining_tool_calls,
                 ),
                 random_seed=_request_seed(
                     scenario.random_seed + seed_salt,
@@ -780,30 +778,13 @@ async def _generate_teacher_led_record_candidate(
         if turn_completed:
             continue
 
-        final_result, final_usage, final_requests = await _generate_validated(
-            generator=generator,
-            response_type=FinalResponseStepEnvelope,
-            messages=teacher_led_assistant_step_messages(
-                scenario=scenario,
-                public_history=messages,
-                remaining_tool_calls=0,
+        raise GenerationAttemptError(
+            (
+                "Teacher-led turn reached the runaway guard after "
+                f"{config.teacher_led_runaway_call_guard} consecutive tool calls."
             ),
-            random_seed=_request_seed(
-                scenario.random_seed + seed_salt,
-                turn_index,
-                999,
-            ),
-            maximum_attempts=config.maximum_semantic_attempts,
-            validator=lambda envelope: _validate_teacher_led_assistant_step(envelope.step),
-        )
-        usage = usage.add(final_usage)
-        request_count += final_requests
-        message_index += 1
-        messages.append(
-            AssistantMessage(
-                message_id=f"{scenario.scenario_id}-message-{message_index}",
-                audible_text=final_result.step.audible_text,
-            )
+            usage=usage,
+            request_count=request_count,
         )
 
     metadata = _record_metadata(

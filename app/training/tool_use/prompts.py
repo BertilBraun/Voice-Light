@@ -319,7 +319,6 @@ Audible conversation so far:
 def teacher_led_assistant_step_messages(
     scenario: ScenarioSpec,
     public_history: Sequence[ConversationMessage],
-    remaining_tool_calls: int,
 ) -> tuple[TeacherChatMessage, ...]:
     request = f"""\
 Create only the next assistant step.
@@ -339,12 +338,12 @@ Available tools:
 - calculate(expression): evaluates basic numeric arithmetic
 - get_time(): returns the current local timestamp
 
-At most {remaining_tool_calls} additional tool calls are available for this user turn. For a tool
-action, emit exactly one call with a short natural spoken bridge. Never merely promise to search,
-check, calculate, or look something up in a final response. If the user's request is clear, do not
-ask permission before calling. After a tool result, use that result directly or make another call
-only when it is genuinely needed. Preserve the metric, entity, and correction implied by short
-follow-ups. Do not answer a pending lookup from memory.
+For a tool action, emit exactly one call with a short natural spoken bridge. Never merely promise
+to search, check, calculate, or look something up in a final response. If the user's request is
+clear, do not ask permission before calling. After a tool result, use that result directly or make
+another call when it is genuinely needed. Continue through as many dependent calls as the request
+requires, then give the final spoken response. Preserve the metric, entity, and correction implied
+by short follow-ups. Do not answer a pending lookup from memory.
 
 Complete conversation history:
 {_history_json(public_history)}

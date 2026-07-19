@@ -542,6 +542,75 @@ def test_teacher_led_rollout_chooses_tools_and_preserves_causal_results() -> Non
     assert record.metadata.scenario.user_turn_count == 4
 
 
+def test_teacher_led_rollout_allows_more_than_two_dependent_calls() -> None:
+    values: tuple[ToolUseBaseModel, ...] = (
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(
+                text="Can you calculate three steps for me?",
+                speech_style=SpeechStyle.CASUAL,
+            )
+        ),
+        AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="Starting with the first step.",
+                call=CalculateCall(expression="2 + 2"),
+            )
+        ),
+        AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="Using that for the second step.",
+                call=CalculateCall(expression="4 * 3"),
+            )
+        ),
+        AssistantStepEnvelope(
+            step=ToolActionStep(
+                audible_text="And now the final calculation.",
+                call=CalculateCall(expression="12 - 5"),
+            )
+        ),
+        AssistantStepEnvelope(
+            step=FinalResponseStep(audible_text="The three results are 4, 12, and 7.")
+        ),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(text="Great, thanks.", speech_style=SpeechStyle.CASUAL)
+        ),
+        AssistantStepEnvelope(step=FinalResponseStep(audible_text="You’re welcome.")),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(text="That was all I needed.", speech_style=SpeechStyle.CASUAL)
+        ),
+        AssistantStepEnvelope(step=FinalResponseStep(audible_text="All set.")),
+        GeneratedUserTurnEnvelope(
+            turn=GeneratedUserTurn(text="Perfect.", speech_style=SpeechStyle.CASUAL)
+        ),
+        AssistantStepEnvelope(step=FinalResponseStep(audible_text="Perfect.")),
+    )
+
+    async def exercise() -> tuple[ScriptedGenerator, ToolDialogueRecord]:
+        generator = ScriptedGenerator(values)
+        generated = await generate_record(
+            scenario=teacher_led_scenario(),
+            generator=generator,
+            config=RolloutGenerationConfig(
+                model_identifier="Qwen/Qwen3.6-27B-FP8",
+                model_revision="test-revision",
+                quantization="fp8",
+                time_reference=TIME_REFERENCE,
+                semantic_audits_enabled=False,
+            ),
+        )
+        return generator, generated.record
+
+    generator, record = asyncio.run(exercise())
+
+    assert not generator.values
+    assert record.metadata.scenario.expected_tool_names[:3] == (
+        "calculate",
+        "calculate",
+        "calculate",
+    )
+    assert "additional tool calls are available" not in generator.requests[1][1].content
+
+
 def test_clarified_search_calls_automatically_after_resolving_query() -> None:
     values: tuple[ToolUseBaseModel, ...] = (
         GeneratedUserTurnEnvelope(

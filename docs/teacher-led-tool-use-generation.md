@@ -8,13 +8,15 @@ Each scenario supplies only:
 - one loose conversation brief;
 - one speech style;
 - four user turns;
-- the available `search`, `calculate`, and `get_time` tools;
-- a maximum of two causal tool calls for each user turn.
+- the available `search`, `calculate`, and `get_time` tools.
 
 The teacher chooses every concrete user utterance, follow-up, assistant response, tool decision,
 and tool argument. No expected tool is assigned to an individual turn. When the teacher chooses a
 call, the controller executes it and appends its result before asking for the next assistant step.
-This preserves causal grounding while allowing the teacher to decide the conversational path.
+This preserves causal grounding while allowing the teacher to decide the conversational path and
+make as many dependent calls as the request naturally requires. The controller rejects a turn
+only if it reaches eight consecutive calls without a final response; this is a runaway guard, not
+a limit disclosed to or optimized by the teacher.
 
 Semantic audits remain optional. The default experiment uses only structured-output parsing,
 canonical schema validation, safe calculation, bounded turn length, and causal call/result order.

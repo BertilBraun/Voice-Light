@@ -87,10 +87,10 @@ def _argument_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--semantic-audits", action="store_true")
     generate_parser.add_argument("--record-attempts", type=int, default=3)
     generate_parser.add_argument(
-        "--maximum-teacher-tool-calls-per-turn",
+        "--teacher-runaway-call-guard",
         type=int,
-        default=2,
-        help="Causal tool-call limit for each turn in teacher-led scenarios.",
+        default=8,
+        help="Reject a teacher-led turn that loops through this many consecutive calls.",
     )
     generate_parser.add_argument("--http-attempts", type=int, default=3)
     generate_parser.add_argument("--timeout-seconds", type=float, default=180.0)
@@ -177,7 +177,7 @@ async def _generate(arguments: argparse.Namespace) -> None:
         maximum_concurrency=arguments.concurrency,
         maximum_semantic_attempts=arguments.semantic_attempts,
         maximum_record_attempts=arguments.record_attempts,
-        maximum_teacher_led_tool_calls_per_turn=(arguments.maximum_teacher_tool_calls_per_turn),
+        teacher_led_runaway_call_guard=arguments.teacher_runaway_call_guard,
     )
     async with VllmStructuredClient(
         config=client_config,
