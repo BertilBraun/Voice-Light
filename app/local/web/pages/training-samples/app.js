@@ -1,3 +1,5 @@
+import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js";
+
 const sampleSelect = document.querySelector("#sample-select");
 const userSideSelect = document.querySelector("#user-side-select");
 const startInput = document.querySelector("#start-input");
@@ -15,6 +17,8 @@ const timeReadout = document.querySelector("#time-readout");
 const userAudio = document.querySelector("#user-audio");
 const assistantAudio = document.querySelector("#assistant-audio");
 const timeline = document.querySelector("#timeline");
+const annotationTimeline = document.querySelector("#annotation-timeline");
+const annotationSource = document.querySelector("#annotation-source");
 const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
@@ -65,7 +69,9 @@ let playbackSeconds = 0;
 
 async function loadSamples() {
   try {
-    const response = await fetch("/api/training-samples/options?limit=40");
+    const response = await fetch("/api/training-samples/options?limit=100", {
+      cache: "no-store",
+    });
     const samples = await response.json();
     if (!response.ok) {
       throw new Error(errorMessage(samples, response.status));
@@ -103,7 +109,9 @@ async function loadPreview(randomLocation, autoplay = false) {
     parameters.set("start_seconds", String(Number(startInput.value)));
   }
   try {
-    const response = await fetch(`/api/training-samples/preview?${parameters.toString()}`);
+    const response = await fetch(`/api/training-samples/preview?${parameters.toString()}`, {
+      cache: "no-store",
+    });
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(errorMessage(payload, response.status));
@@ -123,8 +131,10 @@ async function applyPreview(payload, autoplay) {
   configureControls();
   configureAudio();
   renderSummary();
+  renderAnnotationSource();
   renderSelectedFrame(null);
   drawTimeline();
+  drawSourceAnnotationTimeline();
   const coverageMessage =
     preview.annotated_duration_seconds < preview.represented_duration_seconds
       ? `Preview ready · ${formatDuration(preview.annotated_duration_seconds)} annotated of ${formatDuration(preview.represented_duration_seconds)}`
@@ -155,10 +165,30 @@ function configureControls() {
 }
 
 function configureAudio() {
-  userAudio.src = `/api/dataset-dashboard/audio/${preview.sample_id}/${preview.user_side}`;
-  assistantAudio.src = `/api/dataset-dashboard/audio/${preview.sample_id}/${preview.assistant_side}`;
+  configureAudioElement(
+    userAudio,
+    preview.user_side,
+    preview.user_audio_sha256,
+  );
+  configureAudioElement(
+    assistantAudio,
+    preview.assistant_side,
+    preview.assistant_audio_sha256,
+  );
   userAudio.currentTime = preview.start_seconds;
   assistantAudio.currentTime = preview.start_seconds;
+}
+
+function configureAudioElement(audioElement, side, audioSha256) {
+  const sourceUrl =
+    `/api/dataset-dashboard/audio/${preview.sample_id}/${side}` +
+    `?v=${encodeURIComponent(audioSha256)}`;
+  if (audioElement.dataset.sourceUrl === sourceUrl) {
+    return;
+  }
+  audioElement.dataset.sourceUrl = sourceUrl;
+  audioElement.src = sourceUrl;
+  audioElement.load();
 }
 
 async function startPlayback() {
@@ -198,6 +228,7 @@ async function loadNextRandomSample() {
     }
     const response = await fetch(
       `/api/training-samples/random-preview?${parameters.toString()}`,
+      { cache: "no-store" },
     );
     const payload = await response.json();
     if (!response.ok) {
@@ -249,6 +280,9 @@ function renderSummary() {
       ["Usable events", optionalInteger(preview.quality.usable_event_count)],
       ["Events per hour", optionalDecimal(preview.quality.events_per_hour)],
       ["Quality flags", preview.quality.flags.length === 0 ? "None" : preview.quality.flags.join(", ")],
+      ["Annotation version", preview.annotation_version],
+      ["Annotation generated", formatDateTime(preview.annotation_generated_at)],
+      ["Quality metric", preview.quality_metric_version],
       ["Input / supervised", `${preview.input_duration_seconds.toFixed(1)} s / ${preview.supervised_duration_seconds.toFixed(1)} s`],
       ["Recording duration", formatDuration(preview.represented_duration_seconds)],
       ["Annotated duration", formatDuration(preview.annotated_duration_seconds)],
@@ -265,6 +299,14 @@ function renderSummary() {
       ["Feedback / floor take", `${eventCounts.nonFloorFeedback} / ${eventCounts.floorTake}`],
     ]),
   );
+}
+
+function renderAnnotationSource() {
+  annotationSource.textContent =
+    `${preview.annotation_version} · stored quality annotation generated ` +
+    `${formatDateTime(preview.annotation_generated_at)} · ` +
+    `user audio ${preview.user_audio_sha256.slice(0, 12)}… · ` +
+    `assistant audio ${preview.assistant_audio_sha256.slice(0, 12)}…`;
 }
 
 function interactionEventCounts(frames) {
@@ -343,6 +385,100 @@ function drawTimeline() {
   drawCursor(context, left, plotWidth, top, displayHeight);
 }
 
+function drawSourceAnnotationTimeline() {
+  const devicePixelRatio = window.devicePixelRatio || 1;
+  const displayWidth = Math.max(980, annotationTimeline.clientWidth);
+  const displayHeight = 270;
+  annotationTimeline.width = Math.round(displayWidth * devicePixelRatio);
+  annotationTimeline.height = Math.round(displayHeight * devicePixelRatio);
+  const context = annotationTimeline.getContext("2d");
+  context.scale(devicePixelRatio, devicePixelRatio);
+  context.clearRect(0, 0, displayWidth, displayHeight);
+  if (preview === null) {
+    return;
+  }
+
+  const left = 245;
+  const right = 16;
+  const plotWidth = displayWidth - left - right;
+  const waveformRows = [
+    {
+      label: `USER AUDIO · ${prettySide(preview.user_side)}`,
+      points: preview.user_waveform,
+      color: "#267d74",
+    },
+    {
+      label: `ASSISTANT AUDIO · ${prettySide(preview.assistant_side)}`,
+      points: preview.assistant_waveform,
+      color: "#b9772b",
+    },
+  ];
+  waveformRows.forEach((row, rowIndex) => {
+    const top = 32 + rowIndex * 42;
+    context.fillStyle = "#48575c";
+    context.font = "bold 12px sans-serif";
+    context.fillText(row.label, 8, top + 22);
+    drawWaveformPoints(context, row.points, left, top, plotWidth, 32, row.color);
+  });
+  const rows = [
+    {
+      label: `USER · ${prettySide(preview.user_side)}`,
+      annotation: sourceAnnotation("user"),
+    },
+    {
+      label: `ASSISTANT · ${prettySide(preview.assistant_side)}`,
+      annotation: sourceAnnotation("assistant"),
+    },
+  ];
+  rows.forEach((row, rowIndex) => {
+    const top = 124 + rowIndex * 58;
+    context.fillStyle = "#48575c";
+    context.font = "bold 12px sans-serif";
+    context.fillText(row.label, 8, top + 26);
+    drawAnnotationTimelineRow({
+      context,
+      annotation: row.annotation,
+      left,
+      top,
+      width: plotWidth,
+      viewportStartSeconds: preview.start_seconds,
+      viewportEndSeconds: preview.end_seconds,
+    });
+  });
+  drawAnnotationTimeAxis(context, left, plotWidth, displayHeight);
+  drawCursor(context, left, plotWidth, 30, displayHeight);
+}
+
+function sourceAnnotation(role) {
+  const spans = preview[`${role}_spans`];
+  const points = preview[`${role}_points`];
+  return {
+    speech_segments: spans.filter((span) => span.event_type === `${role}_speech`),
+    pauses: spans.filter((span) => span.event_type === `${role}_pause`),
+    backchannels: spans.filter((span) => span.event_type === `${role}_backchannel`),
+    turns: points.filter((point) => point.event_type === `${role}_end_of_turn`),
+    interruptions: points.filter((point) => point.event_type === `${role}_interruption`),
+    segment_targets: preview[`${role}_segment_targets`],
+    connection_targets: preview[`${role}_connection_targets`],
+  };
+}
+
+function drawAnnotationTimeAxis(context, left, width, height) {
+  context.strokeStyle = "#cbd3d1";
+  context.fillStyle = "#657378";
+  context.font = "11px sans-serif";
+  for (let seconds = 0; seconds <= preview.input_duration_seconds; seconds += 2) {
+    const ratio = seconds / preview.input_duration_seconds;
+    const x = left + ratio * width;
+    context.beginPath();
+    context.moveTo(x, 24);
+    context.lineTo(x, height - 24);
+    context.stroke();
+    context.fillText(`+${seconds}s`, x + 3, height - 17);
+    context.fillText(formatDuration(preview.start_seconds + seconds), x + 3, height - 5);
+  }
+}
+
 function drawBurnInOverlay(context, left, top, width, height, burnRatio) {
   const burnWidth = width * burnRatio;
   context.fillStyle = "rgba(117, 131, 136, 0.13)";
@@ -360,9 +496,14 @@ function drawBurnInOverlay(context, left, top, width, height, burnRatio) {
 }
 
 function drawWaveform(context, left, top, width, height) {
-  const points = preview.user_waveform;
+  drawWaveformPoints(context, preview.user_waveform, left, top, width, height, "#267d74");
+}
+
+function drawWaveformPoints(context, points, left, top, width, height, color) {
   const middle = top + height / 2;
-  context.strokeStyle = "#267d74";
+  context.fillStyle = "#f7f9f8";
+  context.fillRect(left, top, width, height);
+  context.strokeStyle = color;
   context.lineWidth = 1;
   points.forEach((point, index) => {
     const x = left + (index / Math.max(1, points.length - 1)) * width;
@@ -544,6 +685,7 @@ function selectFrameAtEvent(event) {
   renderSelectedFrame(frame);
   updateTimeReadout();
   drawTimeline();
+  drawSourceAnnotationTimeline();
 }
 
 async function togglePlayback() {
@@ -582,6 +724,7 @@ function trackPlayback() {
   }
   updateTimeReadout();
   drawTimeline();
+  drawSourceAnnotationTimeline();
 }
 
 function synchronizeAudioTracks() {
@@ -699,6 +842,10 @@ function formatDuration(totalSeconds) {
   return `${String(minutes).padStart(2, "0")}:${seconds.toFixed(2).padStart(5, "0")}`;
 }
 
+function formatDateTime(value) {
+  return new Date(value).toLocaleString();
+}
+
 sampleSelect.addEventListener("change", () => loadPreview(true));
 userSideSelect.addEventListener("change", () => loadPreview(true));
 loadButton.addEventListener("click", () => loadPreview(false));
@@ -718,6 +865,9 @@ timeline.addEventListener("pointermove", (event) => {
     selectFrameAtEvent(event);
   }
 });
-window.addEventListener("resize", drawTimeline);
+window.addEventListener("resize", () => {
+  drawTimeline();
+  drawSourceAnnotationTimeline();
+});
 
 await loadSamples();

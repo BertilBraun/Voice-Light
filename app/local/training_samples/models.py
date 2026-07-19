@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
 from app.local.db.models import TrackSide
 from app.shared.base_model import FrozenBaseModel
+from app.shared.quality import ConnectionAnnotationTarget, SegmentAnnotationTarget
 
 
 class PreviewEventType(StrEnum):
@@ -112,6 +114,11 @@ class TrainingSamplePreview(FrozenBaseModel):
     external_id: str
     user_side: TrackSide
     assistant_side: TrackSide
+    user_audio_sha256: str
+    assistant_audio_sha256: str
+    annotation_version: str
+    annotation_generated_at: datetime
+    quality_metric_version: str
     quality: TrainingSampleQuality
     represented_duration_seconds: float
     annotated_duration_seconds: float
@@ -123,11 +130,17 @@ class TrainingSamplePreview(FrozenBaseModel):
     supervised_duration_seconds: float
     frame_seconds: float
     waveform_sample_rate: int
+    assistant_waveform_sample_rate: int
     user_waveform: tuple[PreviewWaveformPoint, ...]
+    assistant_waveform: tuple[PreviewWaveformPoint, ...]
     user_spans: tuple[PreviewSpan, ...]
     assistant_spans: tuple[PreviewSpan, ...]
     user_points: tuple[PreviewPoint, ...]
     assistant_points: tuple[PreviewPoint, ...]
+    user_segment_targets: tuple[SegmentAnnotationTarget, ...]
+    assistant_segment_targets: tuple[SegmentAnnotationTarget, ...]
+    user_connection_targets: tuple[ConnectionAnnotationTarget, ...]
+    assistant_connection_targets: tuple[ConnectionAnnotationTarget, ...]
     frames: tuple[TrainingFramePreview, ...]
 
 

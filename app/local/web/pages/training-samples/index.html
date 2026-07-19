@@ -95,6 +95,28 @@
         </div>
       </section>
 
+      <section class="panel annotation-panel">
+        <div class="timeline-header">
+          <div>
+            <h2>Source end-of-turn annotation</h2>
+            <p>
+              The exact stored annotation used to construct the targets above, cropped to the same
+              20 seconds.
+            </p>
+          </div>
+          <div class="annotation-legend">
+            <span><i class="annotation-turn"></i>Turn-favoring segment</span>
+            <span><i class="annotation-keep"></i>Keep-playing / backchannel</span>
+            <span><i class="annotation-pause"></i>Continuation gap</span>
+            <span><i class="annotation-eot"></i>End of turn</span>
+          </div>
+        </div>
+        <div id="annotation-source" class="annotation-source">No annotation loaded</div>
+        <div class="canvas-shell">
+          <canvas id="annotation-timeline" height="270"></canvas>
+        </div>
+      </section>
+
       <section class="details-grid">
         <article class="panel summary-card">
           <h2>Crop summary</h2>

@@ -140,6 +140,7 @@ button.primary {
 .position-panel,
 .transport,
 .timeline-panel,
+.annotation-panel,
 .summary-card,
 .frame-card,
 .info-card,
@@ -239,15 +240,65 @@ button.primary {
   background: repeating-linear-gradient(135deg, #fff, #fff 3px, #cbd3d1 3px, #cbd3d1 5px);
 }
 
+.annotation-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.annotation-legend span {
+  align-items: center;
+  color: #5b696e;
+  display: flex;
+  font-size: 12px;
+  gap: 5px;
+}
+
+.annotation-legend i {
+  border: 1px solid rgb(0 0 0 / 12%);
+  display: inline-block;
+  height: 12px;
+  width: 18px;
+}
+
+.annotation-legend .annotation-turn {
+  background: #b9dcd8;
+  border-color: #146b63;
+}
+
+.annotation-legend .annotation-keep {
+  background: #d8c9f0;
+  border-color: #6c3eb4;
+}
+
+.annotation-legend .annotation-pause {
+  background: rgb(224 173 42 / 55%);
+}
+
+.annotation-legend .annotation-eot {
+  background: linear-gradient(90deg, transparent 44%, #c2322d 44%, #c2322d 56%, transparent 56%);
+}
+
+.annotation-source {
+  color: #526167;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
 .canvas-shell {
   overflow-x: auto;
 }
 
-#timeline {
+#timeline,
+#annotation-timeline {
   cursor: crosshair;
   display: block;
   min-width: 1100px;
   width: 100%;
+}
+
+#annotation-timeline {
+  cursor: default;
 }
 
 .details-grid {

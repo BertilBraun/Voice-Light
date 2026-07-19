@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.local.config import DATABASE_URL
 from app.local.db.models import TrackSide
@@ -27,10 +27,12 @@ def repository() -> Repository:
 @router.get("/preview")
 def preview_training_sample(
     sample_id: UUID,
+    response: Response,
     user_side: TrackSide = TrackSide.SPEAKER2,
     start_seconds: float | None = Query(default=None, ge=0.0),
 ) -> TrainingSamplePreview:
     try:
+        response.headers["Cache-Control"] = "no-store"
         dashboard_sample = repository().get_dashboard_sample(sample_id)
         return build_training_sample_preview(
             dashboard_sample=dashboard_sample,
@@ -45,9 +47,11 @@ def preview_training_sample(
 
 @router.get("/options")
 def list_training_sample_options(
+    response: Response,
     limit: int = Query(default=40, ge=1, le=100),
     minimum_quality: float | None = Query(default=None, ge=0.0, le=1.0),
 ) -> tuple[TrainingSampleOption, ...]:
+    response.headers["Cache-Control"] = "no-store"
     records = repository().list_annotated_samples(limit, minimum_quality)
     return tuple(
         TrainingSampleOption(
@@ -64,10 +68,12 @@ def list_training_sample_options(
 @router.get("/random-preview")
 def random_training_sample_preview(
     current_sample_id: UUID,
+    response: Response,
     minimum_quality: float | None = Query(default=None, ge=0.0, le=1.0),
     sampling_mode: TrainingSampleSelectionMode = TrainingSampleSelectionMode.RANDOM,
 ) -> TrainingSamplePreview:
     try:
+        response.headers["Cache-Control"] = "no-store"
         sample_repository = repository()
         match sampling_mode:
             case TrainingSampleSelectionMode.RANDOM:

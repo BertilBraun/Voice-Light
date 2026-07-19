@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.local.db.models import DashboardSample, TrackSide
+from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
 from app.local.training_samples.models import (
     CandidateSource,
     EventTargetDistribution,
@@ -97,6 +97,8 @@ def build_training_sample_preview(
     generator: random.Random,
 ) -> TrainingSamplePreview:
     annotation = _conversation_annotation(dashboard_sample)
+    quality = dashboard_sample.latest_quality
+    assert quality is not None
     represented_duration_seconds = (
         dashboard_sample.sample.duration_seconds
         if dashboard_sample.sample.duration_seconds is not None
@@ -117,9 +119,18 @@ def build_training_sample_preview(
         generator=generator,
     )
     end_seconds = min(eligible_duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
-    user_track_path = _track_path(dashboard_sample, user_side)
+    user_track = _track(dashboard_sample, user_side)
+    assistant_track = _track(dashboard_sample, assistant_side)
+    user_track_path = _track_path(user_track)
+    assistant_track_path = _track_path(assistant_track)
     sample_rate, waveform = _waveform_window(
         path=user_track_path,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        point_count=WAVEFORM_POINT_COUNT,
+    )
+    assistant_sample_rate, assistant_waveform = _waveform_window(
+        path=assistant_track_path,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
         point_count=WAVEFORM_POINT_COUNT,
@@ -136,6 +147,11 @@ def build_training_sample_preview(
         external_id=dashboard_sample.sample.external_id,
         user_side=user_side,
         assistant_side=assistant_side,
+        user_audio_sha256=user_track.audio_sha256,
+        assistant_audio_sha256=assistant_track.audio_sha256,
+        annotation_version=annotation.annotation_version,
+        annotation_generated_at=quality.created_at,
+        quality_metric_version=quality.metric_version,
         quality=_training_sample_quality(dashboard_sample),
         represented_duration_seconds=represented_duration_seconds,
         annotated_duration_seconds=annotation.analyzed_duration_seconds,
@@ -147,7 +163,9 @@ def build_training_sample_preview(
         supervised_duration_seconds=max(0.0, end_seconds - start_seconds - BURN_IN_SECONDS),
         frame_seconds=FRAME_SECONDS,
         waveform_sample_rate=sample_rate,
+        assistant_waveform_sample_rate=assistant_sample_rate,
         user_waveform=waveform,
+        assistant_waveform=assistant_waveform,
         user_spans=_preview_spans(user_annotation, start_seconds, end_seconds, is_user=True),
         assistant_spans=_preview_spans(
             assistant_annotation, start_seconds, end_seconds, is_user=False
@@ -155,6 +173,26 @@ def build_training_sample_preview(
         user_points=_preview_points(user_annotation, start_seconds, end_seconds, is_user=True),
         assistant_points=_preview_points(
             assistant_annotation, start_seconds, end_seconds, is_user=False
+        ),
+        user_segment_targets=_preview_segment_targets(
+            user_annotation.segment_targets,
+            start_seconds,
+            end_seconds,
+        ),
+        assistant_segment_targets=_preview_segment_targets(
+            assistant_annotation.segment_targets,
+            start_seconds,
+            end_seconds,
+        ),
+        user_connection_targets=_preview_connection_targets(
+            user_annotation.connection_targets,
+            start_seconds,
+            end_seconds,
+        ),
+        assistant_connection_targets=_preview_connection_targets(
+            assistant_annotation.connection_targets,
+            start_seconds,
+            end_seconds,
         ),
         frames=frames,
     )
@@ -358,12 +396,16 @@ def _speaker_annotation(
     return speaker
 
 
-def _track_path(dashboard_sample: DashboardSample, side: TrackSide) -> Path:
+def _track(dashboard_sample: DashboardSample, side: TrackSide) -> SampleTrackRecord:
     track = next(
         (candidate for candidate in dashboard_sample.tracks if candidate.side == side), None
     )
     if track is None:
         raise ValueError(f"The selected sample has no {side.value} track.")
+    return track
+
+
+def _track_path(track: SampleTrackRecord) -> Path:
     path = Path(track.access_uri)
     if not path.is_file():
         raise ValueError(f"Audio file does not exist: {path}")
@@ -1169,6 +1211,30 @@ def _points_of_type(
         )
         for point in points
     ]
+
+
+def _preview_segment_targets(
+    targets: Sequence[SegmentAnnotationTarget],
+    start_seconds: float,
+    end_seconds: float,
+) -> tuple[SegmentAnnotationTarget, ...]:
+    return tuple(
+        target
+        for target in targets
+        if target.end_seconds >= start_seconds and target.start_seconds <= end_seconds
+    )
+
+
+def _preview_connection_targets(
+    targets: Sequence[ConnectionAnnotationTarget],
+    start_seconds: float,
+    end_seconds: float,
+) -> tuple[ConnectionAnnotationTarget, ...]:
+    return tuple(
+        target
+        for target in targets
+        if target.later_start_seconds >= start_seconds and target.earlier_end_seconds <= end_seconds
+    )
 
 
 def _waveform_window(
