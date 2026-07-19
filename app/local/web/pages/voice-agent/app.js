@@ -48,6 +48,11 @@ class ConversationTurn {
     speaker.textContent = role === "user" ? "You" : "Assistant";
     this.meta = document.createElement("span");
     this.meta.className = "turn-meta";
+    this.state = document.createElement("span");
+    this.state.className = "turn-state";
+    this.latencies = document.createElement("span");
+    this.latencies.className = "turn-latencies";
+    this.meta.append(this.state, this.latencies);
     heading.append(speaker, this.meta);
 
     this.transcript = document.createElement("p");
@@ -106,7 +111,43 @@ class ConversationTurn {
 
   setState(state) {
     this.element.dataset.state = state;
-    this.meta.textContent = stateLabel(state);
+    this.state.textContent = stateLabel(state);
+  }
+
+  setLatencies(latencies) {
+    const measurements = [
+      {
+        label: "total",
+        value: latencies.turn_commit_to_playback_ms,
+        description:
+          "Committed user turn to the server receiving the browser's first-rendered-audio acknowledgement.",
+      },
+      {
+        label: "LLM",
+        value: latencies.generation_to_first_word_ms,
+        description: "Language-model generation start to its first complete spoken word.",
+      },
+      {
+        label: "TTS",
+        value: latencies.tts_first_word_to_first_pcm_ms,
+        description: "First word submitted to speech synthesis to its first generated PCM packet.",
+      },
+      {
+        label: "play",
+        value: latencies.first_audio_send_to_playback_ms,
+        description:
+          "First PCM packet sent by the server to receipt of the browser's first-rendered-audio acknowledgement.",
+      },
+    ];
+    this.latencies.replaceChildren(
+      ...measurements.map(({ label, value, description }) => {
+        const measurement = document.createElement("span");
+        measurement.className = "turn-latency";
+        measurement.title = description;
+        measurement.textContent = `${label} ${formatLatency(value)}`;
+        return measurement;
+      }),
+    );
   }
 
   get text() {
@@ -425,6 +466,9 @@ function handleMessage(event) {
       startSample: message.start_sample,
     });
   }
+  if (message.type === "assistant.latency") {
+    assistantTurn(message.generation_id).setLatencies(message);
+  }
   if (message.type === "playback.command") {
     if (message.action === "cancel") {
       cancelledGenerationId = Math.max(cancelledGenerationId, message.generation_id);
@@ -599,6 +643,11 @@ function updateBoundaryProgress(progress) {
 
 function characterLength(text) {
   return Array.from(text).length;
+}
+
+function formatLatency(milliseconds) {
+  if (milliseconds < 10) return `${milliseconds.toFixed(1)} ms`;
+  return `${Math.round(milliseconds)} ms`;
 }
 
 function historyIsAtEnd() {

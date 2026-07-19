@@ -80,6 +80,7 @@ from app.compute.voice.predictive import (
 from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
     AssistantAudioTextBoundaryEvent,
+    AssistantLatencyEvent,
     AssistantTextDeltaEvent,
     CapturedAudioChunk,
     CausalSource,
@@ -595,7 +596,7 @@ class VoiceSession:
                 case SessionStartEvent():
                     await self._start(event)
                 case PlaybackStartedEvent():
-                    self._record_playback_started(event)
+                    await self._record_playback_started(event)
                 case PlaybackCompleteEvent():
                     self._complete_playback(event)
                 case PlaybackProgressEvent():
@@ -2789,7 +2790,7 @@ class VoiceSession:
         generation.accepts_playback = False
         self._commit_assistant_if_complete(generation)
 
-    def _record_playback_started(self, event: PlaybackStartedEvent) -> None:
+    async def _record_playback_started(self, event: PlaybackStartedEvent) -> None:
         generation = self.generations.get(event.generation_id)
         if generation is None:
             return
@@ -2826,6 +2827,30 @@ class VoiceSession:
                 _require_timestamp(latency.generation_started_at, "generation start"),
                 latency.playback_started_at,
             ),
+        )
+        await self._send_event(
+            AssistantLatencyEvent(
+                generation_id=generation.generation_id,
+                turn_commit_to_playback_ms=_milliseconds_between(
+                    turn_committed_at,
+                    latency.playback_started_at,
+                ),
+                generation_to_first_word_ms=_milliseconds_between(
+                    _require_timestamp(latency.generation_started_at, "generation start"),
+                    _require_latency_point(
+                        latency.qwen_first_complete_word,
+                        "first complete language-model word",
+                    ).monotonic_time_seconds,
+                ),
+                tts_first_word_to_first_pcm_ms=_milliseconds_between(
+                    _require_timestamp(latency.first_synthesis_word_at, "first synthesis word"),
+                    _require_timestamp(latency.first_audio_at, "first audio"),
+                ),
+                first_audio_send_to_playback_ms=_milliseconds_between(
+                    latency.first_audio_sent_at,
+                    latency.playback_started_at,
+                ),
+            )
         )
 
     def _acknowledge_playback(self, event: PlaybackProgressEvent) -> None:
@@ -3278,6 +3303,15 @@ def _require_timestamp(timestamp: float | None, label: str) -> float:
     if timestamp is None:
         raise AssertionError(f"Missing {label} latency timestamp.")
     return timestamp
+
+
+def _require_latency_point(
+    point: MediaLatencyPoint | None,
+    label: str,
+) -> MediaLatencyPoint:
+    if point is None:
+        raise AssertionError(f"Missing {label} latency point.")
+    return point
 
 
 def _component_error(

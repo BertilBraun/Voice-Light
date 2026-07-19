@@ -406,6 +406,7 @@ class VoiceServerEventType(StrEnum):
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
     ASSISTANT_AUDIO_TEXT_BOUNDARY = "assistant.audio.text_boundary"
+    ASSISTANT_LATENCY = "assistant.latency"
     ASSISTANT_CANCEL = "assistant.cancel"
     PLAYBACK_COMMAND = "playback.command"
     ERROR = "error"
@@ -525,6 +526,15 @@ class AssistantAudioTextBoundaryEvent(FrozenBaseModel):
     start_sample: int = Field(ge=0)
 
 
+class AssistantLatencyEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.ASSISTANT_LATENCY] = VoiceServerEventType.ASSISTANT_LATENCY
+    generation_id: int = Field(gt=0)
+    turn_commit_to_playback_ms: float = Field(ge=0)
+    generation_to_first_word_ms: float = Field(ge=0)
+    tts_first_word_to_first_pcm_ms: float = Field(ge=0)
+    first_audio_send_to_playback_ms: float = Field(ge=0)
+
+
 class PlaybackCommandEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.PLAYBACK_COMMAND] = VoiceServerEventType.PLAYBACK_COMMAND
     command_id: str
@@ -584,6 +594,7 @@ VoiceServerEvent = Annotated[
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioTextBoundaryEvent
+    | AssistantLatencyEvent
     | PlaybackCommandEvent
     | ErrorEvent,
     Field(discriminator="type"),

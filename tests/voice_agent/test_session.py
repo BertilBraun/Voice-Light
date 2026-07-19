@@ -2599,6 +2599,7 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
         events, audio_frame = receive_until(websocket, "llm.history")
         wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
         send_playback_started(websocket, 1)
+        latency_events, _ = receive_until(websocket, "assistant.latency")
         wait_until(
             lambda: sessions[0].generations[1].latency.first_browser_playback_ack is not None
         )
@@ -2627,6 +2628,12 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
     assert latency.candidate_resolution is not None
     assert latency.first_released_pcm is not None
     assert latency.first_browser_playback_ack is not None
+    latency_event = latency_events[-1]
+    assert latency_event["generation_id"] == 1
+    assert float(latency_event["turn_commit_to_playback_ms"]) >= 0
+    assert float(latency_event["generation_to_first_word_ms"]) >= 0
+    assert float(latency_event["tts_first_word_to_first_pcm_ms"]) >= 0
+    assert float(latency_event["first_audio_send_to_playback_ms"]) >= 0
     assert report.commit_to_first_played_audio_p50_ms is not None
 
 

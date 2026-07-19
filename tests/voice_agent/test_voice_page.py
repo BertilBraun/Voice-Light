@@ -38,6 +38,12 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "assistant.text.delta"' in script_response.text
     assert 'message.type === "assistant.cancel"' in script_response.text
     assert 'message.type === "assistant.audio.text_boundary"' in script_response.text
+    assert 'message.type === "assistant.latency"' in script_response.text
+    assert 'label: "total"' in script_response.text
+    assert 'label: "LLM"' in script_response.text
+    assert 'label: "TTS"' in script_response.text
+    assert 'label: "play"' in script_response.text
+    assert "turn-latencies" in script_response.text
     assert 'message.type === "playback.command"' in script_response.text
     assert 'data.type === "playback.started"' in script_response.text
     assert 'data.type === "boundary.started"' in script_response.text
@@ -54,7 +60,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
     assert "playback-worklet.js?v=4" in script_response.text
-    assert "app.js?v=7" in page_response.text
+    assert "app.js?v=8" in page_response.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text
     assert "local_time_zone: LOCAL_TIME_ZONE" in script_response.text
     assert 'from "./spoken-text-progress.mjs"' in script_response.text
