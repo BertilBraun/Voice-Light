@@ -20,7 +20,7 @@ from app.training.tool_use.schema import (
     UserMessage,
 )
 
-PROMPT_REVISION = "teacher-led-conversations-v21"
+PROMPT_REVISION = "teacher-led-conversations-v22"
 
 TEACHER_SYSTEM_PROMPT = """\
 You create natural English voice-assistant training examples.
@@ -312,18 +312,14 @@ def teacher_led_assistant_step_messages(
     public_history: Sequence[ConversationMessage],
 ) -> tuple[TeacherChatMessage, ...]:
     conversation_guidance = _teacher_led_assistant_guidance(scenario.teacher_led_kind)
+    action_guidance = _teacher_led_action_guidance(scenario.teacher_led_kind)
     request = f"""\
 Create only the next assistant step.
 
 Loose conversation brief:
 {scenario.topic}
 
-Choose the action yourself from the conversation:
-- Give a final spoken response when the request is answerable from the conversation.
-- Call search immediately for a current, changing, local, or externally verified fact that is not
-  already present.
-- Call calculate for exact arithmetic, including a comparison derived from known numbers.
-- Call get_time when the current local date or time is required.
+{action_guidance}
 
 Available tools:
 - search(query): returns one concise search-result string
@@ -362,7 +358,8 @@ def _teacher_led_user_turn_guidance(
         case (TeacherLedConversationKind.NO_TOOL, 0):
             return (
                 "Open with a concrete, casual situation and a clear request. Supply every detail, "
-                "preference, option, or piece of text the assistant needs in the utterance itself."
+                "preference, option, or piece of text the assistant needs in the utterance itself. "
+                "Do not open with a correction or follow-up to an unstated earlier conversation."
             )
         case (TeacherLedConversationKind.TOOL_RICH, _):
             return (
@@ -415,9 +412,28 @@ def _teacher_led_assistant_guidance(
         case TeacherLedConversationKind.NO_TOOL:
             return (
                 "This conversation is designed to stay answerable from the user's own content and "
-                "preferences. Normally give a final spoken response without calling a tool. Do not "
-                "call a tool merely because one is available."
+                "preferences. Give a final spoken response without calling a tool. Do not call "
+                "search, calculate, or get_time in this profile."
             )
+
+
+def _teacher_led_action_guidance(
+    conversation_kind: TeacherLedConversationKind | None,
+) -> str:
+    assert conversation_kind is not None
+    match conversation_kind:
+        case TeacherLedConversationKind.TOOL_RICH:
+            return """\
+Choose the action yourself from the conversation:
+- Give a final spoken response when the request is answerable from the conversation.
+- Call search immediately for a current, changing, local, or externally verified fact that is not
+  already present.
+- Call calculate for exact arithmetic, including a comparison derived from known numbers.
+- Call get_time when the current local date or time is required."""
+        case TeacherLedConversationKind.NO_TOOL:
+            return """\
+Give the final spoken response now using only the conversation. The user turn is intentionally
+self-contained. Do not emit a tool action."""
 
 
 def user_turn_scope_messages(

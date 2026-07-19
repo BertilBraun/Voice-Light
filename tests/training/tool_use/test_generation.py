@@ -220,9 +220,10 @@ def test_teacher_led_no_tool_prompts_keep_requests_answerable_from_context() -> 
     )[1].content
 
     assert "Supply every detail" in first_user_prompt
+    assert "unstated earlier conversation" in first_user_prompt
     assert "Do not request current time" in first_user_prompt
-    assert "Normally give a final spoken response" in assistant_prompt
-    assert "Do not call a tool merely because one is available" in assistant_prompt
+    assert "Give the final spoken response now" in assistant_prompt
+    assert "Do not call search, calculate, or get_time" in assistant_prompt
 
 
 def scripted_two_call_values() -> tuple[ToolUseBaseModel, ...]:
