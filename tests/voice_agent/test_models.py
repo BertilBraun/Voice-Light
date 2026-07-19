@@ -49,6 +49,8 @@ from app.compute.voice.models import (
     VllmTextGenerator,
 )
 from app.compute.voice.qwen_config import (
+    MERGED_LANGUAGE_MODEL_NAME_ENVIRONMENT_VARIABLE,
+    MERGED_LANGUAGE_MODEL_REVISION_ENVIRONMENT_VARIABLE,
     QwenAdapterConfiguration,
     QwenModelConfiguration,
 )
@@ -437,6 +439,44 @@ def test_conversation_and_search_models_use_distinct_workers_and_locks(
         language_model.worker_manager.release()
 
     asyncio.run(acquire_both_workers())
+
+
+def test_conversation_model_starts_merged_checkpoint_without_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configurations: list[QwenWorkerConfiguration] = []
+    merged_model_name = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
+    merged_model_revision = "0" * 40
+
+    def create_worker(
+        python_path: Path,
+        configuration: QwenWorkerConfiguration,
+    ) -> FakeQwenWorker:
+        del python_path
+        configurations.append(configuration)
+        return FakeQwenWorker()
+
+    monkeypatch.setattr(language_models, "QwenWorkerProcess", create_worker)
+    monkeypatch.setenv(MERGED_LANGUAGE_MODEL_NAME_ENVIRONMENT_VARIABLE, merged_model_name)
+    monkeypatch.setenv(
+        MERGED_LANGUAGE_MODEL_REVISION_ENVIRONMENT_VARIABLE,
+        merged_model_revision,
+    )
+
+    VllmLanguageModel()
+
+    assert configurations == [
+        QwenWorkerConfiguration(
+            model=QwenModelConfiguration(
+                model_name=merged_model_name,
+                model_revision=merged_model_revision,
+                adapter=None,
+                gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
+                maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+            ),
+            component_name="Qwen language model",
+        )
+    ]
 
 
 def create_session(

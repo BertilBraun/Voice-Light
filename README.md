@@ -191,6 +191,22 @@ bash deployment/compute/stop.sh
 .venv/bin/python -m deployment.compute.benchmark_tts
 ```
 
+The conversational Qwen adapter can also be built as a standalone BF16 safetensors checkpoint.
+The merge command always uses the exact base-model and adapter revisions pinned by Voice Light:
+
+```powershell
+uv run python -m deployment.compute.merge_qwen_lora `
+  --output-directory '.runtime/qwen3-1.7b-tool-use-merged' `
+  --destination-repository-id 'BertilBraun/qwen3-1.7b-voice-light-tool-use-merged'
+```
+
+The output includes the tokenizer, a Hugging Face model card, and machine-readable merge
+provenance. After uploading it, configure both
+`VOICE_LIGHT_MERGED_LANGUAGE_MODEL_NAME=BertilBraun/qwen3-1.7b-voice-light-tool-use-merged` and
+`VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION=<Hugging Face commit hash>` in `.env.compute`.
+Voice Light then loads that pinned checkpoint in vLLM with dynamic LoRA disabled. If neither
+variable is present, it continues to load the separately pinned base model and LoRA adapter.
+
 See [provider-neutral compute backend](docs/compute-backend.md) for the deployment boundary,
 endpoints, authentication, readiness behavior, and TTS decision.
 See [Vast.ai deployment](docs/vast-deployment.md) for the rental requirements, one-command local

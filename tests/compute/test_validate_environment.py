@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import pytest
 
+from app.compute.voice.model_constants import (
+    LANGUAGE_MODEL_ADAPTER_NAME,
+    LANGUAGE_MODEL_ADAPTER_REVISION,
+    LANGUAGE_MODEL_NAME,
+    LANGUAGE_MODEL_REVISION,
+)
 from deployment.compute import validate_environment
 
 
-def test_compute_environment_validator_imports_voice_model_constants() -> None:
-    assert validate_environment.LANGUAGE_MODEL_NAME == "Qwen/Qwen3-1.7B"
-    assert validate_environment.LANGUAGE_MODEL_REVISION
+def test_compute_environment_validator_selects_default_voice_models() -> None:
+    language_model = validate_environment.language_model_configuration_from_environment({})
+
+    assert language_model.model_name == LANGUAGE_MODEL_NAME
+    assert language_model.model_revision == LANGUAGE_MODEL_REVISION
+    assert language_model.adapter is not None
     assert (
-        validate_environment.LANGUAGE_MODEL_ADAPTER_NAME
+        language_model.adapter.repository_id
+        == LANGUAGE_MODEL_ADAPTER_NAME
         == "BertilBraun/qwen3-1.7b-voice-light-tool-use-lora"
     )
-    assert (
-        validate_environment.LANGUAGE_MODEL_ADAPTER_REVISION
-        == "2c834fa6398fe342f390752ffa295511190b7376"
-    )
+    assert language_model.adapter.revision == LANGUAGE_MODEL_ADAPTER_REVISION
     assert validate_environment.SEARCH_SUMMARIZER_MODEL_NAME == "Qwen/Qwen3-0.6B"
     assert validate_environment.SEARCH_SUMMARIZER_MODEL_REVISION
     assert validate_environment.KYUTAI_TTS_MODEL_NAME

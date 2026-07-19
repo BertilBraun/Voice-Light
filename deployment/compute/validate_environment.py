@@ -15,14 +15,14 @@ from app.compute.voice.interfaces import SynthesisWord, SynthesizedAudioChunk
 from app.compute.voice.model_constants import (
     KYUTAI_TTS_MODEL_NAME,
     KYUTAI_TTS_MODEL_REVISION,
-    LANGUAGE_MODEL_ADAPTER_NAME,
-    LANGUAGE_MODEL_ADAPTER_REVISION,
-    LANGUAGE_MODEL_NAME,
-    LANGUAGE_MODEL_REVISION,
     NEMOTRON_ASR_MODEL_NAME,
     NEMOTRON_ASR_MODEL_REVISION,
     SEARCH_SUMMARIZER_MODEL_NAME,
     SEARCH_SUMMARIZER_MODEL_REVISION,
+)
+from app.compute.voice.qwen_config import (
+    QwenModelConfiguration,
+    language_model_configuration_from_environment,
 )
 from app.compute.voice.tts_selection import (
     SpeechSynthesisBackend,
@@ -47,7 +47,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
     validate_imports()
     validate_vllm_environment()
     if options.download_models:
-        download_required_models(speech_synthesis_settings)
+        language_model_configuration = language_model_configuration_from_environment(os.environ)
+        download_required_models(speech_synthesis_settings, language_model_configuration)
         smoke_test_tts(speech_synthesis_settings)
     print("Compute environment validation passed.")
 
@@ -100,13 +101,21 @@ def validate_vllm_environment() -> None:
     print("vLLM runtime import smoke test passed.")
 
 
-def download_required_models(settings: SpeechSynthesisSettings) -> None:
+def download_required_models(
+    settings: SpeechSynthesisSettings,
+    language_model_configuration: QwenModelConfiguration,
+) -> None:
     required_models = [
         (NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION),
-        (LANGUAGE_MODEL_NAME, LANGUAGE_MODEL_REVISION),
-        (LANGUAGE_MODEL_ADAPTER_NAME, LANGUAGE_MODEL_ADAPTER_REVISION),
+        (
+            language_model_configuration.model_name,
+            language_model_configuration.model_revision,
+        ),
         (SEARCH_SUMMARIZER_MODEL_NAME, SEARCH_SUMMARIZER_MODEL_REVISION),
     ]
+    adapter = language_model_configuration.adapter
+    if adapter is not None:
+        required_models.append((adapter.repository_id, adapter.revision))
     if settings.backend is SpeechSynthesisBackend.KYUTAI:
         required_models.append((KYUTAI_TTS_MODEL_NAME, KYUTAI_TTS_MODEL_REVISION))
     for repository_id, revision in required_models:

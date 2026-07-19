@@ -52,19 +52,14 @@ from app.compute.voice.llm_worker_protocol import (
     llm_worker_event_adapter,
 )
 from app.compute.voice.model_constants import (
-    LANGUAGE_MODEL_ADAPTER_NAME,
-    LANGUAGE_MODEL_ADAPTER_REVISION,
-    LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
-    LANGUAGE_MODEL_NAME,
-    LANGUAGE_MODEL_REVISION,
     QWEN_MAXIMUM_MODEL_LENGTH,
     SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
     SEARCH_SUMMARIZER_MODEL_NAME,
     SEARCH_SUMMARIZER_MODEL_REVISION,
 )
 from app.compute.voice.qwen_config import (
-    QwenAdapterConfiguration,
     QwenModelConfiguration,
+    language_model_configuration_from_environment,
 )
 from app.compute.voice.subprocess_start import read_worker_start_event
 
@@ -269,16 +264,7 @@ class VllmLanguageModel:
         self.worker_manager = RestartingQwenWorkerManager(
             python_path,
             QwenWorkerConfiguration(
-                model=QwenModelConfiguration(
-                    model_name=LANGUAGE_MODEL_NAME,
-                    model_revision=LANGUAGE_MODEL_REVISION,
-                    adapter=QwenAdapterConfiguration(
-                        repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
-                        revision=LANGUAGE_MODEL_ADAPTER_REVISION,
-                    ),
-                    gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
-                    maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
-                ),
+                model=language_model_configuration_from_environment(os.environ),
                 component_name="Qwen language model",
             ),
         )
