@@ -280,6 +280,16 @@ h1 {
   color: #9d362f;
 }
 
+.badge.temporal_change {
+  background: #f7dedd;
+  color: #9d362f;
+}
+
+.badge.stable_offset {
+  background: #fae7dc;
+  color: #955029;
+}
+
 .review-column {
   display: grid;
   gap: 16px;
@@ -529,6 +539,22 @@ input[type="range"] {
 
 .window-target.unreliable {
   opacity: 0.58;
+}
+
+.window-target.audit-target {
+  border-color: #8ab8ad;
+  box-shadow: inset 3px 0 #168074;
+}
+
+.audit-target-actions {
+  display: flex !important;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.audit-target-actions button {
+  font-size: 10px;
+  padding: 6px 8px;
 }
 
 .window-target strong,

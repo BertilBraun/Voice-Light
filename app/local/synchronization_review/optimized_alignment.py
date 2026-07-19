@@ -8,7 +8,9 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from app.local.analyses.end_of_turn.detectors.naive_vad import run_naive_vad_floor
+from app.local.analyses.end_of_turn.detectors.naive_vad import (
+    run_naive_vad_floor_full_recording,
+)
 from app.local.synchronization_review.activity_optimization import (
     ActivityInterval,
     ActivityLagCurve,
@@ -36,7 +38,8 @@ COMPETING_EXCLUSION_SECONDS = 0.5
 BASIN_LOSS_TOLERANCE = 0.0005
 MINIMUM_IMPROVEMENT_OVER_ZERO = 0.002
 MINIMUM_COMPETING_MARGIN = 0.0001
-WINDOW_DURATION_SECONDS = 300.0
+WINDOW_DURATION_SECONDS = 180.0
+WINDOW_HOP_SECONDS = 60.0
 MINIMUM_WINDOW_DURATION_SECONDS = 180.0
 MINIMUM_DRIFT_WINDOW_COUNT = 4
 MINIMUM_DRIFT_RANGE_SECONDS = 1.5
@@ -50,6 +53,13 @@ class ActivityOffsetAnalysis:
     overlap_reduction: float
     dual_silence_reduction: float
     accepted: bool
+
+
+@dataclass(frozen=True)
+class ActivityWindowAnalysis:
+    start_seconds: float
+    end_seconds: float
+    analysis: ActivityOffsetAnalysis
 
 
 def optimized_alignment_candidate(
@@ -135,7 +145,7 @@ def _vad_activity_mask(
     wave_path: Path,
     duration_seconds: float,
 ) -> NDArray[np.bool_]:
-    vad_result = run_naive_vad_floor(
+    vad_result = run_naive_vad_floor_full_recording(
         wave_path=wave_path,
         result_name="synchronization_audio_activity",
         description="Full-recording audio activity for synchronization",
@@ -193,31 +203,48 @@ def _window_estimates(
     speaker1_mask: NDArray[np.bool_],
     speaker2_mask: NDArray[np.bool_],
 ) -> tuple[SynchronizationWindowEstimate, ...]:
+    return tuple(
+        SynchronizationWindowEstimate(
+            source=SynchronizationEvidenceSource.AUDIO_ACTIVITY,
+            start_seconds=window.start_seconds,
+            end_seconds=window.end_seconds,
+            estimated_b_shift_seconds=window.analysis.estimate.shift_seconds,
+            bad_state_improvement=window.analysis.estimate.improvement_over_zero,
+            overlap_reduction=window.analysis.overlap_reduction,
+            silence_reduction=window.analysis.dual_silence_reduction,
+            meaningful=window.analysis.accepted,
+        )
+        for window in overlapping_window_analyses(
+            speaker1_mask=speaker1_mask,
+            speaker2_mask=speaker2_mask,
+        )
+    )
+
+
+def overlapping_window_analyses(
+    speaker1_mask: NDArray[np.bool_],
+    speaker2_mask: NDArray[np.bool_],
+) -> tuple[ActivityWindowAnalysis, ...]:
     window_frame_count = round(WINDOW_DURATION_SECONDS / FRAME_DURATION_SECONDS)
+    window_hop_frame_count = round(WINDOW_HOP_SECONDS / FRAME_DURATION_SECONDS)
     minimum_window_frame_count = round(MINIMUM_WINDOW_DURATION_SECONDS / FRAME_DURATION_SECONDS)
-    estimates: list[SynchronizationWindowEstimate] = []
+    windows: list[ActivityWindowAnalysis] = []
     shared_frame_count = min(len(speaker1_mask), len(speaker2_mask))
-    for start_index in range(0, shared_frame_count, window_frame_count):
+    for start_index in range(0, shared_frame_count, window_hop_frame_count):
         end_index = min(shared_frame_count, start_index + window_frame_count)
         if end_index - start_index < minimum_window_frame_count:
             continue
-        analysis = _analyze_masks(
-            speaker1_mask=speaker1_mask[start_index:end_index],
-            speaker2_mask=speaker2_mask[start_index:end_index],
-        )
-        estimates.append(
-            SynchronizationWindowEstimate(
-                source=SynchronizationEvidenceSource.AUDIO_ACTIVITY,
+        windows.append(
+            ActivityWindowAnalysis(
                 start_seconds=start_index * FRAME_DURATION_SECONDS,
                 end_seconds=end_index * FRAME_DURATION_SECONDS,
-                estimated_b_shift_seconds=analysis.estimate.shift_seconds,
-                bad_state_improvement=analysis.estimate.improvement_over_zero,
-                overlap_reduction=analysis.overlap_reduction,
-                silence_reduction=analysis.dual_silence_reduction,
-                meaningful=analysis.accepted,
+                analysis=_analyze_masks(
+                    speaker1_mask=speaker1_mask[start_index:end_index],
+                    speaker2_mask=speaker2_mask[start_index:end_index],
+                ),
             )
         )
-    return tuple(estimates)
+    return tuple(windows)
 
 
 def _state_reductions(

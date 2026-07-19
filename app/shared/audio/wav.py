@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import wave
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,6 +94,41 @@ def read_mono_wave_audio_window(
         frame_count=frame_count,
         duration_seconds=frame_count / sample_rate,
     )
+
+
+def iter_mono_wave_audio_chunks(
+    wave_path: Path,
+    chunk_duration_seconds: float,
+) -> Iterator[MonoWaveAudio]:
+    if chunk_duration_seconds <= 0.0:
+        raise ValueError("chunk_duration_seconds must be positive")
+    with wave.open(str(wave_path), "rb") as wave_reader:
+        sample_rate = wave_reader.getframerate()
+        sample_width = wave_reader.getsampwidth()
+        channel_count = wave_reader.getnchannels()
+        source_frame_count = wave_reader.getnframes()
+        chunk_frame_count = max(1, round(chunk_duration_seconds * sample_rate))
+        remaining_frame_count = source_frame_count
+        while remaining_frame_count > 0:
+            frame_count = min(remaining_frame_count, chunk_frame_count)
+            fragment = wave_reader.readframes(frame_count)
+            samples = mono_samples(
+                fragment=fragment,
+                sample_width=sample_width,
+                channel_count=channel_count,
+            )
+            actual_frame_count = len(samples)
+            if actual_frame_count == 0:
+                break
+            yield MonoWaveAudio(
+                samples=samples,
+                sample_rate=sample_rate,
+                sample_width=sample_width,
+                channel_count=channel_count,
+                frame_count=actual_frame_count,
+                duration_seconds=actual_frame_count / sample_rate,
+            )
+            remaining_frame_count -= actual_frame_count
 
 
 def capped_wave_bytes(wave_path: Path) -> bytes:

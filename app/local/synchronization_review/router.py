@@ -9,7 +9,9 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from app.local.config import DATABASE_URL
 from app.local.db.models import DashboardSample, TrackSide
 from app.local.db.repository import Repository
+from app.local.synchronization_review.audit import SYNCHRONIZATION_AUDIT_PATH
 from app.local.synchronization_review.models import (
+    SynchronizationAuditReport,
     SynchronizationCandidateListResponse,
     SynchronizationGainResponse,
     SynchronizationReviewRequest,
@@ -35,6 +37,21 @@ def list_synchronization_candidates() -> SynchronizationCandidateListResponse:
         return cached_synchronization_candidates(DATABASE_URL)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/audit")
+def synchronization_audit() -> SynchronizationAuditReport:
+    if not SYNCHRONIZATION_AUDIT_PATH.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No synchronization audit report exists. Run "
+                "`python -m app.local.synchronization_review.audit_cli` first."
+            ),
+        )
+    return SynchronizationAuditReport.model_validate_json(
+        SYNCHRONIZATION_AUDIT_PATH.read_text(encoding="utf-8")
+    )
 
 
 @router.get("/gain/{sample_id}")

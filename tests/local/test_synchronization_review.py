@@ -55,7 +55,8 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "Slide speaker B relative to speaker A",
         "B earlier",
         "B later",
-        "Estimated shift by recording window",
+        "Overlapping-window synchronization evidence",
+        "Read-only audit targets",
         "Speaker A gain",
         "Speaker B gain",
         "Reset automatic gains",
@@ -65,7 +66,7 @@ def synchronization_review_assets() -> Iterator[tuple[str, str]]:
         "three-minute playback window",
         "Hide reviewed",
         "Lowest confidence first",
-        "app.js?v=12",
+        "app.js?v=13",
     ),
 )
 def test_synchronization_review_page_exposes_alignment_controls(
@@ -94,9 +95,7 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "fetchSpeechGains",
         "/api/synchronization-review/gain/",
         "Speech-only RMS",
-        "manually reviewed",
         "alignment_estimate_origin",
-        "alignment unresolved",
         "offset confidence",
         "offset_confidence_score",
         "/api/synchronization-review/reviews/",
@@ -109,6 +108,12 @@ def test_synchronization_review_page_exposes_alignment_controls(
         "nextVisibleCandidateExternalId",
         "Automatic playback unavailable",
         "await play()",
+        "/api/synchronization-review/audit",
+        "synchronization-audit.generated.json",
+        "fetchAuditReport",
+        "audit_descending",
+        "Inspect raw shift 0",
+        "Preview local",
     ),
 )
 def test_synchronization_review_script_uses_shared_shifted_timeline(

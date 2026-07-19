@@ -7,7 +7,9 @@ import numpy as np
 
 from app.local.analyses.end_of_turn.base import EndOfTurnDetectorInfo, EndOfTurnDetectorMode
 from app.local.analyses.end_of_turn.service import BaselineResult, EndOfTurnEvent, SpeechSegment
-from app.shared.audio.wav import read_mono_wave_audio
+from app.shared.audio.wav import iter_mono_wave_audio_chunks, read_mono_wave_audio
+
+FULL_RECORDING_READ_CHUNK_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,46 @@ def run_naive_vad_floor(
     min_silence_seconds: float = 0.7,
 ) -> BaselineResult:
     frame_energies = _read_frame_energies(wave_path=wave_path, frame_seconds=frame_seconds)
+    return _vad_result_from_frame_energies(
+        frame_energies=frame_energies,
+        result_name=result_name,
+        description=description,
+        frame_seconds=frame_seconds,
+        min_speech_seconds=min_speech_seconds,
+        min_silence_seconds=min_silence_seconds,
+    )
+
+
+def run_naive_vad_floor_full_recording(
+    wave_path: Path,
+    result_name: str,
+    description: str,
+    frame_seconds: float = 0.03,
+    min_speech_seconds: float = 0.12,
+    min_silence_seconds: float = 0.7,
+) -> BaselineResult:
+    frame_energies = _read_full_recording_frame_energies(
+        wave_path=wave_path,
+        frame_seconds=frame_seconds,
+    )
+    return _vad_result_from_frame_energies(
+        frame_energies=frame_energies,
+        result_name=result_name,
+        description=description,
+        frame_seconds=frame_seconds,
+        min_speech_seconds=min_speech_seconds,
+        min_silence_seconds=min_silence_seconds,
+    )
+
+
+def _vad_result_from_frame_energies(
+    frame_energies: list[float],
+    result_name: str,
+    description: str,
+    frame_seconds: float,
+    min_speech_seconds: float,
+    min_silence_seconds: float,
+) -> BaselineResult:
     threshold = _adaptive_threshold(frame_energies=frame_energies)
     speech_flags = [frame_energy >= threshold for frame_energy in frame_energies]
     speech_segments = _speech_segments_from_flags(
@@ -59,6 +101,40 @@ def run_naive_vad_floor(
         backchannel_spans=[],
         end_of_turn_events=end_of_turn_events,
     )
+
+
+def _read_full_recording_frame_energies(
+    wave_path: Path,
+    frame_seconds: float,
+) -> list[float]:
+    frame_energies: list[float] = []
+    pending_samples = np.empty(0, dtype=np.float64)
+    sample_rate: int | None = None
+    frames_per_window: int | None = None
+    for audio in iter_mono_wave_audio_chunks(
+        wave_path=wave_path,
+        chunk_duration_seconds=FULL_RECORDING_READ_CHUNK_SECONDS,
+    ):
+        if sample_rate is None:
+            sample_rate = audio.sample_rate
+            frames_per_window = max(1, round(sample_rate * frame_seconds))
+        assert audio.sample_rate == sample_rate
+        assert frames_per_window is not None
+        samples = (
+            np.concatenate((pending_samples, audio.samples))
+            if len(pending_samples)
+            else audio.samples
+        )
+        complete_sample_count = len(samples) - len(samples) % frames_per_window
+        complete_samples = samples[:complete_sample_count]
+        if complete_sample_count:
+            windows = complete_samples.reshape(-1, frames_per_window)
+            energies = np.sqrt(np.mean(np.square(windows), axis=1))
+            frame_energies.extend(float(energy) for energy in energies)
+        pending_samples = samples[complete_sample_count:].copy()
+    if len(pending_samples):
+        frame_energies.append(float(np.sqrt(np.mean(np.square(pending_samples)))))
+    return frame_energies
 
 
 def _read_frame_energies(

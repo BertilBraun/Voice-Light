@@ -14,6 +14,12 @@ class OffsetPattern(StrEnum):
     UNCERTAIN = "uncertain"
 
 
+class SynchronizationAuditKind(StrEnum):
+    TEMPORAL_CHANGE = "temporal_change"
+    STABLE_OFFSET = "stable_offset"
+    UNCERTAIN = "uncertain"
+
+
 class SynchronizationEvidenceSource(StrEnum):
     AUDIO_ACTIVITY = "audio_activity"
     CONVERSATION_ANNOTATION = "conversation_annotation"
@@ -86,6 +92,42 @@ class SynchronizationCandidateListResponse(FrozenBaseModel):
     analyzed_session_count: int
     offset_candidate_count: int
     excluded_session_count: int
+
+
+class SynchronizationAuditWindow(FrozenBaseModel):
+    start_seconds: float
+    end_seconds: float
+    estimated_b_shift_seconds: float
+    confidence_score: float
+    bad_state_improvement: float
+    competing_margin: float
+    basin_width_seconds: float
+    persistence_window_count: int
+    agreeing_transcript_sources: tuple[SynchronizationEvidenceSource, ...]
+    accepted: bool
+    maximum_lag_boundary: bool
+
+
+class SynchronizationAuditResult(FrozenBaseModel):
+    sample_id: UUID
+    external_id: str
+    kind: SynchronizationAuditKind
+    anomaly_score: float
+    strongest_window_start_seconds: float
+    strongest_window_end_seconds: float
+    strongest_shift_seconds: float
+    temporal_shift_range_seconds: float
+    summary: str
+    windows: tuple[SynchronizationAuditWindow, ...]
+
+
+class SynchronizationAuditReport(FrozenBaseModel):
+    estimator_version: str
+    window_duration_seconds: float
+    window_hop_seconds: float
+    analyzed_session_count: int
+    generated_at: str
+    results: tuple[SynchronizationAuditResult, ...]
 
 
 class SynchronizationGainResponse(FrozenBaseModel):

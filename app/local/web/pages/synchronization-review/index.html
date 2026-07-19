@@ -34,12 +34,13 @@
             </label>
             <div class="candidate-filter-controls">
               <label class="checkbox-filter">
-                <input id="hide-reviewed" type="checkbox" checked />
+                <input id="hide-reviewed" type="checkbox" />
                 <span>Hide reviewed</span>
               </label>
               <label class="filter">
                 <span>Sort</span>
                 <select id="candidate-sort">
+                  <option value="audit_descending">Worst audit anomaly first</option>
                   <option value="confidence_ascending">Lowest confidence first</option>
                   <option value="confidence_descending">Highest confidence first</option>
                   <option value="likelihood_descending">Highest likelihood first</option>
@@ -139,10 +140,10 @@
           <section class="panel targets-panel">
             <div class="section-heading">
               <div>
-                <span class="eyebrow">Relative targets</span>
-                <h3>Estimated shift by recording window</h3>
+                <span class="eyebrow">Read-only audit targets</span>
+                <h3>Overlapping-window synchronization evidence</h3>
               </div>
-              <span class="muted">Click a target to apply its shift and seek there.</span>
+              <span class="muted">Click a target to seek there; it does not apply or save a shift.</span>
             </div>
             <div id="window-targets" class="window-targets"></div>
           </section>
@@ -165,6 +166,6 @@
       </section>
     </main>
 
-    <script type="module" src="/pages/synchronization-review/app.js?v=12"></script>
+    <script type="module" src="/pages/synchronization-review/app.js?v=13"></script>
   </body>
 </html>

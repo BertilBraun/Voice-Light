@@ -8,6 +8,7 @@
 /logs/compute/
 /run/compute/
 /.runtime/
+/app/local/web/pages/synchronization-review/synchronization-audit.generated.json
 .pytest_cache/
 .ruff_cache/
 __pycache__/

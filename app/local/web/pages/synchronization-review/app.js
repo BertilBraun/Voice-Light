@@ -70,6 +70,7 @@ const state = {
   sourceNodeB: null,
   gainNormalization: null,
   fullRecordingMode: false,
+  auditResults: new Map(),
 };
 
 function selectedCandidate() {
@@ -127,12 +128,20 @@ function setError(message) {
 
 async function loadCandidates() {
   try {
-    const response = await fetch("/api/synchronization-review/candidates");
+    const [response, auditPayload] = await Promise.all([
+      fetch("/api/synchronization-review/candidates"),
+      fetchAuditReport(),
+    ]);
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || `Request failed with ${response.status}`);
     }
     const payload = await response.json();
+    if (auditPayload) {
+      state.auditResults = new Map(
+        auditPayload.results.map((result) => [result.external_id, result]),
+      );
+    }
     state.candidates = payload.candidates;
     const belowCandidateThreshold =
       payload.analyzed_session_count - payload.offset_candidate_count;
@@ -140,17 +149,33 @@ async function loadCandidates() {
       `${payload.analyzed_session_count} sessions analyzed · ` +
       `${payload.offset_candidate_count} offset candidates · ` +
       `${belowCandidateThreshold} below the candidate threshold · ` +
-      `${payload.excluded_session_count} without complete timing evidence`;
+      (auditPayload
+        ? `${auditPayload.analyzed_session_count} full-waveform audits`
+        : "full-waveform audit unavailable");
     elements.workspace.hidden = false;
     applyCandidateFilters();
     if (state.visibleCandidates.length === 0) {
       setError("No analyzed sessions match the current review filters.");
       return;
     }
-    await selectCandidate(state.visibleCandidates[0].external_id);
+    await selectCandidateAtAuditTarget(state.visibleCandidates[0].external_id);
   } catch (error) {
     setError(`Could not load synchronization candidates: ${error.message}`);
   }
+}
+
+async function fetchAuditReport() {
+  const apiResponse = await fetch("/api/synchronization-review/audit");
+  if (apiResponse.ok) {
+    return apiResponse.json();
+  }
+  const staticResponse = await fetch(
+    "/pages/synchronization-review/synchronization-audit.generated.json",
+  );
+  if (staticResponse.ok) {
+    return staticResponse.json();
+  }
+  return null;
 }
 
 function applyCandidateFilters() {
@@ -172,6 +197,13 @@ function applyCandidateFilters() {
 }
 
 function candidateComparator(sortMode) {
+  if (sortMode === "audit_descending") {
+    return (left, right) =>
+      auditScore(right.external_id) - auditScore(left.external_id) ||
+      auditTemporalRange(right.external_id) - auditTemporalRange(left.external_id) ||
+      auditShiftMagnitude(right.external_id) - auditShiftMagnitude(left.external_id) ||
+      right.likelihood_score - left.likelihood_score;
+  }
   if (sortMode === "confidence_descending") {
     return (left, right) =>
       right.offset_confidence_score - left.offset_confidence_score ||
@@ -190,9 +222,32 @@ function candidateComparator(sortMode) {
     right.likelihood_score - left.likelihood_score;
 }
 
+function auditScore(externalId) {
+  return state.auditResults.get(externalId)?.anomaly_score || 0;
+}
+
+function auditTemporalRange(externalId) {
+  return state.auditResults.get(externalId)?.temporal_shift_range_seconds || 0;
+}
+
+function auditShiftMagnitude(externalId) {
+  return Math.abs(state.auditResults.get(externalId)?.strongest_shift_seconds || 0);
+}
+
+function auditKindLabel(kind) {
+  if (kind === "temporal_change") {
+    return "temporal change";
+  }
+  if (kind === "stable_offset") {
+    return "stable offset";
+  }
+  return "uncertain";
+}
+
 function renderCandidateList() {
   elements.candidateList.replaceChildren();
   for (const candidate of state.visibleCandidates) {
+    const audit = state.auditResults.get(candidate.external_id);
     const button = document.createElement("button");
     button.type = "button";
     button.className =
@@ -206,48 +261,61 @@ function renderCandidateList() {
         <span class="score">likelihood ${Math.round(candidate.likelihood_score * 100)}%</span>
       </span>
       <span class="candidate-main">
-        <span class="badge ${candidate.offset_pattern}">${candidate.offset_pattern}</span>
-        <strong>${formatShift(candidate.estimated_b_shift_seconds)}</strong>
+        <span class="badge ${audit?.kind || "uncertain"}">
+          ${audit ? auditKindLabel(audit.kind) : "not audited"}
+        </span>
+        <strong>${audit ? `${Math.round(audit.anomaly_score * 100)}%` : "—"}</strong>
       </span>
       <span class="candidate-meta">
         <span>
-          ${candidate.is_offset_candidate ? "offset candidate" : "below threshold"} ·
-          ${candidate.overlap_silence_cycle_count} cycles
+          ${audit
+            ? `${formatTime(audit.strongest_window_start_seconds)} · ${formatShift(audit.strongest_shift_seconds)}`
+            : "no full-waveform audit"}
         </span>
         <span>
-          ${candidate.alignment_estimate_origin === "reviewed"
-            ? "manually reviewed"
-            : candidate.alignment_estimate_origin === "unresolved"
-              ? "alignment unresolved"
-            : candidate.source_agreement
-              ? "sources agree"
-              : "mixed evidence"}
+          ${audit?.summary || "Generate the read-only audit report"}
         </span>
       </span>
       <span class="confidence-row">
-        <span>offset confidence</span>
-        <span>${Math.round(candidate.offset_confidence_score * 100)}%</span>
+        <span>audit anomaly score</span>
+        <span>${audit ? Math.round(audit.anomaly_score * 100) : 0}%</span>
       </span>
-      <span class="confidence-track" title="Heuristic offset confidence">
-        <i style="width: ${Math.round(candidate.offset_confidence_score * 100)}%"></i>
+      <span class="confidence-track" title="Persistent, non-boundary audit evidence">
+        <i style="width: ${audit ? Math.round(audit.anomaly_score * 100) : 0}%"></i>
       </span>
     `;
     button.addEventListener("click", () => {
-      void selectCandidate(candidate.external_id);
+      void selectCandidateAtAuditTarget(candidate.external_id);
     });
     elements.candidateList.append(button);
   }
 }
 
-async function selectCandidate(externalId) {
+async function selectCandidateAtAuditTarget(externalId) {
+  const audit = state.auditResults.get(externalId);
+  await selectCandidate(
+    externalId,
+    audit ? Math.max(0, audit.strongest_window_start_seconds - 5) : null,
+    Boolean(audit),
+  );
+}
+
+async function selectCandidate(
+  externalId,
+  targetSeconds = null,
+  inspectRawResidual = false,
+) {
   const candidate = state.candidates.find((item) => item.external_id === externalId);
   if (!candidate) {
     return;
   }
   pause();
   state.selectedExternalId = externalId;
-  state.bShiftSeconds = candidate.estimated_b_shift_seconds;
-  state.timelineSeconds = 0;
+  state.bShiftSeconds = inspectRawResidual ? 0 : candidate.estimated_b_shift_seconds;
+  state.timelineSeconds = targetSeconds ?? 0;
+  if (targetSeconds !== null && targetSeconds >= DEFAULT_DURATION_SECONDS) {
+    state.fullRecordingMode = true;
+  }
   state.gainNormalization = candidate;
   applyAutomaticGains(candidate);
   state.waveformA = null;
@@ -391,12 +459,19 @@ function renderCandidateDetails() {
     return;
   }
   const visibleIndex = selectedVisibleIndex();
+  const audit = state.auditResults.get(candidate.external_id);
   elements.position.textContent =
     visibleIndex >= 0
       ? `Candidate ${visibleIndex + 1} of ${state.visibleCandidates.length}`
       : "Candidate hidden by filter";
   elements.sampleName.textContent = candidate.external_id.toUpperCase();
   elements.sampleSummary.innerHTML = `
+    ${audit
+      ? `<span class="badge ${audit.kind}">${auditKindLabel(audit.kind)}</span>
+         <span>audit score ${Math.round(audit.anomaly_score * 100)}%</span>
+         <span>strongest window ${formatTime(audit.strongest_window_start_seconds)}–${formatTime(audit.strongest_window_end_seconds)}</span>
+         <span>${formatShift(audit.strongest_shift_seconds)}</span>`
+      : ""}
     <span class="badge ${candidate.offset_pattern}">${candidate.offset_pattern} offset</span>
     ${candidate.alignment_estimate_origin === "reviewed" ? '<span class="badge reviewed">reviewed</span>' : ""}
     ${candidate.alignment_estimate_origin === "unresolved" ? '<span class="badge unresolved">unresolved</span>' : ""}
@@ -544,6 +619,55 @@ function renderWindowTargets(candidate) {
     canary: "Canary",
   };
   elements.windowTargets.replaceChildren();
+  const audit = state.auditResults.get(candidate.external_id);
+  if (audit) {
+    for (const estimate of audit.windows) {
+      const target = document.createElement("article");
+      target.className =
+        estimate.accepted && !estimate.maximum_lag_boundary
+          ? "window-target audit-target"
+          : "window-target unreliable";
+      const sourceAgreement = estimate.agreeing_transcript_sources.length;
+      target.innerHTML = `
+        <span>
+          Full-waveform VAD ·
+          ${formatTime(estimate.start_seconds)}–${formatTime(estimate.end_seconds)}
+        </span>
+        <strong>${formatShift(estimate.estimated_b_shift_seconds)}</strong>
+        <span>
+          confidence ${Math.round(estimate.confidence_score * 100)}% ·
+          persistence ${estimate.persistence_window_count} ·
+          ASR agreement ${sourceAgreement}/2
+          ${estimate.maximum_lag_boundary ? " · max-lag boundary" : ""}
+        </span>
+        <span class="audit-target-actions">
+          <button type="button" data-action="inspect">Inspect raw shift 0</button>
+          <button type="button" data-action="preview">
+            Preview local ${formatShift(estimate.estimated_b_shift_seconds)}
+          </button>
+        </span>
+      `;
+      target.querySelector('[data-action="inspect"]').addEventListener("click", () => {
+        setShift(0);
+        if (!state.fullRecordingMode && estimate.start_seconds >= DEFAULT_DURATION_SECONDS) {
+          state.timelineSeconds = Math.max(0, estimate.start_seconds - 5);
+          void toggleFullRecordingMode();
+          return;
+        }
+        seekTo(Math.max(timelineBounds().start, estimate.start_seconds - 5));
+      });
+      target.querySelector('[data-action="preview"]').addEventListener("click", () => {
+        setShift(estimate.estimated_b_shift_seconds);
+        if (!state.fullRecordingMode && estimate.start_seconds >= DEFAULT_DURATION_SECONDS) {
+          state.timelineSeconds = Math.max(0, estimate.start_seconds - 5);
+          void toggleFullRecordingMode();
+          return;
+        }
+        seekTo(Math.max(timelineBounds().start, estimate.start_seconds - 5));
+      });
+      elements.windowTargets.append(target);
+    }
+  }
   for (const estimate of candidate.window_estimates) {
     const button = document.createElement("button");
     button.type = "button";
@@ -562,7 +686,6 @@ function renderWindowTargets(candidate) {
       </span>
     `;
     button.addEventListener("click", () => {
-      setShift(estimate.estimated_b_shift_seconds);
       seekTo(Math.max(timelineBounds().start, estimate.start_seconds - 2));
     });
     elements.windowTargets.append(button);
@@ -1088,7 +1211,7 @@ function moveSelection(delta) {
   const index = selectedVisibleIndex();
   const target = state.visibleCandidates[index + delta];
   if (target) {
-    void selectCandidate(target.external_id);
+    void selectCandidateAtAuditTarget(target.external_id);
   }
 }
 
@@ -1100,7 +1223,7 @@ function refreshCandidateFilterSelection() {
   if (selectedStillVisible) {
     renderCandidateDetails();
   } else if (state.visibleCandidates.length > 0) {
-    void selectCandidate(state.visibleCandidates[0].external_id);
+    void selectCandidateAtAuditTarget(state.visibleCandidates[0].external_id);
   }
 }
 
