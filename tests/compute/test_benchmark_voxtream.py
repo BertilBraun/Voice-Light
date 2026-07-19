@@ -19,7 +19,10 @@ from deployment.compute.benchmark_voxtream import (
     BenchmarkPhase,
     ManagedLoadProcess,
     VoxtreamBenchmarkCase,
+    VoxtreamBenchmarkConfiguration,
+    absolute_path_preserving_symlinks,
     benchmark_case,
+    create_synthesizer,
     normalized_variant,
     parse_load_command,
     percentile,
@@ -165,3 +168,68 @@ def test_managed_load_rejects_stale_readiness_file(tmp_path: Path) -> None:
 def test_percentile_interpolates_small_benchmark_samples() -> None:
     assert percentile((10.0, 20.0, 30.0), 0.5) == 20.0
     assert percentile((10.0, 20.0, 30.0), 0.9) == pytest.approx(28.0)
+
+
+def test_create_synthesizer_preserves_virtual_environment_python_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    python_path = tmp_path / "venv" / "bin" / "python"
+    configuration = VoxtreamBenchmarkConfiguration(
+        variant="test",
+        condition="idle",
+        runs_per_case=1,
+        compile_model=False,
+        cache_prompt_in_memory=False,
+        python_path=str(python_path),
+        config_path=str(tmp_path / "generator.json"),
+        config_sha256="0" * 64,
+        prompt_audio_path=str(tmp_path / "prompt.wav"),
+        prompt_audio_sha256="1" * 64,
+        load_command=None,
+        load_startup_seconds=0.0,
+        load_ready_file=None,
+        load_ready_timeout_seconds=1.0,
+    )
+    received_python_paths: list[Path] = []
+
+    def create_voxtream(
+        *,
+        python_path: Path,
+        config_path: Path,
+        prompt_audio_path: Path,
+        compile_model: bool,
+        cache_prompt_in_memory: bool,
+    ) -> FakeSpeechSynthesizer:
+        del config_path, prompt_audio_path, compile_model, cache_prompt_in_memory
+        received_python_paths.append(python_path)
+        return FakeSpeechSynthesizer(pcm_bytes=b"\x00\x00", sample_rate=16_000)
+
+    monkeypatch.setattr(
+        "deployment.compute.benchmark_voxtream.VoxtreamSpeechSynthesizer",
+        create_voxtream,
+    )
+
+    create_synthesizer(configuration)
+
+    assert received_python_paths == [python_path]
+
+
+def test_absolute_python_path_does_not_dereference_virtual_environment_symlink(
+    tmp_path: Path,
+) -> None:
+    interpreter = tmp_path / "python-base"
+    interpreter.touch()
+    virtual_environment_python = tmp_path / "venv" / "bin" / "python"
+    virtual_environment_python.parent.mkdir(parents=True)
+    try:
+        virtual_environment_python.symlink_to(interpreter)
+    except OSError:
+        pytest.skip("Creating symlinks is unavailable on this platform.")
+
+    assert absolute_path_preserving_symlinks(virtual_environment_python) == (
+        virtual_environment_python.absolute()
+    )
+    assert absolute_path_preserving_symlinks(virtual_environment_python) != (
+        virtual_environment_python.resolve()
+    )

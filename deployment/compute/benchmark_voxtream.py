@@ -260,7 +260,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         runs_per_case=options.runs,
         compile_model=options.compile_model,
         cache_prompt_in_memory=options.cache_prompt_in_memory,
-        python_path=str(options.python.resolve()),
+        python_path=str(absolute_path_preserving_symlinks(options.python)),
         config_path=str(options.config.resolve()),
         config_sha256=sha256_file(options.config),
         prompt_audio_path=str(options.prompt_audio.resolve()),
@@ -553,6 +553,10 @@ def normalized_variant(value: str) -> str:
     if not normalized:
         raise ValueError("--variant must contain at least one letter or number.")
     return normalized
+
+
+def absolute_path_preserving_symlinks(path: Path) -> Path:
+    return path.expanduser().absolute()
 
 
 if __name__ == "__main__":
