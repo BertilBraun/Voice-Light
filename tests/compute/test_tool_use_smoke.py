@@ -7,6 +7,7 @@ from deployment.compute.smoke_test_tool_use import (
     SmokeCase,
     _run_smoke_request,
     _smoke_requests,
+    tool_use_worker_configuration,
 )
 
 
@@ -52,3 +53,19 @@ def test_tool_use_smoke_rejects_wrong_tool() -> None:
 
     assert not observation.passed
     assert observation.generated_tools == (ToolName.SEARCH,)
+
+
+def test_tool_use_smoke_uses_merged_model_environment() -> None:
+    model_name = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
+    model_revision = "7eab893e17e3ed8ba40d9c3585dfbb7de17d2c2e"
+
+    configuration = tool_use_worker_configuration(
+        {
+            "VOICE_LIGHT_MERGED_LANGUAGE_MODEL_NAME": model_name,
+            "VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION": model_revision,
+        }
+    )
+
+    assert configuration.model.model_name == model_name
+    assert configuration.model.model_revision == model_revision
+    assert configuration.model.adapter is None

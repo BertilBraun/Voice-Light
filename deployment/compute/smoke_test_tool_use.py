@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -22,23 +24,12 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerErrorEvent,
     StartLlmCommand,
 )
-from app.compute.voice.model_constants import (
-    LANGUAGE_MODEL_ADAPTER_NAME,
-    LANGUAGE_MODEL_ADAPTER_REVISION,
-    LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
-    LANGUAGE_MODEL_NAME,
-    LANGUAGE_MODEL_REVISION,
-    QWEN_MAXIMUM_MODEL_LENGTH,
-)
 from app.compute.voice.models import (
     QWEN_PYTHON_PATH,
     QwenWorkerConfiguration,
     QwenWorkerProcess,
 )
-from app.compute.voice.qwen_config import (
-    QwenAdapterConfiguration,
-    QwenModelConfiguration,
-)
+from app.compute.voice.qwen_config import language_model_configuration_from_environment
 from app.compute.voice.tools import (
     CalculateArguments,
     CalculateToolCallFunction,
@@ -79,26 +70,14 @@ class SmokeObservation(FrozenBaseModel):
 class ToolUseSmokeReport(FrozenBaseModel):
     base_model: str
     base_revision: str
-    adapter: str
-    adapter_revision: str
+    adapter: str | None
+    adapter_revision: str | None
     observations: tuple[SmokeObservation, ...]
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    configuration = QwenWorkerConfiguration(
-        model=QwenModelConfiguration(
-            model_name=LANGUAGE_MODEL_NAME,
-            model_revision=LANGUAGE_MODEL_REVISION,
-            adapter=QwenAdapterConfiguration(
-                repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
-                revision=LANGUAGE_MODEL_ADAPTER_REVISION,
-            ),
-            gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
-            maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
-        ),
-        component_name="Qwen language model",
-    )
+    configuration = tool_use_worker_configuration(os.environ)
     worker = QwenWorkerProcess(QWEN_PYTHON_PATH, configuration)
     try:
         observations = tuple(
@@ -106,11 +85,12 @@ def main() -> None:
         )
     finally:
         worker.close()
+    adapter = configuration.model.adapter
     report = ToolUseSmokeReport(
-        base_model=LANGUAGE_MODEL_NAME,
-        base_revision=LANGUAGE_MODEL_REVISION,
-        adapter=LANGUAGE_MODEL_ADAPTER_NAME,
-        adapter_revision=LANGUAGE_MODEL_ADAPTER_REVISION,
+        base_model=configuration.model.model_name,
+        base_revision=configuration.model.model_revision,
+        adapter=None if adapter is None else adapter.repository_id,
+        adapter_revision=None if adapter is None else adapter.revision,
         observations=observations,
     )
     print(report.model_dump_json(indent=2))
@@ -118,6 +98,15 @@ def main() -> None:
     if failed_cases:
         failed_case_names = ", ".join(failed_cases)
         raise RuntimeError(f"Tool-use smoke test failed: {failed_case_names}")
+
+
+def tool_use_worker_configuration(
+    environment: Mapping[str, str],
+) -> QwenWorkerConfiguration:
+    return QwenWorkerConfiguration(
+        model=language_model_configuration_from_environment(environment),
+        component_name="Qwen language model",
+    )
 
 
 def _run_smoke_request(
