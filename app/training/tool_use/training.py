@@ -143,7 +143,6 @@ def run_lora_training(
     corpus = prepare_training_corpus(
         tokenizer=cast(ChatTemplateTokenizer, tokenizer),
         source_records=source_records,
-        holdout_record_count=config.holdout_record_count,
         logical_epochs=config.logical_epochs,
         random_seed=config.random_seed,
         minimum_user_turns=config.minimum_user_turns,
@@ -344,6 +343,14 @@ def _train_model(
         if validation_loss < best_validation_loss:
             best_validation_loss = validation_loss
             best_logical_epoch = logical_epoch
+        _save_checkpoint(
+            model=model,
+            tokenizer=tokenizer,
+            directory=(
+                config.output_directory
+                / f"checkpoint-epoch-{logical_epoch + 1:02d}-step-{optimizer_step:05d}"
+            ),
+        )
 
     elapsed_seconds = time.monotonic() - started_at
     tensorboard.close()

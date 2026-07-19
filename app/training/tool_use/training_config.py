@@ -19,7 +19,6 @@ class LoraTrainingConfig(ToolUseBaseModel):
     model_identifier: str
     model_revision: str
     random_seed: int
-    holdout_record_count: int = Field(ge=1)
     logical_epochs: int = Field(ge=1)
     minimum_user_turns: int = Field(ge=1)
     maximum_user_turns: int = Field(ge=1)
@@ -55,14 +54,13 @@ def pilot_training_config(
         model_identifier=QWEN3_1_7B_MODEL_IDENTIFIER,
         model_revision=QWEN3_1_7B_REVISION,
         random_seed=20260729,
-        holdout_record_count=80,
-        logical_epochs=16,
+        logical_epochs=8,
         minimum_user_turns=8,
         maximum_user_turns=16,
         maximum_sequence_tokens=4096,
         per_device_batch_size=2,
         gradient_accumulation_steps=8,
-        learning_rate=1e-4,
+        learning_rate=5e-5,
         warmup_ratio=0.05,
         maximum_gradient_norm=1.0,
         lora_rank=16,

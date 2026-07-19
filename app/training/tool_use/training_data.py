@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,12 +17,8 @@ from app.training.tool_use.renderer import (
     QwenTrainingExample,
     render_qwen_training_records,
 )
-from app.training.tool_use.scenario import SegmentBucket
 from app.training.tool_use.schema import (
     DatasetSplit,
-    RecordMetadata,
-    SpeechStyle,
-    SplitMetadata,
     ToolDialogueRecord,
     ToolUseBaseModel,
 )
@@ -72,21 +67,15 @@ class TrainingCorpusManifest(ToolUseBaseModel):
 def prepare_training_corpus(
     tokenizer: ChatTemplateTokenizer,
     source_records: tuple[ToolDialogueRecord, ...],
-    holdout_record_count: int,
     logical_epochs: int,
     random_seed: int,
     minimum_user_turns: int,
     maximum_user_turns: int,
     maximum_sequence_tokens: int,
 ) -> PreparedTrainingCorpus:
-    assigned_source_records = assign_proof_of_concept_splits(
-        source_records=source_records,
-        holdout_record_count=holdout_record_count,
-        random_seed=random_seed,
-    )
     training = _prepare_split(
         tokenizer=tokenizer,
-        source_records=assigned_source_records,
+        source_records=source_records,
         split=DatasetSplit.TRAIN,
         logical_epochs=logical_epochs,
         random_seed=random_seed,
@@ -96,7 +85,7 @@ def prepare_training_corpus(
     )
     validation = _prepare_split(
         tokenizer=tokenizer,
-        source_records=assigned_source_records,
+        source_records=source_records,
         split=DatasetSplit.VALIDATION,
         logical_epochs=1,
         random_seed=random_seed + 50_000_000,
@@ -105,7 +94,7 @@ def prepare_training_corpus(
         maximum_sequence_tokens=maximum_sequence_tokens,
     )
     return PreparedTrainingCorpus(
-        source_records=assigned_source_records,
+        source_records=source_records,
         training=training,
         validation=validation,
     )
@@ -132,47 +121,6 @@ def training_corpus_manifest(
             DatasetSplit.VALIDATION,
             corpus.validation,
         ),
-    )
-
-
-def assign_proof_of_concept_splits(
-    source_records: tuple[ToolDialogueRecord, ...],
-    holdout_record_count: int,
-    random_seed: int,
-) -> tuple[ToolDialogueRecord, ...]:
-    cell_count = len(SegmentBucket) * len(SpeechStyle)
-    if holdout_record_count % cell_count != 0:
-        raise ValueError(f"Holdout count must be divisible by {cell_count} behavior/style cells.")
-    holdout_per_cell = holdout_record_count // cell_count
-    if holdout_per_cell < 1:
-        raise ValueError("Holdout must contain at least one record per behavior/style cell.")
-    generator = random.Random(random_seed)
-    holdout_ids: set[str] = set()
-    for bucket in SegmentBucket:
-        for speech_style in SpeechStyle:
-            candidates = tuple(
-                record
-                for record in source_records
-                if record.metadata.scenario.family == bucket.value
-                and record.metadata.scenario.speech_style is speech_style
-            )
-            if len(candidates) < holdout_per_cell:
-                raise ValueError(
-                    f"Not enough {bucket.value}/{speech_style.value} records for holdout."
-                )
-            holdout_ids.update(
-                record.record_id
-                for record in generator.sample(
-                    sorted(candidates, key=lambda record: record.record_id),
-                    holdout_per_cell,
-                )
-            )
-    return tuple(
-        _with_split(
-            record,
-            (DatasetSplit.VALIDATION if record.record_id in holdout_ids else DatasetSplit.TRAIN),
-        )
-        for record in source_records
     )
 
 
@@ -258,28 +206,6 @@ def _split_summary(
         ),
         assistant_target_tokens=sum(
             sum(example.assistant_loss_mask) for example in prepared_split.examples
-        ),
-    )
-
-
-def _with_split(
-    record: ToolDialogueRecord,
-    split: DatasetSplit,
-) -> ToolDialogueRecord:
-    return ToolDialogueRecord(
-        schema_version=record.schema_version,
-        record_id=record.record_id,
-        tools=record.tools,
-        messages=record.messages,
-        metadata=RecordMetadata(
-            generation=record.metadata.generation,
-            scenario=record.metadata.scenario,
-            split=SplitMetadata(
-                name=split,
-                policy_revision="proof-of-concept-balanced-80-v1",
-                leakage_group_id=record.metadata.split.leakage_group_id,
-            ),
-            audit=record.metadata.audit,
         ),
     )
 
