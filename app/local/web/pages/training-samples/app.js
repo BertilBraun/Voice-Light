@@ -93,6 +93,9 @@ const contextOverviewController = createConversationContextOverview({
   commitSelection: () => {
     void loadPreview(false);
   },
+  reportError: (error) => {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  },
 });
 
 async function loadDatasets() {

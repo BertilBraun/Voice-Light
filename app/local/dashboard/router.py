@@ -325,7 +325,7 @@ def sample_waveform(
     points: int = Query(default=1200, ge=100, le=5000),
     trimmed: bool = False,
     start_seconds: float | None = Query(default=None, ge=0.0),
-    duration_seconds: float | None = Query(default=None, gt=0.0, le=300.0),
+    duration_seconds: float | None = Query(default=None, gt=0.0, le=7200.0),
 ) -> WaveformResponse:
     source_path = sample_track_path(sample_id=sample_id, side=side)
     try:

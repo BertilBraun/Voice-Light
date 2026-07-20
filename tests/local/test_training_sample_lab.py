@@ -62,6 +62,8 @@ def training_sample_script() -> Iterator[str]:
         "createConversationContextOverview",
         "contextOverviewController",
         "const CONTEXT_DURATION_SECONDS = 180",
+        'canvas.addEventListener("wheel", zoomAtEvent',
+        "wheel to zoom",
         "createMediaElementGainController",
         "commonWaveformDisplayScale",
         "preview.user_gain.default_gain",

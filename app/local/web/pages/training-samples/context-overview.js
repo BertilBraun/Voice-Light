@@ -2,6 +2,10 @@ import { commonWaveformDisplayScale } from "/pages/shared/waveform-rendering.js"
 
 const CONTEXT_DURATION_SECONDS = 180;
 const CONTEXT_WAVEFORM_POINTS = 1200;
+const MINIMUM_CONTEXT_DURATION_SECONDS = 30;
+const MAXIMUM_CONTEXT_DURATION_SECONDS = 7200;
+const ZOOM_FACTOR = 1.4;
+const ZOOM_SETTLE_MILLISECONDS = 180;
 
 export function createConversationContextOverview(options) {
   const {
@@ -11,17 +15,23 @@ export function createConversationContextOverview(options) {
     getSelectedStartSeconds,
     setSelectedStartSeconds,
     commitSelection,
+    reportError,
   } = options;
   let waveforms = null;
   let requestGeneration = 0;
   let dragging = false;
+  let contextDurationSeconds = CONTEXT_DURATION_SECONDS;
+  let pendingViewport = null;
+  let zoomTimer = null;
 
-  async function load(selectedStartSeconds) {
+  async function load(selectedStartSeconds, requestedBounds = null) {
     const preview = getPreview();
     if (preview === null) {
       return;
     }
-    const bounds = contextBounds(preview, selectedStartSeconds);
+    const bounds =
+      requestedBounds ??
+      contextBounds(preview, selectedStartSeconds, contextDurationSeconds);
     const generation = ++requestGeneration;
     label.textContent =
       `Loading ${formatDuration(bounds.startSeconds)}–${formatDuration(bounds.endSeconds)}…`;
@@ -59,11 +69,18 @@ export function createConversationContextOverview(options) {
       user: userWaveform.points,
       assistant: assistantWaveform.points,
     };
+    contextDurationSeconds = bounds.endSeconds - bounds.startSeconds;
+    pendingViewport = null;
     restoreLabel();
     draw();
   }
 
   function reset() {
+    if (zoomTimer !== null) {
+      window.clearTimeout(zoomTimer);
+      zoomTimer = null;
+    }
+    pendingViewport = null;
     waveforms = null;
     requestGeneration += 1;
     draw();
@@ -209,7 +226,70 @@ export function createConversationContextOverview(options) {
     }
     label.textContent =
       `${formatDuration(waveforms.startSeconds)}–` +
-      `${formatDuration(waveforms.endSeconds)} · drag to reposition the 20-second crop`;
+      `${formatDuration(waveforms.endSeconds)} · click to center · wheel to zoom`;
+  }
+
+  function zoomAtEvent(event) {
+    event.preventDefault();
+    const preview = getPreview();
+    if (preview === null || waveforms === null || event.deltaY === 0) {
+      return;
+    }
+    const rectangle = canvas.getBoundingClientRect();
+    const left = 112;
+    const right = 18;
+    const plotWidth = rectangle.width - left - right;
+    const x = Math.min(plotWidth, Math.max(0, event.clientX - rectangle.left - left));
+    const cursorRatio = x / plotWidth;
+    const viewport =
+      pendingViewport ?? {
+        startSeconds: waveforms.startSeconds,
+        endSeconds: waveforms.endSeconds,
+      };
+    const viewportDurationSeconds = viewport.endSeconds - viewport.startSeconds;
+    const cursorSeconds =
+      viewport.startSeconds + cursorRatio * viewportDurationSeconds;
+    const maximumDurationSeconds = Math.min(
+      MAXIMUM_CONTEXT_DURATION_SECONDS,
+      preview.eligible_duration_seconds,
+    );
+    const minimumDurationSeconds = Math.min(
+      MINIMUM_CONTEXT_DURATION_SECONDS,
+      maximumDurationSeconds,
+    );
+    const requestedDurationSeconds =
+      viewportDurationSeconds * (event.deltaY > 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR);
+    const durationSeconds = Math.min(
+      maximumDurationSeconds,
+      Math.max(minimumDurationSeconds, requestedDurationSeconds),
+    );
+    const maximumStartSeconds = Math.max(
+      0,
+      preview.eligible_duration_seconds - durationSeconds,
+    );
+    const startSeconds = Math.min(
+      maximumStartSeconds,
+      Math.max(0, cursorSeconds - cursorRatio * durationSeconds),
+    );
+    pendingViewport = {
+      startSeconds,
+      endSeconds: startSeconds + durationSeconds,
+    };
+    contextDurationSeconds = durationSeconds;
+    label.textContent =
+      `Zooming to ${formatDuration(startSeconds)}–` +
+      `${formatDuration(startSeconds + durationSeconds)}…`;
+    if (zoomTimer !== null) {
+      window.clearTimeout(zoomTimer);
+    }
+    zoomTimer = window.setTimeout(() => {
+      zoomTimer = null;
+      const requestedViewport = pendingViewport;
+      if (requestedViewport === null) {
+        return;
+      }
+      void load(getSelectedStartSeconds(), requestedViewport).catch(reportError);
+    }, ZOOM_SETTLE_MILLISECONDS);
   }
 
   canvas.addEventListener("pointerdown", (event) => {
@@ -237,6 +317,7 @@ export function createConversationContextOverview(options) {
     dragging = false;
   });
   canvas.addEventListener("pointerleave", restoreLabel);
+  canvas.addEventListener("wheel", zoomAtEvent, { passive: false });
 
   return { load, reset, draw };
 }
@@ -288,9 +369,9 @@ export function drawUnusableRegionOverlay(
   }
 }
 
-function contextBounds(preview, selectedStartSeconds) {
+function contextBounds(preview, selectedStartSeconds, requestedDurationSeconds) {
   const durationSeconds = Math.min(
-    CONTEXT_DURATION_SECONDS,
+    requestedDurationSeconds,
     preview.eligible_duration_seconds,
   );
   const selectionCenterSeconds =
@@ -410,14 +491,31 @@ function drawAxis(
   context.fillStyle = "#657378";
   context.font = "11px sans-serif";
   const durationSeconds = viewportEndSeconds - viewportStartSeconds;
-  for (let offsetSeconds = 0; offsetSeconds <= durationSeconds; offsetSeconds += 15) {
+  const intervalSeconds = timeAxisInterval(durationSeconds);
+  const firstTickSeconds =
+    Math.ceil(viewportStartSeconds / intervalSeconds) * intervalSeconds;
+  for (
+    let tickSeconds = firstTickSeconds;
+    tickSeconds <= viewportEndSeconds;
+    tickSeconds += intervalSeconds
+  ) {
+    const offsetSeconds = tickSeconds - viewportStartSeconds;
     const x = left + (offsetSeconds / durationSeconds) * width;
     context.beginPath();
     context.moveTo(x, 174);
     context.lineTo(x, top - 2);
     context.stroke();
-    context.fillText(formatDuration(viewportStartSeconds + offsetSeconds), x + 3, top + 12);
+    context.fillText(formatDuration(tickSeconds), x + 3, top + 12);
   }
+}
+
+function timeAxisInterval(durationSeconds) {
+  const minimumIntervalSeconds = durationSeconds / 10;
+  const intervals = [5, 10, 15, 30, 60, 120, 300, 600, 900];
+  return (
+    intervals.find((intervalSeconds) => intervalSeconds >= minimumIntervalSeconds) ??
+    1800
+  );
 }
 
 function timeAtEvent(canvas, waveforms, event) {
