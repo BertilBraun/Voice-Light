@@ -1,5 +1,6 @@
 import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js";
 import {
+  conversationStructureRegions,
   sampleLanguageStatus,
   silenceMaskSegments,
 } from "/pages/datasets/assessment.mjs";
@@ -446,6 +447,12 @@ function renderSampleDetail(sample) {
   );
   container.appendChild(
     createSilenceMaskPreview(
+      payload.conversation_annotation,
+      sample.sample.duration_seconds,
+    ),
+  );
+  container.appendChild(
+    createConversationStructurePreview(
       payload.conversation_annotation,
       sample.sample.duration_seconds,
     ),
@@ -1031,6 +1038,97 @@ function createSilenceMaskPreview(conversation, representedDurationSeconds) {
   updatePreview();
   section.append(controls, timeline, legend);
   return section;
+}
+
+function createConversationStructurePreview(
+  conversation,
+  representedDurationSeconds,
+) {
+  const section = document.createElement("section");
+  section.className = "quality-section";
+  const heading = document.createElement("div");
+  heading.className = "section-heading";
+  const title = document.createElement("h3");
+  title.textContent = "Conversation structure";
+  const status = document.createElement("span");
+  status.className = "muted";
+  heading.append(title, status);
+  section.appendChild(heading);
+
+  if (!conversation) {
+    section.appendChild(createEmptyMessage("Available after conversation analysis"));
+    return section;
+  }
+  const durationSeconds = Number(
+    conversation.analyzed_duration_seconds || representedDurationSeconds || 0,
+  );
+  const regions = conversationStructureRegions(
+    conversation,
+    durationSeconds,
+    30,
+  );
+  const grid = document.createElement("div");
+  grid.className = "structure-grid";
+  grid.setAttribute("role", "img");
+  grid.setAttribute(
+    "aria-label",
+    `${regions.length} thirty-second conversation structure regions`,
+  );
+  const counts = new Map();
+  for (const region of regions) {
+    counts.set(region.category, (counts.get(region.category) || 0) + 1);
+    const cell = document.createElement("span");
+    cell.className = `structure-region structure-${region.category}`;
+    const gamingEvidence = region.gaming_terms.length
+      ? `; terms ${region.gaming_terms.join(", ")}`
+      : "";
+    cell.title =
+      `${formatClock(region.start_seconds)}–${formatClock(region.end_seconds)}; ` +
+      `${formatStructureCategory(region.category)}; ` +
+      `${region.speaker_transitions} speaker transitions${gamingEvidence}`;
+    cell.setAttribute("aria-label", cell.title);
+    grid.appendChild(cell);
+  }
+
+  const legend = document.createElement("div");
+  legend.className = "structure-legend";
+  for (const category of [
+    "alternating_dialogue",
+    "gaming_like",
+    "single_speaker",
+    "two_speaker_unstructured",
+    "silence",
+  ]) {
+    const item = document.createElement("span");
+    item.className = `structure-legend-item structure-${category}`;
+    item.textContent =
+      `${formatStructureCategory(category)} ${counts.get(category) || 0}`;
+    legend.appendChild(item);
+  }
+  const alternatingCount = counts.get("alternating_dialogue") || 0;
+  status.textContent =
+    `${alternatingCount} of ${regions.length} regions show alternating dialogue`;
+  const note = document.createElement("p");
+  note.className = "summary-note";
+  note.textContent =
+    "Gaming-like regions are transcript-keyword review candidates, not automatic exclusions.";
+  section.append(grid, legend, note);
+  return section;
+}
+
+function formatStructureCategory(category) {
+  switch (category) {
+    case "alternating_dialogue":
+      return "Alternating dialogue";
+    case "gaming_like":
+      return "Gaming-like";
+    case "single_speaker":
+      return "Single speaker";
+    case "two_speaker_unstructured":
+      return "Two-speaker, no alternation";
+    default:
+      return "Silence";
+  }
 }
 
 function createEventSection(events, playbackController) {

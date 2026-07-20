@@ -169,3 +169,12 @@ def test_dataset_dashboard_previews_tunable_silence_masking(
     assert "minimumSilenceSeconds" in dashboard_script
     assert "silenceMaskSegments" in dashboard_script
     assert "This preview does not alter ingestion." in dashboard_script
+
+
+def test_dataset_dashboard_previews_conversation_structure(
+    dashboard_script: str,
+) -> None:
+    assert '"Conversation structure"' in dashboard_script
+    assert "conversationStructureRegions" in dashboard_script
+    assert '"gaming_like"' in dashboard_script
+    assert "not automatic exclusions" in dashboard_script

@@ -541,6 +541,51 @@ nav a:hover {
   font-size: 11px;
 }
 
+.structure-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(8px, 1fr));
+  gap: 3px;
+}
+
+.structure-region {
+  min-height: 24px;
+  border-radius: 3px;
+  background: #cbd5df;
+}
+
+.structure-alternating_dialogue {
+  background: #8bc9a4;
+}
+
+.structure-gaming_like {
+  background: #e8ae78;
+}
+
+.structure-single_speaker {
+  background: #a9bdd0;
+}
+
+.structure-two_speaker_unstructured {
+  background: #c7b6d7;
+}
+
+.structure-silence {
+  background: #cbd5df;
+}
+
+.structure-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.structure-legend-item {
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #24303c;
+  font-size: 11px;
+}
+
 .track-card {
   display: grid;
   gap: 3px;

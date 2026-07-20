@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  conversationStructureRegions,
   sampleLanguageStatus,
   silenceMaskSegments,
 } from "../../app/local/web/pages/datasets/assessment.mjs";
@@ -58,4 +59,53 @@ test("keeps inconclusive language visible without calling it excluded", () => {
     ]),
     "Inconclusive — full analysis allowed",
   );
+});
+
+test("classifies alternating dialogue from ordered speaker targets", () => {
+  const conversation = {
+    speaker1: {
+      speech_segments: [{ start_seconds: 1, end_seconds: 8 }],
+      segment_targets: [
+        { start_seconds: 1, end_seconds: 4, text: "hello there" },
+        { start_seconds: 7, end_seconds: 8, text: "right" },
+      ],
+    },
+    speaker2: {
+      speech_segments: [{ start_seconds: 4, end_seconds: 7 }],
+      segment_targets: [
+        { start_seconds: 4, end_seconds: 7, text: "how are you" },
+      ],
+    },
+  };
+
+  assert.equal(
+    conversationStructureRegions(conversation, 30)[0].category,
+    "alternating_dialogue",
+  );
+});
+
+test("marks gaming language as a review candidate without excluding it", () => {
+  const conversation = {
+    speaker1: {
+      speech_segments: [{ start_seconds: 1, end_seconds: 8 }],
+      segment_targets: [
+        {
+          start_seconds: 1,
+          end_seconds: 8,
+          text: "enemy respawn on the map",
+        },
+      ],
+    },
+    speaker2: {
+      speech_segments: [{ start_seconds: 8, end_seconds: 12 }],
+      segment_targets: [
+        { start_seconds: 8, end_seconds: 12, text: "I see them" },
+      ],
+    },
+  };
+
+  const region = conversationStructureRegions(conversation, 30)[0];
+
+  assert.equal(region.category, "gaming_like");
+  assert.deepEqual(region.gaming_terms, ["enemy", "map", "respawn"]);
 });
