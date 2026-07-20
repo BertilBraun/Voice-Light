@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import wave
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -134,6 +135,41 @@ def iter_mono_wave_audio_chunks(
 def capped_wave_bytes(wave_path: Path) -> bytes:
     audio = read_mono_wave_audio(wave_path=wave_path)
     return playback_wave_bytes(audio=audio)
+
+
+def capped_audio_wave_bytes(audio_path: Path) -> bytes:
+    if audio_path.suffix.lower() == ".wav":
+        return capped_wave_bytes(audio_path)
+    completed = subprocess.run(
+        (
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(audio_path),
+            "-t",
+            str(ANALYSIS_AUDIO_MAX_DURATION_SECONDS),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "s16le",
+            "pipe:1",
+        ),
+        check=True,
+        capture_output=True,
+    )
+    output_buffer = io.BytesIO()
+    with wave.open(output_buffer, "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(PLAYBACK_SAMPLE_WIDTH_BYTES)
+        wave_writer.setframerate(16_000)
+        wave_writer.writeframes(completed.stdout)
+    return output_buffer.getvalue()
 
 
 def wave_window_bytes(

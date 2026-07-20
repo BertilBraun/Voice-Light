@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
+from app.local.ingestion.local_audio import materialize_sample_track
 from app.local.misalignment_lab.models import (
     InteractionWindowMetrics,
     MisalignmentCandidatePreview,
@@ -995,10 +996,7 @@ def _clip_points(
 
 def _track_path(dashboard_sample: DashboardSample, side: TrackSide) -> Path:
     track = _track_record(dashboard_sample=dashboard_sample, side=side)
-    path = Path(track.access_uri).resolve()
-    if not path.is_file():
-        raise ValueError(f"Track audio does not exist: {path}")
-    return path
+    return materialize_sample_track(track)
 
 
 def _track_record(

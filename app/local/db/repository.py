@@ -51,6 +51,8 @@ class SampleTrackInput:
     channels: int | None
     sample_count: int | None
     audio_sha256: str | None
+    source_size_bytes: int | None = None
+    source_etag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -322,18 +324,27 @@ class Repository:
                 """
                 INSERT INTO sample_tracks (
                   sample_id, side, speaker_index, storage_uri, access_uri,
-                  duration_seconds, sample_rate, channels, sample_count, audio_sha256, updated_at
+                  duration_seconds, sample_rate, channels, sample_count, audio_sha256,
+                  source_size_bytes, source_etag, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (sample_id, side) DO UPDATE
                 SET speaker_index = EXCLUDED.speaker_index,
                     storage_uri = EXCLUDED.storage_uri,
                     access_uri = EXCLUDED.access_uri,
-                    duration_seconds = EXCLUDED.duration_seconds,
-                    sample_rate = EXCLUDED.sample_rate,
-                    channels = EXCLUDED.channels,
-                    sample_count = EXCLUDED.sample_count,
-                    audio_sha256 = EXCLUDED.audio_sha256,
+                    duration_seconds = COALESCE(
+                      EXCLUDED.duration_seconds, sample_tracks.duration_seconds
+                    ),
+                    sample_rate = COALESCE(EXCLUDED.sample_rate, sample_tracks.sample_rate),
+                    channels = COALESCE(EXCLUDED.channels, sample_tracks.channels),
+                    sample_count = COALESCE(EXCLUDED.sample_count, sample_tracks.sample_count),
+                    audio_sha256 = COALESCE(
+                      EXCLUDED.audio_sha256, sample_tracks.audio_sha256
+                    ),
+                    source_size_bytes = COALESCE(
+                      EXCLUDED.source_size_bytes, sample_tracks.source_size_bytes
+                    ),
+                    source_etag = COALESCE(EXCLUDED.source_etag, sample_tracks.source_etag),
                     updated_at = now()
                 RETURNING *
                 """,
@@ -348,6 +359,8 @@ class Repository:
                     track.channels,
                     track.sample_count,
                     track.audio_sha256,
+                    track.source_size_bytes,
+                    track.source_etag,
                 ),
             ).fetchone()
         assert row is not None

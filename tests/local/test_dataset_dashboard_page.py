@@ -178,3 +178,15 @@ def test_dataset_dashboard_previews_conversation_structure(
     assert "conversationStructureRegions" in dashboard_script
     assert '"gaming_like"' in dashboard_script
     assert "not automatic exclusions" in dashboard_script
+
+
+def test_ingestion_page_supports_manifest_without_persisting_credentials() -> None:
+    with TestClient(app) as client:
+        page_response = client.get("/datasets/ingest")
+        script_response = client.get("/pages/datasets/ingest.js")
+
+    assert page_response.status_code == 200
+    assert script_response.status_code == 200
+    assert 'id="manifest-ingestion-form"' in page_response.text
+    assert "never persisted by Voice Light" in page_response.text
+    assert "/api/dataset-dashboard/ingest/manifest" in script_response.text

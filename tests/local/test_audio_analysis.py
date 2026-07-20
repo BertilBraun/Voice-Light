@@ -1,4 +1,5 @@
 import io
+import subprocess
 import wave
 from pathlib import Path
 
@@ -17,9 +18,11 @@ from app.local.data.transcripts import read_transcript_turns
 from app.local.main import delete_file, write_playback_wave_file
 from app.shared.audio.wav import (
     ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
+    capped_audio_wave_bytes,
     capped_wave_bytes,
     wave_window_bytes,
 )
+from app.shared.audio.waveform import full_waveform_envelope
 
 
 @pytest.mark.parametrize(
@@ -165,6 +168,39 @@ def test_wave_window_bytes_reads_requested_recording_region() -> None:
         assert wave_reader.getnchannels() == 1
         assert wave_reader.getsampwidth() == 2
         assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(10.0)
+
+
+def test_flac_playback_and_waveform_use_ffmpeg(tmp_path: Path) -> None:
+    wave_path = tmp_path / "source.wav"
+    flac_path = tmp_path / "source.flac"
+    with wave.open(str(wave_path), "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(2)
+        wave_writer.setframerate(16_000)
+        wave_writer.writeframes(b"\x00\x00" * 16_000)
+    subprocess.run(
+        (
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(wave_path),
+            str(flac_path),
+        ),
+        check=True,
+    )
+
+    playback = capped_audio_wave_bytes(flac_path)
+    envelope = full_waveform_envelope(flac_path, point_count=100)
+
+    with wave.open(io.BytesIO(playback), "rb") as wave_reader:
+        assert wave_reader.getnchannels() == 1
+        assert wave_reader.getsampwidth() == 2
+        assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(1.0)
+    assert envelope.duration_seconds == pytest.approx(1.0)
+    assert len(envelope.points) == 100
 
 
 def test_write_playback_wave_file_creates_and_deletes_capped_audio_file() -> None:

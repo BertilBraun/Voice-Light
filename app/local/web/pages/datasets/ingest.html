@@ -20,6 +20,44 @@
       </header>
 
       <section class="panel">
+        <h2>S3 manifest ingestion</h2>
+        <p>
+          The manifest supplies immutable S3 object metadata. Credentials are resolved from the
+          compute node environment and are never persisted by Voice Light.
+        </p>
+        <form id="manifest-ingestion-form" class="ingestion-form">
+          <label>
+            Dataset name
+            <input id="manifest-dataset-name" type="text" value="meetings-s3" required />
+          </label>
+          <label>
+            Manifest path
+            <input
+              id="manifest-path"
+              type="text"
+              placeholder="C:\path\to\meetings-metadata.json"
+              required
+            />
+          </label>
+          <label>
+            Parallel workers
+            <input id="manifest-max-workers" type="number" value="1" min="1" max="4" />
+          </label>
+          <label>
+            Maximum new audio hours (optional)
+            <input
+              id="manifest-max-duration-hours"
+              type="number"
+              min="0.1"
+              step="0.1"
+            />
+          </label>
+          <button type="submit">Start manifest ingestion</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Local folder ingestion</h2>
         <form id="ingestion-form" class="ingestion-form">
           <label>
             Dataset name

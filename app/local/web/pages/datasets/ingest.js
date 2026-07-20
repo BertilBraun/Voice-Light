@@ -1,10 +1,12 @@
 const form = document.querySelector("#ingestion-form");
+const manifestForm = document.querySelector("#manifest-ingestion-form");
 const statusElement = document.querySelector("#status");
 const errorOutput = document.querySelector("#error-output");
 const jobsList = document.querySelector("#jobs-list");
 const refreshJobsButton = document.querySelector("#refresh-jobs");
 
 form.addEventListener("submit", submitIngestion);
+manifestForm.addEventListener("submit", submitManifestIngestion);
 refreshJobsButton.addEventListener("click", loadJobs);
 
 loadJobs();
@@ -27,6 +29,26 @@ async function submitIngestion(event) {
     await loadJobs();
   } catch (error) {
     statusElement.textContent = "Ingestion request failed";
+    setError(error.message);
+  }
+}
+
+async function submitManifestIngestion(event) {
+  event.preventDefault();
+  setError("");
+  statusElement.textContent = "Queueing manifest ingestion";
+  const payload = {
+    dataset_name: document.querySelector("#manifest-dataset-name").value.trim(),
+    manifest_path: document.querySelector("#manifest-path").value.trim(),
+    max_workers: Number(document.querySelector("#manifest-max-workers").value),
+    max_duration_hours: optionalNumber("#manifest-max-duration-hours"),
+  };
+  try {
+    await postJson("/api/dataset-dashboard/ingest/manifest", payload);
+    statusElement.textContent = "Manifest ingestion queued";
+    await loadJobs();
+  } catch (error) {
+    statusElement.textContent = "Manifest ingestion request failed";
     setError(error.message);
   }
 }

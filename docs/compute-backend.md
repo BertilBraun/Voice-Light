@@ -81,10 +81,24 @@ WebSocket is deliberately public for direct use by the browser.
 - `GET /health/ready`: ready after the enabled startup stages complete.
 - `POST /v1/asr:batch`: batch ASR with request-contained base64 audio.
 - `POST /v1/quality:analyze`: two multipart audio uploads plus a sample identifier.
+- `POST /v1/dataset:language`: materialize two immutable S3 tracks and run active-window language
+  assessment.
+- `POST /v1/dataset:asr`: materialize one immutable S3 track and run selected full-recording ASR
+  models.
+- `POST /v1/dataset:quality`: reuse two materialized S3 tracks to calculate VAD, crosstalk-filtered
+  transcript evidence, and raw quality metrics.
 - `WS /v1/voice`: focused, ephemeral cascaded voice session with binary PCM in both directions.
 
 The compute server never accepts filesystem paths or shell commands from HTTP clients. Quality
 uploads are decoded in request-scoped temporary storage and deleted after the response.
+
+Manifest ingestion uses `VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR` as a durable, URI-keyed cache shared
+by the three dataset endpoints. A track is downloaded once per compute instance; its object size is
+validated and its content hash and decoded metadata are stored beside the cached file. Configure
+S3 access through the standard AWS environment variables on the compute node
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, and
+`AWS_DEFAULT_REGION`). Credentials from a manifest are deliberately not sent to the API or written
+to the database.
 
 ## Voice web search
 

@@ -99,5 +99,12 @@ token. Update the local application's `VOICE_LIGHT_COMPUTE_TOKEN` from
 `.runtime/compute.env` if batch ASR or quality analysis is used. The browser voice endpoint remains
 `ws://127.0.0.1:8080/v1/voice` when the default local port is retained.
 
+For S3 manifest ingestion, also configure the compute instance's `.env.compute` with the standard
+AWS credential and region variables. Cached source audio remains under
+`VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR` for the life of the instance. The local dashboard downloads
+only audio opened for listening or waveform/sample inspection and retains it under
+`VOICE_LIGHT_LOCAL_DATASET_AUDIO_CACHE_DIR` (default `.cache/local/dataset-audio`). Configure the
+same standard AWS variables for the local app when those previews require authenticated access.
+
 Do not destroy the old rental until the replacement command reports that the local health endpoint
 is working. This makes replacement reversible and keeps the interruption short.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import wave
 from dataclasses import dataclass
 from functools import lru_cache
@@ -49,11 +50,74 @@ def _waveform_envelope(
     resolved_path = wave_path.resolve()
     if not resolved_path.is_file():
         raise ValueError(f"Audio file does not exist: {resolved_path}")
+    if resolved_path.suffix.lower() != ".wav":
+        return _ffmpeg_waveform_envelope(
+            audio_path=resolved_path,
+            point_count=point_count,
+            maximum_duration_seconds=maximum_duration_seconds,
+        )
     return _cached_waveform_envelope(
         wave_path=resolved_path,
         modified_nanoseconds=resolved_path.stat().st_mtime_ns,
         point_count=point_count,
         maximum_duration_seconds=maximum_duration_seconds,
+    )
+
+
+def _ffmpeg_waveform_envelope(
+    audio_path: Path,
+    point_count: int,
+    maximum_duration_seconds: float | None,
+) -> WaveformEnvelope:
+    waveform_sample_rate = 100
+    command = [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+    ]
+    command.extend(
+        (
+            "-i",
+            str(audio_path),
+        )
+    )
+    if maximum_duration_seconds is not None:
+        command.extend(("-t", str(maximum_duration_seconds)))
+    command.extend(
+        (
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(waveform_sample_rate),
+            "-f",
+            "f32le",
+            "pipe:1",
+        )
+    )
+    completed = subprocess.run(tuple(command), check=True, capture_output=True)
+    samples = np.frombuffer(completed.stdout, dtype="<f4")
+    if len(samples) == 0:
+        return WaveformEnvelope(
+            duration_seconds=0.0,
+            sample_rate=waveform_sample_rate,
+            points=(),
+        )
+    samples_per_point = max(1, int(np.ceil(len(samples) / point_count)))
+    points = tuple(
+        WaveformPoint(
+            minimum_amplitude=max(-1.0, float(np.min(fragment))),
+            maximum_amplitude=min(1.0, float(np.max(fragment))),
+        )
+        for start_index in range(0, len(samples), samples_per_point)
+        if len(fragment := samples[start_index : start_index + samples_per_point])
+    )
+    return WaveformEnvelope(
+        duration_seconds=len(samples) / waveform_sample_rate,
+        sample_rate=waveform_sample_rate,
+        points=points,
     )
 
 

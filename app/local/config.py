@@ -20,6 +20,12 @@ SESSIONS_ROOT = DATA_ROOT / "luel" / "sessions"
 WEB_ROOT = APP_ROOT / "web"
 FUTURE_WORK_ROOT = REPOSITORY_ROOT / "docs" / "future-work"
 MIGRATIONS_ROOT = APP_ROOT / "db" / "migrations"
+LOCAL_DATASET_AUDIO_CACHE_ROOT = Path(
+    os.environ.get(
+        "VOICE_LIGHT_LOCAL_DATASET_AUDIO_CACHE_DIR",
+        (REPOSITORY_ROOT / ".cache" / "local" / "dataset-audio").as_posix(),
+    )
+)
 DATABASE_URL = configured_database_url(os.environ)
 COMPUTE_BASE_URL = configured_compute_url(os.environ)
 COMPUTE_TOKEN = os.environ.get("VOICE_LIGHT_COMPUTE_TOKEN", "")

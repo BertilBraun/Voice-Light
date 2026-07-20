@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+import subprocess
 import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
+from app.local.ingestion.local_audio import materialize_sample_track
 from app.local.training_samples.models import (
     CandidateSource,
     EventTargetDistribution,
@@ -140,8 +142,8 @@ def build_training_sample_preview(
         external_id=dashboard_sample.sample.external_id,
         user_side=user_side,
         assistant_side=assistant_side,
-        user_audio_sha256=user_track.audio_sha256,
-        assistant_audio_sha256=assistant_track.audio_sha256,
+        user_audio_sha256=required_track_sha256(user_track),
+        assistant_audio_sha256=required_track_sha256(assistant_track),
         annotation_version=annotation.annotation_version,
         annotation_generated_at=quality.created_at,
         quality_metric_version=quality.metric_version,
@@ -399,10 +401,13 @@ def _track(dashboard_sample: DashboardSample, side: TrackSide) -> SampleTrackRec
 
 
 def _track_path(track: SampleTrackRecord) -> Path:
-    path = Path(track.access_uri)
-    if not path.is_file():
-        raise ValueError(f"Audio file does not exist: {path}")
-    return path
+    return materialize_sample_track(track)
+
+
+def required_track_sha256(track: SampleTrackRecord) -> str:
+    if track.audio_sha256 is None:
+        raise ValueError(f"Track has not been materialized by ingestion: {track.id}")
+    return track.audio_sha256
 
 
 def build_frame_previews(
@@ -1154,6 +1159,13 @@ def waveform_window(
     end_seconds: float,
     point_count: int,
 ) -> tuple[int, tuple[PreviewWaveformPoint, ...]]:
+    if path.suffix.lower() != ".wav":
+        return ffmpeg_waveform_window(
+            path=path,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            point_count=point_count,
+        )
     try:
         with wave.open(str(path), "rb") as wave_reader:
             sample_rate = wave_reader.getframerate()
@@ -1184,3 +1196,50 @@ def waveform_window(
             )
         )
     return sample_rate, tuple(points)
+
+
+def ffmpeg_waveform_window(
+    path: Path,
+    start_seconds: float,
+    end_seconds: float,
+    point_count: int,
+) -> tuple[int, tuple[PreviewWaveformPoint, ...]]:
+    waveform_sample_rate = 100
+    completed = subprocess.run(
+        (
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(start_seconds),
+            "-i",
+            str(path),
+            "-t",
+            str(max(0.0, end_seconds - start_seconds)),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(waveform_sample_rate),
+            "-f",
+            "f32le",
+            "pipe:1",
+        ),
+        check=True,
+        capture_output=True,
+    )
+    samples = np.frombuffer(completed.stdout, dtype="<f4")
+    if len(samples) == 0:
+        return waveform_sample_rate, ()
+    frames_per_point = max(1, math.ceil(len(samples) / point_count))
+    points = tuple(
+        PreviewWaveformPoint(
+            minimum_amplitude=max(-1.0, float(np.min(point_samples))),
+            maximum_amplitude=min(1.0, float(np.max(point_samples))),
+        )
+        for point_start in range(0, len(samples), frames_per_point)
+        if len(point_samples := samples[point_start : point_start + frames_per_point])
+    )
+    return waveform_sample_rate, points

@@ -97,6 +97,8 @@ class SampleTrackRecord(FrozenBaseModel):
     channels: int | None
     sample_count: int | None
     audio_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_size_bytes: int | None = None
+    source_etag: str | None = None
     created_at: datetime
     updated_at: datetime
 

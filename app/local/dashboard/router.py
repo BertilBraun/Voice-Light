@@ -22,8 +22,10 @@ from app.local.db.models import (
 from app.local.db.repository import Repository
 from app.local.ingestion.conversation import ANNOTATION_VERSION
 from app.local.ingestion.discovery import DatasetLayout
+from app.local.ingestion.local_audio import materialize_sample_track
+from app.local.ingestion.manifest_service import ManifestIngestionService
 from app.local.ingestion.service import IngestionService
-from app.shared.audio.wav import capped_wave_bytes
+from app.shared.audio.wav import capped_audio_wave_bytes
 from app.shared.audio.waveform import capped_waveform_envelope, full_waveform_envelope
 from app.shared.base_model import FrozenBaseModel
 from app.shared.quality import METRIC_VERSION
@@ -51,6 +53,13 @@ class LocalIngestionRequest(FrozenBaseModel):
     dataset_name: str
     root_path: str
     layout: DatasetLayout = DatasetLayout.TWO_AUDIO_FILES
+    max_workers: int = Field(default=1, ge=1, le=4)
+    max_duration_hours: float | None = Field(default=None, gt=0.0)
+
+
+class ManifestIngestionRequest(FrozenBaseModel):
+    dataset_name: str
+    manifest_path: str
     max_workers: int = Field(default=1, ge=1, le=4)
     max_duration_hours: float | None = Field(default=None, gt=0.0)
 
@@ -231,18 +240,43 @@ def ingest_local_dataset(
     return IngestionQueueResponse(status="queued")
 
 
+@router.post("/ingest/manifest")
+def ingest_manifest_dataset(
+    request: ManifestIngestionRequest,
+    background_tasks: BackgroundTasks,
+) -> IngestionQueueResponse:
+    manifest_path = Path(request.manifest_path).resolve()
+    if not manifest_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dataset manifest does not exist: {request.manifest_path}",
+        )
+    try:
+        ingestion_service = ManifestIngestionService.create_default(repository())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    background_tasks.add_task(
+        ingestion_service.ingest,
+        request.dataset_name,
+        manifest_path,
+        request.max_workers,
+        request.max_duration_hours,
+    )
+    return IngestionQueueResponse(status="queued")
+
+
 @router.get("/audio/{sample_id}/{side}")
 def sample_audio(sample_id: UUID, side: TrackSide, trimmed: bool = False) -> Response:
     source_path = sample_track_path(sample_id=sample_id, side=side)
     if trimmed:
         return Response(
-            content=capped_wave_bytes(wave_path=source_path),
+            content=capped_audio_wave_bytes(audio_path=source_path),
             media_type="audio/wav",
             headers={"Cache-Control": "private, max-age=3600"},
         )
     return FileResponse(
         source_path,
-        media_type="audio/wav",
+        media_type=audio_media_type(source_path),
         filename=source_path.name,
         content_disposition_type="inline",
         headers={"Cache-Control": "private, max-age=3600"},
@@ -286,7 +320,21 @@ def sample_track_path(sample_id: UUID, side: TrackSide) -> Path:
     matched_track = next((track for track in matched_sample.tracks if track.side == side), None)
     if matched_track is None:
         raise HTTPException(status_code=404, detail=f"Track not found: {side.value}")
-    source_path = Path(matched_track.access_uri)
-    if not source_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Audio file not found: {source_path}")
-    return source_path
+    try:
+        return materialize_sample_track(matched_track)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def audio_media_type(path: Path) -> str:
+    match path.suffix.lower():
+        case ".wav":
+            return "audio/wav"
+        case ".flac":
+            return "audio/flac"
+        case ".mp3":
+            return "audio/mpeg"
+        case ".ogg" | ".opus":
+            return "audio/ogg"
+        case _:
+            return "application/octet-stream"
