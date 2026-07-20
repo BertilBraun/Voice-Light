@@ -7,10 +7,19 @@ from pathlib import Path
 from typing import BinaryIO
 
 from app.compute.asr.models.base import PreparedAsrAudio, TimedTranscription
-from app.compute.dataset_audio import analyze_dataset_language, transcribe_dataset_audio
+from app.compute.dataset_audio import (
+    analyze_dataset_language,
+    analyze_dataset_quality,
+    transcribe_dataset_audio,
+)
 from app.shared.asr import AsrModelId, LanguageEstimate, TimestampedWord
 from app.shared.audio.s3 import S3AudioCache, S3AudioSource
-from app.shared.compute_api import DatasetAsrRequest, DatasetLanguageRequest
+from app.shared.compute_api import (
+    DatasetAsrRequest,
+    DatasetLanguageRequest,
+    DatasetQualityRequest,
+    DatasetTrackTranscripts,
+)
 
 
 class MemoryDownloader:
@@ -102,6 +111,20 @@ def test_language_and_asr_share_materialized_s3_audio(tmp_path: Path) -> None:
         audio_cache=cache,
         model_cache=models,
     )
+    transcripts = DatasetTrackTranscripts(
+        parakeet=asr.results[0],
+        canary=asr.results[1],
+    )
+    quality = analyze_dataset_quality(
+        request=DatasetQualityRequest(
+            sample_id="sample",
+            speaker1=source,
+            speaker2=source,
+            speaker1_transcripts=transcripts,
+            speaker2_transcripts=transcripts,
+        ),
+        audio_cache=cache,
+    )
 
     assert language.speaker1.status.value == "english"
     assert language.speaker2.status.value == "english"
@@ -110,6 +133,9 @@ def test_language_and_asr_share_materialized_s3_audio(tmp_path: Path) -> None:
         AsrModelId.PARAKEET_TDT,
         AsrModelId.CANARY,
     )
+    assert quality.vad_version == "energy-pair-v1"
+    assert quality.speaker1_vad.speech_segments
+    assert quality.quality_result.audio_quality is not None
     assert downloader.requests == [("meetings", "sample/speaker.wav")]
 
 
@@ -122,7 +148,11 @@ def active_wave_bytes() -> bytes:
         writer.setframerate(sample_rate)
         frames = bytearray()
         for sample_index in range(sample_rate * 10):
-            value = round(12_000 * math.sin(2.0 * math.pi * 220.0 * sample_index / sample_rate))
+            value = (
+                0
+                if sample_index < sample_rate * 5
+                else round(12_000 * math.sin(2.0 * math.pi * 220.0 * sample_index / sample_rate))
+            )
             frames.extend(value.to_bytes(2, byteorder="little", signed=True))
         writer.writeframes(frames)
     return output.getvalue()

@@ -9,6 +9,7 @@ from app.shared.quality import (
     QualityResult,
     RunConfig,
     SpeakerSide,
+    TrackVadResult,
 )
 from app.shared.quality_analysis.audio_quality import (
     energy_envelope_correlation,
@@ -36,17 +37,22 @@ def score_two_track_sample(
     speaker2_uri: str,
     conversation_annotation: ConversationAnnotation | None = None,
     config: RunConfig | None = None,
+    precomputed_vad: tuple[TrackVadResult, TrackVadResult] | None = None,
 ) -> QualityResult:
     effective_config = config if config is not None else RunConfig()
     try:
         prepared_speaker1_audio = prepare_audio_track(speaker1_audio)
         prepared_speaker2_audio = prepare_audio_track(speaker2_audio)
         sample_rate = prepared_speaker1_audio.metadata.sample_rate
-        speaker1_vad, speaker2_vad = detect_speech_segments_pair(
-            prepared_speaker1_audio.samples,
-            prepared_speaker2_audio.samples,
-            sample_rate,
-            VadConfig(),
+        speaker1_vad, speaker2_vad = (
+            precomputed_vad
+            if precomputed_vad is not None
+            else detect_speech_segments_pair(
+                prepared_speaker1_audio.samples,
+                prepared_speaker2_audio.samples,
+                sample_rate,
+                VadConfig(),
+            )
         )
         duration_seconds = min(
             prepared_speaker1_audio.metadata.duration_seconds,
@@ -170,6 +176,47 @@ def score_two_track_sample(
             total_quality_score=None,
             error=f"{type(error).__name__}: {error}",
         )
+
+
+def quality_result_with_conversation_annotation(
+    result: QualityResult,
+    conversation_annotation: ConversationAnnotation,
+    config: RunConfig | None = None,
+) -> QualityResult:
+    if (
+        result.interaction_density is None
+        or result.timing_reliability is None
+        or result.audio_quality is None
+        or result.duration_seconds is None
+    ):
+        raise ValueError("A failed quality result cannot receive conversation annotation.")
+    effective_config = (
+        config if config is not None else RunConfig(metric_version=result.metric_version)
+    )
+    raw_quality_score = total_quality_score(
+        interaction_density=result.interaction_density,
+        timing_reliability=result.timing_reliability,
+        audio_quality=result.audio_quality,
+        conversation_annotation=conversation_annotation,
+        weights=effective_config.weights,
+    )
+    return result.model_copy(
+        update={
+            "conversation_annotation": conversation_annotation,
+            "conversation_count_estimate": conversation_count_estimate(
+                annotation=conversation_annotation,
+                represented_duration_seconds=result.duration_seconds,
+            ),
+            "raw_quality_score": raw_quality_score,
+            "quality_flags": quality_flags(
+                result.interaction_density,
+                result.timing_reliability,
+                result.audio_quality,
+                conversation_annotation,
+            ),
+            "total_quality_score": raw_quality_score,
+        }
+    )
 
 
 def conversation_count_estimate(

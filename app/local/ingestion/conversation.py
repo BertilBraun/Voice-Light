@@ -24,6 +24,8 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
 )
 from app.local.analyses.end_of_turn.service import SpeechSegment
 from app.local.asr.full_recording_models import FullRecordingAsrTranscriptBundle
+from app.local.asr.transcript import Word
+from app.shared.asr import TimestampedWord
 from app.shared.audio import AudioTrack
 from app.shared.quality import (
     AnnotationEvidenceSource,
@@ -34,6 +36,7 @@ from app.shared.quality import (
     SegmentAnnotationTarget,
     SpeakerConversationAnnotation,
     SpeakerSide,
+    TrackVadResult,
 )
 from app.shared.quality_analysis.utils import clamp, safe_ratio
 from app.shared.quality_analysis.vad import (
@@ -87,14 +90,58 @@ def analyze_conversation(
         frame_power_pair=speaker2_power,
         config=CROSSTALK_FILTER_CONFIG,
     )
-    turns = merged_asr_turns(
+    return analyze_conversation_evidence(
         speaker1_words=filtered_speaker1_words,
         speaker2_words=filtered_speaker2_words,
+        speaker1_activity_segments=audio_activity_segments(speaker1_audio),
+        speaker2_activity_segments=audio_activity_segments(speaker2_audio),
+        duration_seconds=duration_seconds,
+    )
+
+
+def analyze_conversation_from_remote_evidence(
+    speaker1_words: tuple[TimestampedWord, ...],
+    speaker2_words: tuple[TimestampedWord, ...],
+    speaker1_vad: TrackVadResult,
+    speaker2_vad: TrackVadResult,
+    duration_seconds: float,
+) -> ConversationAnnotation:
+    return analyze_conversation_evidence(
+        speaker1_words=tuple(word_from_timestamped_word(word) for word in speaker1_words),
+        speaker2_words=tuple(word_from_timestamped_word(word) for word in speaker2_words),
+        speaker1_activity_segments=[
+            SpeechSegment(
+                start_seconds=segment.start_seconds,
+                end_seconds=segment.end_seconds,
+            )
+            for segment in speaker1_vad.speech_segments
+        ],
+        speaker2_activity_segments=[
+            SpeechSegment(
+                start_seconds=segment.start_seconds,
+                end_seconds=segment.end_seconds,
+            )
+            for segment in speaker2_vad.speech_segments
+        ],
+        duration_seconds=duration_seconds,
+    )
+
+
+def analyze_conversation_evidence(
+    speaker1_words: tuple[Word, ...],
+    speaker2_words: tuple[Word, ...],
+    speaker1_activity_segments: list[SpeechSegment],
+    speaker2_activity_segments: list[SpeechSegment],
+    duration_seconds: float,
+) -> ConversationAnnotation:
+    turns = merged_asr_turns(
+        speaker1_words=speaker1_words,
+        speaker2_words=speaker2_words,
         turn_gap_seconds=SPEECH_SEGMENT_GAP_SECONDS,
     )
     speaker1_scored = score_conversation(
         turns=turns,
-        audio_activity_segments=audio_activity_segments(speaker1_audio),
+        audio_activity_segments=speaker1_activity_segments,
         target_speaker=TARGET_SPEAKER,
         other_speaker=OTHER_SPEAKER,
         analysis_end_seconds=duration_seconds,
@@ -102,7 +149,7 @@ def analyze_conversation(
     )
     speaker2_scored = score_conversation(
         turns=turns,
-        audio_activity_segments=audio_activity_segments(speaker2_audio),
+        audio_activity_segments=speaker2_activity_segments,
         target_speaker=OTHER_SPEAKER,
         other_speaker=TARGET_SPEAKER,
         analysis_end_seconds=duration_seconds,

@@ -5,7 +5,14 @@ from pathlib import Path
 
 from app.compute.asr.models.base import prepare_asr_audio
 from app.compute.asr.service import RemoteAsrModelCache, transcribe_requested_models
-from app.shared.asr import AsrModelId
+from app.shared.asr import AsrModelId, TimestampedWord
+from app.shared.audio import load_audio, pad_audio_tracks_to_shared_timeline
+from app.shared.audio.crosstalk import (
+    CrosstalkFilterConfig,
+    crosstalk_frame_power,
+    filter_crosstalk_words,
+    parakeet_canary_union_words,
+)
 from app.shared.audio.s3 import CachedAudioFile, S3AudioCache
 from app.shared.audio.transport import CANONICAL_MODEL_AUDIO_SPEC, prepare_audio_transport
 from app.shared.compute_api import (
@@ -14,6 +21,9 @@ from app.shared.compute_api import (
     DatasetLanguageRequest,
     DatasetLanguageResponse,
     DatasetLanguageTrackResponse,
+    DatasetQualityRequest,
+    DatasetQualityResponse,
+    DatasetTrackTranscripts,
     MaterializedAudio,
 )
 from app.shared.language import (
@@ -21,6 +31,13 @@ from app.shared.language import (
     prepare_language_probe_audio,
     track_language_status,
 )
+from app.shared.quality_analysis.preprocessing import prepare_audio_track
+from app.shared.quality_analysis.service import score_two_track_sample
+from app.shared.quality_analysis.vad import VadConfig, detect_speech_segments_pair
+from app.shared.storage.local import LocalStorageBackend
+
+DATASET_VAD_VERSION = "energy-pair-v1"
+CROSSTALK_CONFIG = CrosstalkFilterConfig()
 
 
 def analyze_dataset_language(
@@ -129,6 +146,88 @@ def transcribe_dataset_audio(
         prepared_audio_sha256=prepared.sha256,
         prepared_duration_seconds=prepared.duration_seconds,
         results=results,
+    )
+
+
+def analyze_dataset_quality(
+    request: DatasetQualityRequest,
+    audio_cache: S3AudioCache,
+) -> DatasetQualityResponse:
+    speaker1_file = audio_cache.materialize(request.speaker1)
+    speaker2_file = audio_cache.materialize(request.speaker2)
+    storage = LocalStorageBackend()
+    shared_audio = pad_audio_tracks_to_shared_timeline(
+        speaker1=load_audio(
+            storage=storage,
+            path=speaker1_file.path.as_posix(),
+            target_sample_rate=16_000,
+        ),
+        speaker2=load_audio(
+            storage=storage,
+            path=speaker2_file.path.as_posix(),
+            target_sample_rate=16_000,
+        ),
+    )
+    prepared_speaker1 = prepare_audio_track(shared_audio.speaker1)
+    prepared_speaker2 = prepare_audio_track(shared_audio.speaker2)
+    speaker1_vad, speaker2_vad = detect_speech_segments_pair(
+        speaker1_samples=prepared_speaker1.samples,
+        speaker2_samples=prepared_speaker2.samples,
+        sample_rate=prepared_speaker1.metadata.sample_rate,
+        config=VadConfig(),
+    )
+    speaker1_words = track_union_words(request.speaker1_transcripts)
+    speaker2_words = track_union_words(request.speaker2_transcripts)
+    speaker1_power = crosstalk_frame_power(
+        target_audio=shared_audio.speaker1,
+        other_audio=shared_audio.speaker2,
+        config=CROSSTALK_CONFIG,
+    )
+    speaker2_power = crosstalk_frame_power(
+        target_audio=shared_audio.speaker2,
+        other_audio=shared_audio.speaker1,
+        config=CROSSTALK_CONFIG,
+    )
+    filtered_speaker1_words = filter_crosstalk_words(
+        words=speaker1_words,
+        frame_power_pair=speaker1_power,
+        config=CROSSTALK_CONFIG,
+    )
+    filtered_speaker2_words = filter_crosstalk_words(
+        words=speaker2_words,
+        frame_power_pair=speaker2_power,
+        config=CROSSTALK_CONFIG,
+    )
+    quality_result = score_two_track_sample(
+        sample_id=request.sample_id,
+        speaker1_audio=shared_audio.speaker1,
+        speaker2_audio=shared_audio.speaker2,
+        speaker1_uri=request.speaker1.uri,
+        speaker2_uri=request.speaker2.uri,
+        precomputed_vad=(speaker1_vad, speaker2_vad),
+    )
+    return DatasetQualityResponse(
+        speaker1_audio=materialized_audio(speaker1_file),
+        speaker2_audio=materialized_audio(speaker2_file),
+        vad_version=DATASET_VAD_VERSION,
+        speaker1_vad=speaker1_vad,
+        speaker2_vad=speaker2_vad,
+        speaker1_filtered_words=filtered_speaker1_words,
+        speaker2_filtered_words=filtered_speaker2_words,
+        quality_result=quality_result,
+    )
+
+
+def track_union_words(
+    transcripts: DatasetTrackTranscripts,
+) -> tuple[TimestampedWord, ...]:
+    if transcripts.parakeet.model_id is not AsrModelId.PARAKEET_TDT:
+        raise ValueError("Parakeet transcript has the wrong model identifier.")
+    if transcripts.canary.model_id is not AsrModelId.CANARY:
+        raise ValueError("Canary transcript has the wrong model identifier.")
+    return parakeet_canary_union_words(
+        parakeet_words=transcripts.parakeet.words,
+        canary_words=transcripts.canary.words,
     )
 
 

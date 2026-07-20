@@ -5,11 +5,11 @@ from typing import Literal
 
 from pydantic import Field
 
-from app.shared.asr import AsrModelId, AsrTranscriptResult
+from app.shared.asr import AsrModelId, AsrTranscriptResult, TimestampedWord
 from app.shared.audio.s3 import S3AudioSource
 from app.shared.base_model import FrozenBaseModel
 from app.shared.language import LanguageProbeWindow, TrackLanguageStatus
-from app.shared.quality import AudioMetadata, QualityResult
+from app.shared.quality import AudioMetadata, QualityResult, TrackVadResult
 
 
 class HealthStatus(StrEnum):
@@ -97,3 +97,27 @@ class DatasetAsrResponse(FrozenBaseModel):
     prepared_audio_sha256: str
     prepared_duration_seconds: float
     results: tuple[AsrTranscriptResult, ...]
+
+
+class DatasetTrackTranscripts(FrozenBaseModel):
+    parakeet: AsrTranscriptResult
+    canary: AsrTranscriptResult
+
+
+class DatasetQualityRequest(FrozenBaseModel):
+    sample_id: str
+    speaker1: S3AudioSource
+    speaker2: S3AudioSource
+    speaker1_transcripts: DatasetTrackTranscripts
+    speaker2_transcripts: DatasetTrackTranscripts
+
+
+class DatasetQualityResponse(FrozenBaseModel):
+    speaker1_audio: MaterializedAudio
+    speaker2_audio: MaterializedAudio
+    vad_version: str
+    speaker1_vad: TrackVadResult
+    speaker2_vad: TrackVadResult
+    speaker1_filtered_words: tuple[TimestampedWord, ...]
+    speaker2_filtered_words: tuple[TimestampedWord, ...]
+    quality_result: QualityResult

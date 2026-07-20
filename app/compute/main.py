@@ -16,7 +16,11 @@ from starlette.responses import Response as StarletteResponse
 from app.compute.asr.service import transcribe_request, transcribe_uploaded_request
 from app.compute.auth import BearerTokenAuthorizer
 from app.compute.config import ComputeSettings
-from app.compute.dataset_audio import analyze_dataset_language, transcribe_dataset_audio
+from app.compute.dataset_audio import (
+    analyze_dataset_language,
+    analyze_dataset_quality,
+    transcribe_dataset_audio,
+)
 from app.compute.quality.router import analyze_uploaded_quality
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope, configure_logging, gpu_memory
@@ -27,6 +31,8 @@ from app.shared.compute_api import (
     DatasetAsrResponse,
     DatasetLanguageRequest,
     DatasetLanguageResponse,
+    DatasetQualityRequest,
+    DatasetQualityResponse,
     HealthStatus,
     LivenessResponse,
     ReadinessResponse,
@@ -140,6 +146,17 @@ def create_compute_app(settings: ComputeSettings) -> FastAPI:
             request,
             runtime.dataset_audio_cache,
             runtime.batch_asr_models,
+        )
+
+    @application.post(
+        "/v1/dataset:quality",
+        dependencies=[Depends(authorizer.authorize_http)],
+    )
+    async def dataset_quality(request: DatasetQualityRequest) -> DatasetQualityResponse:
+        return await asyncio.to_thread(
+            analyze_dataset_quality,
+            request,
+            runtime.dataset_audio_cache,
         )
 
     @application.websocket("/v1/voice")
