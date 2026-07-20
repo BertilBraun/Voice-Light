@@ -129,6 +129,11 @@ void loadQueue();
 async function loadQueue() {
   try {
     renderMode();
+    showLoading(
+      state.mode === "repairs"
+        ? "Loading conservative repair candidates..."
+        : "Loading high-value alignment checks...",
+    );
     const queueUrl =
       state.mode === "repairs"
         ? "/api/misalignment-lab/repair-queue"
@@ -611,7 +616,7 @@ function renderMode() {
     : "Do the two raw tracks plausibly share one timeline?";
   elements.decisionDescription.textContent = repairMode
     ? "Toggle repeatedly between the raw and predicted timelines. This only records your assessment; no audio is rewritten."
-    : "One likely-misaligned judgment quarantines the whole recording immediately. No audio is rewritten and no offset is applied.";
+    : "Plausibly aligned accepts the recording; likely misaligned quarantines it. Unsure asks for a different exchange later. No audio is rewritten.";
 }
 
 function renderRepairComparison() {
@@ -692,6 +697,14 @@ function showEmpty(message) {
   elements.emptyState.hidden = false;
   elements.emptyState.textContent = message;
   elements.queuePosition.textContent = "Queue complete";
+}
+
+function showLoading(message) {
+  stopPlayback();
+  elements.review.hidden = true;
+  elements.emptyState.hidden = false;
+  elements.emptyState.textContent = message;
+  elements.queuePosition.textContent = "Loading";
 }
 
 function currentCandidate() {

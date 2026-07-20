@@ -62,7 +62,7 @@ def misalignment_lab_assets() -> Iterator[tuple[str, str]]:
         "Plausibly aligned",
         "Likely misaligned",
         "Skip / unsure",
-        "quarantines the whole recording",
+        "Plausibly aligned accepts the recording",
         "raw waveform",
         "end of turn",
         "Test quarantine repairs",
@@ -223,7 +223,7 @@ def test_likely_misaligned_judgment_quarantines_whole_session() -> None:
     assert remaining.progress.quarantined_session_count == 1
 
 
-def test_aligned_judgment_avoids_exact_snippet_without_quarantining_session() -> None:
+def test_aligned_judgment_accepts_session_and_removes_it_from_queue() -> None:
     sample = _dashboard_sample(external_id="pmt_203", dense_late_exchange=True)
     initial = build_misalignment_queue(
         dashboard_samples=(sample,),
@@ -248,10 +248,40 @@ def test_aligned_judgment_avoids_exact_snippet_without_quarantining_session() ->
         limit=1,
     )
 
+    assert later.candidates == ()
+    assert later.progress.plausibly_aligned_count == 1
+    assert later.progress.quarantined_session_count == 0
+
+
+def test_unsure_judgment_resamples_session_with_a_different_exchange() -> None:
+    sample = _dashboard_sample(external_id="pmt_204", dense_late_exchange=True)
+    initial = build_misalignment_queue(
+        dashboard_samples=(sample,),
+        audit_report=None,
+        judgments=(),
+        seed="unsure",
+        limit=1,
+    )
+    reviewed = initial.candidates[0]
+    judgment = _stored_judgment(
+        candidate_id=reviewed.candidate_id,
+        sample_id=reviewed.sample_id,
+        external_id=reviewed.external_id,
+        judgment=MisalignmentJudgment.UNSURE,
+    )
+
+    later = build_misalignment_queue(
+        dashboard_samples=(sample,),
+        audit_report=None,
+        judgments=(judgment,),
+        seed="unsure",
+        limit=1,
+    )
+
     assert len(later.candidates) == 1
     assert later.candidates[0].sample_id == reviewed.sample_id
     assert later.candidates[0].candidate_id != reviewed.candidate_id
-    assert later.progress.quarantined_session_count == 0
+    assert later.progress.unsure_count == 1
 
 
 def test_piecewise_repair_estimate_requires_stable_distinct_second_part() -> None:

@@ -17,6 +17,7 @@ from app.local.misalignment_lab.models import (
     MisalignmentRepairJudgmentRequest,
     MisalignmentRepairJudgmentResponse,
     MisalignmentRepairQueueResponse,
+    MisalignmentStoredJudgment,
 )
 from app.local.misalignment_lab.repository import MisalignmentLabRepository
 from app.local.misalignment_lab.service import (
@@ -58,9 +59,13 @@ def misalignment_queue(
     try:
         response.headers["Cache-Control"] = "no-store"
         judgments = judgment_repository().list_judgments()
+        audit_report = _audit_report(SYNCHRONIZATION_AUDIT_PATH)
         return build_misalignment_queue(
-            dashboard_samples=_all_dashboard_samples(sample_repository()),
-            audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            dashboard_samples=_audited_dashboard_samples(
+                repository=sample_repository(),
+                audit_report=audit_report,
+            ),
+            audit_report=audit_report,
             judgments=judgments,
             seed=seed,
             limit=limit,
@@ -74,10 +79,14 @@ def misalignment_repair_queue(response: Response) -> MisalignmentRepairQueueResp
     try:
         response.headers["Cache-Control"] = "no-store"
         reviews = judgment_repository()
+        judgments = reviews.list_judgments()
         return build_misalignment_repair_queue(
-            dashboard_samples=_all_dashboard_samples(sample_repository()),
+            dashboard_samples=_quarantined_dashboard_samples(
+                repository=sample_repository(),
+                judgments=judgments,
+            ),
             audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
-            judgments=reviews.list_judgments(),
+            judgments=judgments,
             repair_judgments=reviews.list_repair_judgments(),
         )
     except ValueError as error:
@@ -144,12 +153,16 @@ def save_misalignment_repair_judgment(
 ) -> MisalignmentRepairJudgmentResponse:
     try:
         response.headers["Cache-Control"] = "no-store"
-        samples = _all_dashboard_samples(sample_repository())
         reviews = judgment_repository()
+        judgments = reviews.list_judgments()
+        samples = _quarantined_dashboard_samples(
+            repository=sample_repository(),
+            judgments=judgments,
+        )
         repair_queue = build_misalignment_repair_queue(
             dashboard_samples=samples,
             audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
-            judgments=reviews.list_judgments(),
+            judgments=judgments,
             repair_judgments=reviews.list_repair_judgments(),
         )
         repair_candidate = next(
@@ -196,6 +209,45 @@ def _all_dashboard_samples(repository: Repository) -> tuple[DashboardSample, ...
         if len(page) < SAMPLE_PAGE_SIZE:
             return tuple(samples)
         offset += SAMPLE_PAGE_SIZE
+
+
+def _audited_dashboard_samples(
+    repository: Repository,
+    audit_report: SynchronizationAuditReport | None,
+) -> tuple[DashboardSample, ...]:
+    if audit_report is None or not audit_report.results:
+        return _all_dashboard_samples(repository)
+    audited_sample_ids = {result.sample_id for result in audit_report.results}
+    first_sample = repository.get_dashboard_sample(audit_report.results[0].sample_id)
+    samples: list[DashboardSample] = []
+    offset = 0
+    while True:
+        page = repository.list_dashboard_samples(
+            SampleListFilter(
+                dataset_id=first_sample.sample.dataset_id,
+                limit=SAMPLE_PAGE_SIZE,
+                offset=offset,
+            )
+        )
+        samples.extend(sample for sample in page if sample.sample.id in audited_sample_ids)
+        if len(page) < SAMPLE_PAGE_SIZE:
+            return tuple(samples)
+        offset += SAMPLE_PAGE_SIZE
+
+
+def _quarantined_dashboard_samples(
+    repository: Repository,
+    judgments: tuple[MisalignmentStoredJudgment, ...],
+) -> tuple[DashboardSample, ...]:
+    sample_ids = sorted(
+        {
+            judgment.sample_id
+            for judgment in judgments
+            if judgment.judgment is MisalignmentJudgment.LIKELY_MISALIGNED
+        },
+        key=str,
+    )
+    return tuple(repository.get_dashboard_sample(sample_id) for sample_id in sample_ids)
 
 
 def _audit_report(path: Path) -> SynchronizationAuditReport | None:

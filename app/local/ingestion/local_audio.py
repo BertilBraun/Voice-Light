@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from app.local.config import LOCAL_DATASET_AUDIO_CACHE_ROOT
+from app.local.config import DATA_ROOT, LOCAL_DATASET_AUDIO_CACHE_ROOT
 from app.local.db.models import SampleTrackRecord
 from app.shared.audio.s3 import S3AudioCache, S3AudioSource, default_s3_downloader
 
@@ -21,10 +21,30 @@ def materialize_sample_track(track: SampleTrackRecord) -> Path:
         return materialize_s3_track(track)
     if "://" in track.access_uri:
         raise ValueError(f"Unsupported track access URI: {track.access_uri}")
-    path = Path(track.access_uri).resolve()
-    if not path.is_file():
-        raise ValueError(f"Audio file does not exist: {path}")
-    return path
+    direct_path = Path(track.access_uri).resolve()
+    if direct_path.is_file():
+        return direct_path
+    mounted_path = _mounted_data_path(track.access_uri)
+    if mounted_path is not None and mounted_path.is_file():
+        return mounted_path
+    raise ValueError(f"Audio file does not exist: {direct_path}")
+
+
+def _mounted_data_path(access_uri: str) -> Path | None:
+    normalized_parts = PurePosixPath(access_uri.replace("\\", "/")).parts
+    data_indexes = [
+        index for index, part in enumerate(normalized_parts) if part.casefold() == "data"
+    ]
+    if not data_indexes:
+        return None
+    relative_parts = normalized_parts[data_indexes[-1] + 1 :]
+    if not relative_parts:
+        return None
+    data_root = DATA_ROOT.resolve()
+    candidate = data_root.joinpath(*relative_parts).resolve()
+    if not candidate.is_relative_to(data_root):
+        raise ValueError(f"Local audio path escapes the configured data root: {access_uri}")
+    return candidate
 
 
 def materialize_s3_track(track: SampleTrackRecord) -> Path:

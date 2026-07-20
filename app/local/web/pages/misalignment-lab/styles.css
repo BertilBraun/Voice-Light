@@ -6,6 +6,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; }
 button, input { font: inherit; }
 main { margin: 0 auto; max-width: 1120px; padding: 28px 22px 52px; }

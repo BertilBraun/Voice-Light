@@ -5,7 +5,7 @@ import math
 import random
 import statistics
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -105,14 +105,18 @@ def build_misalignment_queue(
         else {}
     )
     reviewed_candidate_ids = {judgment.candidate_id for judgment in judgments}
-    quarantined_sample_ids = {
+    decided_sample_ids = {
         judgment.sample_id
         for judgment in judgments
-        if judgment.judgment is MisalignmentJudgment.LIKELY_MISALIGNED
+        if judgment.judgment
+        in (
+            MisalignmentJudgment.PLAUSIBLY_ALIGNED,
+            MisalignmentJudgment.LIKELY_MISALIGNED,
+        )
     }
     candidates: list[MisalignmentCandidateSummary] = []
     for annotated_sample in annotations:
-        if annotated_sample.dashboard_sample.sample.id in quarantined_sample_ids:
+        if annotated_sample.dashboard_sample.sample.id in decided_sample_ids:
             continue
         ranked_windows = _ranked_windows(
             annotated_sample=annotated_sample,
@@ -179,18 +183,12 @@ def build_misalignment_repair_queue(
         estimate = estimate_piecewise_repair(audit_result=audit_result)
         if estimate is None:
             continue
-        candidate = next(
-            (
-                ranked
-                for ranked in _ranked_windows(
-                    annotated_sample=annotated_sample,
-                    audit_result=audit_result,
-                )
-                if ranked.candidate_id == quarantine_judgment.candidate_id
-            ),
-            None,
+        candidate = _candidate_summary(
+            annotated_sample=annotated_sample,
+            audit_result=audit_result,
+            start_seconds=quarantine_judgment.window_start_seconds,
         )
-        if candidate is None:
+        if candidate.candidate_id != quarantine_judgment.candidate_id:
             continue
         candidates.append(
             MisalignmentRepairCandidate(
@@ -451,11 +449,19 @@ def misalignment_progress(
 ) -> MisalignmentLabProgress:
     return MisalignmentLabProgress(
         reviewed_snippet_count=len(judgments),
-        plausibly_aligned_count=sum(
-            judgment.judgment is MisalignmentJudgment.PLAUSIBLY_ALIGNED for judgment in judgments
+        plausibly_aligned_count=len(
+            {
+                judgment.sample_id
+                for judgment in judgments
+                if judgment.judgment is MisalignmentJudgment.PLAUSIBLY_ALIGNED
+            }
         ),
-        likely_misaligned_count=sum(
-            judgment.judgment is MisalignmentJudgment.LIKELY_MISALIGNED for judgment in judgments
+        likely_misaligned_count=len(
+            {
+                judgment.sample_id
+                for judgment in judgments
+                if judgment.judgment is MisalignmentJudgment.LIKELY_MISALIGNED
+            }
         ),
         unsure_count=sum(
             judgment.judgment is MisalignmentJudgment.UNSURE for judgment in judgments
@@ -517,13 +523,21 @@ def _ranked_windows(
     annotated_sample: AnnotatedSample,
     audit_result: SynchronizationAuditResult | None,
 ) -> tuple[MisalignmentCandidateSummary, ...]:
+    interaction_sample = replace(
+        annotated_sample,
+        annotation=_interaction_region_annotation(
+            annotation=annotated_sample.annotation,
+            start_seconds=_late_region_start(annotated_sample.duration_seconds),
+            end_seconds=annotated_sample.duration_seconds,
+        ),
+    )
     starts = _candidate_starts(
-        annotation=annotated_sample.annotation,
+        annotation=interaction_sample.annotation,
         duration_seconds=annotated_sample.duration_seconds,
     )
     candidates = tuple(
         _candidate_summary(
-            annotated_sample=annotated_sample,
+            annotated_sample=interaction_sample,
             audit_result=audit_result,
             start_seconds=start_seconds,
         )
@@ -547,11 +561,7 @@ def _candidate_starts(
     duration_seconds: float,
 ) -> tuple[float, ...]:
     maximum_start = duration_seconds - CLIP_DURATION_SECONDS
-    late_start = max(
-        0.0,
-        duration_seconds - LATE_REGION_SECONDS,
-        duration_seconds * LATE_REGION_START_RATIO,
-    )
+    late_start = _late_region_start(duration_seconds)
     grid_start = math.ceil(late_start / WINDOW_STEP_SECONDS) * WINDOW_STEP_SECONDS
     starts = {
         round(start, 3) for start in _float_range(grid_start, maximum_start, WINDOW_STEP_SECONDS)
@@ -571,6 +581,67 @@ def _candidate_starts(
         starts.add(round(centered_start, 3))
     starts.add(round(maximum_start, 3))
     return tuple(sorted(starts))
+
+
+def _late_region_start(duration_seconds: float) -> float:
+    return max(
+        0.0,
+        duration_seconds - LATE_REGION_SECONDS,
+        duration_seconds * LATE_REGION_START_RATIO,
+    )
+
+
+def _interaction_region_annotation(
+    annotation: ConversationAnnotation,
+    start_seconds: float,
+    end_seconds: float,
+) -> ConversationAnnotation:
+    return annotation.model_copy(
+        update={
+            "speaker1": _interaction_region_speaker(
+                annotation=annotation.speaker1,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+            ),
+            "speaker2": _interaction_region_speaker(
+                annotation=annotation.speaker2,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+            ),
+        }
+    )
+
+
+def _interaction_region_speaker(
+    annotation: SpeakerConversationAnnotation,
+    start_seconds: float,
+    end_seconds: float,
+) -> SpeakerConversationAnnotation:
+    return annotation.model_copy(
+        update={
+            "speech_segments": _clip_spans(
+                annotation.speech_segments,
+                start_seconds,
+                end_seconds,
+            ),
+            "backchannels": _clip_spans(
+                annotation.backchannels,
+                start_seconds,
+                end_seconds,
+            ),
+            "turns": _clip_points(annotation.turns, start_seconds, end_seconds),
+            "interruptions": _clip_points(
+                annotation.interruptions,
+                start_seconds,
+                end_seconds,
+            ),
+            "segment_targets": tuple(
+                target
+                for target in annotation.segment_targets
+                if target.end_seconds >= start_seconds and target.start_seconds <= end_seconds
+            ),
+        }
+    )
 
 
 def _candidate_summary(

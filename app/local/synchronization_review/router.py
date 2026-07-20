@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from app.local.config import DATABASE_URL
 from app.local.db.models import DashboardSample, TrackSide
 from app.local.db.repository import Repository
+from app.local.ingestion.local_audio import materialize_sample_track
 from app.local.synchronization_review.audit import SYNCHRONIZATION_AUDIT_PATH
 from app.local.synchronization_review.models import (
     SynchronizationAuditReport,
@@ -157,7 +158,4 @@ def track_path(dashboard_sample: DashboardSample, side: TrackSide) -> Path:
     )
     if track is None:
         raise ValueError(f"Sample has no {side.value} track: {dashboard_sample.sample.id}")
-    path = Path(track.access_uri).resolve()
-    if not path.is_file():
-        raise ValueError(f"Track audio does not exist: {path}")
-    return path
+    return materialize_sample_track(track)

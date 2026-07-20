@@ -40,6 +40,23 @@ def test_local_path_is_returned_without_using_s3_cache(
     assert result == audio_path.resolve()
 
 
+def test_host_data_path_is_remapped_to_container_data_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    audio_path = data_root / "luel" / "sessions" / "pmt_001" / "speaker.wav"
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_bytes(b"audio")
+    monkeypatch.setattr(local_audio_module, "DATA_ROOT", data_root)
+
+    result = materialize_sample_track(
+        track_record("C:\\Projects\\Voice-Light\\data\\luel\\sessions\\pmt_001\\speaker.wav")
+    )
+
+    assert result == audio_path.resolve()
+
+
 def test_s3_track_is_materialized_from_persisted_object_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
