@@ -105,6 +105,27 @@
         </div>
       </section>
 
+      <section class="panel timeline-panel">
+        <div class="timeline-header">
+          <div>
+            <h2>Frame preview</h2>
+            <p>Click or scrub to inspect the target and mask assigned to an individual frame.</p>
+          </div>
+          <div class="legend">
+            <span><i class="burn"></i>Burn-in</span>
+            <span><i class="condition"></i>Known assistant-state input</span>
+            <span><i class="positive"></i>Valid target</span>
+            <span><i class="probability"></i>Higher target value</span>
+            <span><i class="uncertain"></i>Uncertain / censored</span>
+            <span><i class="inactive"></i>No auxiliary label at this frame</span>
+            <span><i class="unusable"></i>Potentially unusable region</span>
+          </div>
+        </div>
+        <div class="canvas-shell">
+          <canvas id="timeline" height="660"></canvas>
+        </div>
+      </section>
+
       <section class="panel context-panel">
         <div class="timeline-header">
           <div>
@@ -124,27 +145,6 @@
             height="220"
             aria-label="Zoomable waveform and annotation context"
           ></canvas>
-        </div>
-      </section>
-
-      <section class="panel timeline-panel">
-        <div class="timeline-header">
-          <div>
-            <h2>Frame preview</h2>
-            <p>Click or scrub to inspect the target and mask assigned to an individual frame.</p>
-          </div>
-          <div class="legend">
-            <span><i class="burn"></i>Burn-in</span>
-            <span><i class="condition"></i>Known assistant-state input</span>
-            <span><i class="positive"></i>Valid target</span>
-            <span><i class="probability"></i>Higher target value</span>
-            <span><i class="uncertain"></i>Uncertain / censored</span>
-            <span><i class="inactive"></i>No auxiliary label at this frame</span>
-            <span><i class="unusable"></i>Potentially unusable region</span>
-          </div>
-        </div>
-        <div class="canvas-shell">
-          <canvas id="timeline" height="660"></canvas>
         </div>
       </section>
 

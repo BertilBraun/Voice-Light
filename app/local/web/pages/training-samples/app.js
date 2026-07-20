@@ -1010,6 +1010,17 @@ async function togglePlayback() {
   await startPlayback();
 }
 
+function togglePlaybackFromSpace(event) {
+  if (event.code !== "Space") {
+    return;
+  }
+  event.preventDefault();
+  if (event.repeat) {
+    return;
+  }
+  void togglePlayback();
+}
+
 function pausePlayback() {
   userAudio.pause();
   assistantAudio.pause();
@@ -1202,6 +1213,7 @@ playBothInput.addEventListener("change", updatePlaybackMode);
 userAudio.addEventListener("timeupdate", trackPlayback);
 userAudio.addEventListener("ended", pausePlayback);
 timeline.addEventListener("click", selectFrameAtEvent);
+document.addEventListener("keydown", togglePlaybackFromSpace);
 window.addEventListener("resize", () => {
   drawTimeline();
   drawSourceAnnotationTimeline();

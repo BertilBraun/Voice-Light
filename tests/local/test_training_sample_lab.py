@@ -121,19 +121,27 @@ def test_training_sample_lab_updates_positions_only_on_committed_interactions(
     assert "contextOverviewController.schedule" not in training_sample_script
 
 
-def test_source_annotation_precedes_context_and_frame_preview() -> None:
+def test_source_annotation_and_frame_preview_precede_context() -> None:
     with TestClient(app) as client:
         page = client.get("/training/sample-lab").text
 
     annotation_index = page.index("Source end-of-turn annotation")
     context_index = page.index("Conversation context")
     frame_index = page.index("Frame preview")
-    assert annotation_index < context_index < frame_index
+    assert annotation_index < frame_index < context_index
     assert "Suggested training crops" not in page
 
 
 def test_prefetched_crop_autoplays_after_selection(training_sample_script: str) -> None:
     assert "await applyPreview(payload, true);" in training_sample_script
+
+
+def test_space_toggles_playback_independent_of_focus(training_sample_script: str) -> None:
+    assert 'event.code !== "Space"' in training_sample_script
+    assert "event.preventDefault();" in training_sample_script
+    assert (
+        'document.addEventListener("keydown", togglePlaybackFromSpace);' in training_sample_script
+    )
 
 
 def test_assistant_floor_is_a_soft_input_and_excludes_backchannels() -> None:
