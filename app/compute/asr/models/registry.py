@@ -17,7 +17,7 @@ from app.compute.asr.models.base import (
 )
 from app.shared.asr import AsrModelId
 
-DEFAULT_MAX_LOADED_MODELS = 2
+DEFAULT_MAX_LOADED_MODELS = 3
 AsrModelLoader = Callable[[AsrModelId, BatchInferenceExecutor], LoadedAsrModel]
 
 

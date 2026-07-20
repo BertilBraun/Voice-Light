@@ -36,7 +36,11 @@ class WhisperxAsrModel:
             WHISPER_IDENTIFIER,
             revision=WHISPER_REVISION,
         )
-        self.model = WhisperModel(model_path, device=self.device, compute_type="float16")
+        self.model = WhisperModel(
+            model_path,
+            device=self.device,
+            compute_type="int8_float16",
+        )
 
     def transcribe(self, audio: PreparedAsrAudio) -> ModelTranscription:
         result = self.inference_executor.execute(
