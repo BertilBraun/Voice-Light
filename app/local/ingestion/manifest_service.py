@@ -90,6 +90,7 @@ class ManifestRegisteredSample:
 
 @dataclass(frozen=True)
 class ManifestLanguageReady:
+    discovered: ManifestDiscoveredSample
     registered: RegisteredSample
     assessment: SampleLanguageAssessment
 
@@ -166,37 +167,144 @@ class ManifestIngestionService:
             language_excluded_samples = 0
             failed_samples = 0
             sample_errors: list[str] = []
+
+            registered_samples: list[ManifestRegisteredSample] = []
+            for sample in selected:
+                try:
+                    registered_samples.append(
+                        register_manifest_sample(
+                            repository=self.repository,
+                            dataset_id=dataset.id,
+                            discovered=sample,
+                        )
+                    )
+                except Exception as error:
+                    failed_samples += 1
+                    sample_errors.append(stage_error("registration", sample.external_id, error))
+                    logger.exception("manifest registration failed: %s", sample.external_id)
+            self.repository.update_ingestion_job(
+                job.id,
+                JobStatus.RUNNING,
+                (
+                    f"Registration complete: {len(registered_samples)} registered; "
+                    f"{failed_samples} failed. Starting language pass."
+                ),
+                processed_samples=processed_samples,
+                failed_samples=failed_samples,
+            )
+
+            language_ready_samples: list[ManifestLanguageReady] = []
+            language_assessed_samples = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
-                    executor.submit(self.process_sample, dataset.id, sample): sample
-                    for sample in selected
+                    executor.submit(self.assess_language, registered): registered
+                    for registered in registered_samples
                 }
                 for future in as_completed(futures):
-                    sample = futures[future]
+                    registered = futures[future]
                     try:
-                        status = future.result()
-                        processed_samples += 1
-                        match status:
-                            case SampleProcessingStatus.ANALYZED:
-                                analyzed_samples += 1
-                            case SampleProcessingStatus.LANGUAGE_EXCLUDED:
-                                language_excluded_samples += 1
+                        language_ready = future.result()
+                        language_assessed_samples += 1
+                        if language_ready.assessment.allows_full_analysis:
+                            language_ready_samples.append(language_ready)
+                        else:
+                            language_excluded_samples += 1
+                            processed_samples += 1
                     except Exception as error:
                         failed_samples += 1
                         sample_errors.append(
-                            f"{sample.external_id}: {type(error).__name__}: {error}"
+                            stage_error(
+                                "language",
+                                registered.discovered.external_id,
+                                error,
+                            )
                         )
                         logger.exception(
-                            "manifest ingestion sample failed: %s",
-                            sample.external_id,
+                            "manifest language assessment failed: %s",
+                            registered.discovered.external_id,
                         )
                     self.repository.update_ingestion_job(
                         job.id,
                         JobStatus.RUNNING,
                         (
-                            f"Assessed {processed_samples + failed_samples} of "
-                            f"{len(selected)} samples; analyzed {analyzed_samples}; "
-                            f"language-excluded {language_excluded_samples}"
+                            f"Language pass: {language_assessed_samples} assessed; "
+                            f"{len(language_ready_samples)} eligible; "
+                            f"{language_excluded_samples} excluded; "
+                            f"{failed_samples} failed"
+                        ),
+                        processed_samples=processed_samples,
+                        failed_samples=failed_samples,
+                    )
+
+            asr_ready_samples: list[ManifestLanguageReady] = []
+            asr_completed_samples = 0
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self.transcribe_sample, language_ready): language_ready
+                    for language_ready in language_ready_samples
+                }
+                for future in as_completed(futures):
+                    language_ready = futures[future]
+                    try:
+                        asr_ready_samples.append(future.result())
+                        asr_completed_samples += 1
+                    except Exception as error:
+                        failed_samples += 1
+                        sample_errors.append(
+                            stage_error(
+                                "asr",
+                                language_ready.discovered.external_id,
+                                error,
+                            )
+                        )
+                        logger.exception(
+                            "manifest ASR failed: %s",
+                            language_ready.discovered.external_id,
+                        )
+                    self.repository.update_ingestion_job(
+                        job.id,
+                        JobStatus.RUNNING,
+                        (
+                            f"ASR pass: {asr_completed_samples} of "
+                            f"{len(language_ready_samples)} eligible samples complete; "
+                            f"{failed_samples} failed"
+                        ),
+                        processed_samples=processed_samples,
+                        failed_samples=failed_samples,
+                    )
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self.analyze_quality, asr_ready): asr_ready
+                    for asr_ready in asr_ready_samples
+                }
+                for future in as_completed(futures):
+                    asr_ready = futures[future]
+                    try:
+                        future.result()
+                        processed_samples += 1
+                        analyzed_samples += 1
+                    except Exception as error:
+                        failed_samples += 1
+                        sample_errors.append(
+                            stage_error(
+                                "quality",
+                                asr_ready.discovered.external_id,
+                                error,
+                            )
+                        )
+                        logger.exception(
+                            "manifest quality analysis failed: %s",
+                            asr_ready.discovered.external_id,
+                        )
+                    self.repository.update_ingestion_job(
+                        job.id,
+                        JobStatus.RUNNING,
+                        (
+                            f"Quality pass: {analyzed_samples} of "
+                            f"{len(asr_ready_samples)} samples complete; "
+                            f"{language_excluded_samples} language-excluded; "
+                            f"{failed_samples} failed"
                         ),
                         processed_samples=processed_samples,
                         failed_samples=failed_samples,
@@ -234,21 +342,42 @@ class ManifestIngestionService:
             dataset_id=dataset_id,
             discovered=discovered,
         )
-        language_ready = ensure_manifest_language(
+        language_ready = self.assess_language(registered)
+        if not language_ready.assessment.allows_full_analysis:
+            return SampleProcessingStatus.LANGUAGE_EXCLUDED
+        self.transcribe_sample(language_ready)
+        self.analyze_quality(language_ready)
+        return SampleProcessingStatus.ANALYZED
+
+    def assess_language(
+        self,
+        registered: ManifestRegisteredSample,
+    ) -> ManifestLanguageReady:
+        return ensure_manifest_language(
             repository=self.repository,
             language_repository=self.language_repository,
             analysis_client=self.analysis_client,
             registered=registered,
         )
-        if not language_ready.assessment.allows_full_analysis:
-            return SampleProcessingStatus.LANGUAGE_EXCLUDED
+
+    def transcribe_sample(
+        self,
+        language_ready: ManifestLanguageReady,
+    ) -> ManifestLanguageReady:
         ensure_manifest_transcripts(
             repository=self.full_asr_repository,
             analysis_client=self.analysis_client,
             registered=language_ready.registered,
-            speaker1_source=discovered.speaker1,
-            speaker2_source=discovered.speaker2,
+            speaker1_source=language_ready.discovered.speaker1,
+            speaker2_source=language_ready.discovered.speaker2,
         )
+        return language_ready
+
+    def analyze_quality(
+        self,
+        language_ready: ManifestLanguageReady,
+    ) -> None:
+        discovered = language_ready.discovered
         ready = ready_sample(
             full_asr_repository=self.full_asr_repository,
             registered=language_ready.registered,
@@ -310,7 +439,10 @@ class ManifestIngestionService:
                 ),
             ),
         )
-        return SampleProcessingStatus.ANALYZED
+
+
+def stage_error(stage: str, external_id: str, error: Exception) -> str:
+    return f"{stage} {external_id}: {type(error).__name__}: {error}"
 
 
 def select_manifest_duration(
@@ -395,6 +527,7 @@ def ensure_manifest_language(
     cached = cached_language_assessment(language_repository, registered)
     if cached is not None:
         return ManifestLanguageReady(
+            discovered=registered.discovered,
             registered=completed_registered_sample(registered),
             assessment=cached,
         )
@@ -425,6 +558,7 @@ def ensure_manifest_language(
         response=response.speaker2,
     )
     return ManifestLanguageReady(
+        discovered=registered.discovered,
         registered=completed_registered_sample(
             ManifestRegisteredSample(
                 discovered=registered.discovered,

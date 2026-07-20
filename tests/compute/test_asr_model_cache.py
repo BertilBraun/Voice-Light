@@ -49,7 +49,7 @@ def test_model_cache_evicts_least_recently_used_model(tmp_path: Path) -> None:
         loaded_model_ids.append(model_id)
         return StubAsrModel(model_id=model_id)
 
-    model_cache = AsrModelCache(max_loaded_models=3, model_loader=load_model)
+    model_cache = AsrModelCache(max_loaded_models=2, model_loader=load_model)
     audio = PreparedAsrAudio(
         path=tmp_path / "audio.wav",
         samples=np.zeros(160, dtype=np.float32),
@@ -61,9 +61,8 @@ def test_model_cache_evicts_least_recently_used_model(tmp_path: Path) -> None:
     for model_id in (
         AsrModelId.WHISPERX,
         AsrModelId.PARAKEET_TDT,
-        AsrModelId.CANARY,
         AsrModelId.WHISPERX,
-        AsrModelId.NEMOTRON_3_5,
+        AsrModelId.CANARY,
         AsrModelId.PARAKEET_TDT,
     ):
         model_cache.transcribe_prepared(model_id=model_id, audio=audio)
@@ -72,6 +71,5 @@ def test_model_cache_evicts_least_recently_used_model(tmp_path: Path) -> None:
         AsrModelId.WHISPERX,
         AsrModelId.PARAKEET_TDT,
         AsrModelId.CANARY,
-        AsrModelId.NEMOTRON_3_5,
         AsrModelId.PARAKEET_TDT,
     ]
