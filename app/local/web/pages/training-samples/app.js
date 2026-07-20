@@ -32,7 +32,7 @@ const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
 const frameDetails = document.querySelector("#frame-details");
-const NO_EVENT_ANCHOR_REASON = "No interaction event is anchored to this frame";
+const NO_AUXILIARY_ANNOTATION_REASON = "No auxiliary annotation applies at this frame";
 const BURN_IN_REASON = "Burn-in recurrent-state warm-up";
 
 const rowDefinitions = [
@@ -49,24 +49,20 @@ const rowDefinitions = [
     validField: "user_yield_valid",
   },
   {
-    label: "AUX event · completion",
-    field: "interaction_event_distribution.turn_completion",
-    validField: "interaction_event_valid",
+    label: "AUX point · turn completion",
+    field: "interaction_auxiliary.turn_completion",
   },
   {
-    label: "AUX event · continuation pause",
-    field: "interaction_event_distribution.continuation_pause",
-    validField: "interaction_event_valid",
+    label: "AUX span · continuation pause",
+    field: "interaction_auxiliary.continuation_pause",
   },
   {
-    label: "AUX event · non-floor feedback",
-    field: "interaction_event_distribution.non_floor_feedback",
-    validField: "interaction_event_valid",
+    label: "AUX span · non-floor feedback",
+    field: "interaction_auxiliary.non_floor_feedback",
   },
   {
-    label: "AUX event · floor take",
-    field: "interaction_event_distribution.floor_take",
-    validField: "interaction_event_valid",
+    label: "AUX point · floor take / interruption",
+    field: "interaction_auxiliary.floor_take",
   },
   { label: "AUX activity · 0–200 ms", field: "future_activity.0" },
   { label: "AUX activity · 200–500 ms", field: "future_activity.1" },
@@ -477,14 +473,13 @@ function renderSummary() {
     (frame) => frame.user_has_floor_valid,
   );
   const validYieldFrames = supervisedFrames.filter((frame) => frame.user_yield_valid);
-  const eventFrames = preview.frames.filter((frame) => frame.interaction_event_valid);
   const hasFloorPositives = validHasFloorFrames.filter(
     (frame) => frame.user_has_floor_target >= 0.5,
   ).length;
   const yieldSoonPositives = validYieldFrames.filter(
     (frame) => frame.user_yield_target >= 0.5,
   ).length;
-  const eventCounts = interactionEventCounts(eventFrames);
+  const auxiliaryCounts = interactionAuxiliaryCounts(preview.frames);
   summary.replaceChildren(
     ...definitionRows([
       ["Overall quality", optionalScore(preview.quality.total_score)],
@@ -523,9 +518,8 @@ function renderSummary() {
       ["Floor target ≥ 0.5", String(hasFloorPositives)],
       ["Runtime yield supervision", supervisionCoverage(validYieldFrames, supervisedFrames)],
       ["Floor available in 500 ms ≥ 0.5", String(yieldSoonPositives)],
-      ["Valid event anchors", String(eventFrames.length)],
-      ["Completion / continuation", `${eventCounts.turnCompletion} / ${eventCounts.continuationPause}`],
-      ["Feedback / floor take", `${eventCounts.nonFloorFeedback} / ${eventCounts.floorTake}`],
+      ["Completion / floor-take point frames", `${auxiliaryCounts.turnCompletion} / ${auxiliaryCounts.floorTake}`],
+      ["Pause / feedback span frames", `${auxiliaryCounts.continuationPause} / ${auxiliaryCounts.nonFloorFeedback}`],
     ]),
   );
 }
@@ -538,7 +532,7 @@ function renderAnnotationSource() {
     `assistant audio ${preview.assistant_audio_sha256.slice(0, 12)}…`;
 }
 
-function interactionEventCounts(frames) {
+function interactionAuxiliaryCounts(frames) {
   const counts = {
     turnCompletion: 0,
     continuationPause: 0,
@@ -546,23 +540,16 @@ function interactionEventCounts(frames) {
     floorTake: 0,
   };
   frames.forEach((frame) => {
-    const distribution = frame.interaction_event_distribution;
-    if (distribution === null) {
-      return;
-    }
-    const maximum = Math.max(
-      distribution.turn_completion,
-      distribution.continuation_pause,
-      distribution.non_floor_feedback,
-      distribution.floor_take,
-    );
-    if (distribution.turn_completion === maximum) {
+    if (frame.interaction_auxiliary.turn_completion.valid) {
       counts.turnCompletion += 1;
-    } else if (distribution.continuation_pause === maximum) {
+    }
+    if (frame.interaction_auxiliary.continuation_pause.valid) {
       counts.continuationPause += 1;
-    } else if (distribution.non_floor_feedback === maximum) {
+    }
+    if (frame.interaction_auxiliary.non_floor_feedback.valid) {
       counts.nonFloorFeedback += 1;
-    } else {
+    }
+    if (frame.interaction_auxiliary.floor_take.valid) {
       counts.floorTake += 1;
     }
   });
@@ -826,7 +813,7 @@ function drawTargetFrames(context, field, validField, left, top, width, height) 
 }
 
 function drawMaskedFrame(context, left, top, width, height, maskReason) {
-  if (maskReason === NO_EVENT_ANCHOR_REASON) {
+  if (maskReason === NO_AUXILIARY_ANNOTATION_REASON) {
     return;
   }
   const isBurnIn = maskReason === BURN_IN_REASON;
@@ -852,11 +839,12 @@ function targetValue(frame, field, validField) {
       maskReason: target?.mask_reason ?? null,
     };
   }
-  if (field.startsWith("interaction_event_distribution.")) {
+  if (field.startsWith("interaction_auxiliary.")) {
+    const target = frame.interaction_auxiliary[field.split(".")[1]];
     return {
-      value: frame.interaction_event_distribution?.[field.split(".")[1]] ?? null,
-      valid: frame.interaction_event_valid,
-      maskReason: frame.interaction_event_mask_reason,
+      value: target.target,
+      valid: target.valid,
+      maskReason: target.mask_reason,
     };
   }
   const maskReasonField =
@@ -925,14 +913,10 @@ function renderSelectedFrame(frame) {
         frame.user_yield_valid,
         frame.user_yield_mask_reason,
       )],
-      ["Event target mask", maskLabel(
-        frame.interaction_event_valid,
-        frame.interaction_event_mask_reason,
-      )],
-      ["Event: completion", eventProbability(frame, "turn_completion")],
-      ["Event: continuation pause", eventProbability(frame, "continuation_pause")],
-      ["Event: non-floor feedback", eventProbability(frame, "non_floor_feedback")],
-      ["Event: floor take", eventProbability(frame, "floor_take")],
+      ["Point: turn completion", auxiliaryProbability(frame, "turn_completion")],
+      ["Span: continuation pause", auxiliaryProbability(frame, "continuation_pause")],
+      ["Span: non-floor feedback", auxiliaryProbability(frame, "non_floor_feedback")],
+      ["Point: floor take / interruption", auxiliaryProbability(frame, "floor_take")],
       ...frame.future_activity.map((target) => [
         `Future user activity ${target.start_milliseconds}–${target.end_milliseconds} ms`,
         maskedProbability(target.occupancy, target.valid, target.mask_reason),
@@ -1105,17 +1089,8 @@ function maskedProbability(value, valid, maskReason) {
   if (valid) {
     return optionalProbability(value);
   }
-  return maskReason === NO_EVENT_ANCHOR_REASON
-    ? "NOT AN EVENT ANCHOR"
-    : `MASKED · ${prettyMaskReason(maskReason)}`;
-}
-
-function maskLabel(valid, maskReason) {
-  if (valid) {
-    return "VALID";
-  }
-  return maskReason === NO_EVENT_ANCHOR_REASON
-    ? "NOT AN EVENT ANCHOR"
+  return maskReason === NO_AUXILIARY_ANNOTATION_REASON
+    ? "NO AUXILIARY LABEL HERE"
     : `MASKED · ${prettyMaskReason(maskReason)}`;
 }
 
@@ -1142,11 +1117,9 @@ function optionalSeconds(value) {
   return value === null ? "—" : `${value.toFixed(2)} s`;
 }
 
-function eventProbability(frame, field) {
-  if (!frame.interaction_event_valid || frame.interaction_event_distribution === null) {
-    return "—";
-  }
-  return frame.interaction_event_distribution[field].toFixed(3);
+function auxiliaryProbability(frame, field) {
+  const target = frame.interaction_auxiliary[field];
+  return maskedProbability(target.target, target.valid, target.mask_reason);
 }
 
 function percentage(count, total) {

@@ -139,7 +139,7 @@
             <span><i class="positive"></i>Valid target</span>
             <span><i class="probability"></i>Higher target value</span>
             <span><i class="uncertain"></i>Uncertain / censored</span>
-            <span><i class="inactive"></i>No auxiliary event anchor</span>
+            <span><i class="inactive"></i>No auxiliary label at this frame</span>
             <span><i class="unusable"></i>Potentially unusable region</span>
           </div>
         </div>
@@ -166,7 +166,8 @@
           <code>p_user_has_floor</code> is a soft state estimate built directly from the detector's
           turn and connection probabilities, including continuation pauses.
           <code>p_user_yield</code> predicts that the user will not hold the floor 500 ms ahead. It
-          stays supervised after a release, so a missed pre-end threshold can still recover.
+          stays supervised for two seconds after a release, so a missed pre-end threshold can
+          still recover, then leaves the loss instead of remaining artificially high forever.
         </p>
         <p>
           At runtime, the assistant-floor phase reads <code>p_user_has_floor</code> to hand control
@@ -181,11 +182,12 @@
         <h2>Auxiliary supervision</h2>
         <p>
           Future activity is a soft occupancy fraction for four future horizons, not a hard
-          speech/no-speech label. The interaction event is one categorical four-class auxiliary
-          target placed on one causal anchor frame; its floor-take class is not a runtime state.
-          Frames without an event anchor are intentionally absent from this sparse auxiliary loss;
-          they are shown as empty rather than as uncertain data. Ambiguous anchors, censored
-          horizons, padding, and the four-second recurrent burn-in contribute no loss.
+          speech/no-speech label and not a pause classifier. Continuation-pause and non-floor
+          feedback targets retain the source annotation's probability across the full annotated
+          span. Turn completion and floor take / interruption remain causal point targets on one
+          frame. Frames without an applicable auxiliary label are blank and contribute no
+          auxiliary loss. Ambiguous annotations, censored horizons, padding, and the four-second
+          recurrent burn-in contribute no loss.
         </p>
       </section>
     </main>

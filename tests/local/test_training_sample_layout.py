@@ -35,8 +35,15 @@ def test_burn_in_masks_every_training_head() -> None:
     assert burn_in_frame.user_yield_mask_reason is SupervisionMaskReason.BURN_IN
     assert not burn_in_frame.user_has_floor_valid
     assert burn_in_frame.user_has_floor_mask_reason is SupervisionMaskReason.BURN_IN
-    assert not burn_in_frame.interaction_event_valid
-    assert burn_in_frame.interaction_event_mask_reason is SupervisionMaskReason.BURN_IN
+    assert all(
+        not target.valid and target.mask_reason is SupervisionMaskReason.BURN_IN
+        for target in (
+            burn_in_frame.interaction_auxiliary.turn_completion,
+            burn_in_frame.interaction_auxiliary.continuation_pause,
+            burn_in_frame.interaction_auxiliary.non_floor_feedback,
+            burn_in_frame.interaction_auxiliary.floor_take,
+        )
+    )
     assert all(not target.valid for target in burn_in_frame.future_activity)
     assert all(
         target.mask_reason is SupervisionMaskReason.BURN_IN
@@ -71,14 +78,15 @@ def test_user_yield_predicts_floor_availability_in_500_milliseconds() -> None:
     assert post_completion_frame.user_yield_valid
     assert post_completion_frame.user_yield_target == pytest.approx(1.0)
     assert post_completion_frame.user_has_floor_target == pytest.approx(0.0)
-    assert post_completion_frame.interaction_event_valid
-    assert post_completion_frame.interaction_event_distribution is not None
-    assert post_completion_frame.interaction_event_distribution.turn_completion == pytest.approx(
-        1.0
-    )
+    assert post_completion_frame.interaction_auxiliary.turn_completion.valid
+    assert post_completion_frame.interaction_auxiliary.turn_completion.target == pytest.approx(1.0)
+
+    inactive_frame = _frame_at(frames, 7.24)
+    assert not inactive_frame.user_yield_valid
+    assert inactive_frame.user_yield_mask_reason is SupervisionMaskReason.OUTSIDE_USER_YIELD_CONTEXT
 
 
-def test_user_yield_masks_only_when_its_future_floor_horizon_is_censored() -> None:
+def test_user_yield_masks_when_its_future_floor_horizon_is_censored() -> None:
     segment = _segment_target(start_seconds=4.2, end_seconds=5.2)
     speech_segments = (
         AnnotationSpan(
@@ -135,19 +143,14 @@ def test_connection_probability_softly_supervises_floor_state_and_yield() -> Non
     assert continuation_frame.user_has_floor_target == pytest.approx(0.9)
     assert continuation_frame.user_yield_valid
     assert continuation_frame.user_yield_target == pytest.approx(0.1)
-    assert continuation_frame.interaction_event_valid
-    assert continuation_frame.interaction_event_distribution is not None
-    assert continuation_frame.interaction_event_distribution.continuation_pause == pytest.approx(
-        1.0
-    )
+    assert continuation_frame.interaction_auxiliary.continuation_pause.valid
+    assert continuation_frame.interaction_auxiliary.continuation_pause.target == pytest.approx(0.9)
     assert ambiguous_frame.user_yield_valid
     assert ambiguous_frame.user_yield_target == pytest.approx(0.5)
     assert ambiguous_frame.user_has_floor_valid
     assert ambiguous_frame.user_has_floor_target == pytest.approx(0.5)
-    assert not ambiguous_frame.interaction_event_valid
-    assert (
-        ambiguous_frame.interaction_event_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
-    )
+    assert ambiguous_frame.interaction_auxiliary.continuation_pause.valid
+    assert ambiguous_frame.interaction_auxiliary.continuation_pause.target == pytest.approx(0.5)
 
 
 def test_connection_state_supervision_covers_untranscribed_activity_inside_pause() -> None:
@@ -180,6 +183,39 @@ def test_connection_state_supervision_covers_untranscribed_activity_inside_pause
     assert pause_frame.user_yield_target == pytest.approx(0.25)
 
 
+def test_user_yield_masks_after_two_seconds_even_inside_a_long_connection() -> None:
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        segment_targets=(
+            _segment_target(start_seconds=4.2, end_seconds=5.2),
+            _segment_target(start_seconds=10.0, end_seconds=11.0),
+        ),
+        connection_targets=(
+            ConnectionAnnotationTarget(
+                earlier_end_seconds=5.2,
+                later_start_seconds=10.0,
+                gap_seconds=4.8,
+                pause_confidence=0.4,
+                merge_confidence=0.3,
+            ),
+        ),
+    )
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=12.0,
+        annotation_end_seconds=12.0,
+        user=user,
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    release_window_frame = _frame_at(frames, 7.16)
+    inactive_frame = _frame_at(frames, 7.24)
+
+    assert release_window_frame.user_yield_valid
+    assert not inactive_frame.user_yield_valid
+    assert inactive_frame.user_yield_mask_reason is SupervisionMaskReason.OUTSIDE_USER_YIELD_CONTEXT
+
+
 @pytest.mark.parametrize(
     (
         "start_seconds",
@@ -194,7 +230,7 @@ def test_connection_state_supervision_covers_untranscribed_activity_inside_pause
         (6.5, 6.8, 1.0, 0.0, 0.0, 0.0),
     ),
 )
-def test_user_has_floor_is_dense_while_floor_take_remains_an_onset_event(
+def test_user_has_floor_is_dense_while_floor_take_remains_a_soft_onset_event(
     start_seconds: float,
     end_seconds: float,
     keep_playing_confidence: float,
@@ -243,18 +279,54 @@ def test_user_has_floor_is_dense_while_floor_take_remains_an_onset_event(
     assert onset_frame.user_has_floor_target == pytest.approx(expected_has_floor)
     assert late_frame.user_has_floor_valid
     assert late_frame.user_has_floor_target == pytest.approx(expected_has_floor)
-    assert onset_frame.interaction_event_valid
-    assert onset_frame.interaction_event_distribution is not None
-    assert onset_frame.interaction_event_distribution.floor_take == pytest.approx(
-        expected_has_floor
+    assert onset_frame.interaction_auxiliary.floor_take.valid
+    assert onset_frame.interaction_auxiliary.floor_take.target == pytest.approx(
+        turn_confidence * interruption_confidence
     )
-    assert onset_frame.interaction_event_distribution.non_floor_feedback == pytest.approx(
-        1.0 - expected_has_floor
-    )
-    assert not late_frame.interaction_event_valid
+    assert not late_frame.interaction_auxiliary.floor_take.valid
 
 
-def test_interaction_event_is_valid_on_only_one_causal_anchor_frame() -> None:
+def test_non_floor_feedback_probability_covers_the_annotated_backchannel_span() -> None:
+    backchannel = AnnotationSpan(start_seconds=5.0, end_seconds=5.6, text="right")
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        speech_segments=(backchannel,),
+        backchannels=(backchannel,),
+        segment_targets=(
+            _segment_target(
+                start_seconds=5.0,
+                end_seconds=5.6,
+                keep_playing_confidence=0.65,
+                turn_confidence=0.2,
+            ),
+        ),
+    )
+    assistant = _speaker_annotation(
+        side=SpeakerSide.SPEAKER1,
+        speech_segments=(AnnotationSpan(start_seconds=4.0, end_seconds=7.0, text="talk"),),
+        segment_targets=(_segment_target(start_seconds=4.0, end_seconds=7.0),),
+    )
+
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=8.0,
+        annotation_end_seconds=8.0,
+        user=user,
+        assistant=assistant,
+    )
+    feedback_frames = [
+        frame for frame in frames if frame.interaction_auxiliary.non_floor_feedback.valid
+    ]
+
+    assert len(feedback_frames) > 1
+    assert all(5.0 <= frame.time_seconds < 5.6 for frame in feedback_frames)
+    assert all(
+        frame.interaction_auxiliary.non_floor_feedback.target == pytest.approx(0.65)
+        for frame in feedback_frames
+    )
+
+
+def test_completion_is_a_point_target_while_pause_covers_the_connection_span() -> None:
     frames = build_frame_previews(
         start_seconds=0.0,
         end_seconds=8.0,
@@ -263,12 +335,22 @@ def test_interaction_event_is_valid_on_only_one_causal_anchor_frame() -> None:
         assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
     )
 
-    event_frames = [frame for frame in frames if frame.interaction_event_valid]
+    completion_frames = [
+        frame for frame in frames if frame.interaction_auxiliary.turn_completion.valid
+    ]
+    pause_frames = [
+        frame for frame in frames if frame.interaction_auxiliary.continuation_pause.valid
+    ]
 
-    assert len(event_frames) == 1
-    assert event_frames[0].time_seconds >= 5.2
+    assert len(completion_frames) == 1
+    assert completion_frames[0].time_seconds >= 5.2
+    assert completion_frames[0].interaction_auxiliary.turn_completion.target == pytest.approx(0.1)
+    assert all(frame.time_seconds >= 5.2 for frame in pause_frames)
+    assert all(frame.time_seconds < 6.0 for frame in pause_frames)
+    assert len(pause_frames) > 1
     assert all(
-        frame.interaction_event_mask_reason is SupervisionMaskReason.NO_EVENT_ANCHOR
+        frame.interaction_auxiliary.continuation_pause.mask_reason
+        is SupervisionMaskReason.NO_AUXILIARY_ANNOTATION
         for frame in frames
         if frame.supervised and not frame.candidate
     )
@@ -287,9 +369,10 @@ def test_event_anchors_outside_crop_are_not_clamped_into_edge_frames() -> None:
         assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
     )
 
-    assert not any(frame.interaction_event_valid for frame in frames)
+    assert not any(frame.interaction_auxiliary.turn_completion.valid for frame in frames)
     assert all(
-        frame.interaction_event_mask_reason is SupervisionMaskReason.NO_EVENT_ANCHOR
+        frame.interaction_auxiliary.turn_completion.mask_reason
+        is SupervisionMaskReason.NO_AUXILIARY_ANNOTATION
         for frame in frames
         if frame.supervised
     )
@@ -323,9 +406,10 @@ def test_audio_activity_segment_only_trains_future_activity() -> None:
     assert speech_frame.user_has_floor_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
     assert speech_frame.future_activity[0].valid
     assert speech_frame.future_activity[0].occupancy == pytest.approx(1.0)
-    assert not boundary_frame.interaction_event_valid
+    assert not boundary_frame.interaction_auxiliary.turn_completion.valid
     assert (
-        boundary_frame.interaction_event_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
+        boundary_frame.interaction_auxiliary.turn_completion.mask_reason
+        is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
     )
 
 
@@ -355,7 +439,8 @@ def test_uncertain_transcript_softly_supervises_runtime_heads() -> None:
     ambiguous_speech_frame = _frame_at(frames, 4.44)
     assert ambiguous_speech_frame.user_has_floor_valid
     assert ambiguous_speech_frame.user_has_floor_target == pytest.approx(0.5)
-    assert not post_speech_frame.interaction_event_valid
+    assert post_speech_frame.interaction_auxiliary.turn_completion.valid
+    assert post_speech_frame.interaction_auxiliary.turn_completion.target == pytest.approx(0.5)
 
 
 def test_future_activity_is_soft_union_occupancy_and_masks_censored_horizons() -> None:

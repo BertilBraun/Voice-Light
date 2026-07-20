@@ -35,7 +35,8 @@ class SupervisionMaskReason(StrEnum):
     BURN_IN = "Burn-in recurrent-state warm-up"
     AMBIGUOUS_ANNOTATION = "Annotation confidence is ambiguous"
     CENSORED_ANNOTATION = "Required future annotation is unavailable"
-    NO_EVENT_ANCHOR = "No interaction event is anchored to this frame"
+    NO_AUXILIARY_ANNOTATION = "No auxiliary annotation applies at this frame"
+    OUTSIDE_USER_YIELD_CONTEXT = "Outside the user-floor release window"
     FUTURE_HORIZON_CENSORED = "Future activity horizon exceeds annotated audio"
 
 
@@ -52,11 +53,17 @@ class TrainingSamplePropositionKind(StrEnum):
     BACKGROUND = "background"
 
 
-class EventTargetDistribution(FrozenBaseModel):
-    turn_completion: float
-    continuation_pause: float
-    non_floor_feedback: float
-    floor_take: float
+class AuxiliaryTarget(FrozenBaseModel):
+    target: float | None
+    valid: bool
+    mask_reason: SupervisionMaskReason | None
+
+
+class InteractionAuxiliaryTargets(FrozenBaseModel):
+    turn_completion: AuxiliaryTarget
+    continuation_pause: AuxiliaryTarget
+    non_floor_feedback: AuxiliaryTarget
+    floor_take: AuxiliaryTarget
 
 
 class FutureActivityTarget(FrozenBaseModel):
@@ -101,9 +108,7 @@ class TrainingFramePreview(FrozenBaseModel):
     user_has_floor_target: float | None
     user_has_floor_valid: bool
     user_has_floor_mask_reason: SupervisionMaskReason | None
-    interaction_event_distribution: EventTargetDistribution | None
-    interaction_event_valid: bool
-    interaction_event_mask_reason: SupervisionMaskReason | None
+    interaction_auxiliary: InteractionAuxiliaryTargets
     future_activity: tuple[FutureActivityTarget, ...]
 
 
