@@ -1,4 +1,8 @@
 import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js";
+import {
+  sampleLanguageStatus,
+  silenceMaskSegments,
+} from "/pages/datasets/assessment.mjs";
 
 const state = {
   datasets: [],
@@ -87,6 +91,7 @@ const elements = {
   status: document.querySelector("#status"),
   refreshButton: document.querySelector("#refresh-button"),
   datasetFilter: document.querySelector("#dataset-filter"),
+  languageFilter: document.querySelector("#language-filter"),
   qualityMin: document.querySelector("#quality-min"),
   overlapMax: document.querySelector("#overlap-max"),
   flagFilter: document.querySelector("#flag-filter"),
@@ -101,6 +106,7 @@ elements.refreshButton.addEventListener("click", () => {
 });
 for (const element of [
   elements.datasetFilter,
+  elements.languageFilter,
   elements.qualityMin,
   elements.overlapMax,
   elements.flagFilter,
@@ -130,6 +136,9 @@ async function loadSamples() {
   const datasetId = elements.datasetFilter.value;
   if (datasetId) {
     parameters.set("dataset_id", datasetId);
+  }
+  if (elements.languageFilter.value) {
+    parameters.set("language_status", elements.languageFilter.value);
   }
   if (elements.qualityMin.value) {
     parameters.set("quality_min", elements.qualityMin.value);
@@ -319,6 +328,7 @@ function renderSamples() {
     metrics.className = "metric-line";
     metrics.textContent = [
       formatSeconds(sample.sample.duration_seconds),
+      `language ${formatLanguageStatus(sample.language_status)}`,
       `speech ${formatRatio(sample.latest_quality?.speech_ratio)}`,
       `overlap ${formatRatio(sample.latest_quality?.overlap_ratio)}`,
     ].join(" - ");
@@ -367,6 +377,7 @@ function renderSampleDetail(sample) {
   titleGroup.append(title, version);
   heading.append(titleGroup, createScoreBadge(payload.total_quality_score));
   container.appendChild(heading);
+  container.appendChild(createLanguageSection(sample));
 
   container.appendChild(
     createMetricSection("Quality scores", [
@@ -432,6 +443,12 @@ function renderSampleDetail(sample) {
       ["Interruptions / hour", interaction.interruptions_per_hour, "number"],
       ["Backchannels / hour", interaction.backchannels_per_hour, "number"],
     ]),
+  );
+  container.appendChild(
+    createSilenceMaskPreview(
+      payload.conversation_annotation,
+      sample.sample.duration_seconds,
+    ),
   );
 
   const timing = payload.timing_reliability || {};
@@ -881,6 +898,141 @@ function createAudioQualitySection(audioQuality) {
   return section;
 }
 
+function createLanguageSection(sample) {
+  const section = document.createElement("section");
+  section.className = "quality-section";
+  const heading = document.createElement("div");
+  heading.className = "section-heading";
+  const title = document.createElement("h3");
+  title.textContent = "Language preflight";
+  const status = document.createElement("span");
+  status.className = "muted";
+  status.textContent = sampleLanguageStatus(sample.language_assessments);
+  heading.append(title, status);
+  section.appendChild(heading);
+
+  if (!sample.language_assessments?.length) {
+    section.appendChild(createEmptyMessage("No language preflight result"));
+    return section;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "language-track-grid";
+  for (const assessment of sample.language_assessments) {
+    const track = sample.tracks.find(
+      (candidate) => candidate.id === assessment.sample_track_id,
+    );
+    const card = document.createElement("article");
+    card.className = "language-track";
+    const cardHeading = document.createElement("div");
+    cardHeading.className = "section-heading";
+    const trackTitle = document.createElement("strong");
+    trackTitle.textContent = formatSpeaker(track?.side);
+    const trackStatus = document.createElement("span");
+    trackStatus.className = `language-status language-${assessment.status}`;
+    trackStatus.textContent = formatLanguageStatus(assessment.status);
+    cardHeading.append(trackTitle, trackStatus);
+
+    const evidence = document.createElement("dl");
+    for (const [label, value] of [
+      ["Detected", assessment.language_code || "—"],
+      ["Confidence", formatPercent(assessment.confidence)],
+      ["Probe words", String(assessment.transcript_word_count)],
+      ["Windows", formatProbeWindows(assessment.probe_windows)],
+    ]) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const description = document.createElement("dd");
+      description.textContent = value;
+      evidence.append(term, description);
+    }
+
+    const transcript = document.createElement("p");
+    transcript.className = "language-transcript";
+    transcript.textContent =
+      assessment.transcript_text || assessment.error || "No probe transcript";
+    card.append(cardHeading, evidence, transcript);
+    grid.appendChild(card);
+  }
+  section.appendChild(grid);
+  return section;
+}
+
+function createSilenceMaskPreview(conversation, representedDurationSeconds) {
+  const section = document.createElement("section");
+  section.className = "quality-section";
+  const heading = document.createElement("div");
+  heading.className = "section-heading";
+  const title = document.createElement("h3");
+  title.textContent = "Silence masking preview";
+  const summary = document.createElement("span");
+  summary.className = "muted";
+  heading.append(title, summary);
+  section.appendChild(heading);
+
+  if (!conversation) {
+    section.appendChild(createEmptyMessage("Available after conversation analysis"));
+    return section;
+  }
+
+  const durationSeconds = Number(
+    conversation.analyzed_duration_seconds || representedDurationSeconds || 0,
+  );
+  const controls = document.createElement("label");
+  controls.className = "silence-control";
+  const controlText = document.createElement("span");
+  const threshold = document.createElement("input");
+  threshold.type = "range";
+  threshold.min = "1";
+  threshold.max = "30";
+  threshold.step = "1";
+  threshold.value = "5";
+  threshold.setAttribute("aria-label", "Minimum silence to mask in seconds");
+  controls.append(controlText, threshold);
+
+  const timeline = document.createElement("div");
+  timeline.className = "silence-timeline";
+  timeline.setAttribute("role", "img");
+  const legend = document.createElement("div");
+  legend.className = "silence-legend";
+  legend.textContent =
+    "Blue is retained context; gray is proposed masking. This preview does not alter ingestion.";
+
+  function updatePreview() {
+    const minimumSilenceSeconds = Number(threshold.value);
+    controlText.textContent =
+      `Mask silence lasting at least ${minimumSilenceSeconds} s`;
+    const masks = silenceMaskSegments(
+      conversation,
+      durationSeconds,
+      minimumSilenceSeconds,
+    );
+    timeline.replaceChildren();
+    let maskedSeconds = 0;
+    for (const mask of masks) {
+      const span = document.createElement("span");
+      span.className = "silence-mask";
+      span.style.left = `${(mask.start_seconds / durationSeconds) * 100}%`;
+      span.style.width =
+        `${((mask.end_seconds - mask.start_seconds) / durationSeconds) * 100}%`;
+      timeline.appendChild(span);
+      maskedSeconds += mask.end_seconds - mask.start_seconds;
+    }
+    const retainedSeconds = Math.max(0, durationSeconds - maskedSeconds);
+    summary.textContent =
+      `${formatClock(retainedSeconds)} retained · ${formatClock(maskedSeconds)} masked`;
+    timeline.setAttribute(
+      "aria-label",
+      `${masks.length} silence regions would mask ${formatClock(maskedSeconds)} of ${formatClock(durationSeconds)}`,
+    );
+  }
+
+  threshold.addEventListener("input", updatePreview);
+  updatePreview();
+  section.append(controls, timeline, legend);
+  return section;
+}
+
 function createEventSection(events, playbackController) {
   const section = document.createElement("section");
   section.className = "quality-section event-section";
@@ -986,6 +1138,32 @@ function formatRatio(value) {
     return "?";
   }
   return Number(value).toFixed(2);
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function formatLanguageStatus(value) {
+  if (!value) {
+    return "not assessed";
+  }
+  return String(value).replaceAll("_", " ");
+}
+
+function formatProbeWindows(windows) {
+  if (!windows?.length) {
+    return "—";
+  }
+  return windows
+    .map(
+      (window) =>
+        `${formatClock(window.start_seconds)} (${Number(window.rms_dbfs).toFixed(1)} dBFS)`,
+    )
+    .join(", ");
 }
 
 function formatMetric(value, format) {

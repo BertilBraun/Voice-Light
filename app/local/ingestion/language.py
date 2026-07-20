@@ -4,7 +4,6 @@ import math
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -13,7 +12,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.local.asr.service import RemoteAsrClient
-from app.local.db.models import TrackSide
+from app.local.db.models import (
+    LanguageProbeWindow,
+    SampleLanguageStatus,
+    TrackLanguageAssessment,
+    TrackLanguageStatus,
+    TrackSide,
+)
 from app.shared.asr import AsrModelId, AsrTranscriptResult, RemoteAsrUploadRequest
 from app.shared.audio import probe_local_audio_metadata
 from app.shared.audio.transport import (
@@ -22,7 +27,6 @@ from app.shared.audio.transport import (
     AudioTransportMetadata,
     sha256_file,
 )
-from app.shared.base_model import FrozenBaseModel
 
 LANGUAGE_ASSESSMENT_VERSION = "whisper-active-windows-v1"
 LANGUAGE_PROBE_CANDIDATE_COUNT = 9
@@ -32,38 +36,6 @@ LANGUAGE_PROBE_SAMPLE_RATE = 16_000
 MINIMUM_ACTIVE_WINDOW_RMS_DBFS = -55.0
 MINIMUM_LANGUAGE_CONFIDENCE = 0.75
 MINIMUM_TRANSCRIPT_WORD_COUNT = 4
-
-
-class TrackLanguageStatus(StrEnum):
-    ENGLISH = "english"
-    NON_ENGLISH = "non_english"
-    INCONCLUSIVE = "inconclusive"
-    FAILED = "failed"
-
-
-class SampleLanguageStatus(StrEnum):
-    ENGLISH = "english"
-    NON_ENGLISH = "non_english"
-    INCONCLUSIVE = "inconclusive"
-
-
-class LanguageProbeWindow(FrozenBaseModel):
-    start_seconds: float
-    duration_seconds: float
-    rms_dbfs: float
-
-
-class TrackLanguageAssessment(FrozenBaseModel):
-    sample_track_id: UUID
-    source_audio_sha256: str
-    assessment_version: str
-    status: TrackLanguageStatus
-    language_code: str | None
-    confidence: float | None
-    transcript_word_count: int
-    transcript_text: str
-    probe_windows: tuple[LanguageProbeWindow, ...]
-    error: str | None
 
 
 @dataclass(frozen=True)

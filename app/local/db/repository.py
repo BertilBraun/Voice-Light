@@ -28,9 +28,11 @@ from app.local.db.models import (
     QualityResultRecord,
     QualityResultSummaryRecord,
     QualityVersionCount,
+    SampleLanguageStatus,
     SampleListFilter,
     SampleRecord,
     SampleTrackRecord,
+    TrackLanguageAssessment,
     TrackSide,
 )
 from app.shared.quality import METRIC_VERSION
@@ -592,7 +594,9 @@ class Repository:
                   COALESCE(track_rows.tracks_json, '[]'::json) AS tracks_json,
                   row_to_json(latest_quality.*) AS quality_json,
                   row_to_json(latest_asr_run.*) AS asr_run_json,
-                  row_to_json(latest_asr_evaluation.*) AS asr_evaluation_json
+                  row_to_json(latest_asr_evaluation.*) AS asr_evaluation_json,
+                  COALESCE(language_rows.assessments_json, '[]'::json)
+                    AS language_assessments_json
                 FROM samples
                 LEFT JOIN LATERAL (
                   SELECT json_agg(sample_tracks.* ORDER BY speaker_index) AS tracks_json
@@ -615,6 +619,8 @@ class Repository:
                 ) AS latest_asr_run ON true
                 LEFT JOIN asr_evaluations AS latest_asr_evaluation
                   ON latest_asr_evaluation.asr_run_id = latest_asr_run.id
+                {language_assessments_lateral_sql()}
+                {language_summary_lateral_sql()}
                 {filter_sql.where_clause}
                 ORDER BY samples.updated_at DESC, samples.external_id
                 LIMIT %s OFFSET %s
@@ -651,7 +657,8 @@ class Repository:
                     latest_quality.speaker1_canary_full_asr_transcript_id IS NOT NULL
                     AND latest_quality.speaker2_canary_full_asr_transcript_id IS NOT NULL
                   ) AS has_canary_transcript_pair,
-                  latest_quality.created_at AS quality_created_at
+                  latest_quality.created_at AS quality_created_at,
+                  language_summary.language_status
                 FROM samples
                 LEFT JOIN LATERAL (
                   SELECT *
@@ -669,6 +676,7 @@ class Repository:
                 ) AS latest_asr_run ON true
                 LEFT JOIN asr_evaluations AS latest_asr_evaluation
                   ON latest_asr_evaluation.asr_run_id = latest_asr_run.id
+                {language_summary_lateral_sql()}
                 {filter_sql.where_clause}
                 ORDER BY samples.updated_at DESC, samples.external_id
                 LIMIT %s OFFSET %s
@@ -895,6 +903,7 @@ class Repository:
                 ) AS latest_asr_run ON true
                 LEFT JOIN asr_evaluations AS latest_asr_evaluation
                   ON latest_asr_evaluation.asr_run_id = latest_asr_run.id
+                {language_summary_lateral_sql()}
                 {filter_sql.where_clause}
                 """,
                 query_parameters,
@@ -905,13 +914,15 @@ class Repository:
     def get_dashboard_sample(self, sample_id: UUID) -> DashboardSample:
         with self.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT
                   row_to_json(samples.*) AS sample_json,
                   COALESCE(track_rows.tracks_json, '[]'::json) AS tracks_json,
                   row_to_json(latest_quality.*) AS quality_json,
                   row_to_json(latest_asr_run.*) AS asr_run_json,
-                  row_to_json(latest_asr_evaluation.*) AS asr_evaluation_json
+                  row_to_json(latest_asr_evaluation.*) AS asr_evaluation_json,
+                  COALESCE(language_rows.assessments_json, '[]'::json)
+                    AS language_assessments_json
                 FROM samples
                 LEFT JOIN LATERAL (
                   SELECT json_agg(sample_tracks.* ORDER BY speaker_index) AS tracks_json
@@ -934,6 +945,7 @@ class Repository:
                 ) AS latest_asr_run ON true
                 LEFT JOIN asr_evaluations AS latest_asr_evaluation
                   ON latest_asr_evaluation.asr_run_id = latest_asr_run.id
+                {language_assessments_lateral_sql()}
                 WHERE samples.id = %s
                 """,
                 (sample_id,),
@@ -1106,6 +1118,9 @@ def dashboard_filter_sql(sample_filter: SampleListFilter) -> DashboardFilterSql:
             """
         )
         parameters.append(sample_filter.timestamp_p90_max)
+    if sample_filter.language_status is not None:
+        filters.append("language_summary.language_status = %s")
+        parameters.append(sample_filter.language_status.value)
     where_clause = "WHERE " + " AND ".join(filters) if filters else ""
     return DashboardFilterSql(where_clause=where_clause, parameters=tuple(parameters))
 
@@ -1193,6 +1208,7 @@ def dashboard_sample_from_row(row: dict[str, object]) -> DashboardSample:
     quality_json = stable_json_value(row["quality_json"])
     asr_run_json = stable_json_value(row["asr_run_json"])
     asr_evaluation_json = stable_json_value(row["asr_evaluation_json"])
+    language_assessments_json = stable_json_value(row["language_assessments_json"])
     return DashboardSample(
         sample=sample_record(dict(sample_json)),
         tracks=tuple(sample_track_record(dict(track_json)) for track_json in tracks_json),
@@ -1203,6 +1219,10 @@ def dashboard_sample_from_row(row: dict[str, object]) -> DashboardSample:
         latest_asr_evaluation=asr_evaluation_record(dict(asr_evaluation_json))
         if asr_evaluation_json is not None
         else None,
+        language_assessments=tuple(
+            TrackLanguageAssessment.model_validate(assessment)
+            for assessment in language_assessments_json
+        ),
     )
 
 
@@ -1235,7 +1255,71 @@ def dashboard_sample_summary_from_row(row: dict[str, object]) -> DashboardSample
     return DashboardSampleSummary(
         sample=sample_record(dict(sample_json)),
         latest_quality=latest_quality,
+        language_status=(
+            SampleLanguageStatus(str(row["language_status"]))
+            if row["language_status"] is not None
+            else None
+        ),
     )
+
+
+def language_assessments_lateral_sql() -> str:
+    return """
+        LEFT JOIN LATERAL (
+          SELECT json_agg(
+            current_language.assessment_json
+            ORDER BY current_language.speaker_index
+          ) AS assessments_json
+          FROM (
+            SELECT DISTINCT ON (sample_tracks.id)
+              to_jsonb(track_language_assessments.*) AS assessment_json,
+              sample_tracks.speaker_index
+            FROM sample_tracks
+            JOIN track_language_assessments
+              ON track_language_assessments.sample_track_id = sample_tracks.id
+             AND track_language_assessments.source_audio_sha256
+                 = sample_tracks.audio_sha256
+            WHERE sample_tracks.sample_id = samples.id
+            ORDER BY
+              sample_tracks.id,
+              track_language_assessments.updated_at DESC,
+              track_language_assessments.id DESC
+          ) AS current_language
+        ) AS language_rows ON true
+    """
+
+
+def language_summary_lateral_sql() -> str:
+    return """
+        LEFT JOIN LATERAL (
+          SELECT CASE
+            WHEN COUNT(current_language.status) = 0 THEN NULL
+            WHEN BOOL_OR(current_language.status = 'non_english') THEN 'non_english'
+            WHEN COUNT(current_language.status) < (
+              SELECT COUNT(*)
+              FROM sample_tracks
+              WHERE sample_tracks.sample_id = samples.id
+            ) OR BOOL_OR(current_language.status IN ('inconclusive', 'failed'))
+              THEN 'inconclusive'
+            ELSE 'english'
+          END AS language_status
+          FROM (
+            SELECT DISTINCT ON (sample_tracks.id)
+              sample_tracks.id AS sample_track_id,
+              track_language_assessments.status
+            FROM sample_tracks
+            JOIN track_language_assessments
+              ON track_language_assessments.sample_track_id = sample_tracks.id
+             AND track_language_assessments.source_audio_sha256
+                 = sample_tracks.audio_sha256
+            WHERE sample_tracks.sample_id = samples.id
+            ORDER BY
+              sample_tracks.id,
+              track_language_assessments.updated_at DESC,
+              track_language_assessments.id DESC
+          ) AS current_language
+        ) AS language_summary ON true
+    """
 
 
 def optional_float(value: object) -> float | None:

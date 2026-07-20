@@ -26,6 +26,15 @@
           <select id="dataset-filter"></select>
         </label>
         <label>
+          Language
+          <select id="language-filter">
+            <option value="">All language states</option>
+            <option value="english">English</option>
+            <option value="non_english">Non-English</option>
+            <option value="inconclusive">Inconclusive</option>
+          </select>
+        </label>
+        <label>
           Min quality
           <input id="quality-min" type="number" min="0" max="1" step="0.05" />
         </label>
@@ -54,6 +63,6 @@
         </div>
       </section>
     </main>
-    <script src="/pages/datasets/app.js?v=2" type="module"></script>
+    <script src="/pages/datasets/app.js?v=3" type="module"></script>
   </body>
 </html>

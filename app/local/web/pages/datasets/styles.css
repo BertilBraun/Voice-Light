@@ -168,7 +168,7 @@ nav a:hover {
 
 .filters {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr;
+  grid-template-columns: 2fr 1.2fr 1fr 1fr 1fr;
   gap: 12px;
   margin: 20px 0;
 }
@@ -448,6 +448,99 @@ nav a:hover {
   gap: 8px;
 }
 
+.language-track-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.language-track {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e4e9ef;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.language-track dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.language-track dt {
+  color: #69778a;
+}
+
+.language-track dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.language-status {
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.language-english {
+  color: #166534;
+}
+
+.language-non_english,
+.language-failed {
+  color: #991b1b;
+}
+
+.language-inconclusive {
+  color: #854d0e;
+}
+
+.language-transcript {
+  max-height: 72px;
+  overflow: auto;
+  color: #435063;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.silence-control {
+  display: grid;
+  gap: 6px;
+  color: #435063;
+  font-size: 12px;
+}
+
+.silence-control input {
+  width: 100%;
+  accent-color: #1d4f7a;
+}
+
+.silence-timeline {
+  position: relative;
+  height: 30px;
+  overflow: hidden;
+  border: 1px solid #a9bdd0;
+  border-radius: 5px;
+  background: #dcecf8;
+}
+
+.silence-mask {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #8d99a8;
+}
+
+.silence-legend {
+  color: #69778a;
+  font-size: 11px;
+}
+
 .track-card {
   display: grid;
   gap: 3px;
@@ -640,7 +733,8 @@ pre {
 
 @media (max-width: 560px) {
   .metric-grid,
-  .audio-quality-tracks {
+  .audio-quality-tracks,
+  .language-track-grid {
     grid-template-columns: 1fr 1fr;
   }
 

@@ -357,6 +357,7 @@ def _dashboard_sample(external_id: str, dense_late_exchange: bool) -> DashboardS
         ),
         latest_asr_run=None,
         latest_asr_evaluation=None,
+        language_assessments=(),
     )
 
 

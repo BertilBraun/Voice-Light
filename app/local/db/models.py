@@ -36,6 +36,38 @@ class AsrRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class TrackLanguageStatus(StrEnum):
+    ENGLISH = "english"
+    NON_ENGLISH = "non_english"
+    INCONCLUSIVE = "inconclusive"
+    FAILED = "failed"
+
+
+class SampleLanguageStatus(StrEnum):
+    ENGLISH = "english"
+    NON_ENGLISH = "non_english"
+    INCONCLUSIVE = "inconclusive"
+
+
+class LanguageProbeWindow(FrozenBaseModel):
+    start_seconds: float
+    duration_seconds: float
+    rms_dbfs: float
+
+
+class TrackLanguageAssessment(FrozenBaseModel):
+    sample_track_id: UUID
+    source_audio_sha256: str
+    assessment_version: str
+    status: TrackLanguageStatus
+    language_code: str | None
+    confidence: float | None
+    transcript_word_count: int
+    transcript_text: str
+    probe_windows: tuple[LanguageProbeWindow, ...]
+    error: str | None
+
+
 class DatasetCreate(FrozenBaseModel):
     name: str
     storage_kind: DatasetStorageKind = DatasetStorageKind.LOCAL
@@ -155,6 +187,7 @@ class QualityResultSummaryRecord(FrozenBaseModel):
 class DashboardSampleSummary(FrozenBaseModel):
     sample: SampleRecord
     latest_quality: QualityResultSummaryRecord | None
+    language_status: SampleLanguageStatus | None
 
 
 class QualityVersionCount(FrozenBaseModel):
@@ -286,6 +319,7 @@ class SampleListFilter(FrozenBaseModel):
     wer_min: float | None = None
     wer_max: float | None = None
     timestamp_p90_max: float | None = None
+    language_status: SampleLanguageStatus | None = None
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
 
@@ -296,3 +330,4 @@ class DashboardSample(FrozenBaseModel):
     latest_quality: QualityResultRecord | None
     latest_asr_run: AsrRunRecord | None
     latest_asr_evaluation: AsrEvaluationRecord | None
+    language_assessments: tuple[TrackLanguageAssessment, ...]

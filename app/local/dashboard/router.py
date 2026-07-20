@@ -15,6 +15,7 @@ from app.local.db.models import (
     DatasetCompletenessSummary,
     DatasetRecord,
     IngestionJobRecord,
+    SampleLanguageStatus,
     SampleListFilter,
     TrackSide,
 )
@@ -89,6 +90,7 @@ def conversation_summary(
     quality_min: float | None = None,
     overlap_ratio_max: float | None = None,
     flag: str | None = None,
+    language_status: SampleLanguageStatus | None = None,
 ) -> ConversationDatasetSummary:
     try:
         return repository().conversation_dataset_summary(
@@ -97,6 +99,7 @@ def conversation_summary(
                 quality_min=quality_min,
                 overlap_ratio_max=overlap_ratio_max,
                 flag=flag,
+                language_status=language_status,
             )
         )
     except ValueError as error:
@@ -121,6 +124,7 @@ def list_samples(
     wer_min: float | None = None,
     wer_max: float | None = None,
     timestamp_p90_max: float | None = None,
+    language_status: SampleLanguageStatus | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> SampleListResponse:
@@ -142,6 +146,7 @@ def list_samples(
             wer_min=wer_min,
             wer_max=wer_max,
             timestamp_p90_max=timestamp_p90_max,
+            language_status=language_status,
             limit=limit,
             offset=offset,
         )
@@ -156,6 +161,7 @@ def list_sample_summaries(
     quality_min: float | None = None,
     overlap_ratio_max: float | None = None,
     flag: str | None = None,
+    language_status: SampleLanguageStatus | None = None,
     limit: int = Query(default=200, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> SampleSummaryListResponse:
@@ -165,6 +171,7 @@ def list_sample_summaries(
             quality_min=quality_min,
             overlap_ratio_max=overlap_ratio_max,
             flag=flag,
+            language_status=language_status,
             limit=limit,
             offset=offset,
         )

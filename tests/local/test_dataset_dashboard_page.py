@@ -148,5 +148,24 @@ def test_dataset_dashboard_refreshes_cached_script_and_reports_load_failures(
     dashboard_page: str,
     dashboard_script: str,
 ) -> None:
-    assert 'src="/pages/datasets/app.js?v=2"' in dashboard_page
+    assert 'src="/pages/datasets/app.js?v=3"' in dashboard_page
     assert "Could not load datasets: ${reason}. Use Refresh to retry." in dashboard_script
+
+
+def test_dataset_dashboard_shows_language_preflight_and_filter(
+    dashboard_page: str,
+    dashboard_script: str,
+) -> None:
+    assert 'id="language-filter"' in dashboard_page
+    assert '"Language preflight"' in dashboard_script
+    assert "assessment.transcript_text" in dashboard_script
+    assert "formatProbeWindows" in dashboard_script
+
+
+def test_dataset_dashboard_previews_tunable_silence_masking(
+    dashboard_script: str,
+) -> None:
+    assert '"Silence masking preview"' in dashboard_script
+    assert "minimumSilenceSeconds" in dashboard_script
+    assert "silenceMaskSegments" in dashboard_script
+    assert "This preview does not alter ingestion." in dashboard_script

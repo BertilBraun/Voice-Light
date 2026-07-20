@@ -7,7 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from app.local.ingestion.language import (
+from app.local.db.models import (
     LanguageProbeWindow,
     TrackLanguageAssessment,
     TrackLanguageStatus,

@@ -7,7 +7,7 @@ from app.local.analyses.end_of_turn.detectors.two_speaker_annotation import (
     TARGET_SPEAKER,
     TranscriptTurn,
 )
-from app.local.db.models import JobStatus, SampleListFilter
+from app.local.db.models import JobStatus, SampleLanguageStatus, SampleListFilter
 from app.local.db.repository import dashboard_filter_sql
 from app.local.ingestion.conversation import conversation_annotation
 from app.local.ingestion.service import (
@@ -27,13 +27,15 @@ def test_dashboard_summary_filter_reuses_sample_filters() -> None:
             quality_min=0.9,
             overlap_ratio_max=0.1,
             flag="track_leakage_risk",
+            language_status=SampleLanguageStatus.NON_ENGLISH,
         )
     )
 
     assert "latest_quality.total_quality_score >= %s" in filter_sql.where_clause
     assert "latest_quality.overlap_ratio <= %s" in filter_sql.where_clause
     assert "%s = ANY(samples.quality_flags)" in filter_sql.where_clause
-    assert filter_sql.parameters == (0.9, "track_leakage_risk", 0.1)
+    assert "language_summary.language_status = %s" in filter_sql.where_clause
+    assert filter_sql.parameters == (0.9, "track_leakage_risk", 0.1, "non_english")
 
 
 @pytest.mark.parametrize(
