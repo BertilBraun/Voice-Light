@@ -138,7 +138,6 @@ button.primary {
 }
 
 .position-panel,
-.propositions-panel,
 .context-panel,
 .transport,
 .timeline-panel,
@@ -149,69 +148,6 @@ button.primary {
 .warning-card {
   margin-top: 14px;
   padding: 16px;
-}
-
-.propositions-status {
-  color: #627075;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.propositions-list {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
-}
-
-.proposition {
-  background: #f8faf9;
-  display: grid;
-  gap: 7px;
-  min-height: 132px;
-  padding: 12px;
-  text-align: left;
-}
-
-.proposition.selected {
-  background: #e8f2f0;
-  border-color: #146b63;
-}
-
-.proposition-heading,
-.proposition-metrics {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-}
-
-.proposition-kind {
-  color: #146b63;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.proposition-score {
-  color: #536268;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.proposition-description {
-  color: #263337;
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-.proposition-metrics {
-  color: #66757a;
-  font-size: 11px;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.proposition-mask {
-  color: #a65318;
 }
 
 .context-canvas-shell {

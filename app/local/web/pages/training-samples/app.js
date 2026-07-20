@@ -28,8 +28,6 @@ const annotationTimeline = document.querySelector("#annotation-timeline");
 const annotationSource = document.querySelector("#annotation-source");
 const contextOverview = document.querySelector("#context-overview");
 const contextLabel = document.querySelector("#context-label");
-const propositionsList = document.querySelector("#propositions-list");
-const propositionsStatus = document.querySelector("#propositions-status");
 const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
@@ -79,8 +77,12 @@ const rowDefinitions = [
 let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
-let propositionRequestGeneration = 0;
-const propositionCache = new Map();
+let candidateQueue = [];
+let preparedNextPreview = null;
+let nextPreviewPreparation = null;
+let candidateQueueSource = null;
+let reviewQueueGeneration = 0;
+const reviewedCandidateKeys = new Set();
 const playbackGainController = createMediaElementGainController([
   { id: "user", element: userAudio },
   { id: "assistant", element: assistantAudio },
@@ -168,6 +170,7 @@ async function loadPreview(randomLocation, autoplay = false) {
   if (!sampleId) {
     return;
   }
+  resetReviewQueue();
   pausePlayback();
   setStatus("Building frame preview…", false);
   const parameters = new URLSearchParams({
@@ -191,82 +194,147 @@ async function loadPreview(randomLocation, autoplay = false) {
   }
 }
 
-async function loadPropositions() {
-  if (preview === null) {
+function resetReviewQueue() {
+  reviewQueueGeneration += 1;
+  candidateQueue = [];
+  preparedNextPreview = null;
+  nextPreviewPreparation = null;
+  candidateQueueSource = null;
+  nextRandomButton.disabled = true;
+  nextRandomButton.textContent = "Preparing next sample…";
+}
+
+async function prepareNextReviewSample() {
+  if (
+    preview === null ||
+    preparedNextPreview !== null ||
+    nextPreviewPreparation !== null
+  ) {
     return;
   }
-  const generation = ++propositionRequestGeneration;
-  const cacheKey = `${preview.sample_id}:${preview.user_side}`;
-  const cachedPropositions = propositionCache.get(cacheKey);
-  if (cachedPropositions !== undefined) {
-    renderPropositions(cachedPropositions);
-    propositionsStatus.textContent = `${cachedPropositions.length} balanced candidates`;
-    return;
-  }
-  propositionsStatus.textContent = "Finding candidates…";
-  const parameters = new URLSearchParams({
-    sample_id: preview.sample_id,
-    user_side: preview.user_side,
-    limit: "15",
-  });
+  const generation = reviewQueueGeneration;
+  const sourcePreview = preview;
+  nextRandomButton.disabled = true;
+  nextRandomButton.textContent = "Preparing next sample…";
+  nextPreviewPreparation = buildNextReviewPreview(sourcePreview, generation);
   try {
-    const response = await fetch(`/api/training-samples/propositions?${parameters}`, {
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(errorMessage(payload, response.status));
-    }
-    if (generation !== propositionRequestGeneration) {
+    const payload = await nextPreviewPreparation;
+    if (generation !== reviewQueueGeneration || payload === null) {
       return;
     }
-    propositionCache.set(cacheKey, payload);
-    renderPropositions(payload);
-    propositionsStatus.textContent = `${payload.length} balanced candidates`;
+    preparedNextPreview = payload;
+    nextRandomButton.disabled = false;
+    nextRandomButton.textContent = "Next sample";
   } catch (error) {
-    if (generation !== propositionRequestGeneration) {
+    if (generation !== reviewQueueGeneration) {
       return;
     }
-    propositionsList.replaceChildren();
-    propositionsStatus.textContent =
-      error instanceof Error ? error.message : String(error);
+    nextRandomButton.disabled = false;
+    nextRandomButton.textContent = "Retry next sample";
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    if (generation === reviewQueueGeneration) {
+      nextPreviewPreparation = null;
+    }
   }
 }
 
-function renderPropositions(propositions) {
-  propositionsList.replaceChildren(
-    ...propositions.map((proposition) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "proposition";
-      button.classList.toggle(
-        "selected",
-        Math.abs(proposition.start_seconds - preview.start_seconds) < 0.04,
-      );
-      button.innerHTML = `
-        <span class="proposition-heading">
-          <span class="proposition-kind">${propositionKindLabel(proposition.kind)}</span>
-          <span class="proposition-score">${Math.round(100 * proposition.score)} score</span>
-        </span>
-        <span class="proposition-description">${proposition.description}</span>
-        <span class="proposition-metrics">
-          <span>${formatDuration(proposition.start_seconds)}–${formatDuration(proposition.end_seconds)}</span>
-          <span>${Math.round(100 * proposition.primary_supervision_ratio)}% primary</span>
-          <span>${Math.round(100 * proposition.future_activity_supervision_ratio)}% future</span>
-          <span>${proposition.event_anchor_count} event${proposition.event_anchor_count === 1 ? "" : "s"}</span>
-          <span class="${proposition.masked_supervised_seconds > 0 ? "proposition-mask" : ""}">
-            ${proposition.masked_supervised_seconds.toFixed(1)} s masked
-          </span>
-        </span>
-      `;
-      button.addEventListener("click", () => {
-        startInput.value = proposition.start_seconds.toFixed(2);
-        positionSlider.value = String(proposition.start_seconds);
-        void loadPreview(false, true);
-      });
-      return button;
-    }),
+async function buildNextReviewPreview(sourcePreview, generation) {
+  await fillCandidateQueue(sourcePreview, generation);
+  if (generation !== reviewQueueGeneration) {
+    return null;
+  }
+  if (candidateQueue.length === 0) {
+    const nextConversation = await fetchNextConversationPreview(sourcePreview);
+    if (generation !== reviewQueueGeneration) {
+      return null;
+    }
+    await fillCandidateQueue(nextConversation, generation);
+    if (generation !== reviewQueueGeneration) {
+      return null;
+    }
+    if (candidateQueue.length === 0) {
+      return nextConversation;
+    }
+  }
+  const location = candidateQueue.shift();
+  reviewedCandidateKeys.add(candidateLocationKey(location));
+  return fetchExactPreview(location);
+}
+
+async function fillCandidateQueue(sourcePreview, generation) {
+  const sourceKey = `${sourcePreview.sample_id}:${sourcePreview.user_side}`;
+  if (candidateQueueSource === sourceKey) {
+    return;
+  }
+  const parameters = new URLSearchParams({
+    sample_id: sourcePreview.sample_id,
+    user_side: sourcePreview.user_side,
+    limit: "30",
+  });
+  const response = await fetch(`/api/training-samples/propositions?${parameters}`, {
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, response.status));
+  }
+  if (generation !== reviewQueueGeneration) {
+    return;
+  }
+  candidateQueueSource = sourceKey;
+  candidateQueue = payload
+    .map((proposition) => ({
+      sampleId: sourcePreview.sample_id,
+      userSide: sourcePreview.user_side,
+      startSeconds: proposition.start_seconds,
+    }))
+    .filter(
+      (location) =>
+        Math.abs(location.startSeconds - sourcePreview.start_seconds) >= 0.04 &&
+        !reviewedCandidateKeys.has(candidateLocationKey(location)),
+    );
+}
+
+async function fetchExactPreview(location) {
+  const parameters = new URLSearchParams({
+    sample_id: location.sampleId,
+    user_side: location.userSide,
+    start_seconds: String(location.startSeconds),
+  });
+  const response = await fetch(`/api/training-samples/preview?${parameters}`, {
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, response.status));
+  }
+  return payload;
+}
+
+async function fetchNextConversationPreview(sourcePreview) {
+  const parameters = new URLSearchParams({
+    dataset_id: sourcePreview.dataset_id,
+    current_sample_id: sourcePreview.sample_id,
+    sampling_mode: samplingModeSelect.value,
+  });
+  const minimumQuality = selectedMinimumQuality();
+  if (minimumQuality !== null) {
+    parameters.set("minimum_quality", String(minimumQuality));
+  }
+  const response = await fetch(
+    `/api/training-samples/random-preview?${parameters}`,
+    { cache: "no-store" },
   );
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, response.status));
+  }
+  return payload;
+}
+
+function candidateLocationKey(location) {
+  return `${location.sampleId}:${location.userSide}:${location.startSeconds.toFixed(2)}`;
 }
 
 async function applyPreview(payload, autoplay) {
@@ -284,10 +352,11 @@ async function applyPreview(payload, autoplay) {
   renderSelectedFrame(null);
   drawTimeline();
   drawSourceAnnotationTimeline();
-  await Promise.all([
-    contextOverviewController.load(preview.start_seconds),
-    loadPropositions(),
-  ]);
+  void contextOverviewController
+    .load(preview.start_seconds)
+    .catch((error) =>
+      setStatus(error instanceof Error ? error.message : String(error), true),
+    );
   const coverageMessage =
     preview.annotated_duration_seconds < preview.represented_duration_seconds
       ? `Preview ready · ${formatDuration(preview.annotated_duration_seconds)} annotated of ${formatDuration(preview.represented_duration_seconds)}`
@@ -300,6 +369,7 @@ async function applyPreview(payload, autoplay) {
     statusMessage = `${coverageMessage} - press Play if autoplay was blocked`;
   }
   setStatus(statusMessage, false);
+  void prepareNextReviewSample();
 }
 
 function configureControls() {
@@ -369,35 +439,20 @@ async function startPlayback() {
   }
 }
 
-async function loadNextRandomSample() {
-  const currentSampleId = sampleSelect.value;
-  if (!currentSampleId) {
+async function loadNextPreparedSample() {
+  if (preparedNextPreview === null) {
+    await prepareNextReviewSample();
+    if (nextPreviewPreparation !== null) {
+      await nextPreviewPreparation;
+    }
+  }
+  if (preparedNextPreview === null) {
     return;
   }
+  const payload = preparedNextPreview;
+  preparedNextPreview = null;
   pausePlayback();
-  setStatus(`Choosing the next ${samplingModeSelect.value} sample…`, false);
-  try {
-    const parameters = new URLSearchParams({
-      dataset_id: datasetSelect.value,
-      current_sample_id: currentSampleId,
-      sampling_mode: samplingModeSelect.value,
-    });
-    const minimumQuality = selectedMinimumQuality();
-    if (minimumQuality !== null) {
-      parameters.set("minimum_quality", String(minimumQuality));
-    }
-    const response = await fetch(
-      `/api/training-samples/random-preview?${parameters.toString()}`,
-      { cache: "no-store" },
-    );
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(errorMessage(payload, response.status));
-    }
-    await applyPreview(payload, true);
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
-  }
+  await applyPreview(payload, true);
 }
 
 function ensureSampleOption() {
@@ -1013,17 +1068,6 @@ function sampleOptionLabel(sample) {
   return `${sample.external_id} · quality ${optionalScore(sample.quality_score)} · ${formatDuration(sample.represented_duration_seconds)} · ${sample.usable_event_count} events`;
 }
 
-function propositionKindLabel(kind) {
-  const labels = {
-    turn_shift: "Turn shift",
-    hold_pause: "Hard hold",
-    non_floor_feedback: "Non-floor feedback",
-    overlap_interruption: "Overlap / interruption",
-    background: "Background",
-  };
-  return labels[kind] ?? kind.replaceAll("_", " ");
-}
-
 function selectedMinimumQuality() {
   if (minimumQualityInput.value === "") {
     return null;
@@ -1131,7 +1175,15 @@ sampleSelect.addEventListener("change", () => loadPreview(true));
 userSideSelect.addEventListener("change", () => loadPreview(true));
 loadButton.addEventListener("click", () => loadPreview(false));
 randomButton.addEventListener("click", () => loadPreview(true));
-nextRandomButton.addEventListener("click", loadNextRandomSample);
+nextRandomButton.addEventListener("click", loadNextPreparedSample);
+minimumQualityInput.addEventListener("change", () => {
+  resetReviewQueue();
+  void prepareNextReviewSample();
+});
+samplingModeSelect.addEventListener("change", () => {
+  resetReviewQueue();
+  void prepareNextReviewSample();
+});
 positionSlider.addEventListener("input", () => {
   const startSeconds = Number(positionSlider.value);
   startInput.value = startSeconds.toFixed(2);

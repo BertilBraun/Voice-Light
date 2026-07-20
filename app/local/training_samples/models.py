@@ -182,5 +182,6 @@ class TrainingSampleProposition(FrozenBaseModel):
     masked_supervised_seconds: float
     masked_supervised_ratio: float
     event_anchor_count: int
+    category_event_count: int
     masked_reasons: tuple[str, ...]
     description: str

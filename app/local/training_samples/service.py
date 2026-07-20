@@ -53,6 +53,11 @@ INTERESTING_RANDOM_LOCATION_COUNT = 24
 INTERESTING_ANCHOR_LIMIT = 64
 PROPOSITION_ANCHOR_LIMIT_PER_KIND = 18
 PROPOSITION_EVENT_OFFSET_SECONDS = 12.0
+MAXIMUM_TURN_SHIFT_GAP_SECONDS = 1.5
+MINIMUM_PROPOSITION_SCORE = 0.75
+MINIMUM_PROPOSITION_PRIMARY_COVERAGE = 0.9
+MINIMUM_PROPOSITION_FUTURE_COVERAGE = 0.95
+MAXIMUM_PROPOSITION_MASKED_RATIO = 0.35
 HIGH_CONFIDENCE = 0.8
 LOW_CONFIDENCE = 0.2
 USER_YIELD_HORIZON_SECONDS = 0.5
@@ -277,17 +282,17 @@ def build_training_sample_propositions(
             user=user,
             assistant=assistant,
             conversation_regions=conversation_regions,
+            all_anchors=anchors,
         )
         for anchor in selected_anchors
     )
     return tuple(
-        sorted(
-            propositions,
-            key=lambda proposition: (
-                tuple(TrainingSamplePropositionKind).index(proposition.kind),
-                -proposition.score,
-            ),
-        )
+        proposition
+        for proposition in propositions
+        if proposition.score >= MINIMUM_PROPOSITION_SCORE
+        and proposition.primary_supervision_ratio >= MINIMUM_PROPOSITION_PRIMARY_COVERAGE
+        and proposition.future_activity_supervision_ratio >= MINIMUM_PROPOSITION_FUTURE_COVERAGE
+        and proposition.masked_supervised_ratio <= MAXIMUM_PROPOSITION_MASKED_RATIO
     )
 
 
@@ -303,6 +308,7 @@ def _balanced_proposition_anchors(
                 (anchor for anchor in anchors if anchor.kind is proposition_kind),
                 key=lambda anchor: _anchor_preference(
                     anchor=anchor,
+                    all_anchors=anchors,
                     duration_seconds=duration_seconds,
                     conversation_regions=conversation_regions,
                 ),
@@ -329,6 +335,7 @@ def _balanced_proposition_anchors(
 
 def _anchor_preference(
     anchor: PropositionAnchor,
+    all_anchors: Sequence[PropositionAnchor],
     duration_seconds: float,
     conversation_regions: ConversationRegionAnalysis | None,
 ) -> tuple[float, float]:
@@ -348,8 +355,15 @@ def _anchor_preference(
         masked_seconds,
         max(0.0, end_seconds - supervision_start_seconds),
     )
+    category_event_count = sum(
+        candidate.kind is anchor.kind
+        and supervision_start_seconds <= candidate.time_seconds < end_seconds
+        for candidate in all_anchors
+    )
     return (
-        anchor.confidence - 0.8 * max(0.0, masked_ratio - 0.2),
+        anchor.confidence
+        + 0.08 * min(3, category_event_count)
+        - 0.8 * max(0.0, masked_ratio - 0.2),
         -masked_ratio,
     )
 
@@ -359,31 +373,18 @@ def _proposition_anchors(
     assistant: SpeakerConversationAnnotation,
     duration_seconds: float,
 ) -> tuple[PropositionAnchor, ...]:
-    turn_shift_anchors = (
-        *(
-            PropositionAnchor(
-                kind=TrainingSamplePropositionKind.TURN_SHIFT,
-                time_seconds=point.time_seconds,
-                confidence=point.confidence if point.confidence is not None else 0.6,
-                description="User releases the floor",
-            )
-            for point in user.turns
-        ),
-        *(
-            PropositionAnchor(
-                kind=TrainingSamplePropositionKind.TURN_SHIFT,
-                time_seconds=point.time_seconds,
-                confidence=point.confidence if point.confidence is not None else 0.6,
-                description="User can take the floor after the other speaker",
-            )
-            for point in assistant.turns
-        ),
+    turn_shift_anchors = _tight_turn_shift_anchors(
+        user=user,
+        assistant=assistant,
     )
     hold_pause_anchors = tuple(
         PropositionAnchor(
             kind=TrainingSamplePropositionKind.HOLD_PAUSE,
             time_seconds=(connection.earlier_end_seconds + connection.later_start_seconds) / 2.0,
-            confidence=connection.merge_confidence,
+            confidence=min(
+                1.0,
+                connection.merge_confidence + 0.1 * min(1.0, connection.gap_seconds / 1.5),
+            ),
             description=(f"User resumes after a {connection.gap_seconds:.2f} s continuation pause"),
         )
         for connection in user.connection_targets
@@ -397,6 +398,7 @@ def _proposition_anchors(
             description="Short user response should remain non-floor feedback",
         )
         for span in user.backchannels
+        if _overlap_seconds(span, assistant.speech_segments) > 0.0
     )
     interruption_anchors = tuple(
         PropositionAnchor(
@@ -416,28 +418,86 @@ def _proposition_anchors(
         )
         for time_seconds in _overlap_onsets(user.speech_segments, assistant.speech_segments)
     )
-    maximum_start_seconds = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
-    background_count = min(24, max(1, math.ceil(duration_seconds / 120.0)))
-    background_anchors = tuple(
-        PropositionAnchor(
-            kind=TrainingSamplePropositionKind.BACKGROUND,
-            time_seconds=(
-                PROPOSITION_EVENT_OFFSET_SECONDS
-                if maximum_start_seconds == 0.0
-                else maximum_start_seconds * (index + 0.5) / background_count
-                + PROPOSITION_EVENT_OFFSET_SECONDS
-            ),
-            confidence=0.5,
-            description="Ordinary conversational context for baseline supervision",
-        )
-        for index in range(background_count)
-    )
     return (
         *_spread_anchors(turn_shift_anchors),
         *_spread_anchors(hold_pause_anchors),
         *_spread_anchors(feedback_anchors),
         *_spread_anchors((*interruption_anchors, *overlap_anchors)),
-        *_spread_anchors(background_anchors),
+    )
+
+
+def _tight_turn_shift_anchors(
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+) -> tuple[PropositionAnchor, ...]:
+    return (
+        *_speaker_shift_anchors(
+            releasing_segments=user.segment_targets,
+            responding_segments=assistant.segment_targets,
+            description="User releases the floor",
+        ),
+        *_speaker_shift_anchors(
+            releasing_segments=assistant.segment_targets,
+            responding_segments=user.segment_targets,
+            description="User takes the floor after the other speaker",
+        ),
+    )
+
+
+def _speaker_shift_anchors(
+    releasing_segments: Sequence[SegmentAnnotationTarget],
+    responding_segments: Sequence[SegmentAnnotationTarget],
+    description: str,
+) -> tuple[PropositionAnchor, ...]:
+    transcript_responses = tuple(
+        segment
+        for segment in responding_segments
+        if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+    )
+    anchors: list[PropositionAnchor] = []
+    for releasing_segment in releasing_segments:
+        if releasing_segment.evidence_source is not AnnotationEvidenceSource.TRANSCRIPT:
+            continue
+        response = next(
+            (
+                segment
+                for segment in transcript_responses
+                if segment.start_seconds >= releasing_segment.end_seconds
+            ),
+            None,
+        )
+        if response is None:
+            continue
+        gap_seconds = response.start_seconds - releasing_segment.end_seconds
+        if gap_seconds > MAXIMUM_TURN_SHIFT_GAP_SECONDS:
+            continue
+        timing_confidence = 1.0 - 0.25 * gap_seconds / MAXIMUM_TURN_SHIFT_GAP_SECONDS
+        anchors.append(
+            PropositionAnchor(
+                kind=TrainingSamplePropositionKind.TURN_SHIFT,
+                time_seconds=releasing_segment.end_seconds,
+                confidence=timing_confidence
+                * min(
+                    releasing_segment.turn_confidence,
+                    response.turn_confidence,
+                ),
+                description=f"{description} with a {gap_seconds:.2f} s response gap",
+            )
+        )
+    return tuple(anchors)
+
+
+def _overlap_seconds(
+    span: AnnotationSpan,
+    candidates: Sequence[AnnotationSpan],
+) -> float:
+    return sum(
+        max(
+            0.0,
+            min(span.end_seconds, candidate.end_seconds)
+            - max(span.start_seconds, candidate.start_seconds),
+        )
+        for candidate in candidates
     )
 
 
@@ -490,6 +550,7 @@ def _build_proposition(
     user: SpeakerConversationAnnotation,
     assistant: SpeakerConversationAnnotation,
     conversation_regions: ConversationRegionAnalysis | None,
+    all_anchors: Sequence[PropositionAnchor],
 ) -> TrainingSampleProposition:
     maximum_start_seconds = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
     start_seconds = min(
@@ -525,18 +586,25 @@ def _build_proposition(
     )
     supervised_duration_seconds = max(0.0, end_seconds - supervision_start_seconds)
     masked_supervised_ratio = _ratio(masked_supervised_seconds, supervised_duration_seconds)
+    category_event_count = sum(
+        candidate.kind is anchor.kind
+        and supervision_start_seconds <= candidate.time_seconds < end_seconds
+        for candidate in all_anchors
+    )
     retained_ratio = 1.0 - masked_supervised_ratio
     event_density_score = min(1.0, event_anchor_count / 3.0)
+    category_density_score = min(1.0, category_event_count / 3.0)
     excessive_mask_penalty = 0.7 * max(0.0, masked_supervised_ratio - 0.2)
     score = min(
         1.0,
         max(
             0.0,
-            0.35 * primary_supervision_ratio
-            + 0.2 * future_activity_supervision_ratio
+            0.25 * primary_supervision_ratio
+            + 0.15 * future_activity_supervision_ratio
             + 0.2 * anchor.confidence
             + 0.1 * event_density_score
             + 0.15 * retained_ratio
+            + 0.15 * category_density_score
             - excessive_mask_penalty,
         ),
     )
@@ -552,6 +620,7 @@ def _build_proposition(
         masked_supervised_seconds=masked_supervised_seconds,
         masked_supervised_ratio=masked_supervised_ratio,
         event_anchor_count=event_anchor_count,
+        category_event_count=category_event_count,
         masked_reasons=masked_reasons,
         description=anchor.description,
     )

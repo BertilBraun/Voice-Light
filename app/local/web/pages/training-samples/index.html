@@ -63,18 +63,46 @@
         <button id="next-random-button" class="primary" type="button">Next sample</button>
       </section>
 
-      <section class="panel propositions-panel" aria-label="Suggested training crops">
+      <section class="panel position-panel">
+        <div class="position-heading">
+          <strong id="position-label">No crop loaded</strong>
+          <span id="role-label"></span>
+        </div>
+        <input id="position-slider" type="range" min="0" max="0" step="0.08" value="0" />
+      </section>
+
+      <section class="panel transport">
+        <button id="play-button" type="button" disabled>Play user input</button>
+        <label class="play-both-option">
+          <input id="play-both-input" type="checkbox" />
+          Play both tracks
+        </label>
+        <span id="time-readout">00:00.00 / 00:20.00</span>
+        <span class="input-note">User audio plus the known assistant-speaking state are model inputs.</span>
+        <audio id="user-audio" preload="metadata"></audio>
+        <audio id="assistant-audio" preload="metadata"></audio>
+      </section>
+
+      <section class="panel annotation-panel">
         <div class="timeline-header">
           <div>
-            <h2>Suggested training crops</h2>
+            <h2>Source end-of-turn annotation</h2>
             <p>
-              Ranked across turn shifts, hard holds, feedback, overlap, and ordinary context.
-              Short orange regions are allowed and reported for loss masking.
+              The exact stored annotation used to construct the targets above, cropped to the same
+              20 seconds. Both waveforms use the same automatic gain normalization as playback.
             </p>
           </div>
-          <div id="propositions-status" class="propositions-status">Finding candidates…</div>
+          <div class="annotation-legend">
+            <span><i class="annotation-turn"></i>Turn-favoring segment</span>
+            <span><i class="annotation-keep"></i>Keep-playing / backchannel</span>
+            <span><i class="annotation-pause"></i>Continuation gap</span>
+            <span><i class="annotation-eot"></i>End of turn</span>
+          </div>
         </div>
-        <div id="propositions-list" class="propositions-list"></div>
+        <div id="annotation-source" class="annotation-source">No annotation loaded</div>
+        <div class="canvas-shell">
+          <canvas id="annotation-timeline" height="270"></canvas>
+        </div>
       </section>
 
       <section class="panel context-panel">
@@ -99,26 +127,6 @@
         </div>
       </section>
 
-      <section class="panel position-panel">
-        <div class="position-heading">
-          <strong id="position-label">No crop loaded</strong>
-          <span id="role-label"></span>
-        </div>
-        <input id="position-slider" type="range" min="0" max="0" step="0.08" value="0" />
-      </section>
-
-      <section class="panel transport">
-        <button id="play-button" type="button" disabled>Play user input</button>
-        <label class="play-both-option">
-          <input id="play-both-input" type="checkbox" />
-          Play both tracks
-        </label>
-        <span id="time-readout">00:00.00 / 00:20.00</span>
-        <span class="input-note">User audio plus the known assistant-speaking state are model inputs.</span>
-        <audio id="user-audio" preload="metadata"></audio>
-        <audio id="assistant-audio" preload="metadata"></audio>
-      </section>
-
       <section class="panel timeline-panel">
         <div class="timeline-header">
           <div>
@@ -137,28 +145,6 @@
         </div>
         <div class="canvas-shell">
           <canvas id="timeline" height="660"></canvas>
-        </div>
-      </section>
-
-      <section class="panel annotation-panel">
-        <div class="timeline-header">
-          <div>
-            <h2>Source end-of-turn annotation</h2>
-            <p>
-              The exact stored annotation used to construct the targets above, cropped to the same
-              20 seconds.
-            </p>
-          </div>
-          <div class="annotation-legend">
-            <span><i class="annotation-turn"></i>Turn-favoring segment</span>
-            <span><i class="annotation-keep"></i>Keep-playing / backchannel</span>
-            <span><i class="annotation-pause"></i>Continuation gap</span>
-            <span><i class="annotation-eot"></i>End of turn</span>
-          </div>
-        </div>
-        <div id="annotation-source" class="annotation-source">No annotation loaded</div>
-        <div class="canvas-shell">
-          <canvas id="annotation-timeline" height="270"></canvas>
         </div>
       </section>
 

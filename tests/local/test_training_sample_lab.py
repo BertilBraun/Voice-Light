@@ -19,6 +19,7 @@ from app.local.training_samples.service import (
     PropositionAnchor,
     _build_proposition,
     _interesting_location_score,
+    _proposition_anchors,
     build_frame_previews,
 )
 from app.shared.quality import (
@@ -61,12 +62,12 @@ def training_sample_script() -> Iterator[str]:
         "future_activity",
         "occupancy",
         "nextRandomButton",
-        "loadNextRandomSample",
+        "loadNextPreparedSample",
+        "prepareNextReviewSample",
+        "preparedNextPreview",
         "/api/training-samples/options?${parameters}",
         "/api/training-samples/random-preview",
         "/api/training-samples/propositions",
-        "renderPropositions",
-        "masked_supervised_seconds",
         "playBothInput",
         "assistantAudio",
         "synchronizeAudioTracks",
@@ -116,8 +117,19 @@ def test_training_sample_lab_updates_positions_only_on_committed_interactions(
     assert "contextOverviewController.schedule" not in training_sample_script
 
 
-def test_suggested_crop_autoplays_after_selection(training_sample_script: str) -> None:
-    assert "void loadPreview(false, true);" in training_sample_script
+def test_source_annotation_precedes_context_and_frame_preview() -> None:
+    with TestClient(app) as client:
+        page = client.get("/training/sample-lab").text
+
+    annotation_index = page.index("Source end-of-turn annotation")
+    context_index = page.index("Conversation context")
+    frame_index = page.index("Frame preview")
+    assert annotation_index < context_index < frame_index
+    assert "Suggested training crops" not in page
+
+
+def test_prefetched_crop_autoplays_after_selection(training_sample_script: str) -> None:
+    assert "await applyPreview(payload, true);" in training_sample_script
 
 
 def test_assistant_speaking_is_an_input_and_respects_playback_pauses() -> None:
@@ -183,13 +195,14 @@ def test_proposition_allows_short_masked_region_with_explicit_coverage() -> None
             ),
         ),
     )
+    anchor = PropositionAnchor(
+        kind=TrainingSamplePropositionKind.HOLD_PAUSE,
+        time_seconds=12.0,
+        confidence=0.9,
+        description="Short masked hold",
+    )
     proposition = _build_proposition(
-        anchor=PropositionAnchor(
-            kind=TrainingSamplePropositionKind.HOLD_PAUSE,
-            time_seconds=12.0,
-            confidence=0.9,
-            description="Short masked hold",
-        ),
+        anchor=anchor,
         duration_seconds=30.0,
         user=user,
         assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
@@ -209,12 +222,54 @@ def test_proposition_allows_short_masked_region_with_explicit_coverage() -> None
                 ),
             ),
         ),
+        all_anchors=(anchor,),
     )
 
     assert proposition.masked_supervised_seconds == pytest.approx(1.0)
     assert proposition.masked_supervised_ratio == pytest.approx(1.0 / 16.0)
     assert proposition.primary_supervision_ratio == pytest.approx(1.0)
-    assert proposition.score > 0.8
+    assert proposition.score > 0.75
+
+
+def test_candidate_anchors_require_tight_shifts_and_overlapping_backchannels() -> None:
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        speech_segments=(
+            AnnotationSpan(start_seconds=2.0, end_seconds=4.0, text="user turn"),
+            AnnotationSpan(start_seconds=11.2, end_seconds=11.5, text="yeah"),
+            AnnotationSpan(start_seconds=15.0, end_seconds=15.3, text="alone"),
+        ),
+        backchannels=(
+            AnnotationSpan(start_seconds=11.2, end_seconds=11.5, text="yeah"),
+            AnnotationSpan(start_seconds=15.0, end_seconds=15.3, text="alone"),
+        ),
+        segment_targets=(_segment_target(start_seconds=2.0, end_seconds=4.0),),
+    )
+    assistant = _speaker_annotation(
+        side=SpeakerSide.SPEAKER1,
+        speech_segments=(
+            AnnotationSpan(start_seconds=5.0, end_seconds=6.0, text="tight response"),
+            AnnotationSpan(start_seconds=10.0, end_seconds=13.0, text="assistant turn"),
+        ),
+        segment_targets=(
+            _segment_target(start_seconds=5.0, end_seconds=6.0),
+            _segment_target(start_seconds=10.0, end_seconds=13.0),
+        ),
+    )
+
+    anchors = _proposition_anchors(user=user, assistant=assistant, duration_seconds=20.0)
+
+    shifts = tuple(
+        anchor for anchor in anchors if anchor.kind is TrainingSamplePropositionKind.TURN_SHIFT
+    )
+    feedback = tuple(
+        anchor
+        for anchor in anchors
+        if anchor.kind is TrainingSamplePropositionKind.NON_FLOOR_FEEDBACK
+    )
+    assert any(anchor.time_seconds == pytest.approx(4.0) for anchor in shifts)
+    assert len(feedback) == 1
+    assert feedback[0].time_seconds == pytest.approx(11.35)
 
 
 def _speaker_annotation(
@@ -240,4 +295,19 @@ def _speaker_annotation(
         backchannel_duration_seconds=sum(
             span.end_seconds - span.start_seconds for span in backchannels
         ),
+    )
+
+
+def _segment_target(
+    start_seconds: float,
+    end_seconds: float,
+) -> SegmentAnnotationTarget:
+    return SegmentAnnotationTarget(
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        text="speech",
+        evidence_source=AnnotationEvidenceSource.TRANSCRIPT,
+        keep_playing_confidence=0.0,
+        turn_confidence=1.0,
+        interruption_confidence=0.0,
     )
