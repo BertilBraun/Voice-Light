@@ -37,6 +37,8 @@ const elements = {
   sampleName: document.querySelector("#sample-name"),
   candidateTime: document.querySelector("#candidate-time"),
   candidateReason: document.querySelector("#candidate-reason"),
+  reviewCategory: document.querySelector("#review-category"),
+  reviewCategorySummary: document.querySelector("#review-category-summary"),
   shiftBadge: document.querySelector("#shift-badge"),
   candidateDetails: document.querySelector("#candidate-details"),
   comparisonControls: document.querySelector("#comparison-controls"),
@@ -44,6 +46,7 @@ const elements = {
   originalShift: document.querySelector("#original-shift"),
   predictedShift: document.querySelector("#predicted-shift"),
   predictedShiftLabel: document.querySelector("#predicted-shift-label"),
+  recommendedFixes: document.querySelector("#recommended-fixes"),
   play: document.querySelector("#play"),
   seek: document.querySelector("#seek"),
   clock: document.querySelector("#clock"),
@@ -78,6 +81,7 @@ elements.misaligned.addEventListener("click", () => void submitJudgment("likely_
 elements.unsure.addEventListener("click", () => void submitJudgment("unsure"));
 elements.originalShift.addEventListener("click", () => setComparisonShift(false));
 elements.predictedShift.addEventListener("click", () => setComparisonShift(true));
+elements.recommendedFixes.addEventListener("click", () => void submitRecommendedFix());
 elements.repairPlausible.addEventListener("click", () => void submitRepairJudgment("plausible"));
 elements.repairRejected.addEventListener("click", () =>
   void submitRepairJudgment("not_plausible"),
@@ -109,13 +113,17 @@ document.addEventListener("keydown", (event) => {
     } else {
       void submitRepairJudgment("unsure");
     }
-  } else if (event.key.toLowerCase() === "f" && state.mode === "repairs") {
-    void submitRepairJudgment("plausible");
+  } else if (event.key.toLowerCase() === "f") {
+    if (state.mode === "repairs") {
+      void submitRepairJudgment("plausible");
+    } else if (currentOffsetRecommendation()) {
+      void submitRecommendedFix();
+    }
   } else if (event.key.toLowerCase() === "n" && state.mode === "repairs") {
     void submitRepairJudgment("not_plausible");
-  } else if (event.key.toLowerCase() === "o" && state.mode === "repairs") {
+  } else if (event.key.toLowerCase() === "o" && currentOffsetRecommendation()) {
     setComparisonShift(false);
-  } else if (event.key.toLowerCase() === "p" && state.mode === "repairs") {
+  } else if (event.key.toLowerCase() === "p" && currentOffsetRecommendation()) {
     setComparisonShift(true);
   } else if (event.key === " ") {
     event.preventDefault();
@@ -200,15 +208,15 @@ async function loadCandidate(index, autoplay) {
         `/api/synchronization-review/audio-window/${candidate.sample_id}/${side}?${query.toString()}`,
       );
     });
-    const repairEstimate = currentRepairEstimate();
+    const offsetRecommendation = currentOffsetRecommendation();
     const predictedAudioRequest =
-      state.mode === "repairs" && repairEstimate
+      offsetRecommendation
         ? fetch(
             `/api/synchronization-review/audio-window/${candidate.sample_id}/speaker2?${new URLSearchParams(
               {
                 start_seconds: String(
                   candidate.window_start_seconds -
-                    repairEstimate.predicted_second_part_shift_seconds,
+                    offsetRecommendation.shift_seconds,
                 ),
                 duration_seconds: String(clipDuration(candidate)),
               },
@@ -268,7 +276,7 @@ async function ensureAudioContext(resume) {
 
 async function startPlayback(fromUserGesture) {
   const speaker2Buffer =
-    state.mode === "repairs" && state.usePredictedShift
+    state.usePredictedShift
       ? state.buffers.speaker2Predicted
       : state.buffers.speaker2Original;
   if (!state.buffers.speaker1 || !speaker2Buffer) {
@@ -295,9 +303,9 @@ async function startPlayback(fromUserGesture) {
   });
   state.playbackStartedAt = scheduledTime - state.playbackOffsetSeconds;
   elements.playbackStatus.textContent =
-    state.mode === "repairs" && state.usePredictedShift
+    state.usePredictedShift
       ? `Playing speaker 2 with the predicted ${formatSignedSeconds(
-          currentRepairEstimate().predicted_second_part_shift_seconds,
+          currentOffsetRecommendation().shift_seconds,
         )} shift. No files are modified.`
       : "Playing both raw tracks on one AudioContext clock with exactly zero applied shift.";
   elements.playbackStatus.classList.remove("warning");
@@ -434,6 +442,64 @@ async function submitRepairJudgment(judgment) {
   }
 }
 
+async function submitRecommendedFix() {
+  const candidate = currentCandidate();
+  const recommendation = currentOffsetRecommendation();
+  if (!candidate || !recommendation || state.mode !== "triage" || state.judging) {
+    return;
+  }
+  state.judging = true;
+  stopPlayback();
+  setDecisionDisabled(true);
+  try {
+    const judgmentResponse = await fetch("/api/misalignment-lab/judgments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        candidate_id: candidate.candidate_id,
+        sample_id: candidate.sample_id,
+        window_start_seconds: candidate.window_start_seconds,
+        window_end_seconds: candidate.window_end_seconds,
+        judgment: "likely_misaligned",
+        queue_seed: QUEUE_SEED,
+      }),
+    });
+    const judgmentPayload = await judgmentResponse.json();
+    if (!judgmentResponse.ok) {
+      throw new Error(
+        judgmentPayload.detail || `Judgment request failed (${judgmentResponse.status})`,
+      );
+    }
+    const repairResponse = await fetch("/api/misalignment-lab/repair-judgments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sample_id: candidate.sample_id,
+        candidate_id: candidate.candidate_id,
+        predicted_shift_seconds: recommendation.shift_seconds,
+        estimator_version: recommendation.estimator_version,
+        judgment: "plausible",
+      }),
+    });
+    const repairPayload = await repairResponse.json();
+    if (!repairResponse.ok) {
+      throw new Error(
+        repairPayload.detail || `Offset assessment failed (${repairResponse.status})`,
+      );
+    }
+    state.progress = judgmentPayload.progress;
+    renderProgress();
+    await loadCandidate(state.index + 1, true);
+  } catch (error) {
+    elements.playbackStatus.textContent =
+      error instanceof Error ? error.message : "Could not save the offset assessment.";
+    elements.playbackStatus.classList.add("warning");
+    setDecisionDisabled(false);
+  } finally {
+    state.judging = false;
+  }
+}
+
 function renderCandidate() {
   const candidate = currentCandidate();
   const preview = state.preview;
@@ -447,7 +513,8 @@ function renderCandidate() {
     `${formatDuration(candidate.seconds_from_recording_end)} before recording end.`;
   elements.speaker1Events.textContent = annotationSummary(preview.speaker1);
   elements.speaker2Events.textContent = annotationSummary(activeSpeaker2Annotation());
-  renderRepairComparison();
+  renderReviewCategory();
+  renderOffsetComparison();
   const repairEstimate = currentRepairEstimate();
   elements.candidateDetails.replaceChildren(
     ...detailRows([
@@ -564,6 +631,7 @@ function setDecisionDisabled(disabled) {
   elements.repairPlausible.disabled = disabled;
   elements.repairRejected.disabled = disabled;
   elements.repairUnsure.disabled = disabled;
+  elements.recommendedFixes.disabled = disabled;
 }
 
 function renderProgress() {
@@ -619,27 +687,33 @@ function renderMode() {
     : "Plausibly aligned accepts the recording; likely misaligned quarantines it. Unsure asks for a different exchange later. No audio is rewritten.";
 }
 
-function renderRepairComparison() {
-  const repairEstimate = currentRepairEstimate();
-  if (state.mode !== "repairs" || !repairEstimate) {
+function renderReviewCategory() {
+  const candidate = currentCandidate();
+  const labels = {
+    likely_aligned: "1 - Very likely aligned",
+    likely_constant_offset: "2 - Likely one-offset repair",
+    non_constant_or_uncertain: "3 - Non-constant / no safe shift",
+  };
+  elements.reviewCategory.textContent = labels[candidate.review_category];
+  elements.reviewCategory.className = candidate.review_category.replaceAll("_", "-");
+  elements.reviewCategorySummary.textContent = candidate.review_category_summary;
+}
+
+function renderOffsetComparison() {
+  const recommendation = currentOffsetRecommendation();
+  if (!recommendation) {
     elements.comparisonControls.hidden = true;
     elements.shiftBadge.textContent = "Raw tracks - shift 0.0 s";
     return;
   }
   elements.comparisonControls.hidden = false;
-  elements.predictedShiftLabel.textContent = formatSignedSeconds(
-    repairEstimate.predicted_second_part_shift_seconds,
-  );
-  elements.repairEvidence.textContent =
-    `${repairEstimate.supporting_window_count} stable windows over ` +
-    `${formatDuration(repairEstimate.stable_second_part_duration_seconds)}; ` +
-    `${repairEstimate.shift_spread_seconds.toFixed(2)} s spread`;
+  elements.recommendedFixes.hidden = state.mode === "repairs";
+  elements.predictedShiftLabel.textContent = formatSignedSeconds(recommendation.shift_seconds);
+  elements.repairEvidence.textContent = recommendation.summary;
   elements.originalShift.setAttribute("aria-pressed", String(!state.usePredictedShift));
   elements.predictedShift.setAttribute("aria-pressed", String(state.usePredictedShift));
   elements.shiftBadge.textContent = state.usePredictedShift
-    ? `Predicted speaker 2 shift ${formatSignedSeconds(
-        repairEstimate.predicted_second_part_shift_seconds,
-      )}`
+    ? `Recommended speaker 2 shift ${formatSignedSeconds(recommendation.shift_seconds)}`
     : "Original tracks - shift 0.0 s";
   const storedJudgment = currentQueueItem().stored_judgment;
   if (storedJudgment) {
@@ -650,7 +724,7 @@ function renderRepairComparison() {
 }
 
 function setComparisonShift(usePredictedShift) {
-  if (state.mode !== "repairs" || !currentRepairEstimate()) {
+  if (!currentOffsetRecommendation()) {
     return;
   }
   const wasPlaying = state.playbackStartedAt !== null;
@@ -662,8 +736,8 @@ function setComparisonShift(usePredictedShift) {
     void startPlayback(true);
   } else {
     elements.playbackStatus.textContent = usePredictedShift
-      ? `Ready to play speaker 2 with the predicted ${formatSignedSeconds(
-          currentRepairEstimate().predicted_second_part_shift_seconds,
+      ? `Ready to play speaker 2 with the recommended ${formatSignedSeconds(
+          currentOffsetRecommendation().shift_seconds,
         )} shift.`
       : "Ready to play both original tracks with exactly zero applied shift.";
   }
@@ -671,7 +745,6 @@ function setComparisonShift(usePredictedShift) {
 
 function activeSpeaker2Waveform() {
   if (
-    state.mode === "repairs" &&
     state.usePredictedShift &&
     state.preview.predicted_speaker2_waveform
   ) {
@@ -682,7 +755,6 @@ function activeSpeaker2Waveform() {
 
 function activeSpeaker2Annotation() {
   if (
-    state.mode === "repairs" &&
     state.usePredictedShift &&
     state.preview.predicted_speaker2
   ) {
@@ -719,6 +791,21 @@ function currentQueueItem() {
 function currentRepairEstimate() {
   const item = currentQueueItem();
   return item?.repair_estimate ?? null;
+}
+
+function currentOffsetRecommendation() {
+  const repairEstimate = currentRepairEstimate();
+  if (repairEstimate) {
+    return {
+      shift_seconds: repairEstimate.predicted_second_part_shift_seconds,
+      estimator_version: repairEstimate.estimator_version,
+      summary:
+        `${repairEstimate.supporting_window_count} stable windows over ` +
+        `${formatDuration(repairEstimate.stable_second_part_duration_seconds)}; ` +
+        `${repairEstimate.shift_spread_seconds.toFixed(2)} s spread`,
+    };
+  }
+  return currentCandidate()?.offset_recommendation ?? null;
 }
 
 function clipDuration(candidate = currentCandidate()) {

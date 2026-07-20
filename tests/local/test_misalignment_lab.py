@@ -16,17 +16,20 @@ from app.local.db.models import (
 )
 from app.local.main import app
 from app.local.misalignment_lab.models import (
+    AlignmentReviewCategory,
     MisalignmentJudgment,
     MisalignmentStoredJudgment,
 )
 from app.local.misalignment_lab.service import (
     _candidate_starts,
+    alignment_assessment,
     build_misalignment_queue,
     estimate_piecewise_repair,
     interaction_window_metrics,
 )
 from app.local.synchronization_review.models import (
     SynchronizationAuditKind,
+    SynchronizationAuditReport,
     SynchronizationAuditResult,
     SynchronizationAuditWindow,
     SynchronizationEvidenceSource,
@@ -67,7 +70,8 @@ def misalignment_lab_assets() -> Iterator[tuple[str, str]]:
         "end of turn",
         "Test quarantine repairs",
         "Original 0.0 s",
-        "Predicted",
+        "Try recommended",
+        "Recommended shift fixes it",
         "Prediction sounds plausible",
         "Prediction does not fix it",
     ),
@@ -101,6 +105,10 @@ def test_misalignment_lab_exposes_rapid_triage_controls(
         "/api/misalignment-lab/repair-judgments",
         "speaker2Predicted",
         "setComparisonShift",
+        "currentOffsetRecommendation",
+        "review_category",
+        "submitRecommendedFix",
+        'judgment: "likely_misaligned"',
     ),
 )
 def test_misalignment_lab_uses_zero_shift_shared_clock_and_auto_advance(
@@ -301,6 +309,99 @@ def test_piecewise_repair_estimate_requires_stable_distinct_second_part() -> Non
     assert estimate.stable_second_part_duration_seconds == 480.0
     assert estimate.conservative_first_part_end_seconds == 240.0
     assert estimate.conservative_second_part_start_seconds == 780.0
+
+
+@pytest.mark.parametrize(
+    ("kind", "suffix_shifts", "expected_category", "expected_shift"),
+    (
+        (
+            SynchronizationAuditKind.STABLE_OFFSET,
+            (0.18, 0.21, 0.24, 0.20),
+            AlignmentReviewCategory.LIKELY_ALIGNED,
+            0.21,
+        ),
+        (
+            SynchronizationAuditKind.STABLE_OFFSET,
+            (3.9, 4.0, 4.1, 4.0),
+            AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
+            4.0,
+        ),
+        (
+            SynchronizationAuditKind.TEMPORAL_CHANGE,
+            (4.0, 4.2, 4.3, 4.1, 4.2, 4.4),
+            AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
+            4.2,
+        ),
+        (
+            SynchronizationAuditKind.TEMPORAL_CHANGE,
+            (4.0, 5.5, 4.0, 5.5, 4.0),
+            AlignmentReviewCategory.NON_CONSTANT_OR_UNCERTAIN,
+            None,
+        ),
+    ),
+)
+def test_alignment_assessment_labels_and_recommends_only_safe_offsets(
+    kind: SynchronizationAuditKind,
+    suffix_shifts: tuple[float, ...],
+    expected_category: AlignmentReviewCategory,
+    expected_shift: float | None,
+) -> None:
+    assessment = alignment_assessment(
+        _audit_result(
+            sample_id=uuid4(),
+            suffix_shifts=suffix_shifts,
+            kind=kind,
+        )
+    )
+
+    assert assessment.category is expected_category
+    assert (
+        assessment.recommendation.shift_seconds if assessment.recommendation is not None else None
+    ) == expected_shift
+
+
+def test_queue_orders_aligned_then_one_offset_then_non_constant() -> None:
+    aligned = _dashboard_sample(external_id="pmt_aligned", dense_late_exchange=True)
+    constant = _dashboard_sample(external_id="pmt_constant", dense_late_exchange=True)
+    variable = _dashboard_sample(external_id="pmt_variable", dense_late_exchange=True)
+    audit_report = SynchronizationAuditReport(
+        estimator_version="test",
+        window_duration_seconds=180.0,
+        window_hop_seconds=60.0,
+        analyzed_session_count=3,
+        generated_at="2026-07-20T00:00:00Z",
+        results=(
+            _audit_result(
+                sample_id=aligned.sample.id,
+                suffix_shifts=(0.18, 0.21, 0.24, 0.20),
+                kind=SynchronizationAuditKind.STABLE_OFFSET,
+            ),
+            _audit_result(
+                sample_id=constant.sample.id,
+                suffix_shifts=(3.9, 4.0, 4.1, 4.0),
+                kind=SynchronizationAuditKind.STABLE_OFFSET,
+            ),
+            _audit_result(
+                sample_id=variable.sample.id,
+                suffix_shifts=(4.0, 5.5, 4.0, 5.5, 4.0),
+                kind=SynchronizationAuditKind.TEMPORAL_CHANGE,
+            ),
+        ),
+    )
+
+    queue = build_misalignment_queue(
+        dashboard_samples=(variable, constant, aligned),
+        audit_report=audit_report,
+        judgments=(),
+        seed="category-order",
+        limit=3,
+    )
+
+    assert [candidate.review_category for candidate in queue.candidates] == [
+        AlignmentReviewCategory.LIKELY_ALIGNED,
+        AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
+        AlignmentReviewCategory.NON_CONSTANT_OR_UNCERTAIN,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -520,6 +621,7 @@ def _stored_judgment(
 def _audit_result(
     sample_id: UUID,
     suffix_shifts: tuple[float, ...],
+    kind: SynchronizationAuditKind = SynchronizationAuditKind.TEMPORAL_CHANGE,
 ) -> SynchronizationAuditResult:
     prefix = tuple(
         _audit_window(
@@ -542,7 +644,7 @@ def _audit_result(
     return SynchronizationAuditResult(
         sample_id=sample_id,
         external_id="pmt_test",
-        kind=SynchronizationAuditKind.TEMPORAL_CHANGE,
+        kind=kind,
         anomaly_score=0.9,
         strongest_window_start_seconds=600.0,
         strongest_window_end_seconds=780.0,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from uuid import UUID
 
@@ -26,9 +27,7 @@ from app.local.misalignment_lab.service import (
     build_misalignment_preview,
     build_misalignment_queue,
     build_misalignment_repair_queue,
-    eligible_annotated_session_count,
     misalignment_progress,
-    misalignment_repair_progress,
     validate_judgment_candidate,
 )
 from app.local.synchronization_review.audit import SYNCHRONIZATION_AUDIT_PATH
@@ -117,16 +116,12 @@ def save_misalignment_judgment(
 ) -> MisalignmentJudgmentResponse:
     try:
         response.headers["Cache-Control"] = "no-store"
-        samples = _all_dashboard_samples(sample_repository())
-        dashboard_sample = next(
-            (candidate for candidate in samples if candidate.sample.id == request.sample_id),
-            None,
-        )
-        if dashboard_sample is None:
-            raise ValueError(f"Sample not found: {request.sample_id}")
+        repository = sample_repository()
+        audit_report = _audit_report(SYNCHRONIZATION_AUDIT_PATH)
+        dashboard_sample = repository.get_dashboard_sample(request.sample_id)
         validate_judgment_candidate(
             dashboard_sample=dashboard_sample,
-            audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            audit_report=audit_report,
             candidate_id=request.candidate_id,
             start_seconds=request.window_start_seconds,
             end_seconds=request.window_end_seconds,
@@ -139,7 +134,12 @@ def save_misalignment_judgment(
             session_quarantined=stored.judgment is MisalignmentJudgment.LIKELY_MISALIGNED,
             progress=misalignment_progress(
                 judgments=judgments,
-                eligible_session_count=eligible_annotated_session_count(samples),
+                eligible_session_count=len(
+                    _audited_dashboard_samples(
+                        repository=repository,
+                        audit_report=audit_report,
+                    )
+                ),
             ),
         )
     except ValueError as error:
@@ -155,44 +155,50 @@ def save_misalignment_repair_judgment(
         response.headers["Cache-Control"] = "no-store"
         reviews = judgment_repository()
         judgments = reviews.list_judgments()
+        quarantine_judgment = next(
+            (
+                judgment
+                for judgment in judgments
+                if judgment.sample_id == request.sample_id
+                and judgment.candidate_id == request.candidate_id
+                and judgment.judgment is MisalignmentJudgment.LIKELY_MISALIGNED
+            ),
+            None,
+        )
+        if quarantine_judgment is None:
+            raise ValueError("The offset recommendation must be attached to a quarantined review.")
+        repository = sample_repository()
+        audit_report = _audit_report(SYNCHRONIZATION_AUDIT_PATH)
+        candidate = validate_judgment_candidate(
+            dashboard_sample=repository.get_dashboard_sample(request.sample_id),
+            audit_report=audit_report,
+            candidate_id=request.candidate_id,
+            start_seconds=quarantine_judgment.window_start_seconds,
+            end_seconds=quarantine_judgment.window_end_seconds,
+        )
+        recommendation = candidate.offset_recommendation
+        if recommendation is None:
+            raise ValueError("No safe single-offset recommendation exists for this session.")
+        if (
+            recommendation.estimator_version != request.estimator_version
+            or abs(recommendation.shift_seconds - request.predicted_shift_seconds) > 1e-6
+        ):
+            raise ValueError("Offset recommendation is stale; reload the review queue.")
+        stored = reviews.save_repair_judgment(request=request)
+        repair_judgments = reviews.list_repair_judgments()
         samples = _quarantined_dashboard_samples(
-            repository=sample_repository(),
+            repository=repository,
             judgments=judgments,
         )
         repair_queue = build_misalignment_repair_queue(
             dashboard_samples=samples,
-            audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            audit_report=audit_report,
             judgments=judgments,
-            repair_judgments=reviews.list_repair_judgments(),
+            repair_judgments=repair_judgments,
         )
-        repair_candidate = next(
-            (
-                candidate
-                for candidate in repair_queue.candidates
-                if candidate.candidate.sample_id == request.sample_id
-            ),
-            None,
-        )
-        if repair_candidate is None:
-            raise ValueError("No conservative repair estimate exists for this session.")
-        if repair_candidate.candidate.candidate_id != request.candidate_id:
-            raise ValueError("Repair candidate does not match the quarantined review.")
-        estimate = repair_candidate.repair_estimate
-        if (
-            estimate.estimator_version != request.estimator_version
-            or abs(estimate.predicted_second_part_shift_seconds - request.predicted_shift_seconds)
-            > 1e-6
-        ):
-            raise ValueError("Repair estimate is stale; reload the repair queue.")
-        stored = reviews.save_repair_judgment(request=request)
-        repair_judgments = reviews.list_repair_judgments()
         return MisalignmentRepairJudgmentResponse(
             stored=stored,
-            progress=misalignment_repair_progress(
-                quarantined_session_count=(repair_queue.progress.quarantined_session_count),
-                repair_candidate_count=repair_queue.progress.repair_candidate_count,
-                repair_judgments=repair_judgments,
-            ),
+            progress=repair_queue.progress,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -217,8 +223,20 @@ def _audited_dashboard_samples(
 ) -> tuple[DashboardSample, ...]:
     if audit_report is None or not audit_report.results:
         return _all_dashboard_samples(repository)
-    audited_sample_ids = {result.sample_id for result in audit_report.results}
-    first_sample = repository.get_dashboard_sample(audit_report.results[0].sample_id)
+    return _cached_audited_dashboard_samples(
+        database_url=repository.database_url,
+        audited_sample_ids=tuple(result.sample_id for result in audit_report.results),
+    )
+
+
+@lru_cache(maxsize=2)
+def _cached_audited_dashboard_samples(
+    database_url: str,
+    audited_sample_ids: tuple[UUID, ...],
+) -> tuple[DashboardSample, ...]:
+    repository = Repository(database_url)
+    audited_sample_id_set = set(audited_sample_ids)
+    first_sample = repository.get_dashboard_sample(audited_sample_ids[0])
     samples: list[DashboardSample] = []
     offset = 0
     while True:
@@ -229,7 +247,7 @@ def _audited_dashboard_samples(
                 offset=offset,
             )
         )
-        samples.extend(sample for sample in page if sample.sample.id in audited_sample_ids)
+        samples.extend(sample for sample in page if sample.sample.id in audited_sample_id_set)
         if len(page) < SAMPLE_PAGE_SIZE:
             return tuple(samples)
         offset += SAMPLE_PAGE_SIZE

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import math
-import random
 import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -12,11 +10,13 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
 from app.local.ingestion.local_audio import materialize_sample_track
 from app.local.misalignment_lab.models import (
+    AlignmentReviewCategory,
     InteractionWindowMetrics,
     MisalignmentCandidatePreview,
     MisalignmentCandidateSummary,
     MisalignmentJudgment,
     MisalignmentLabProgress,
+    MisalignmentOffsetRecommendation,
     MisalignmentQueueResponse,
     MisalignmentRepairCandidate,
     MisalignmentRepairEstimate,
@@ -28,6 +28,7 @@ from app.local.misalignment_lab.models import (
     MisalignmentWindowAnnotation,
 )
 from app.local.synchronization_review.models import (
+    SynchronizationAuditKind,
     SynchronizationAuditReport,
     SynchronizationAuditResult,
     SynchronizationAuditWindow,
@@ -55,6 +56,7 @@ WAVEFORM_POINT_COUNT = 1000
 DEFAULT_QUEUE_SEED = "misalignment-lab-v1"
 DEFAULT_QUEUE_SIZE = 50
 REPAIR_ESTIMATOR_VERSION = "piecewise-stable-suffix-v1"
+CONSTANT_OFFSET_ESTIMATOR_VERSION = "stable-global-offset-v1"
 REPAIR_MINIMUM_WINDOW_CONFIDENCE = 0.65
 REPAIR_MINIMUM_PERSISTENCE_WINDOWS = 3
 REPAIR_MAXIMUM_NEIGHBOR_GAP_SECONDS = 180.0
@@ -64,6 +66,14 @@ REPAIR_MINIMUM_SUFFIX_DURATION_SECONDS = 300.0
 REPAIR_BASELINE_SHIFT_TOLERANCE_SECONDS = 0.75
 REPAIR_MINIMUM_PREFIX_WINDOWS = 3
 REPAIR_MINIMUM_SHIFT_CHANGE_SECONDS = 1.0
+CONSTANT_OFFSET_MAXIMUM_SPREAD_SECONDS = 1.25
+LIKELY_ALIGNED_MAXIMUM_SHIFT_SECONDS = 1.0
+MINIMUM_RECOMMENDED_SHIFT_SECONDS = 0.1
+REVIEW_CATEGORY_ORDER = {
+    AlignmentReviewCategory.LIKELY_ALIGNED: 0,
+    AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET: 1,
+    AlignmentReviewCategory.NON_CONSTANT_OR_UNCERTAIN: 2,
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +91,14 @@ class TimedSpeakerSegment:
     side: SpeakerSide
     start_seconds: float
     end_seconds: float
+
+
+@dataclass(frozen=True)
+class AlignmentAssessment:
+    category: AlignmentReviewCategory
+    likelihood_score: float
+    summary: str
+    recommendation: MisalignmentOffsetRecommendation | None
 
 
 def build_misalignment_queue(
@@ -133,13 +151,13 @@ def build_misalignment_queue(
         if unreviewed is not None:
             candidates.append(unreviewed)
     ordered = tuple(
-        candidate
-        for _, candidate in sorted(
-            (
-                (_weighted_shuffle_key(candidate=candidate, seed=seed), candidate)
-                for candidate in candidates
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                REVIEW_CATEGORY_ORDER[candidate.review_category],
+                -candidate.alignment_likelihood_score,
+                candidate.external_id,
             ),
-            key=lambda item: (item[0], item[1].external_id),
         )[:limit]
     )
     return MisalignmentQueueResponse(
@@ -282,6 +300,108 @@ def estimate_piecewise_repair(
     )
 
 
+def alignment_assessment(
+    audit_result: SynchronizationAuditResult | None,
+) -> AlignmentAssessment:
+    if audit_result is None:
+        return AlignmentAssessment(
+            category=AlignmentReviewCategory.NON_CONSTANT_OR_UNCERTAIN,
+            likelihood_score=0.0,
+            summary="No synchronization audit is available; no single shift is safe to recommend.",
+            recommendation=None,
+        )
+    if audit_result.kind is SynchronizationAuditKind.STABLE_OFFSET:
+        stable_recommendation = _stable_offset_recommendation(audit_result)
+        if stable_recommendation is not None:
+            shift_magnitude = abs(stable_recommendation.shift_seconds)
+            if shift_magnitude <= LIKELY_ALIGNED_MAXIMUM_SHIFT_SECONDS:
+                likelihood = stable_recommendation.confidence_score * (
+                    1.0 - shift_magnitude / (2.0 * LIKELY_ALIGNED_MAXIMUM_SHIFT_SECONDS)
+                )
+                return AlignmentAssessment(
+                    category=AlignmentReviewCategory.LIKELY_ALIGNED,
+                    likelihood_score=round(likelihood, 3),
+                    summary=(
+                        "Audit windows stay stable and close to the original timeline. "
+                        "Listen to the raw tracks first."
+                    ),
+                    recommendation=(
+                        stable_recommendation
+                        if shift_magnitude >= MINIMUM_RECOMMENDED_SHIFT_SECONDS
+                        else None
+                    ),
+                )
+            return AlignmentAssessment(
+                category=AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
+                likelihood_score=stable_recommendation.confidence_score,
+                summary=(
+                    "Audit windows agree on one stable offset. Toggle the recommended shift "
+                    "before deciding."
+                ),
+                recommendation=stable_recommendation,
+            )
+    if audit_result.kind is SynchronizationAuditKind.TEMPORAL_CHANGE:
+        repair_estimate = estimate_piecewise_repair(audit_result=audit_result)
+        if repair_estimate is not None:
+            return AlignmentAssessment(
+                category=AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
+                likelihood_score=repair_estimate.confidence_score,
+                summary=(
+                    "The later part has one stable offset relative to the aligned beginning. "
+                    "Toggle the recommended late-track shift before deciding."
+                ),
+                recommendation=MisalignmentOffsetRecommendation(
+                    estimator_version=repair_estimate.estimator_version,
+                    shift_seconds=repair_estimate.predicted_second_part_shift_seconds,
+                    confidence_score=repair_estimate.confidence_score,
+                    supporting_window_count=repair_estimate.supporting_window_count,
+                    summary=(
+                        f"{repair_estimate.supporting_window_count} stable late windows over "
+                        f"{repair_estimate.stable_second_part_duration_seconds / 60.0:.1f} min"
+                    ),
+                ),
+            )
+    return AlignmentAssessment(
+        category=AlignmentReviewCategory.NON_CONSTANT_OR_UNCERTAIN,
+        likelihood_score=round(max(0.0, 1.0 - audit_result.anomaly_score), 3),
+        summary=(
+            "The audit does not support one safe constant shift. This recording is intentionally "
+            "placed after the aligned and one-offset candidates."
+        ),
+        recommendation=None,
+    )
+
+
+def _stable_offset_recommendation(
+    audit_result: SynchronizationAuditResult,
+) -> MisalignmentOffsetRecommendation | None:
+    reliable_windows = tuple(
+        window
+        for window in audit_result.windows
+        if window.accepted
+        and not window.maximum_lag_boundary
+        and window.confidence_score >= REPAIR_MINIMUM_WINDOW_CONFIDENCE
+        and window.persistence_window_count >= REPAIR_MINIMUM_PERSISTENCE_WINDOWS
+    )
+    if len(reliable_windows) < REPAIR_MINIMUM_PREFIX_WINDOWS:
+        return None
+    shifts = tuple(window.estimated_b_shift_seconds for window in reliable_windows)
+    spread = max(shifts) - min(shifts)
+    if spread > CONSTANT_OFFSET_MAXIMUM_SPREAD_SECONDS:
+        return None
+    shift = statistics.median(shifts)
+    stability = 1.0 - spread / CONSTANT_OFFSET_MAXIMUM_SPREAD_SECONDS
+    evidence_confidence = statistics.mean(window.confidence_score for window in reliable_windows)
+    confidence = 0.6 * evidence_confidence + 0.4 * stability
+    return MisalignmentOffsetRecommendation(
+        estimator_version=CONSTANT_OFFSET_ESTIMATOR_VERSION,
+        shift_seconds=round(shift, 2),
+        confidence_score=round(confidence, 3),
+        supporting_window_count=len(reliable_windows),
+        summary=(f"{len(reliable_windows)} agreeing windows; {spread:.2f} s total shift spread"),
+    )
+
+
 def misalignment_repair_progress(
     quarantined_session_count: int,
     repair_candidate_count: int,
@@ -358,8 +478,8 @@ def build_misalignment_preview(
     )
     predicted_speaker2_waveform: tuple[PreviewWaveformPoint, ...] | None = None
     predicted_speaker2: MisalignmentWindowAnnotation | None = None
-    if repair_estimate is not None:
-        predicted_shift = repair_estimate.predicted_second_part_shift_seconds
+    if candidate.offset_recommendation is not None:
+        predicted_shift = candidate.offset_recommendation.shift_seconds
         predicted_source_start = candidate.window_start_seconds - predicted_shift
         predicted_source_end = candidate.window_end_seconds - predicted_shift
         if predicted_source_start >= 0.0:
@@ -407,7 +527,7 @@ def validate_judgment_candidate(
     candidate_id: UUID,
     start_seconds: float,
     end_seconds: float,
-) -> None:
+) -> MisalignmentCandidateSummary:
     annotated_sample = _annotated_sample(dashboard_sample)
     if annotated_sample is None:
         raise ValueError("The selected sample has no full conversation annotation.")
@@ -441,6 +561,7 @@ def validate_judgment_candidate(
         or abs(candidate.window_end_seconds - end_seconds) > 1e-6
     ):
         raise ValueError("Judgment window does not match the generated candidate.")
+    return candidate
 
 
 def misalignment_progress(
@@ -523,6 +644,7 @@ def _ranked_windows(
     annotated_sample: AnnotatedSample,
     audit_result: SynchronizationAuditResult | None,
 ) -> tuple[MisalignmentCandidateSummary, ...]:
+    alignment = alignment_assessment(audit_result=audit_result)
     interaction_sample = replace(
         annotated_sample,
         annotation=_interaction_region_annotation(
@@ -540,6 +662,7 @@ def _ranked_windows(
             annotated_sample=interaction_sample,
             audit_result=audit_result,
             start_seconds=start_seconds,
+            alignment=alignment,
         )
         for start_seconds in starts
     )
@@ -648,6 +771,7 @@ def _candidate_summary(
     annotated_sample: AnnotatedSample,
     audit_result: SynchronizationAuditResult | None,
     start_seconds: float,
+    alignment: AlignmentAssessment | None = None,
 ) -> MisalignmentCandidateSummary:
     end_seconds = start_seconds + CLIP_DURATION_SECONDS
     interaction = interaction_window_metrics(
@@ -662,6 +786,7 @@ def _candidate_summary(
     )
     interaction_strength = 1.0 - math.exp(-interaction.interaction_score / 10.0)
     sampling_weight = 0.15 + 3.0 * suspicion_score + 0.75 * interaction_strength
+    resolved_alignment = alignment or alignment_assessment(audit_result=audit_result)
     sample = annotated_sample.dashboard_sample.sample
     candidate_id = uuid5(
         NAMESPACE_URL,
@@ -686,6 +811,10 @@ def _candidate_summary(
         audit_late_shift_seconds=audit_late_shift_seconds,
         duration_mismatch_seconds=annotated_sample.duration_mismatch_seconds,
         sampling_weight=sampling_weight,
+        review_category=resolved_alignment.category,
+        alignment_likelihood_score=resolved_alignment.likelihood_score,
+        review_category_summary=resolved_alignment.summary,
+        offset_recommendation=resolved_alignment.recommendation,
     )
 
 
@@ -818,16 +947,6 @@ def _suspicion(
     )
     suspicion = 1.0 - (1.0 - audit_signal) * (1.0 - 0.65 * duration_signal)
     return max(0.03, min(1.0, suspicion)), anomaly_score, late_shift
-
-
-def _weighted_shuffle_key(
-    candidate: MisalignmentCandidateSummary,
-    seed: str,
-) -> float:
-    digest = hashlib.sha256(f"{seed}:{candidate.candidate_id}".encode()).digest()
-    generator = random.Random(int.from_bytes(digest[:8], byteorder="big"))
-    uniform = max(generator.random(), 1e-12)
-    return -math.log(uniform) / candidate.sampling_weight
 
 
 def _stable_final_suffix(

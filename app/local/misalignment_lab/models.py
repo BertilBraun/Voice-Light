@@ -29,6 +29,20 @@ class MisalignmentRepairJudgment(StrEnum):
     UNSURE = "unsure"
 
 
+class AlignmentReviewCategory(StrEnum):
+    LIKELY_ALIGNED = "likely_aligned"
+    LIKELY_CONSTANT_OFFSET = "likely_constant_offset"
+    NON_CONSTANT_OR_UNCERTAIN = "non_constant_or_uncertain"
+
+
+class MisalignmentOffsetRecommendation(FrozenBaseModel):
+    estimator_version: str
+    shift_seconds: float
+    confidence_score: float
+    supporting_window_count: int
+    summary: str
+
+
 class InteractionWindowMetrics(FrozenBaseModel):
     alternating_speaker_boundaries: int
     rapid_speaker_boundaries: int
@@ -52,6 +66,10 @@ class MisalignmentCandidateSummary(FrozenBaseModel):
     audit_late_shift_seconds: float | None
     duration_mismatch_seconds: float | None
     sampling_weight: float
+    review_category: AlignmentReviewCategory
+    alignment_likelihood_score: float
+    review_category_summary: str
+    offset_recommendation: MisalignmentOffsetRecommendation | None
 
 
 class MisalignmentWindowAnnotation(FrozenBaseModel):

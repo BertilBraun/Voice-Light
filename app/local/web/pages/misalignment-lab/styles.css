@@ -48,6 +48,12 @@ p { color: #5a666b; }
 .progress-panel strong { display: block; font-size: 22px; margin-top: 2px; }
 .eyebrow { color: #5a666b; font-size: 13px; text-transform: uppercase; }
 .candidate-header p { margin-bottom: 0; }
+.review-category-line { align-items: baseline; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.review-category-line strong { border-radius: 999px; padding: 5px 9px; }
+.review-category-line strong.likely-aligned { background: #e7f4ef; color: #165946; }
+.review-category-line strong.likely-constant-offset { background: #fff4d6; color: #74520b; }
+.review-category-line strong.non-constant-or-uncertain { background: #fff0ed; color: #8e2f20; }
+.review-category-line span { color: #5a666b; }
 .raw-badge {
   background: #e8f3f1;
   border: 1px solid #9bc7c2;

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Misalignment Lab - Voice Light</title>
-    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=3" />
+    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=4" />
   </head>
   <body>
     <main>
@@ -52,6 +52,10 @@
             <span id="sample-name" class="eyebrow"></span>
             <h2 id="candidate-time"></h2>
             <p id="candidate-reason"></p>
+            <p class="review-category-line">
+              <strong id="review-category"></strong>
+              <span id="review-category-summary"></span>
+            </p>
           </div>
           <span id="shift-badge" class="raw-badge">Raw tracks - shift 0.0 s</span>
         </section>
@@ -67,7 +71,10 @@
                 Original 0.0 s <kbd>O</kbd>
               </button>
               <button id="predicted-shift" type="button" aria-pressed="false">
-                Predicted <span id="predicted-shift-label"></span> <kbd>P</kbd>
+                Try recommended <span id="predicted-shift-label"></span> <kbd>P</kbd>
+              </button>
+              <button id="recommended-fixes" type="button" class="aligned" hidden>
+                Recommended shift fixes it <kbd>F</kbd>
               </button>
             </div>
           </div>
@@ -145,6 +152,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="/pages/misalignment-lab/app.js?v=3"></script>
+    <script type="module" src="/pages/misalignment-lab/app.js?v=4"></script>
   </body>
 </html>
