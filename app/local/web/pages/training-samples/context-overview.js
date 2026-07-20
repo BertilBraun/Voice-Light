@@ -6,6 +6,8 @@ const MINIMUM_CONTEXT_DURATION_SECONDS = 30;
 const MAXIMUM_CONTEXT_DURATION_SECONDS = 7200;
 const ZOOM_FACTOR = 1.4;
 const ZOOM_SETTLE_MILLISECONDS = 180;
+const PIXELS_PER_ZOOM_STEP = 100;
+const LINES_PER_ZOOM_STEP = 3;
 
 export function createConversationContextOverview(options) {
   const {
@@ -258,7 +260,7 @@ export function createConversationContextOverview(options) {
       maximumDurationSeconds,
     );
     const requestedDurationSeconds =
-      viewportDurationSeconds * (event.deltaY > 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR);
+      viewportDurationSeconds * wheelZoomMultiplier(event);
     const durationSeconds = Math.min(
       maximumDurationSeconds,
       Math.max(minimumDurationSeconds, requestedDurationSeconds),
@@ -275,6 +277,7 @@ export function createConversationContextOverview(options) {
       startSeconds,
       endSeconds: startSeconds + durationSeconds,
     };
+    requestGeneration += 1;
     contextDurationSeconds = durationSeconds;
     label.textContent =
       `Zooming to ${formatDuration(startSeconds)}–` +
@@ -288,7 +291,13 @@ export function createConversationContextOverview(options) {
       if (requestedViewport === null) {
         return;
       }
-      void load(getSelectedStartSeconds(), requestedViewport).catch(reportError);
+      void load(getSelectedStartSeconds(), requestedViewport).catch((error) => {
+        if (pendingViewport === requestedViewport) {
+          pendingViewport = null;
+          restoreLabel();
+        }
+        reportError(error);
+      });
     }, ZOOM_SETTLE_MILLISECONDS);
   }
 
@@ -516,6 +525,23 @@ function timeAxisInterval(durationSeconds) {
     intervals.find((intervalSeconds) => intervalSeconds >= minimumIntervalSeconds) ??
     1800
   );
+}
+
+function wheelZoomMultiplier(event) {
+  const deltaSteps = Math.abs(event.deltaY) / wheelDeltaPerStep(event.deltaMode);
+  const directionalFactor = event.deltaY > 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
+  return directionalFactor ** deltaSteps;
+}
+
+function wheelDeltaPerStep(deltaMode) {
+  switch (deltaMode) {
+    case 1:
+      return LINES_PER_ZOOM_STEP;
+    case 2:
+      return 1;
+    default:
+      return PIXELS_PER_ZOOM_STEP;
+  }
 }
 
 function timeAtEvent(canvas, waveforms, event) {

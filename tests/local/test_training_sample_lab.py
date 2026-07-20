@@ -63,6 +63,8 @@ def training_sample_script() -> Iterator[str]:
         "contextOverviewController",
         "const CONTEXT_DURATION_SECONDS = 180",
         'canvas.addEventListener("wheel", zoomAtEvent',
+        "wheelZoomMultiplier(event)",
+        "requestGeneration += 1",
         "wheel to zoom",
         "createMediaElementGainController",
         "commonWaveformDisplayScale",
