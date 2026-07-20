@@ -294,8 +294,8 @@ def test_non_floor_feedback_probability_covers_the_annotated_backchannel_span() 
         backchannels=(backchannel,),
         segment_targets=(
             _segment_target(
-                start_seconds=5.0,
-                end_seconds=5.6,
+                start_seconds=5.08,
+                end_seconds=5.52,
                 keep_playing_confidence=0.65,
                 turn_confidence=0.2,
             ),
@@ -303,8 +303,8 @@ def test_non_floor_feedback_probability_covers_the_annotated_backchannel_span() 
     )
     assistant = _speaker_annotation(
         side=SpeakerSide.SPEAKER1,
-        speech_segments=(AnnotationSpan(start_seconds=4.0, end_seconds=7.0, text="talk"),),
-        segment_targets=(_segment_target(start_seconds=4.0, end_seconds=7.0),),
+        speech_segments=(AnnotationSpan(start_seconds=4.0, end_seconds=5.2, text="talk"),),
+        segment_targets=(_segment_target(start_seconds=4.0, end_seconds=5.2),),
     )
 
     frames = build_frame_previews(

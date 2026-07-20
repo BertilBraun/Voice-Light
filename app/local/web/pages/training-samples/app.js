@@ -64,10 +64,10 @@ const rowDefinitions = [
     label: "AUX point · floor take / interruption",
     field: "interaction_auxiliary.floor_take",
   },
-  { label: "AUX activity · 0–200 ms", field: "future_activity.0" },
-  { label: "AUX activity · 200–500 ms", field: "future_activity.1" },
-  { label: "AUX activity · 500–1000 ms", field: "future_activity.2" },
-  { label: "AUX activity · 1000–1500 ms", field: "future_activity.3" },
+  { label: "AUX future user audio · 0–200 ms", field: "future_activity.0" },
+  { label: "AUX future user audio · 200–500 ms", field: "future_activity.1" },
+  { label: "AUX future user audio · 500–1000 ms", field: "future_activity.2" },
+  { label: "AUX future user audio · 1000–1500 ms", field: "future_activity.3" },
 ];
 
 let preview = null;

@@ -945,7 +945,6 @@ def build_frame_previews(
             supervised=supervised,
             anchor=event_anchor,
             user=user,
-            assistant=assistant,
         )
         candidate = boundary is not None or event_anchor is not None
         candidate_source = (
@@ -1476,7 +1475,6 @@ def _interaction_auxiliary_supervision(
     supervised: bool,
     anchor: InteractionEventAnchor | None,
     user: SpeakerConversationAnnotation,
-    assistant: SpeakerConversationAnnotation,
 ) -> InteractionAuxiliaryTargets:
     if not supervised:
         burn_in = _masked_scalar(SupervisionMaskReason.BURN_IN)
@@ -1500,7 +1498,6 @@ def _interaction_auxiliary_supervision(
         non_floor_feedback=_non_floor_feedback_supervision(
             time_seconds=time_seconds,
             user=user,
-            assistant=assistant,
         ),
         floor_take=(
             anchor.floor_take
@@ -1552,20 +1549,32 @@ def _continuation_pause_supervision(
 def _non_floor_feedback_supervision(
     time_seconds: float,
     user: SpeakerConversationAnnotation,
-    assistant: SpeakerConversationAnnotation,
 ) -> ScalarSupervision:
-    if not _inside_span(time_seconds, user.backchannels):
-        return _masked_scalar(SupervisionMaskReason.NO_AUXILIARY_ANNOTATION)
-    matching_segment = next(
+    active_backchannel = next(
         (
-            segment
-            for segment in user.segment_targets
-            if segment.start_seconds <= time_seconds < segment.end_seconds
-            and segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+            span
+            for span in user.backchannels
+            if span.start_seconds <= time_seconds < span.end_seconds
         ),
         None,
     )
-    if matching_segment is None or not _assistant_speaking_at(time_seconds, assistant):
+    if active_backchannel is None:
+        return _masked_scalar(SupervisionMaskReason.NO_AUXILIARY_ANNOTATION)
+    matching_segment = max(
+        (
+            segment
+            for segment in user.segment_targets
+            if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+            and segment.start_seconds < active_backchannel.end_seconds
+            and segment.end_seconds > active_backchannel.start_seconds
+        ),
+        key=lambda segment: (
+            min(segment.end_seconds, active_backchannel.end_seconds)
+            - max(segment.start_seconds, active_backchannel.start_seconds)
+        ),
+        default=None,
+    )
+    if matching_segment is None:
         return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
     return _valid_scalar(matching_segment.keep_playing_confidence)
 

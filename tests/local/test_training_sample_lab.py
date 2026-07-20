@@ -60,6 +60,7 @@ def training_sample_script() -> Iterator[str]:
         "continuation_pause",
         "non_floor_feedback",
         "future_activity",
+        "AUX future user audio",
         "occupancy",
         "nextRandomButton",
         "loadNextPreparedSample",
