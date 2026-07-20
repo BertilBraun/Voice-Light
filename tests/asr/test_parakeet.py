@@ -50,7 +50,7 @@ def test_global_chunk_words_offsets_and_excludes_overlap_duplicates() -> None:
 
 def test_parakeet_chunks_are_grouped_into_bounded_inference_batches() -> None:
     sample_rate = 10
-    audio = np.zeros(round(300.0 * sample_rate), dtype=np.float32)
+    audio = np.zeros(round(1200.0 * sample_rate), dtype=np.float32)
     chunks = parakeet_audio_chunks(audio=audio, sample_rate=sample_rate)
 
     batches = inference_batches(chunks, PARAKEET_INFERENCE_BATCH_SIZE)

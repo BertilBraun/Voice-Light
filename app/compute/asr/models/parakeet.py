@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import torch
 from transformers import AutoModelForTDT, AutoProcessor
 
 from app.compute.asr.chunking import (
@@ -39,7 +40,7 @@ class ParakeetAsrModel:
         self.model = AutoModelForTDT.from_pretrained(
             PARAKEET_IDENTIFIER,
             revision=PARAKEET_REVISION,
-            dtype="auto",
+            dtype=torch.float16,
         )
         self.device = cuda_device()
         self.model.to(self.device)

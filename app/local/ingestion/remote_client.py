@@ -15,6 +15,7 @@ from app.shared.compute_api import (
 )
 
 ResponseModel = TypeVar("ResponseModel", bound=FrozenBaseModel)
+DATASET_ANALYSIS_TIMEOUT_SECONDS = 21_600.0
 
 
 class HttpDatasetAnalysisClient:
@@ -57,7 +58,7 @@ class HttpDatasetAnalysisClient:
             f"{self.compute_base_url}{endpoint}",
             headers={"Authorization": f"Bearer {self.api_key}"},
             json=request.model_dump(mode="json"),
-            timeout=900.0,
+            timeout=DATASET_ANALYSIS_TIMEOUT_SECONDS,
         )
         try:
             response.raise_for_status()

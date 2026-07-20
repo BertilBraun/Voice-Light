@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from app.compute.asr.chunking import (
@@ -8,6 +9,7 @@ from app.compute.asr.chunking import (
     CANARY_INFERENCE_BATCH_SIZE,
     CanaryAudioChunk,
     canary_audio_chunks,
+    canary_chunk_samples,
     global_canary_chunk_words,
 )
 from app.compute.asr.models.base import inference_batches
@@ -81,11 +83,25 @@ def test_canary_chunks_are_grouped_into_bounded_inference_batches() -> None:
 
     batches = inference_batches(chunks, CANARY_INFERENCE_BATCH_SIZE)
 
-    assert len(batches) == 3
+    assert len(batches) == 2
     assert len(batches[0]) == CANARY_INFERENCE_BATCH_SIZE
-    assert len(batches[1]) == CANARY_INFERENCE_BATCH_SIZE
-    assert len(batches[2]) == len(chunks) - 2 * CANARY_INFERENCE_BATCH_SIZE
+    assert len(batches[1]) == len(chunks) - CANARY_INFERENCE_BATCH_SIZE
     assert tuple(chunk for batch in batches for chunk in batch) == chunks
+
+
+def test_canary_chunk_samples_slices_the_prepared_waveform() -> None:
+    audio = np.arange(80, dtype=np.float32)
+    chunk = CanaryAudioChunk(
+        start_seconds=2.0,
+        duration_seconds=3.0,
+        keep_start_seconds=0.5,
+        keep_end_seconds=3.0,
+        is_final=True,
+    )
+
+    samples = canary_chunk_samples(audio=audio, sample_rate=10, chunk=chunk)
+
+    np.testing.assert_array_equal(samples, np.arange(20, 50, dtype=np.float32))
 
 
 @pytest.mark.parametrize(

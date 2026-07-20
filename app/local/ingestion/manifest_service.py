@@ -236,42 +236,52 @@ class ManifestIngestionService:
                         failed_samples=failed_samples,
                     )
 
-            asr_ready_samples: list[ManifestLanguageReady] = []
-            asr_completed_samples = 0
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(self.transcribe_sample, language_ready): language_ready
-                    for language_ready in language_ready_samples
-                }
-                for future in as_completed(futures):
-                    language_ready = futures[future]
-                    try:
-                        asr_ready_samples.append(future.result())
-                        asr_completed_samples += 1
-                    except Exception as error:
-                        failed_samples += 1
-                        sample_errors.append(
-                            stage_error(
-                                "asr",
-                                language_ready.discovered.external_id,
-                                error,
+            asr_ready_samples = language_ready_samples
+            for model_index, model_id in enumerate(FULL_RECORDING_MODELS, start=1):
+                model_ready_samples: list[ManifestLanguageReady] = []
+                model_completed_samples = 0
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    futures = {
+                        executor.submit(
+                            self.transcribe_sample_model,
+                            language_ready,
+                            model_id,
+                        ): language_ready
+                        for language_ready in asr_ready_samples
+                    }
+                    for future in as_completed(futures):
+                        language_ready = futures[future]
+                        try:
+                            model_ready_samples.append(future.result())
+                            model_completed_samples += 1
+                        except Exception as error:
+                            failed_samples += 1
+                            sample_errors.append(
+                                stage_error(
+                                    f"asr-{model_id.value}",
+                                    language_ready.discovered.external_id,
+                                    error,
+                                )
                             )
+                            logger.exception(
+                                "manifest %s ASR failed: %s",
+                                model_id.value,
+                                language_ready.discovered.external_id,
+                            )
+                        self.repository.update_ingestion_job(
+                            job.id,
+                            JobStatus.RUNNING,
+                            (
+                                f"ASR model pass {model_index} of "
+                                f"{len(FULL_RECORDING_MODELS)} ({model_id.value}): "
+                                f"{model_completed_samples} of "
+                                f"{len(asr_ready_samples)} samples complete; "
+                                f"{failed_samples} failed"
+                            ),
+                            processed_samples=processed_samples,
+                            failed_samples=failed_samples,
                         )
-                        logger.exception(
-                            "manifest ASR failed: %s",
-                            language_ready.discovered.external_id,
-                        )
-                    self.repository.update_ingestion_job(
-                        job.id,
-                        JobStatus.RUNNING,
-                        (
-                            f"ASR pass: {asr_completed_samples} of "
-                            f"{len(language_ready_samples)} eligible samples complete; "
-                            f"{failed_samples} failed"
-                        ),
-                        processed_samples=processed_samples,
-                        failed_samples=failed_samples,
-                    )
+                asr_ready_samples = model_ready_samples
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
@@ -364,12 +374,22 @@ class ManifestIngestionService:
         self,
         language_ready: ManifestLanguageReady,
     ) -> ManifestLanguageReady:
-        ensure_manifest_transcripts(
+        for model_id in FULL_RECORDING_MODELS:
+            self.transcribe_sample_model(language_ready, model_id)
+        return language_ready
+
+    def transcribe_sample_model(
+        self,
+        language_ready: ManifestLanguageReady,
+        model_id: AsrModelId,
+    ) -> ManifestLanguageReady:
+        ensure_manifest_model_transcripts(
             repository=self.full_asr_repository,
             analysis_client=self.analysis_client,
             registered=language_ready.registered,
             speaker1_source=language_ready.discovered.speaker1,
             speaker2_source=language_ready.discovered.speaker2,
+            model_id=model_id,
         )
         return language_ready
 
@@ -707,20 +727,45 @@ def ensure_manifest_transcripts(
     speaker1_source: S3AudioSource,
     speaker2_source: S3AudioSource,
 ) -> None:
-    ensure_track_transcripts(
-        repository=repository,
-        analysis_client=analysis_client,
-        sample_track_id=registered.speaker1_track_id,
-        source_audio_sha256=registered.speaker1_source_audio_sha256,
-        source=speaker1_source,
-    )
-    ensure_track_transcripts(
-        repository=repository,
-        analysis_client=analysis_client,
-        sample_track_id=registered.speaker2_track_id,
-        source_audio_sha256=registered.speaker2_source_audio_sha256,
-        source=speaker2_source,
-    )
+    for model_id in FULL_RECORDING_MODELS:
+        ensure_manifest_model_transcripts(
+            repository=repository,
+            analysis_client=analysis_client,
+            registered=registered,
+            speaker1_source=speaker1_source,
+            speaker2_source=speaker2_source,
+            model_id=model_id,
+        )
+
+
+def ensure_manifest_model_transcripts(
+    repository: FullRecordingAsrRepository,
+    analysis_client: DatasetAnalysisClient,
+    registered: RegisteredSample,
+    speaker1_source: S3AudioSource,
+    speaker2_source: S3AudioSource,
+    model_id: AsrModelId,
+) -> None:
+    for sample_track_id, source_audio_sha256, source in (
+        (
+            registered.speaker1_track_id,
+            registered.speaker1_source_audio_sha256,
+            speaker1_source,
+        ),
+        (
+            registered.speaker2_track_id,
+            registered.speaker2_source_audio_sha256,
+            speaker2_source,
+        ),
+    ):
+        ensure_track_transcripts(
+            repository=repository,
+            analysis_client=analysis_client,
+            sample_track_id=sample_track_id,
+            source_audio_sha256=source_audio_sha256,
+            source=source,
+            model_ids=(model_id,),
+        )
 
 
 def ensure_track_transcripts(
@@ -729,13 +774,14 @@ def ensure_track_transcripts(
     sample_track_id: UUID,
     source_audio_sha256: str,
     source: S3AudioSource,
+    model_ids: tuple[AsrModelId, ...],
 ) -> tuple[FullRecordingAsrTranscriptRecord, ...]:
     cached = repository.get_cached_transcripts(
         sample_track_id=sample_track_id,
         source_audio_sha256=source_audio_sha256,
-        model_ids=FULL_RECORDING_MODELS,
+        model_ids=model_ids,
     )
-    missing = missing_model_ids(requested=FULL_RECORDING_MODELS, transcripts=cached)
+    missing = missing_model_ids(requested=model_ids, transcripts=cached)
     if missing:
         response = analysis_client.transcribe(DatasetAsrRequest(source=source, models=missing))
         validate_materialized_audio(response.audio, source_audio_sha256)
@@ -756,9 +802,9 @@ def ensure_track_transcripts(
     final = repository.get_cached_transcripts(
         sample_track_id=sample_track_id,
         source_audio_sha256=source_audio_sha256,
-        model_ids=FULL_RECORDING_MODELS,
+        model_ids=model_ids,
     )
-    remaining = missing_model_ids(requested=FULL_RECORDING_MODELS, transcripts=final)
+    remaining = missing_model_ids(requested=model_ids, transcripts=final)
     if remaining:
         labels = ", ".join(model.value for model in remaining)
         raise ValueError(f"Manifest ASR persistence is missing models: {labels}")

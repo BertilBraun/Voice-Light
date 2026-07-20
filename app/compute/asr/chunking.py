@@ -10,10 +10,10 @@ from app.shared.asr import TimestampedWord
 
 CANARY_CHUNK_DURATION_SECONDS = 30.0
 CANARY_CHUNK_OVERLAP_SECONDS = 1.0
-CANARY_INFERENCE_BATCH_SIZE = 4
+CANARY_INFERENCE_BATCH_SIZE = 8
 PARAKEET_CHUNK_DURATION_SECONDS = 30.0
 PARAKEET_CHUNK_OVERLAP_SECONDS = 1.0
-PARAKEET_INFERENCE_BATCH_SIZE = 8
+PARAKEET_INFERENCE_BATCH_SIZE = 32
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,24 @@ def canary_audio_chunks(
             break
         start_seconds += step_duration_seconds
     return tuple(chunks)
+
+
+def canary_chunk_samples(
+    audio: NDArray[np.float32],
+    sample_rate: int,
+    chunk: CanaryAudioChunk,
+) -> NDArray[np.float32]:
+    if sample_rate <= 0:
+        raise ValueError("Canary sample rate must be positive.")
+    start_sample = round(chunk.start_seconds * sample_rate)
+    end_sample = min(
+        start_sample + round(chunk.duration_seconds * sample_rate),
+        len(audio),
+    )
+    samples = audio[start_sample:end_sample]
+    if len(samples) == 0:
+        raise ValueError("Canary audio chunk must contain samples.")
+    return samples
 
 
 def global_canary_chunk_words(
