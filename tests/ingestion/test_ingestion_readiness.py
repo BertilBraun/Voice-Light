@@ -19,8 +19,18 @@ from app.local.db.models import SampleRecord, SampleTrackRecord, TrackSide
 from app.local.db.repository import AudioMetadataInput, SampleTrackInput
 from app.local.ingestion.conversation import ANNOTATION_VERSION, analyze_conversation
 from app.local.ingestion.discovery import DiscoveredSample
+from app.local.ingestion.language import (
+    LANGUAGE_ASSESSMENT_VERSION,
+    LanguageTrack,
+    SampleLanguageAssessment,
+    SampleLanguageStatus,
+    TrackLanguageAssessment,
+    TrackLanguageStatus,
+)
 from app.local.ingestion.service import (
     RegisteredSample,
+    SampleProcessingStatus,
+    process_ingestion_sample,
     ready_sample,
     register_sample,
     track_durations_are_compatible,
@@ -119,6 +129,27 @@ class ReadinessFullAsrRepository:
         )
 
 
+class NonEnglishLanguagePreflight:
+    def assess_sample(
+        self,
+        speaker1: LanguageTrack,
+        speaker2: LanguageTrack,
+    ) -> SampleLanguageAssessment:
+        return SampleLanguageAssessment(
+            status=SampleLanguageStatus.NON_ENGLISH,
+            speaker1=language_assessment(
+                track=speaker1,
+                status=TrackLanguageStatus.ENGLISH,
+                language_code="en",
+            ),
+            speaker2=language_assessment(
+                track=speaker2,
+                status=TrackLanguageStatus.NON_ENGLISH,
+                language_code="de",
+            ),
+        )
+
+
 def test_ready_sample_uses_exact_physical_audio_transcripts() -> None:
     registered = registered_sample()
     transcripts = transcript_bundle(registered=registered)
@@ -186,6 +217,30 @@ def test_registration_hashes_each_physical_track_once_and_persists_hash(
         registered.speaker1_source_audio_sha256,
         registered.speaker2_source_audio_sha256,
     )
+
+
+def test_non_english_preflight_skips_full_asr_and_quality(tmp_path: Path) -> None:
+    speaker1_path = tmp_path / "sample_speaker1.wav"
+    speaker2_path = tmp_path / "sample_speaker2.wav"
+    _write_silent_wave(speaker1_path)
+    _write_silent_wave(speaker2_path)
+    repository = RegistrationRepository()
+
+    status = process_ingestion_sample(
+        repository=repository,
+        full_asr_repository=ReadinessFullAsrRepository(transcripts=None),
+        dataset_id=uuid4(),
+        storage=LocalStorageBackend(),
+        discovered=DiscoveredSample(
+            external_id="sample",
+            speaker1_path=speaker1_path.as_posix(),
+            speaker2_path=speaker2_path.as_posix(),
+        ),
+        remote_asr_client_factory=unexpected_remote_asr_client,
+        language_preflight_service=NonEnglishLanguagePreflight(),
+    )
+
+    assert status is SampleProcessingStatus.LANGUAGE_EXCLUDED
 
 
 def test_full_conversation_annotation_uses_words_beyond_three_minutes() -> None:
@@ -383,6 +438,29 @@ def silent_audio_track(duration_seconds: float) -> AudioTrack:
             sample_count=sample_count,
         ),
     )
+
+
+def language_assessment(
+    track: LanguageTrack,
+    status: TrackLanguageStatus,
+    language_code: str,
+) -> TrackLanguageAssessment:
+    return TrackLanguageAssessment(
+        sample_track_id=track.sample_track_id,
+        source_audio_sha256=track.source_audio_sha256,
+        assessment_version=LANGUAGE_ASSESSMENT_VERSION,
+        status=status,
+        language_code=language_code,
+        confidence=0.99,
+        transcript_word_count=4,
+        transcript_text="one two three four",
+        probe_windows=(),
+        error=None,
+    )
+
+
+def unexpected_remote_asr_client() -> None:
+    raise AssertionError("Full ASR must not run for a non-English sample.")
 
 
 def _write_silent_wave(path: Path) -> None:

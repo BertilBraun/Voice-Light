@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
@@ -41,6 +42,12 @@ from app.local.db.repository import (
 from app.local.ingestion.alignment import pad_audio_tracks_to_shared_timeline
 from app.local.ingestion.conversation import analyze_conversation
 from app.local.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
+from app.local.ingestion.language import (
+    LanguagePreflightService,
+    LanguageTrack,
+    RemoteWhisperLanguageProbeTranscriber,
+)
+from app.local.ingestion.language_repository import LanguageAssessmentRepository
 from app.local.quality.client import HttpRemoteQualityClient, RemoteQualityClient
 from app.local.quality.remote_models import (
     AudioSource,
@@ -124,6 +131,11 @@ class IngestionSummary:
     error: str | None
 
 
+class SampleProcessingStatus(StrEnum):
+    ANALYZED = "analyzed"
+    LANGUAGE_EXCLUDED = "language_excluded"
+
+
 @dataclass(frozen=True)
 class DurationValidatedSamples:
     accepted: list[DiscoveredSample]
@@ -136,6 +148,7 @@ class IngestionService:
         repository: Repository,
         remote_quality_client: RemoteQualityClient | None = None,
         remote_asr_client_factory: RemoteAsrClientFactory | None = None,
+        language_preflight_service: LanguagePreflightService | None = None,
     ) -> None:
         self.repository = repository
         self.remote_quality_client = remote_quality_client or HttpRemoteQualityClient(
@@ -144,6 +157,17 @@ class IngestionService:
         )
         self.remote_asr_client_factory = (
             remote_asr_client_factory or default_remote_asr_client_factory
+        )
+        self.language_preflight_service = (
+            language_preflight_service or self.default_language_preflight_service()
+        )
+
+    def default_language_preflight_service(self) -> LanguagePreflightService:
+        return LanguagePreflightService(
+            store=LanguageAssessmentRepository(self.repository.database_url),
+            transcriber=RemoteWhisperLanguageProbeTranscriber(
+                remote_client=self.remote_asr_client_factory()
+            ),
         )
 
     def ingest_local_dataset(
@@ -218,6 +242,8 @@ class IngestionService:
                 processed_samples=0,
             )
             processed_samples = 0
+            analyzed_samples = 0
+            language_excluded_samples = 0
             failed_samples = 0
             sample_errors: list[str] = []
             full_asr_repository = FullRecordingAsrRepository(
@@ -233,14 +259,20 @@ class IngestionService:
                         storage,
                         discovered_sample,
                         self.remote_asr_client_factory,
+                        self.language_preflight_service,
                     ): discovered_sample
                     for discovered_sample in selected_samples
                 }
                 for future in as_completed(futures):
                     discovered_sample = futures[future]
                     try:
-                        future.result()
+                        processing_status = future.result()
                         processed_samples += 1
+                        match processing_status:
+                            case SampleProcessingStatus.ANALYZED:
+                                analyzed_samples += 1
+                            case SampleProcessingStatus.LANGUAGE_EXCLUDED:
+                                language_excluded_samples += 1
                     except Exception as error:
                         failed_samples += 1
                         sample_error = (
@@ -255,14 +287,17 @@ class IngestionService:
                         job.id,
                         JobStatus.RUNNING,
                         (
-                            f"Processed {processed_samples + failed_samples} of "
-                            f"{len(selected_samples)} samples"
+                            f"Assessed {processed_samples + failed_samples} of "
+                            f"{len(selected_samples)} samples; analyzed {analyzed_samples}; "
+                            f"language-excluded {language_excluded_samples}"
                         ),
                         processed_samples=processed_samples,
                         failed_samples=failed_samples,
                     )
             summary = ingestion_summary(
                 processed_samples=processed_samples,
+                analyzed_samples=analyzed_samples,
+                language_excluded_samples=language_excluded_samples,
                 failed_samples=failed_samples,
                 sample_errors=tuple(sample_errors),
             )
@@ -285,22 +320,33 @@ class IngestionService:
 
 def ingestion_summary(
     processed_samples: int,
+    analyzed_samples: int,
+    language_excluded_samples: int,
     failed_samples: int,
     sample_errors: tuple[str, ...],
 ) -> IngestionSummary:
     assert processed_samples >= 0
+    assert analyzed_samples >= 0
+    assert language_excluded_samples >= 0
     assert failed_samples >= 0
+    assert processed_samples == analyzed_samples + language_excluded_samples
     assert len(sample_errors) == failed_samples
     if failed_samples:
         total_samples = processed_samples + failed_samples
         return IngestionSummary(
             status=JobStatus.FAILED,
-            message=f"Ingestion failed for {failed_samples} of {total_samples} samples",
+            message=(
+                f"Ingestion failed for {failed_samples} of {total_samples} samples; "
+                f"analyzed {analyzed_samples}; language-excluded {language_excluded_samples}"
+            ),
             error="\n".join(sample_errors),
         )
     return IngestionSummary(
         status=JobStatus.COMPLETED,
-        message="Ingestion completed",
+        message=(
+            f"Ingestion completed; analyzed {analyzed_samples}; "
+            f"language-excluded {language_excluded_samples}"
+        ),
         error=None,
     )
 
@@ -502,13 +548,30 @@ def process_ingestion_sample(
     storage: StorageBackend,
     discovered: DiscoveredSample,
     remote_asr_client_factory: RemoteAsrClientFactory,
-) -> None:
+    language_preflight_service: LanguagePreflightService,
+) -> SampleProcessingStatus:
     registered = register_sample(
         repository=repository,
         dataset_id=dataset_id,
         storage=storage,
         discovered=discovered,
     )
+    language_assessment = language_preflight_service.assess_sample(
+        speaker1=LanguageTrack(
+            sample_track_id=registered.speaker1_track_id,
+            side=TrackSide.SPEAKER1,
+            source_path=local_storage_path(storage, discovered.speaker1_path),
+            source_audio_sha256=registered.speaker1_source_audio_sha256,
+        ),
+        speaker2=LanguageTrack(
+            sample_track_id=registered.speaker2_track_id,
+            side=TrackSide.SPEAKER2,
+            source_path=local_storage_path(storage, discovered.speaker2_path),
+            source_audio_sha256=registered.speaker2_source_audio_sha256,
+        ),
+    )
+    if not language_assessment.allows_full_analysis:
+        return SampleProcessingStatus.LANGUAGE_EXCLUDED
     for track in (
         FullRecordingAsrTrack(
             sample_track_id=registered.speaker1_track_id,
@@ -536,6 +599,7 @@ def process_ingestion_sample(
         repository=repository,
         processed=process_ready_sample(storage=storage, ready=ready),
     )
+    return SampleProcessingStatus.ANALYZED
 
 
 def default_remote_asr_client_factory() -> HttpRemoteAsrClient:

@@ -49,18 +49,30 @@ def test_ingestion_summary_reports_sample_failures(
     sample_errors: tuple[str, ...],
     expected_message: str,
 ) -> None:
-    summary = ingestion_summary(processed_samples, failed_samples, sample_errors)
+    summary = ingestion_summary(
+        processed_samples=processed_samples,
+        analyzed_samples=processed_samples,
+        language_excluded_samples=0,
+        failed_samples=failed_samples,
+        sample_errors=sample_errors,
+    )
 
     assert summary.status is JobStatus.FAILED
-    assert summary.message == expected_message
+    assert summary.message.startswith(expected_message)
     assert summary.error == sample_errors[0]
 
 
 def test_ingestion_summary_completes_without_failures() -> None:
-    summary = ingestion_summary(processed_samples=2, failed_samples=0, sample_errors=())
+    summary = ingestion_summary(
+        processed_samples=2,
+        analyzed_samples=1,
+        language_excluded_samples=1,
+        failed_samples=0,
+        sample_errors=(),
+    )
 
     assert summary.status is JobStatus.COMPLETED
-    assert summary.message == "Ingestion completed"
+    assert summary.message == "Ingestion completed; analyzed 1; language-excluded 1"
     assert summary.error is None
 
 
