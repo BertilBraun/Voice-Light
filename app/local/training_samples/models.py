@@ -6,6 +6,7 @@ from uuid import UUID
 
 from app.local.conversation_regions.models import ConversationRegionAnalysis
 from app.local.db.models import TrackSide
+from app.shared.audio.gain import TrackGainNormalization
 from app.shared.base_model import FrozenBaseModel
 from app.shared.quality import ConnectionAnnotationTarget, SegmentAnnotationTarget
 
@@ -117,6 +118,8 @@ class TrainingSamplePreview(FrozenBaseModel):
     assistant_side: TrackSide
     user_audio_sha256: str
     assistant_audio_sha256: str
+    user_gain: TrackGainNormalization
+    assistant_gain: TrackGainNormalization
     annotation_version: str
     annotation_generated_at: datetime
     quality_metric_version: str

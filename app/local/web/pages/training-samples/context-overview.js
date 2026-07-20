@@ -1,3 +1,5 @@
+import { commonWaveformDisplayScale } from "/pages/shared/waveform-rendering.js";
+
 const CONTEXT_DURATION_SECONDS = 180;
 const CONTEXT_WAVEFORM_POINTS = 1200;
 
@@ -98,15 +100,18 @@ export function createConversationContextOverview(options) {
         label: `USER · ${prettySide(preview.user_side)}`,
         points: waveforms.user,
         color: "#0057d9",
+        gain: preview.user_gain.default_gain,
         spans: recordingSpeechSpans(preview, "user"),
       },
       {
         label: `ASSISTANT · ${prettySide(preview.assistant_side)}`,
         points: waveforms.assistant,
         color: "#7a1fa2",
+        gain: preview.assistant_gain.default_gain,
         spans: recordingSpeechSpans(preview, "assistant"),
       },
     ];
+    const displayScale = commonWaveformDisplayScale(waveformRows);
     waveformRows.forEach((row, rowIndex) => {
       const waveformTop = 24 + rowIndex * 80;
       context.fillStyle = "#48575c";
@@ -120,6 +125,7 @@ export function createConversationContextOverview(options) {
         plotWidth,
         42,
         row.color,
+        row.gain * displayScale,
       );
       drawSpeechSpans(
         context,
@@ -309,18 +315,9 @@ function recordingSpeechSpans(preview, role) {
   );
 }
 
-function drawWaveformPoints(context, points, left, top, width, height, color) {
+function drawWaveformPoints(context, points, left, top, width, height, color, gain) {
   const middle = top + height / 2;
-  const peakAmplitude = points.reduce(
-    (maximum, point) =>
-      Math.max(
-        maximum,
-        Math.abs(point.minimum_amplitude),
-        Math.abs(point.maximum_amplitude),
-      ),
-    0.01,
-  );
-  const amplitudeScale = (height * 0.43) / peakAmplitude;
+  const amplitudeScale = height * 0.43;
   context.fillStyle = "#f7f9f8";
   context.fillRect(left, top, width, height);
   context.strokeStyle = color;
@@ -328,8 +325,10 @@ function drawWaveformPoints(context, points, left, top, width, height, color) {
   points.forEach((point, index) => {
     const x = left + (index / Math.max(1, points.length - 1)) * width;
     context.beginPath();
-    context.moveTo(x, middle - point.maximum_amplitude * amplitudeScale);
-    context.lineTo(x, middle - point.minimum_amplitude * amplitudeScale);
+    const maximumAmplitude = Math.min(1, point.maximum_amplitude * gain);
+    const minimumAmplitude = Math.max(-1, point.minimum_amplitude * gain);
+    context.moveTo(x, middle - maximumAmplitude * amplitudeScale);
+    context.lineTo(x, middle - minimumAmplitude * amplitudeScale);
     context.stroke();
   });
 }

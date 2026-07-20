@@ -27,6 +27,7 @@ from app.local.training_samples.models import (
     TrainingSampleQuality,
     TrainingSampleSelectionMode,
 )
+from app.shared.audio.gain import TrackGainNormalization, track_gain_normalization
 from app.shared.audio.wav import mono_samples
 from app.shared.quality import (
     AnnotationEvidenceSource,
@@ -107,6 +108,10 @@ def build_training_sample_preview(
     assistant_side = _other_side(user_side)
     user_annotation = _speaker_annotation(annotation, user_side)
     assistant_annotation = _speaker_annotation(annotation, assistant_side)
+    user_gain, assistant_gain = _training_sample_gains(
+        dashboard_sample=dashboard_sample,
+        user_side=user_side,
+    )
     start_seconds = _select_start_seconds(
         duration_seconds=eligible_duration_seconds,
         requested_start_seconds=requested_start_seconds,
@@ -147,6 +152,8 @@ def build_training_sample_preview(
         assistant_side=assistant_side,
         user_audio_sha256=required_track_sha256(user_track),
         assistant_audio_sha256=required_track_sha256(assistant_track),
+        user_gain=user_gain,
+        assistant_gain=assistant_gain,
         annotation_version=annotation.annotation_version,
         annotation_generated_at=quality.created_at,
         quality_metric_version=quality.metric_version,
@@ -229,6 +236,29 @@ def _conversation_annotation(dashboard_sample: DashboardSample) -> ConversationA
     if result.conversation_annotation is None:
         raise ValueError("The selected sample has no conversation annotation.")
     return result.conversation_annotation
+
+
+def _training_sample_gains(
+    dashboard_sample: DashboardSample,
+    user_side: TrackSide,
+) -> tuple[TrackGainNormalization, TrackGainNormalization]:
+    quality = dashboard_sample.latest_quality
+    if quality is None:
+        raise ValueError("The selected sample has no conversation quality analysis.")
+    audio_quality = QualityResult.model_validate(quality.payload).audio_quality
+    speaker1_quality = audio_quality.speaker1 if audio_quality is not None else None
+    speaker2_quality = audio_quality.speaker2 if audio_quality is not None else None
+    match user_side:
+        case TrackSide.SPEAKER1:
+            return (
+                track_gain_normalization(speaker1_quality),
+                track_gain_normalization(speaker2_quality),
+            )
+        case TrackSide.SPEAKER2:
+            return (
+                track_gain_normalization(speaker2_quality),
+                track_gain_normalization(speaker1_quality),
+            )
 
 
 def _training_sample_quality(dashboard_sample: DashboardSample) -> TrainingSampleQuality:

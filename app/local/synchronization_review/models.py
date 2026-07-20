@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import Field
 
+from app.shared.audio.gain import GainMeasurementBasis as GainMeasurementBasis
+from app.shared.audio.gain import TrackGainNormalization
 from app.shared.base_model import FrozenBaseModel
 
 
@@ -25,11 +27,6 @@ class SynchronizationEvidenceSource(StrEnum):
     CONVERSATION_ANNOTATION = "conversation_annotation"
     PARAKEET = "parakeet"
     CANARY = "canary"
-
-
-class GainMeasurementBasis(StrEnum):
-    WHOLE_TRACK_ESTIMATE = "whole_track_estimate"
-    ANNOTATED_SPEECH = "annotated_speech"
 
 
 class AlignmentEstimateOrigin(StrEnum):
@@ -55,15 +52,6 @@ class SynchronizationWindowEstimate(FrozenBaseModel):
     overlap_reduction: float
     silence_reduction: float
     meaningful: bool
-
-
-class TrackGainNormalization(FrozenBaseModel):
-    measurement_basis: GainMeasurementBasis
-    measured_rms_dbfs: float | None
-    estimated_active_rms_dbfs: float | None
-    measured_speech_duration_seconds: float | None
-    target_active_rms_dbfs: float
-    default_gain: float
 
 
 class SynchronizationCandidate(FrozenBaseModel):

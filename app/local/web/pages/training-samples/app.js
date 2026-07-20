@@ -1,4 +1,6 @@
 import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js";
+import { createMediaElementGainController } from "/pages/shared/audio-gain.js";
+import { commonWaveformDisplayScale } from "/pages/shared/waveform-rendering.js";
 import {
   createConversationContextOverview,
   drawUnusableRegionOverlay,
@@ -75,6 +77,10 @@ const rowDefinitions = [
 let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
+const playbackGainController = createMediaElementGainController([
+  { id: "user", element: userAudio },
+  { id: "assistant", element: assistantAudio },
+]);
 const contextOverviewController = createConversationContextOverview({
   canvas: contextOverview,
   label: contextLabel,
@@ -187,6 +193,7 @@ async function applyPreview(payload, autoplay) {
   userSideSelect.value = preview.user_side;
   configureControls();
   configureAudio();
+  configurePlaybackGains();
   renderSummary();
   renderAnnotationSource();
   renderSelectedFrame(null);
@@ -249,12 +256,18 @@ function configureAudioElement(audioElement, side, audioSha256) {
   audioElement.load();
 }
 
+function configurePlaybackGains() {
+  playbackGainController.setGain("user", preview.user_gain.default_gain);
+  playbackGainController.setGain("assistant", preview.assistant_gain.default_gain);
+}
+
 async function startPlayback() {
   synchronizeAudioTracks();
   if (!playBothInput.checked) {
     assistantAudio.pause();
   }
   try {
+    await playbackGainController.ensureConnected();
     const playRequests = [userAudio.play()];
     if (playBothInput.checked) {
       playRequests.push(assistantAudio.play());
@@ -334,6 +347,8 @@ function renderSummary() {
       ["Overall quality", optionalScore(preview.quality.total_score)],
       ["Conversation quality", optionalScore(preview.quality.conversation_quality_score)],
       ["Audio quality", optionalScore(preview.quality.audio_quality_score)],
+      ["User automatic gain", formatGain(preview.user_gain)],
+      ["Assistant automatic gain", formatGain(preview.assistant_gain)],
       ["Timing reliability", optionalScore(preview.quality.timing_reliability_score)],
       ["Interaction density", optionalScore(preview.quality.interaction_density_score)],
       ["Usable events", optionalInteger(preview.quality.usable_event_count)],
@@ -487,19 +502,31 @@ function drawSourceAnnotationTimeline() {
       label: `USER AUDIO · ${prettySide(preview.user_side)}`,
       points: preview.user_waveform,
       color: "#0057d9",
+      gain: preview.user_gain.default_gain,
     },
     {
       label: `ASSISTANT AUDIO · ${prettySide(preview.assistant_side)}`,
       points: preview.assistant_waveform,
       color: "#7a1fa2",
+      gain: preview.assistant_gain.default_gain,
     },
   ];
+  const displayScale = commonWaveformDisplayScale(waveformRows);
   waveformRows.forEach((row, rowIndex) => {
     const top = 32 + rowIndex * 42;
     context.fillStyle = "#48575c";
     context.font = "bold 12px sans-serif";
     context.fillText(row.label, 8, top + 22);
-    drawWaveformPoints(context, row.points, left, top, plotWidth, 32, row.color);
+    drawWaveformPoints(
+      context,
+      row.points,
+      left,
+      top,
+      plotWidth,
+      32,
+      row.color,
+      row.gain * displayScale,
+    );
   });
   const rows = [
     {
@@ -587,21 +614,25 @@ function drawBurnInOverlay(context, left, top, width, height, burnRatio) {
 }
 
 function drawWaveform(context, left, top, width, height) {
-  drawWaveformPoints(context, preview.user_waveform, left, top, width, height, "#0057d9");
+  const gain = preview.user_gain.default_gain;
+  const displayScale = commonWaveformDisplayScale([
+    { points: preview.user_waveform, gain },
+  ]);
+  drawWaveformPoints(
+    context,
+    preview.user_waveform,
+    left,
+    top,
+    width,
+    height,
+    "#0057d9",
+    gain * displayScale,
+  );
 }
 
-function drawWaveformPoints(context, points, left, top, width, height, color) {
+function drawWaveformPoints(context, points, left, top, width, height, color, gain) {
   const middle = top + height / 2;
-  const peakAmplitude = points.reduce(
-    (maximum, point) =>
-      Math.max(
-        maximum,
-        Math.abs(point.minimum_amplitude),
-        Math.abs(point.maximum_amplitude),
-      ),
-    0.01,
-  );
-  const amplitudeScale = (height * 0.43) / peakAmplitude;
+  const amplitudeScale = height * 0.43;
   context.fillStyle = "#f7f9f8";
   context.fillRect(left, top, width, height);
   context.strokeStyle = color;
@@ -609,8 +640,10 @@ function drawWaveformPoints(context, points, left, top, width, height, color) {
   points.forEach((point, index) => {
     const x = left + (index / Math.max(1, points.length - 1)) * width;
     context.beginPath();
-    context.moveTo(x, middle - point.maximum_amplitude * amplitudeScale);
-    context.lineTo(x, middle - point.minimum_amplitude * amplitudeScale);
+    const maximumAmplitude = Math.min(1, point.maximum_amplitude * gain);
+    const minimumAmplitude = Math.max(-1, point.minimum_amplitude * gain);
+    context.moveTo(x, middle - maximumAmplitude * amplitudeScale);
+    context.lineTo(x, middle - minimumAmplitude * amplitudeScale);
     context.stroke();
   });
 }
@@ -912,6 +945,17 @@ function booleanLabel(value) {
 
 function optionalProbability(value) {
   return value === null ? "UNMEASURED" : value.toFixed(3);
+}
+
+function formatGain(gain) {
+  if (gain.estimated_active_rms_dbfs === null) {
+    return `${gain.default_gain.toFixed(2)}× · loudness unavailable`;
+  }
+  return (
+    `${gain.default_gain.toFixed(2)}× · ` +
+    `${gain.estimated_active_rms_dbfs.toFixed(1)} dBFS → ` +
+    `${gain.target_active_rms_dbfs.toFixed(0)} dBFS`
+  );
 }
 
 function maskedProbability(value, valid, maskReason) {
