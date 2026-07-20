@@ -116,6 +116,10 @@ def test_training_sample_lab_updates_positions_only_on_committed_interactions(
     assert "contextOverviewController.schedule" not in training_sample_script
 
 
+def test_suggested_crop_autoplays_after_selection(training_sample_script: str) -> None:
+    assert "void loadPreview(false, true);" in training_sample_script
+
+
 def test_assistant_speaking_is_an_input_and_respects_playback_pauses() -> None:
     frames = build_frame_previews(
         start_seconds=0.0,

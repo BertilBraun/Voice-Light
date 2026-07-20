@@ -262,7 +262,7 @@ function renderPropositions(propositions) {
       button.addEventListener("click", () => {
         startInput.value = proposition.start_seconds.toFixed(2);
         positionSlider.value = String(proposition.start_seconds);
-        void loadPreview(false);
+        void loadPreview(false, true);
       });
       return button;
     }),
