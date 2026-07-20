@@ -62,7 +62,9 @@ MAXIMUM_PROPOSITION_MASKED_RATIO = 0.35
 HIGH_CONFIDENCE = 0.8
 LOW_CONFIDENCE = 0.2
 USER_YIELD_HORIZON_SECONDS = 0.5
-USER_YIELD_RELEASE_WINDOW_SECONDS = 2.0
+USER_YIELD_ACTIVE_RADIUS_SECONDS = 0.5
+ASSISTANT_BACKCHANNEL_HORIZON_SECONDS = 0.2
+PAUSE_FLOOR_RETENTION = 0.5
 MINIMUM_COMPLETION_INACTIVITY_SECONDS = 1.5
 
 
@@ -567,7 +569,7 @@ def _build_proposition(
     )
     supervised_frames = tuple(frame for frame in frames if frame.supervised)
     primary_supervision_ratio = _ratio(
-        sum(frame.user_yield_valid for frame in supervised_frames),
+        sum(frame.user_has_floor_valid for frame in supervised_frames),
         len(supervised_frames),
     )
     future_targets = tuple(
@@ -940,6 +942,12 @@ def build_frame_previews(
             supervised=supervised,
             user=user,
         )
+        assistant_backchannel_supervision = _assistant_backchannel_supervision(
+            time_seconds=time_seconds,
+            supervised=supervised,
+            annotation_end_seconds=annotation_end_seconds,
+            assistant=assistant,
+        )
         interaction_auxiliary = _interaction_auxiliary_supervision(
             time_seconds=time_seconds,
             supervised=supervised,
@@ -967,7 +975,7 @@ def build_frame_previews(
                 time_seconds=time_seconds,
                 relative_time_seconds=time_seconds - start_seconds,
                 supervised=supervised,
-                assistant_speaking_input=_assistant_speaking_at(
+                assistant_has_floor_input=_assistant_has_floor_input(
                     time_seconds=time_seconds,
                     assistant=assistant,
                 ),
@@ -982,6 +990,9 @@ def build_frame_previews(
                 user_has_floor_target=has_floor_supervision.target,
                 user_has_floor_valid=has_floor_supervision.valid,
                 user_has_floor_mask_reason=has_floor_supervision.mask_reason,
+                assistant_backchannel_target=assistant_backchannel_supervision.target,
+                assistant_backchannel_valid=assistant_backchannel_supervision.valid,
+                assistant_backchannel_mask_reason=assistant_backchannel_supervision.mask_reason,
                 interaction_auxiliary=interaction_auxiliary,
                 future_activity=_future_activity_targets(
                     time_seconds=time_seconds,
@@ -1007,9 +1018,9 @@ def _user_yield_supervision(
     horizon_time_seconds = time_seconds + USER_YIELD_HORIZON_SECONDS
     if horizon_time_seconds > annotation_end_seconds:
         return _masked_scalar(SupervisionMaskReason.FUTURE_HORIZON_CENSORED)
-    future_floor = _user_floor_state_supervision(
+    future_floor = _speaker_floor_state_supervision(
         time_seconds=horizon_time_seconds,
-        user=user,
+        speaker=user,
     )
     if not future_floor.valid:
         assert future_floor.mask_reason is not None
@@ -1022,23 +1033,11 @@ def _user_yield_context_is_active(
     time_seconds: float,
     user: SpeakerConversationAnnotation,
 ) -> bool:
-    active_segment = any(
-        segment.start_seconds <= time_seconds < segment.end_seconds
+    return any(
+        segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+        and abs(time_seconds - segment.end_seconds) <= USER_YIELD_ACTIVE_RADIUS_SECONDS
         for segment in user.segment_targets
     )
-    latest_segment_end_seconds = max(
-        (
-            segment.end_seconds
-            for segment in user.segment_targets
-            if segment.end_seconds <= time_seconds
-        ),
-        default=None,
-    )
-    inside_release_window = (
-        latest_segment_end_seconds is not None
-        and time_seconds <= latest_segment_end_seconds + USER_YIELD_RELEASE_WINDOW_SECONDS
-    )
-    return active_segment or inside_release_window
 
 
 def _user_has_floor_supervision(
@@ -1048,20 +1047,20 @@ def _user_has_floor_supervision(
 ) -> ScalarSupervision:
     if not supervised:
         return _masked_scalar(SupervisionMaskReason.BURN_IN)
-    return _user_floor_state_supervision(
+    return _speaker_floor_state_supervision(
         time_seconds=time_seconds,
-        user=user,
+        speaker=user,
     )
 
 
-def _user_floor_state_supervision(
+def _speaker_floor_state_supervision(
     time_seconds: float,
-    user: SpeakerConversationAnnotation,
+    speaker: SpeakerConversationAnnotation,
 ) -> ScalarSupervision:
     active_transcript_segment = next(
         (
             segment
-            for segment in user.segment_targets
+            for segment in speaker.segment_targets
             if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
             and segment.start_seconds <= time_seconds < segment.end_seconds
         ),
@@ -1072,7 +1071,7 @@ def _user_floor_state_supervision(
     active_connection = next(
         (
             connection
-            for connection in user.connection_targets
+            for connection in speaker.connection_targets
             if connection.earlier_end_seconds <= time_seconds < connection.later_start_seconds
         ),
         None,
@@ -1081,7 +1080,7 @@ def _user_floor_state_supervision(
         earlier_segment = next(
             (
                 segment
-                for segment in user.segment_targets
+                for segment in speaker.segment_targets
                 if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
                 and abs(segment.end_seconds - active_connection.earlier_end_seconds)
                 <= FRAME_SECONDS
@@ -1091,7 +1090,7 @@ def _user_floor_state_supervision(
         later_segment = next(
             (
                 segment
-                for segment in user.segment_targets
+                for segment in speaker.segment_targets
                 if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
                 and abs(segment.start_seconds - active_connection.later_start_seconds)
                 <= FRAME_SECONDS
@@ -1103,6 +1102,7 @@ def _user_floor_state_supervision(
         # A gap holds the floor only to the extent that it joins two floor-taking segments.
         return _valid_scalar(
             active_connection.merge_confidence
+            * (1.0 - (1.0 - PAUSE_FLOOR_RETENTION) * active_connection.pause_confidence)
             * min(
                 earlier_segment.turn_confidence,
                 later_segment.turn_confidence,
@@ -1111,7 +1111,7 @@ def _user_floor_state_supervision(
     active_audio_activity = any(
         segment.evidence_source is AnnotationEvidenceSource.AUDIO_ACTIVITY
         and segment.start_seconds <= time_seconds < segment.end_seconds
-        for segment in user.segment_targets
+        for segment in speaker.segment_targets
     )
     if active_audio_activity:
         return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
@@ -1135,6 +1135,45 @@ def _valid_scalar(target: float) -> ScalarSupervision:
 
 def _masked_scalar(reason: SupervisionMaskReason) -> ScalarSupervision:
     return ScalarSupervision(target=None, valid=False, mask_reason=reason)
+
+
+def _assistant_has_floor_input(
+    time_seconds: float,
+    assistant: SpeakerConversationAnnotation,
+) -> float:
+    if _inside_span(time_seconds, assistant.backchannels):
+        return 0.0
+    floor_state = _speaker_floor_state_supervision(
+        time_seconds=time_seconds,
+        speaker=assistant,
+    )
+    return floor_state.target if floor_state.valid and floor_state.target is not None else 0.0
+
+
+def _assistant_backchannel_supervision(
+    time_seconds: float,
+    supervised: bool,
+    annotation_end_seconds: float,
+    assistant: SpeakerConversationAnnotation,
+) -> ScalarSupervision:
+    if not supervised:
+        return _masked_scalar(SupervisionMaskReason.BURN_IN)
+    horizon_end_seconds = time_seconds + ASSISTANT_BACKCHANNEL_HORIZON_SECONDS
+    if horizon_end_seconds > annotation_end_seconds:
+        return _masked_scalar(SupervisionMaskReason.FUTURE_HORIZON_CENSORED)
+    upcoming_backchannels = tuple(
+        span
+        for span in assistant.backchannels
+        if time_seconds <= span.start_seconds <= horizon_end_seconds
+    )
+    if not upcoming_backchannels:
+        return _valid_scalar(0.0)
+    confidences = tuple(
+        _backchannel_confidence(span=span, speaker=assistant) for span in upcoming_backchannels
+    )
+    if any(confidence is None for confidence in confidences):
+        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+    return _valid_scalar(max(confidence for confidence in confidences if confidence is not None))
 
 
 def _assistant_speaking_at(
@@ -1560,23 +1599,33 @@ def _non_floor_feedback_supervision(
     )
     if active_backchannel is None:
         return _masked_scalar(SupervisionMaskReason.NO_AUXILIARY_ANNOTATION)
+    confidence = _backchannel_confidence(span=active_backchannel, speaker=user)
+    if confidence is None:
+        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+    return _valid_scalar(confidence)
+
+
+def _backchannel_confidence(
+    span: AnnotationSpan,
+    speaker: SpeakerConversationAnnotation,
+) -> float | None:
     matching_segment = max(
         (
             segment
-            for segment in user.segment_targets
+            for segment in speaker.segment_targets
             if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
-            and segment.start_seconds < active_backchannel.end_seconds
-            and segment.end_seconds > active_backchannel.start_seconds
+            and segment.start_seconds < span.end_seconds
+            and segment.end_seconds > span.start_seconds
         ),
         key=lambda segment: (
-            min(segment.end_seconds, active_backchannel.end_seconds)
-            - max(segment.start_seconds, active_backchannel.start_seconds)
+            min(segment.end_seconds, span.end_seconds)
+            - max(segment.start_seconds, span.start_seconds)
         ),
         default=None,
     )
     if matching_segment is None:
-        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
-    return _valid_scalar(matching_segment.keep_playing_confidence)
+        return None
+    return matching_segment.keep_playing_confidence
 
 
 def _future_activity_targets(

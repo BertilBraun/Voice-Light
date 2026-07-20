@@ -48,7 +48,10 @@ def training_sample_script() -> Iterator[str]:
     "label_field",
     (
         "candidate",
-        "assistant_speaking_input",
+        "assistant_has_floor_input",
+        "assistant_backchannel_target",
+        "assistant_backchannel_valid",
+        "assistant_backchannel_mask_reason",
         "candidate_source",
         "user_yield_target",
         "user_yield_valid",
@@ -133,7 +136,7 @@ def test_prefetched_crop_autoplays_after_selection(training_sample_script: str) 
     assert "await applyPreview(payload, true);" in training_sample_script
 
 
-def test_assistant_speaking_is_an_input_and_respects_playback_pauses() -> None:
+def test_assistant_floor_is_a_soft_input_and_excludes_backchannels() -> None:
     frames = build_frame_previews(
         start_seconds=0.0,
         end_seconds=3.0,
@@ -146,12 +149,16 @@ def test_assistant_speaking_is_an_input_and_respects_playback_pauses() -> None:
             ),
             pauses=(AnnotationSpan(start_seconds=1.0, end_seconds=1.5, text=None),),
             backchannels=(AnnotationSpan(start_seconds=2.7, end_seconds=2.9, text="mhm"),),
+            segment_targets=(
+                _segment_target(start_seconds=0.5, end_seconds=2.5),
+                _segment_target(start_seconds=2.7, end_seconds=2.9),
+            ),
         ),
     )
 
-    assert frames[7].assistant_speaking_input
-    assert not frames[15].assistant_speaking_input
-    assert frames[34].assistant_speaking_input
+    assert frames[7].assistant_has_floor_input == pytest.approx(1.0)
+    assert frames[15].assistant_has_floor_input == pytest.approx(1.0)
+    assert frames[34].assistant_has_floor_input == pytest.approx(0.0)
 
 
 def test_interesting_location_score_rewards_dense_events_or_ambiguous_targets() -> None:

@@ -163,18 +163,20 @@
       <section class="panel info-card">
         <h2>What this crop trains</h2>
         <p>
-          <code>p_user_has_floor</code> is a soft state estimate built directly from the detector's
-          turn and connection probabilities, including continuation pauses.
-          <code>p_user_yield</code> predicts that the user will not hold the floor 500 ms ahead. It
-          stays supervised for two seconds after a release, so a missed pre-end threshold can
-          still recover, then leaves the loss instead of remaining artificially high forever.
+          <code>p_user_has_floor</code> and the known <code>p_assistant_has_floor</code> input are soft
+          turn-state estimates. Continuation pauses retain the floor at reduced confidence;
+          backchannels do not assert floor ownership. <code>p_user_yield</code> predicts that the
+          user will not hold the floor 500 ms ahead and is supervised only within 500 ms of a user
+          speech offset.
         </p>
         <p>
           At runtime, the assistant-floor phase reads <code>p_user_has_floor</code> to hand control
           to the user. Once the user owns the floor, the user-floor phase reads
           <code>p_user_yield</code> to release it; the floor-state output does not veto that
-          transition. Only recurrent burn-in, censored lookahead, and unsupported standalone
-          audio-only regions remove runtime loss.
+          transition. <code>p_assistant_backchannel</code> predicts an annotated assistant
+          backchannel during the next 200 ms, allowing a runtime policy to start generating it
+          before its acoustic onset. Only recurrent burn-in, censored lookahead, and unsupported
+          standalone audio-only regions remove runtime loss.
         </p>
       </section>
 

@@ -35,6 +35,8 @@ def test_burn_in_masks_every_training_head() -> None:
     assert burn_in_frame.user_yield_mask_reason is SupervisionMaskReason.BURN_IN
     assert not burn_in_frame.user_has_floor_valid
     assert burn_in_frame.user_has_floor_mask_reason is SupervisionMaskReason.BURN_IN
+    assert not burn_in_frame.assistant_backchannel_valid
+    assert burn_in_frame.assistant_backchannel_mask_reason is SupervisionMaskReason.BURN_IN
     assert all(
         not target.valid and target.mask_reason is SupervisionMaskReason.BURN_IN
         for target in (
@@ -70,8 +72,8 @@ def test_user_yield_predicts_floor_availability_in_500_milliseconds() -> None:
     approaching_completion_frame = _frame_at(frames, 4.84)
     post_completion_frame = _frame_at(frames, 5.24)
 
-    assert speech_frame.user_yield_valid
-    assert speech_frame.user_yield_target == pytest.approx(0.0)
+    assert not speech_frame.user_yield_valid
+    assert speech_frame.user_yield_mask_reason is SupervisionMaskReason.OUTSIDE_USER_YIELD_CONTEXT
     assert speech_frame.user_has_floor_target == pytest.approx(1.0)
     assert approaching_completion_frame.user_yield_valid
     assert approaching_completion_frame.user_yield_target == pytest.approx(1.0)
@@ -140,15 +142,15 @@ def test_connection_probability_softly_supervises_floor_state_and_yield() -> Non
 
     assert continuation_frame.candidate_source is CandidateSource.CONNECTION
     assert continuation_frame.user_has_floor_valid
-    assert continuation_frame.user_has_floor_target == pytest.approx(0.9)
+    assert continuation_frame.user_has_floor_target == pytest.approx(0.45)
     assert continuation_frame.user_yield_valid
-    assert continuation_frame.user_yield_target == pytest.approx(0.1)
+    assert continuation_frame.user_yield_target == pytest.approx(0.55)
     assert continuation_frame.interaction_auxiliary.continuation_pause.valid
     assert continuation_frame.interaction_auxiliary.continuation_pause.target == pytest.approx(0.9)
     assert ambiguous_frame.user_yield_valid
-    assert ambiguous_frame.user_yield_target == pytest.approx(0.5)
+    assert ambiguous_frame.user_yield_target == pytest.approx(0.75)
     assert ambiguous_frame.user_has_floor_valid
-    assert ambiguous_frame.user_has_floor_target == pytest.approx(0.5)
+    assert ambiguous_frame.user_has_floor_target == pytest.approx(0.25)
     assert ambiguous_frame.interaction_auxiliary.continuation_pause.valid
     assert ambiguous_frame.interaction_auxiliary.continuation_pause.target == pytest.approx(0.5)
 
@@ -178,12 +180,64 @@ def test_connection_state_supervision_covers_untranscribed_activity_inside_pause
     pause_frame = _frame_at(frames, 5.44)
 
     assert pause_frame.user_has_floor_valid
-    assert pause_frame.user_has_floor_target == pytest.approx(0.75)
+    assert pause_frame.user_has_floor_target == pytest.approx(0.375)
     assert pause_frame.user_yield_valid
-    assert pause_frame.user_yield_target == pytest.approx(0.25)
+    assert pause_frame.user_yield_target == pytest.approx(0.625)
 
 
-def test_user_yield_masks_after_two_seconds_even_inside_a_long_connection() -> None:
+def test_assistant_floor_input_uses_the_same_pause_attenuation() -> None:
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=8.0,
+        annotation_end_seconds=8.0,
+        user=_speaker_annotation(side=SpeakerSide.SPEAKER2),
+        assistant=_user_with_connection(merge_confidence=0.9),
+    )
+
+    speech_frame = _frame_at(frames, 4.44)
+    pause_frame = _frame_at(frames, 5.44)
+
+    assert speech_frame.assistant_has_floor_input == pytest.approx(1.0)
+    assert pause_frame.assistant_has_floor_input == pytest.approx(0.45)
+
+
+def test_assistant_backchannel_runtime_target_precedes_onset_and_does_not_take_floor() -> None:
+    backchannel = AnnotationSpan(start_seconds=5.0, end_seconds=5.5, text="mhm")
+    assistant = _speaker_annotation(
+        side=SpeakerSide.SPEAKER1,
+        speech_segments=(backchannel,),
+        backchannels=(backchannel,),
+        segment_targets=(
+            _segment_target(
+                start_seconds=5.08,
+                end_seconds=5.42,
+                keep_playing_confidence=0.7,
+                turn_confidence=0.3,
+            ),
+        ),
+    )
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=8.0,
+        annotation_end_seconds=8.0,
+        user=_speaker_annotation(side=SpeakerSide.SPEAKER2),
+        assistant=assistant,
+    )
+
+    before_window = _frame_at(frames, 4.76)
+    prediction_frame = _frame_at(frames, 4.84)
+    after_onset = _frame_at(frames, 5.08)
+
+    assert before_window.assistant_backchannel_valid
+    assert before_window.assistant_backchannel_target == pytest.approx(0.0)
+    assert prediction_frame.assistant_backchannel_valid
+    assert prediction_frame.assistant_backchannel_target == pytest.approx(0.7)
+    assert after_onset.assistant_backchannel_valid
+    assert after_onset.assistant_backchannel_target == pytest.approx(0.0)
+    assert after_onset.assistant_has_floor_input == pytest.approx(0.0)
+
+
+def test_user_yield_is_supervised_only_within_500_milliseconds_of_an_offset() -> None:
     user = _speaker_annotation(
         side=SpeakerSide.SPEAKER2,
         segment_targets=(
@@ -208,8 +262,8 @@ def test_user_yield_masks_after_two_seconds_even_inside_a_long_connection() -> N
         assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
     )
 
-    release_window_frame = _frame_at(frames, 7.16)
-    inactive_frame = _frame_at(frames, 7.24)
+    release_window_frame = _frame_at(frames, 5.64)
+    inactive_frame = _frame_at(frames, 5.8)
 
     assert release_window_frame.user_yield_valid
     assert not inactive_frame.user_yield_valid
@@ -401,7 +455,7 @@ def test_audio_activity_segment_only_trains_future_activity() -> None:
     boundary_frame = _frame_at(frames, 5.24)
 
     assert not speech_frame.user_yield_valid
-    assert speech_frame.user_yield_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
+    assert speech_frame.user_yield_mask_reason is SupervisionMaskReason.OUTSIDE_USER_YIELD_CONTEXT
     assert not speech_frame.user_has_floor_valid
     assert speech_frame.user_has_floor_mask_reason is SupervisionMaskReason.AMBIGUOUS_ANNOTATION
     assert speech_frame.future_activity[0].valid

@@ -36,7 +36,7 @@ class SupervisionMaskReason(StrEnum):
     AMBIGUOUS_ANNOTATION = "Annotation confidence is ambiguous"
     CENSORED_ANNOTATION = "Required future annotation is unavailable"
     NO_AUXILIARY_ANNOTATION = "No auxiliary annotation applies at this frame"
-    OUTSIDE_USER_YIELD_CONTEXT = "Outside the user-floor release window"
+    OUTSIDE_USER_YIELD_CONTEXT = "Outside the user-yield decision window"
     FUTURE_HORIZON_CENSORED = "Future activity horizon exceeds annotated audio"
 
 
@@ -98,7 +98,7 @@ class TrainingFramePreview(FrozenBaseModel):
     time_seconds: float
     relative_time_seconds: float
     supervised: bool
-    assistant_speaking_input: bool
+    assistant_has_floor_input: float
     candidate: bool
     candidate_source: CandidateSource | None
     seconds_since_speech_offset: float | None
@@ -108,6 +108,9 @@ class TrainingFramePreview(FrozenBaseModel):
     user_has_floor_target: float | None
     user_has_floor_valid: bool
     user_has_floor_mask_reason: SupervisionMaskReason | None
+    assistant_backchannel_target: float | None
+    assistant_backchannel_valid: bool
+    assistant_backchannel_mask_reason: SupervisionMaskReason | None
     interaction_auxiliary: InteractionAuxiliaryTargets
     future_activity: tuple[FutureActivityTarget, ...]
 

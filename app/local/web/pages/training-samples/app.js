@@ -33,11 +33,12 @@ const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
 const frameDetails = document.querySelector("#frame-details");
 const NO_AUXILIARY_ANNOTATION_REASON = "No auxiliary annotation applies at this frame";
+const OUTSIDE_USER_YIELD_CONTEXT_REASON = "Outside the user-yield decision window";
 const BURN_IN_REASON = "Burn-in recurrent-state warm-up";
 
 const rowDefinitions = [
   { label: "User waveform", field: "waveform" },
-  { label: "INPUT · Assistant speaking", field: "assistant_speaking_input" },
+  { label: "INPUT · p_assistant_has_floor", field: "assistant_has_floor_input" },
   {
     label: "RUNTIME · p_user_has_floor",
     field: "user_has_floor_target",
@@ -47,6 +48,11 @@ const rowDefinitions = [
     label: "RUNTIME · p_user_yield ≤ 500 ms",
     field: "user_yield_target",
     validField: "user_yield_valid",
+  },
+  {
+    label: "RUNTIME · p_assistant_backchannel ≤ 200 ms",
+    field: "assistant_backchannel_target",
+    validField: "assistant_backchannel_valid",
   },
   {
     label: "AUX point · turn completion",
@@ -466,18 +472,24 @@ function ensureSampleOption() {
 
 function renderSummary() {
   const supervisedFrames = preview.frames.filter((frame) => frame.supervised);
-  const assistantSpeakingFrames = preview.frames.filter(
-    (frame) => frame.assistant_speaking_input,
+  const assistantFloorFrames = preview.frames.filter(
+    (frame) => frame.assistant_has_floor_input >= 0.5,
   );
   const validHasFloorFrames = supervisedFrames.filter(
     (frame) => frame.user_has_floor_valid,
   );
   const validYieldFrames = supervisedFrames.filter((frame) => frame.user_yield_valid);
+  const validAssistantBackchannelFrames = supervisedFrames.filter(
+    (frame) => frame.assistant_backchannel_valid,
+  );
   const hasFloorPositives = validHasFloorFrames.filter(
     (frame) => frame.user_has_floor_target >= 0.5,
   ).length;
   const yieldSoonPositives = validYieldFrames.filter(
     (frame) => frame.user_yield_target >= 0.5,
+  ).length;
+  const assistantBackchannelPositives = validAssistantBackchannelFrames.filter(
+    (frame) => frame.assistant_backchannel_target >= 0.5,
   ).length;
   const auxiliaryCounts = interactionAuxiliaryCounts(preview.frames);
   summary.replaceChildren(
@@ -513,11 +525,12 @@ function renderSummary() {
       ["Annotation coverage", percentage(preview.annotated_duration_seconds, preview.represented_duration_seconds)],
       ["Frame interval", `${Math.round(preview.frame_seconds * 1000)} ms`],
       ["Supervised frames", String(supervisedFrames.length)],
-      ["Assistant-speaking input", percentage(assistantSpeakingFrames.length, preview.frames.length)],
+      ["Assistant-floor input ≥ 0.5", percentage(assistantFloorFrames.length, preview.frames.length)],
       ["Runtime floor supervision", supervisionCoverage(validHasFloorFrames, supervisedFrames)],
       ["Floor target ≥ 0.5", String(hasFloorPositives)],
       ["Runtime yield supervision", supervisionCoverage(validYieldFrames, supervisedFrames)],
       ["Floor available in 500 ms ≥ 0.5", String(yieldSoonPositives)],
+      ["Assistant backchannel ≤ 200 ms ≥ 0.5", String(assistantBackchannelPositives)],
       ["Completion / floor-take point frames", `${auxiliaryCounts.turnCompletion} / ${auxiliaryCounts.floorTake}`],
       ["Pause / feedback span frames", `${auxiliaryCounts.continuationPause} / ${auxiliaryCounts.nonFloorFeedback}`],
     ]),
@@ -585,7 +598,8 @@ function drawTimeline() {
     context.font =
       field === "user_yield_target" ||
       field === "user_has_floor_target" ||
-      field === "assistant_speaking_input"
+      field === "assistant_has_floor_input" ||
+      field === "assistant_backchannel_target"
         ? "bold 12px sans-serif"
         : "12px sans-serif";
     context.fillText(label, 8, rowTop + 23);
@@ -798,13 +812,15 @@ function drawTargetFrames(context, field, validField, left, top, width, height) 
       return;
     }
     if (typeof value === "boolean") {
-      context.fillStyle =
-        field === "assistant_speaking_input" ? "#d6a442" : "#7ebdb4";
+      context.fillStyle = "#7ebdb4";
       if (!value) {
         return;
       }
     } else {
-      context.fillStyle = `rgba(20, 107, 99, ${0.08 + 0.92 * value})`;
+      context.fillStyle =
+        field === "assistant_has_floor_input"
+          ? `rgba(190, 128, 20, ${0.08 + 0.92 * value})`
+          : `rgba(20, 107, 99, ${0.08 + 0.92 * value})`;
     }
     if (value === true || typeof value === "number") {
       context.fillRect(left + index * frameWidth, top + 3, Math.max(1, frameWidth + 0.2), height - 6);
@@ -813,7 +829,10 @@ function drawTargetFrames(context, field, validField, left, top, width, height) 
 }
 
 function drawMaskedFrame(context, left, top, width, height, maskReason) {
-  if (maskReason === NO_AUXILIARY_ANNOTATION_REASON) {
+  if (
+    maskReason === NO_AUXILIARY_ANNOTATION_REASON ||
+    maskReason === OUTSIDE_USER_YIELD_CONTEXT_REASON
+  ) {
     return;
   }
   const isBurnIn = maskReason === BURN_IN_REASON;
@@ -852,6 +871,8 @@ function targetValue(frame, field, validField) {
       ? "user_has_floor_mask_reason"
       : field === "user_yield_target"
         ? "user_yield_mask_reason"
+        : field === "assistant_backchannel_target"
+          ? "assistant_backchannel_mask_reason"
         : null;
   return {
     value: frame[field] ?? null,
@@ -899,7 +920,7 @@ function renderSelectedFrame(frame) {
   frameDetails.replaceChildren(
     ...definitionRows([
       ["Contributes loss", booleanLabel(frame.supervised)],
-      ["INPUT · Assistant speaking", booleanLabel(frame.assistant_speaking_input)],
+      ["INPUT · p_assistant_has_floor", optionalProbability(frame.assistant_has_floor_input)],
       ["Candidate", booleanLabel(frame.candidate)],
       ["Candidate source", frame.candidate_source ?? "—"],
       ["Since user speech offset", optionalSeconds(frame.seconds_since_speech_offset)],
@@ -912,6 +933,11 @@ function renderSelectedFrame(frame) {
         frame.user_yield_target,
         frame.user_yield_valid,
         frame.user_yield_mask_reason,
+      )],
+      ["p_assistant_backchannel ≤ 200 ms target", maskedProbability(
+        frame.assistant_backchannel_target,
+        frame.assistant_backchannel_valid,
+        frame.assistant_backchannel_mask_reason,
       )],
       ["Point: turn completion", auxiliaryProbability(frame, "turn_completion")],
       ["Span: continuation pause", auxiliaryProbability(frame, "continuation_pause")],
