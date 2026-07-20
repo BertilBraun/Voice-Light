@@ -16,19 +16,31 @@ from starlette.responses import Response as StarletteResponse
 from app.compute.asr.service import transcribe_request, transcribe_uploaded_request
 from app.compute.auth import BearerTokenAuthorizer
 from app.compute.config import ComputeSettings
+from app.compute.dataset_audio import analyze_dataset_language, transcribe_dataset_audio
 from app.compute.quality.router import analyze_uploaded_quality
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope, configure_logging, gpu_memory
 from app.compute.voice.router import run_voice_session
 from app.shared.asr import RemoteAsrRequest, RemoteAsrResponse
-from app.shared.compute_api import HealthStatus, LivenessResponse, ReadinessResponse
+from app.shared.compute_api import (
+    DatasetAsrRequest,
+    DatasetAsrResponse,
+    DatasetLanguageRequest,
+    DatasetLanguageResponse,
+    HealthStatus,
+    LivenessResponse,
+    ReadinessResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def create_compute_app(settings: ComputeSettings) -> FastAPI:
     configure_logging(settings.log_directory)
-    runtime = ComputeRuntime(settings.voice_stack)
+    runtime = ComputeRuntime(
+        voice_stack_settings=settings.voice_stack,
+        dataset_audio_cache_directory=settings.dataset_audio_cache_directory,
+    )
     authorizer = BearerTokenAuthorizer(settings.token)
 
     @asynccontextmanager
@@ -105,6 +117,30 @@ def create_compute_app(settings: ComputeSettings) -> FastAPI:
         "/v1/quality:analyze",
         dependencies=[Depends(authorizer.authorize_http)],
     )(analyze_uploaded_quality)
+
+    @application.post(
+        "/v1/dataset:language",
+        dependencies=[Depends(authorizer.authorize_http)],
+    )
+    async def dataset_language(request: DatasetLanguageRequest) -> DatasetLanguageResponse:
+        return await asyncio.to_thread(
+            analyze_dataset_language,
+            request,
+            runtime.dataset_audio_cache,
+            runtime.batch_asr_models,
+        )
+
+    @application.post(
+        "/v1/dataset:asr",
+        dependencies=[Depends(authorizer.authorize_http)],
+    )
+    async def dataset_asr(request: DatasetAsrRequest) -> DatasetAsrResponse:
+        return await asyncio.to_thread(
+            transcribe_dataset_audio,
+            request,
+            runtime.dataset_audio_cache,
+            runtime.batch_asr_models,
+        )
 
     @application.websocket("/v1/voice")
     async def voice(websocket: WebSocket) -> None:

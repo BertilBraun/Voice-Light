@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import Field
 
 from app.shared.base_model import FrozenBaseModel
+from app.shared.language import LanguageProbeWindow, TrackLanguageStatus
 
 
 class DatasetStorageKind(StrEnum):
@@ -36,23 +37,10 @@ class AsrRunStatus(StrEnum):
     FAILED = "failed"
 
 
-class TrackLanguageStatus(StrEnum):
-    ENGLISH = "english"
-    NON_ENGLISH = "non_english"
-    INCONCLUSIVE = "inconclusive"
-    FAILED = "failed"
-
-
 class SampleLanguageStatus(StrEnum):
     ENGLISH = "english"
     NON_ENGLISH = "non_english"
     INCONCLUSIVE = "inconclusive"
-
-
-class LanguageProbeWindow(FrozenBaseModel):
-    start_seconds: float
-    duration_seconds: float
-    rms_dbfs: float
 
 
 class TrackLanguageAssessment(FrozenBaseModel):

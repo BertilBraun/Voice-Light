@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ParamSpec, TypeVar
 
 from app.compute.asr.models.registry import AsrModelCache
@@ -21,6 +22,7 @@ from app.compute.voice.search import SearchProvider, create_search_provider
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
 from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingProvider
 from app.compute.voice.tts_selection import create_speech_synthesizer
+from app.shared.audio.s3 import S3AudioCache, default_s3_downloader
 from app.shared.compute_api import ModelStage, ModelStageStatus
 
 logger = logging.getLogger(__name__)
@@ -45,8 +47,16 @@ class MutableModelStage:
 
 
 class ComputeRuntime:
-    def __init__(self, voice_stack_settings: VoiceStackSettings | None) -> None:
+    def __init__(
+        self,
+        voice_stack_settings: VoiceStackSettings | None,
+        dataset_audio_cache_directory: Path,
+    ) -> None:
         self.voice_stack_settings = voice_stack_settings
+        self.dataset_audio_cache = S3AudioCache(
+            root=dataset_audio_cache_directory,
+            downloader=default_s3_downloader(),
+        )
         self.streaming_asr_stage = MutableModelStage("streaming_asr")
         self.speech_detection_stage = MutableModelStage("speech_detection")
         self.language_model_stage = MutableModelStage("language_model")

@@ -55,6 +55,26 @@ class S3Downloader(Protocol):
     ) -> None: ...
 
 
+class LazyS3Downloader:
+    def __init__(self) -> None:
+        self.client_creation_lock = Lock()
+        self.client: S3Client | None = None
+
+    def download_fileobj(
+        self,
+        bucket: str,
+        key: str,
+        file_object: BinaryIO,
+    ) -> None:
+        self.s3_client().download_fileobj(bucket, key, file_object)
+
+    def s3_client(self) -> S3Client:
+        with self.client_creation_lock:
+            if self.client is None:
+                self.client = boto3.client("s3")
+            return self.client
+
+
 class S3AudioCache:
     def __init__(self, root: Path, downloader: S3Downloader) -> None:
         self.root = root.resolve()
@@ -145,8 +165,8 @@ class S3AudioCache:
         )
 
 
-def default_s3_downloader() -> S3Client:
-    return boto3.client("s3")
+def default_s3_downloader() -> LazyS3Downloader:
+    return LazyS3Downloader()
 
 
 def parse_s3_uri(uri: str) -> S3Location:

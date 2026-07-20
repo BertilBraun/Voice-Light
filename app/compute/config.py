@@ -20,6 +20,7 @@ class VoiceStackSettings:
 class ComputeSettings:
     token: str
     log_directory: Path
+    dataset_audio_cache_directory: Path
     voice_stack: VoiceStackSettings | None
 
     @classmethod
@@ -36,6 +37,12 @@ class ComputeSettings:
         return cls(
             token=token,
             log_directory=log_directory,
+            dataset_audio_cache_directory=Path(
+                environment.get(
+                    "VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR",
+                    ".cache/compute/dataset-audio",
+                )
+            ),
             voice_stack=(
                 VoiceStackSettings(
                     speech_synthesis=SpeechSynthesisSettings.from_environment(

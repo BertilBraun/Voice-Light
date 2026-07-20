@@ -21,6 +21,7 @@ def test_liveness_is_public_and_readiness_requires_authentication(tmp_path: Path
         ComputeSettings(
             token="secret-token",
             log_directory=tmp_path / "logs",
+            dataset_audio_cache_directory=tmp_path / "dataset-audio",
             voice_stack=VoiceStackSettings(
                 search=UnconfiguredSearchSettings(),
                 speech_synthesis=SpeechSynthesisSettings(

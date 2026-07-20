@@ -15,8 +15,11 @@ from app.compute.runtime import ComputeRuntime
 from app.shared.asr import RemoteAsrRequest, RemoteAsrResponse
 
 
-def test_asr_only_runtime_skips_voice_model_loading() -> None:
-    runtime = ComputeRuntime(voice_stack_settings=None)
+def test_asr_only_runtime_skips_voice_model_loading(tmp_path: Path) -> None:
+    runtime = ComputeRuntime(
+        voice_stack_settings=None,
+        dataset_audio_cache_directory=tmp_path / "dataset-audio",
+    )
 
     runtime.start_loading()
 
@@ -52,6 +55,7 @@ def test_asr_only_app_is_ready_and_serves_batch_asr(
         ComputeSettings(
             token="secret-token",
             log_directory=tmp_path / "logs",
+            dataset_audio_cache_directory=tmp_path / "dataset-audio",
             voice_stack=None,
         )
     )
