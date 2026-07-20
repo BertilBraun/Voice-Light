@@ -5,6 +5,7 @@
 .venv/
 .env.compute
 /.cache/compute/
+/.cache/local/
 /logs/compute/
 /run/compute/
 /.runtime/
