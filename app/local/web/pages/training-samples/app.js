@@ -1,5 +1,10 @@
 import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js";
+import {
+  createConversationContextOverview,
+  drawUnusableRegionOverlay,
+} from "/pages/training-samples/context-overview.js";
 
+const datasetSelect = document.querySelector("#dataset-select");
 const sampleSelect = document.querySelector("#sample-select");
 const userSideSelect = document.querySelector("#user-side-select");
 const startInput = document.querySelector("#start-input");
@@ -19,6 +24,8 @@ const assistantAudio = document.querySelector("#assistant-audio");
 const timeline = document.querySelector("#timeline");
 const annotationTimeline = document.querySelector("#annotation-timeline");
 const annotationSource = document.querySelector("#annotation-source");
+const contextOverview = document.querySelector("#context-overview");
+const contextLabel = document.querySelector("#context-label");
 const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
@@ -68,10 +75,60 @@ const rowDefinitions = [
 let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
+const contextOverviewController = createConversationContextOverview({
+  canvas: contextOverview,
+  label: contextLabel,
+  getPreview: () => preview,
+  getSelectedStartSeconds: () => Number(startInput.value),
+  setSelectedStartSeconds: (startSeconds) => {
+    startInput.value = startSeconds.toFixed(2);
+    positionSlider.value = String(startSeconds);
+  },
+  commitSelection: () => {
+    void loadPreview(false);
+  },
+  reportError: (error) => {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  },
+});
+
+async function loadDatasets() {
+  const response = await fetch("/api/dataset-dashboard/datasets", {
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, response.status));
+  }
+  datasetSelect.replaceChildren(
+    ...payload.datasets.map((dataset) => {
+      const option = document.createElement("option");
+      option.value = dataset.id;
+      option.textContent = dataset.name;
+      option.dataset.name = dataset.name;
+      return option;
+    }),
+  );
+  if (payload.datasets.length === 0) {
+    throw new Error("No datasets are available.");
+  }
+  const meetingsOption = Array.from(datasetSelect.options).find(
+    (option) => option.dataset.name === "meetings-s3",
+  );
+  datasetSelect.value = meetingsOption?.value ?? datasetSelect.options[0].value;
+}
 
 async function loadSamples() {
   try {
-    const response = await fetch("/api/training-samples/options?limit=100", {
+    const parameters = new URLSearchParams({
+      dataset_id: datasetSelect.value,
+      limit: "100",
+    });
+    const minimumQuality = selectedMinimumQuality();
+    if (minimumQuality !== null) {
+      parameters.set("minimum_quality", String(minimumQuality));
+    }
+    const response = await fetch(`/api/training-samples/options?${parameters}`, {
       cache: "no-store",
     });
     const samples = await response.json();
@@ -126,6 +183,7 @@ async function loadPreview(randomLocation, autoplay = false) {
 
 async function applyPreview(payload, autoplay) {
   preview = payload;
+  contextOverviewController.reset();
   selectedFrameIndex = null;
   playbackSeconds = preview.start_seconds;
   ensureSampleOption();
@@ -137,6 +195,7 @@ async function applyPreview(payload, autoplay) {
   renderSelectedFrame(null);
   drawTimeline();
   drawSourceAnnotationTimeline();
+  await contextOverviewController.load(preview.start_seconds);
   const coverageMessage =
     preview.annotated_duration_seconds < preview.represented_duration_seconds
       ? `Preview ready · ${formatDuration(preview.annotated_duration_seconds)} annotated of ${formatDuration(preview.represented_duration_seconds)}`
@@ -221,6 +280,7 @@ async function loadNextRandomSample() {
   setStatus(`Choosing the next ${samplingModeSelect.value} sample…`, false);
   try {
     const parameters = new URLSearchParams({
+      dataset_id: datasetSelect.value,
       current_sample_id: currentSampleId,
       sampling_mode: samplingModeSelect.value,
     });
@@ -281,6 +341,18 @@ function renderSummary() {
       ["Interaction density", optionalScore(preview.quality.interaction_density_score)],
       ["Usable events", optionalInteger(preview.quality.usable_event_count)],
       ["Events per hour", optionalDecimal(preview.quality.events_per_hour)],
+      [
+        "Permissive usable duration",
+        preview.conversation_regions === null
+          ? "Not analyzed"
+          : formatDuration(preview.conversation_regions.usable_duration_seconds),
+      ],
+      [
+        "Permissive usable ratio",
+        preview.conversation_regions === null
+          ? "Not analyzed"
+          : `${(preview.conversation_regions.usable_ratio * 100).toFixed(1)}%`,
+      ],
       ["Quality flags", preview.quality.flags.length === 0 ? "None" : preview.quality.flags.join(", ")],
       ["Annotation version", preview.annotation_version],
       ["Annotation generated", formatDateTime(preview.annotation_generated_at)],
@@ -383,6 +455,16 @@ function drawTimeline() {
   });
 
   drawBurnInOverlay(context, left, top, plotWidth, displayHeight, burnRatio);
+  drawUnusableRegionOverlay(
+    context,
+    preview.conversation_regions,
+    left,
+    top - 16,
+    plotWidth,
+    displayHeight - top + 2,
+    preview.start_seconds,
+    preview.end_seconds,
+  );
   drawTimeAxis(context, left, plotWidth, displayHeight);
   drawCursor(context, left, plotWidth, top, displayHeight);
 }
@@ -447,6 +529,16 @@ function drawSourceAnnotationTimeline() {
       viewportEndSeconds: preview.end_seconds,
     });
   });
+  drawUnusableRegionOverlay(
+    context,
+    preview.conversation_regions,
+    left,
+    30,
+    plotWidth,
+    displayHeight - 48,
+    preview.start_seconds,
+    preview.end_seconds,
+  );
   drawAnnotationTimeAxis(context, left, plotWidth, displayHeight);
   drawCursor(context, left, plotWidth, 30, displayHeight);
 }
@@ -882,15 +974,27 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString();
 }
 
+datasetSelect.addEventListener("change", () => {
+  void loadSamples();
+});
 sampleSelect.addEventListener("change", () => loadPreview(true));
 userSideSelect.addEventListener("change", () => loadPreview(true));
 loadButton.addEventListener("click", () => loadPreview(false));
 randomButton.addEventListener("click", () => loadPreview(true));
 nextRandomButton.addEventListener("click", loadNextRandomSample);
 positionSlider.addEventListener("input", () => {
-  startInput.value = Number(positionSlider.value).toFixed(2);
+  const startSeconds = Number(positionSlider.value);
+  startInput.value = startSeconds.toFixed(2);
+  contextOverviewController.schedule(startSeconds);
 });
 positionSlider.addEventListener("change", () => loadPreview(false));
+startInput.addEventListener("input", () => {
+  if (startInput.value === "" || !startInput.checkValidity()) {
+    return;
+  }
+  positionSlider.value = startInput.value;
+  contextOverviewController.schedule(Number(startInput.value));
+});
 playButton.addEventListener("click", togglePlayback);
 playBothInput.addEventListener("change", updatePlaybackMode);
 userAudio.addEventListener("timeupdate", trackPlayback);
@@ -904,6 +1008,8 @@ timeline.addEventListener("pointermove", (event) => {
 window.addEventListener("resize", () => {
   drawTimeline();
   drawSourceAnnotationTimeline();
+  contextOverviewController.draw();
 });
 
+await loadDatasets();
 await loadSamples();

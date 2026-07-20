@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from app.local.conversation_regions.models import ConversationRegionAnalysis
 from app.local.db.models import TrackSide
 from app.shared.base_model import FrozenBaseModel
 from app.shared.quality import ConnectionAnnotationTarget, SegmentAnnotationTarget
@@ -109,6 +110,7 @@ class TrainingSampleQuality(FrozenBaseModel):
 
 
 class TrainingSamplePreview(FrozenBaseModel):
+    dataset_id: UUID
     sample_id: UUID
     external_id: str
     user_side: TrackSide
@@ -140,10 +142,16 @@ class TrainingSamplePreview(FrozenBaseModel):
     assistant_segment_targets: tuple[SegmentAnnotationTarget, ...]
     user_connection_targets: tuple[ConnectionAnnotationTarget, ...]
     assistant_connection_targets: tuple[ConnectionAnnotationTarget, ...]
+    recording_user_spans: tuple[PreviewSpan, ...]
+    recording_assistant_spans: tuple[PreviewSpan, ...]
+    recording_user_points: tuple[PreviewPoint, ...]
+    recording_assistant_points: tuple[PreviewPoint, ...]
+    conversation_regions: ConversationRegionAnalysis | None
     frames: tuple[TrainingFramePreview, ...]
 
 
 class TrainingSampleOption(FrozenBaseModel):
+    dataset_id: UUID
     sample_id: UUID
     external_id: str
     represented_duration_seconds: float

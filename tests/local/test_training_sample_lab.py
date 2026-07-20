@@ -23,10 +23,12 @@ def training_sample_script() -> Iterator[str]:
     with TestClient(app) as client:
         page_response = client.get("/training/sample-lab")
         script_response = client.get("/pages/training-samples/app.js")
+        context_script_response = client.get("/pages/training-samples/context-overview.js")
     assert page_response.status_code == 200
     assert "Training sample lab" in page_response.text
     assert script_response.status_code == 200
-    yield script_response.text
+    assert context_script_response.status_code == 200
+    yield script_response.text + context_script_response.text
 
 
 @pytest.mark.parametrize(
@@ -48,13 +50,20 @@ def training_sample_script() -> Iterator[str]:
         "occupancy",
         "nextRandomButton",
         "loadNextRandomSample",
-        "/api/training-samples/options?limit=100",
+        "/api/training-samples/options?${parameters}",
         "/api/training-samples/random-preview",
         "playBothInput",
         "assistantAudio",
         "synchronizeAudioTracks",
         "minimumQualityInput",
         "samplingModeSelect",
+        "datasetSelect",
+        "contextOverview",
+        "createConversationContextOverview",
+        "contextOverviewController",
+        "drawUnusableRegionOverlay",
+        "recording_${role}_spans",
+        "conversation_regions",
         "preview.quality.total_score",
         "preview.annotation_version",
         "preview.annotation_generated_at",

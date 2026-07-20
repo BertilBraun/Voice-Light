@@ -19,6 +19,9 @@ from app.local.asr.full_recording_service import (
     validate_transcript_timestamps,
 )
 from app.local.config import COMPUTE_BASE_URL, COMPUTE_TOKEN
+from app.local.conversation_regions.models import ConversationRegionConfig
+from app.local.conversation_regions.repository import ConversationRegionRepository
+from app.local.conversation_regions.service import analyze_conversation_regions
 from app.local.db.models import (
     DatasetCreate,
     DatasetStorageKind,
@@ -106,6 +109,7 @@ class ManifestIngestionService:
         self.full_asr_repository = FullRecordingAsrRepository(repository.database_url)
         self.language_repository = LanguageAssessmentRepository(repository.database_url)
         self.vad_repository = VadRepository(repository.database_url)
+        self.conversation_region_repository = ConversationRegionRepository(repository.database_url)
 
     @classmethod
     def create_default(cls, repository: Repository) -> ManifestIngestionService:
@@ -449,14 +453,24 @@ class ManifestIngestionService:
             speaker2_vad=quality_response.speaker2_vad,
             duration_seconds=duration_seconds,
         )
+        quality_result = quality_result_with_conversation_annotation(
+            result=quality_response.quality_result,
+            conversation_annotation=annotation,
+        )
         persist_processed_ready_sample(
             repository=self.repository,
             processed=ProcessedReadySample(
                 ready=ready,
-                quality_result=quality_result_with_conversation_annotation(
-                    result=quality_response.quality_result,
-                    conversation_annotation=annotation,
-                ),
+                quality_result=quality_result,
+            ),
+        )
+        self.conversation_region_repository.upsert(
+            sample_id=ready.registered.sample_id,
+            analysis=analyze_conversation_regions(
+                speaker1_vad=quality_response.speaker1_vad,
+                speaker2_vad=quality_response.speaker2_vad,
+                annotation=annotation,
+                config=ConversationRegionConfig(),
             ),
         )
 

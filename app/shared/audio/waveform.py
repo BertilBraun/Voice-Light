@@ -28,6 +28,7 @@ def full_waveform_envelope(wave_path: Path, point_count: int) -> WaveformEnvelop
     return _waveform_envelope(
         wave_path=wave_path,
         point_count=point_count,
+        start_seconds=0.0,
         maximum_duration_seconds=None,
     )
 
@@ -36,13 +37,33 @@ def capped_waveform_envelope(wave_path: Path, point_count: int) -> WaveformEnvel
     return _waveform_envelope(
         wave_path=wave_path,
         point_count=point_count,
+        start_seconds=0.0,
         maximum_duration_seconds=ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
+    )
+
+
+def windowed_waveform_envelope(
+    wave_path: Path,
+    point_count: int,
+    start_seconds: float,
+    duration_seconds: float,
+) -> WaveformEnvelope:
+    if start_seconds < 0.0:
+        raise ValueError("start_seconds must be non-negative")
+    if duration_seconds <= 0.0:
+        raise ValueError("duration_seconds must be positive")
+    return _waveform_envelope(
+        wave_path=wave_path,
+        point_count=point_count,
+        start_seconds=start_seconds,
+        maximum_duration_seconds=duration_seconds,
     )
 
 
 def _waveform_envelope(
     wave_path: Path,
     point_count: int,
+    start_seconds: float,
     maximum_duration_seconds: float | None,
 ) -> WaveformEnvelope:
     if point_count <= 0:
@@ -54,12 +75,14 @@ def _waveform_envelope(
         return _ffmpeg_waveform_envelope(
             audio_path=resolved_path,
             point_count=point_count,
+            start_seconds=start_seconds,
             maximum_duration_seconds=maximum_duration_seconds,
         )
     return _cached_waveform_envelope(
         wave_path=resolved_path,
         modified_nanoseconds=resolved_path.stat().st_mtime_ns,
         point_count=point_count,
+        start_seconds=start_seconds,
         maximum_duration_seconds=maximum_duration_seconds,
     )
 
@@ -67,6 +90,7 @@ def _waveform_envelope(
 def _ffmpeg_waveform_envelope(
     audio_path: Path,
     point_count: int,
+    start_seconds: float,
     maximum_duration_seconds: float | None,
 ) -> WaveformEnvelope:
     waveform_sample_rate = 100
@@ -77,6 +101,8 @@ def _ffmpeg_waveform_envelope(
         "-loglevel",
         "error",
     ]
+    if start_seconds > 0.0:
+        command.extend(("-ss", str(start_seconds)))
     command.extend(
         (
             "-i",
@@ -126,6 +152,7 @@ def _cached_waveform_envelope(
     wave_path: Path,
     modified_nanoseconds: int,
     point_count: int,
+    start_seconds: float,
     maximum_duration_seconds: float | None,
 ) -> WaveformEnvelope:
     del modified_nanoseconds
@@ -135,10 +162,16 @@ def _cached_waveform_envelope(
             sample_width = wave_reader.getsampwidth()
             channel_count = wave_reader.getnchannels()
             source_frame_count = wave_reader.getnframes()
+            start_frame = min(source_frame_count, round(sample_rate * start_seconds))
+            wave_reader.setpos(start_frame)
+            available_frame_count = source_frame_count - start_frame
             frame_count = (
-                source_frame_count
+                available_frame_count
                 if maximum_duration_seconds is None
-                else min(source_frame_count, round(sample_rate * maximum_duration_seconds))
+                else min(
+                    available_frame_count,
+                    round(sample_rate * maximum_duration_seconds),
+                )
             )
             points = _read_waveform_points(
                 wave_reader=wave_reader,

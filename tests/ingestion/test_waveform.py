@@ -7,7 +7,11 @@ import numpy as np
 import pytest
 
 from app.shared.audio.wav import ANALYSIS_AUDIO_MAX_DURATION_SECONDS
-from app.shared.audio.waveform import capped_waveform_envelope, full_waveform_envelope
+from app.shared.audio.waveform import (
+    capped_waveform_envelope,
+    full_waveform_envelope,
+    windowed_waveform_envelope,
+)
 
 
 def test_full_waveform_envelope_covers_complete_file(tmp_path: Path) -> None:
@@ -48,3 +52,30 @@ def test_capped_waveform_envelope_covers_analysis_window(tmp_path: Path) -> None
 
     assert envelope.duration_seconds == ANALYSIS_AUDIO_MAX_DURATION_SECONDS
     assert len(envelope.points) == 100
+
+
+def test_windowed_waveform_envelope_seeks_to_requested_context(tmp_path: Path) -> None:
+    wave_path = tmp_path / "recording.wav"
+    samples = np.concatenate(
+        (
+            np.full(100, -1000, dtype="<i2"),
+            np.full(100, 2000, dtype="<i2"),
+            np.full(100, -3000, dtype="<i2"),
+        )
+    )
+    with wave.open(str(wave_path), "wb") as wave_writer:
+        wave_writer.setnchannels(1)
+        wave_writer.setsampwidth(2)
+        wave_writer.setframerate(100)
+        wave_writer.writeframes(samples.tobytes())
+
+    envelope = windowed_waveform_envelope(
+        wave_path=wave_path,
+        point_count=2,
+        start_seconds=1.0,
+        duration_seconds=1.0,
+    )
+
+    assert envelope.duration_seconds == pytest.approx(1.0)
+    assert len(envelope.points) == 2
+    assert all(point.minimum_amplitude > 0.0 for point in envelope.points)

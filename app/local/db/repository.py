@@ -969,6 +969,9 @@ class Repository:
 
     def list_annotated_samples(
         self,
+        dataset_id: UUID,
+        metric_version: str,
+        annotation_version: str,
         limit: int,
         minimum_quality: float | None,
     ) -> list[AnnotatedSampleRecord]:
@@ -989,20 +992,37 @@ class Repository:
                   SELECT usable_event_count, total_quality_score, payload
                   FROM quality_results
                   WHERE quality_results.sample_id = samples.id
+                    AND quality_results.metric_version = %s
+                    AND quality_results.status = 'completed'
+                    AND quality_results.payload
+                      -> 'conversation_annotation'
+                      ->> 'annotation_version' = %s
                   ORDER BY created_at DESC
                   LIMIT 1
                 ) AS latest_quality ON true
-                WHERE jsonb_typeof(latest_quality.payload -> 'conversation_annotation') = 'object'
+                WHERE samples.dataset_id = %s
+                  AND jsonb_typeof(
+                    latest_quality.payload -> 'conversation_annotation'
+                  ) = 'object'
                 {quality_filter}
                 ORDER BY samples.updated_at DESC, samples.external_id
                 LIMIT %s
                 """,
-                (*quality_parameters, limit),
+                (
+                    metric_version,
+                    annotation_version,
+                    dataset_id,
+                    *quality_parameters,
+                    limit,
+                ),
             ).fetchall()
         return [annotated_sample_record(row) for row in rows]
 
     def random_annotated_sample_id(
         self,
+        dataset_id: UUID,
+        metric_version: str,
+        annotation_version: str,
         current_sample_id: UUID,
         minimum_quality: float | None,
     ) -> UUID:
@@ -1016,20 +1036,37 @@ class Repository:
                   SELECT total_quality_score, payload
                   FROM quality_results
                   WHERE quality_results.sample_id = samples.id
+                    AND quality_results.metric_version = %s
+                    AND quality_results.status = 'completed'
+                    AND quality_results.payload
+                      -> 'conversation_annotation'
+                      ->> 'annotation_version' = %s
                   ORDER BY created_at DESC
                   LIMIT 1
                 ) AS latest_quality ON true
-                WHERE jsonb_typeof(latest_quality.payload -> 'conversation_annotation') = 'object'
+                WHERE samples.dataset_id = %s
+                  AND jsonb_typeof(
+                    latest_quality.payload -> 'conversation_annotation'
+                  ) = 'object'
                 {quality_filter}
                 ORDER BY (samples.id = %s), random()
                 LIMIT 1
                 """,
-                (*quality_parameters, current_sample_id),
+                (
+                    metric_version,
+                    annotation_version,
+                    dataset_id,
+                    *quality_parameters,
+                    current_sample_id,
+                ),
             ).fetchone()
         return annotated_sample_id(row)
 
     def interesting_annotated_sample_id(
         self,
+        dataset_id: UUID,
+        metric_version: str,
+        annotation_version: str,
         current_sample_id: UUID,
         minimum_quality: float | None,
     ) -> UUID:
@@ -1051,12 +1088,18 @@ class Repository:
                       payload
                     FROM quality_results
                     WHERE quality_results.sample_id = samples.id
+                      AND quality_results.metric_version = %s
+                      AND quality_results.status = 'completed'
+                      AND quality_results.payload
+                        -> 'conversation_annotation'
+                        ->> 'annotation_version' = %s
                     ORDER BY created_at DESC
                     LIMIT 1
                   ) AS latest_quality ON true
-                  WHERE jsonb_typeof(
-                    latest_quality.payload -> 'conversation_annotation'
-                  ) = 'object'
+                  WHERE samples.dataset_id = %s
+                    AND jsonb_typeof(
+                      latest_quality.payload -> 'conversation_annotation'
+                    ) = 'object'
                   {quality_filter}
                   ORDER BY
                     latest_quality.conversation_events_per_hour DESC NULLS LAST,
@@ -1068,7 +1111,14 @@ class Repository:
                 ORDER BY (sample_id = %s), random()
                 LIMIT 1
                 """,
-                (*quality_parameters, INTERESTING_SAMPLE_POOL_SIZE, current_sample_id),
+                (
+                    metric_version,
+                    annotation_version,
+                    dataset_id,
+                    *quality_parameters,
+                    INTERESTING_SAMPLE_POOL_SIZE,
+                    current_sample_id,
+                ),
             ).fetchone()
         return annotated_sample_id(row)
 

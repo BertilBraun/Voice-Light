@@ -86,7 +86,7 @@ p {
   align-items: end;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(240px, 2fr) repeat(4, minmax(120px, 1fr));
+  grid-template-columns: minmax(150px, 1fr) minmax(240px, 2fr) repeat(4, minmax(120px, 1fr));
   padding: 16px;
 }
 
@@ -138,6 +138,7 @@ button.primary {
 }
 
 .position-panel,
+.context-panel,
 .transport,
 .timeline-panel,
 .annotation-panel,
@@ -147,6 +148,53 @@ button.primary {
 .warning-card {
   margin-top: 14px;
   padding: 16px;
+}
+
+.context-canvas-shell {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+#context-overview {
+  display: block;
+  min-width: 980px;
+  width: 100%;
+}
+
+.context-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.context-legend span {
+  align-items: center;
+  color: #5b696e;
+  display: flex;
+  font-size: 12px;
+  gap: 5px;
+}
+
+.context-legend i {
+  border: 1px solid rgb(0 0 0 / 18%);
+  display: inline-block;
+  height: 12px;
+  width: 20px;
+}
+
+.context-selection {
+  background: rgb(20 107 99 / 18%);
+  border-color: #146b63 !important;
+}
+
+.context-unusable {
+  background: repeating-linear-gradient(
+    135deg,
+    rgb(242 153 74 / 22%),
+    rgb(242 153 74 / 22%) 4px,
+    rgb(202 80 16 / 58%) 4px,
+    rgb(202 80 16 / 58%) 6px
+  );
 }
 
 .position-heading {
@@ -249,6 +297,16 @@ button.primary {
 .legend .inactive {
   background: #f7f9f8;
   border-color: #dce3e1;
+}
+
+.legend .unusable {
+  background: repeating-linear-gradient(
+    135deg,
+    rgb(242 153 74 / 22%),
+    rgb(242 153 74 / 22%) 4px,
+    rgb(202 80 16 / 58%) 4px,
+    rgb(202 80 16 / 58%) 6px
+  );
 }
 
 .annotation-legend {

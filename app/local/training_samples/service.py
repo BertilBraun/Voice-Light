@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.local.conversation_regions.models import ConversationRegionAnalysis
 from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
 from app.local.ingestion.local_audio import materialize_sample_track
 from app.local.training_samples.models import (
@@ -90,6 +91,7 @@ def build_training_sample_preview(
     requested_start_seconds: float | None,
     selection_mode: TrainingSampleSelectionMode,
     generator: random.Random,
+    conversation_regions: ConversationRegionAnalysis | None,
 ) -> TrainingSamplePreview:
     annotation = _conversation_annotation(dashboard_sample)
     quality = dashboard_sample.latest_quality
@@ -138,6 +140,7 @@ def build_training_sample_preview(
         assistant=assistant_annotation,
     )
     return TrainingSamplePreview(
+        dataset_id=dashboard_sample.sample.dataset_id,
         sample_id=dashboard_sample.sample.id,
         external_id=dashboard_sample.sample.external_id,
         user_side=user_side,
@@ -189,6 +192,31 @@ def build_training_sample_preview(
             start_seconds,
             end_seconds,
         ),
+        recording_user_spans=_preview_spans(
+            user_annotation,
+            0.0,
+            eligible_duration_seconds,
+            is_user=True,
+        ),
+        recording_assistant_spans=_preview_spans(
+            assistant_annotation,
+            0.0,
+            eligible_duration_seconds,
+            is_user=False,
+        ),
+        recording_user_points=_preview_points(
+            user_annotation,
+            0.0,
+            eligible_duration_seconds,
+            is_user=True,
+        ),
+        recording_assistant_points=_preview_points(
+            assistant_annotation,
+            0.0,
+            eligible_duration_seconds,
+            is_user=False,
+        ),
+        conversation_regions=conversation_regions,
         frames=frames,
     )
 

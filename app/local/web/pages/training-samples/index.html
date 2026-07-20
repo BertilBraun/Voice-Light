@@ -21,6 +21,10 @@
       </header>
 
       <section class="panel controls" aria-label="Sample controls">
+        <label>
+          Dataset
+          <select id="dataset-select"></select>
+        </label>
         <label class="sample-field">
           Conversation
           <select id="sample-select"></select>
@@ -59,6 +63,28 @@
         <button id="next-random-button" class="primary" type="button">Next sample</button>
       </section>
 
+      <section class="panel context-panel">
+        <div class="timeline-header">
+          <div>
+            <h2>Two-minute conversation context</h2>
+            <p id="context-label">
+              Drag across the overview to position the selected 20-second crop.
+            </p>
+          </div>
+          <div class="context-legend">
+            <span><i class="context-selection"></i>Selected 20 seconds</span>
+            <span><i class="context-unusable"></i>Potentially unusable</span>
+          </div>
+        </div>
+        <div class="canvas-shell context-canvas-shell">
+          <canvas
+            id="context-overview"
+            height="220"
+            aria-label="Two-minute waveform and annotation context"
+          ></canvas>
+        </div>
+      </section>
+
       <section class="panel position-panel">
         <div class="position-heading">
           <strong id="position-label">No crop loaded</strong>
@@ -92,6 +118,7 @@
             <span><i class="probability"></i>Higher target value</span>
             <span><i class="uncertain"></i>Uncertain / censored</span>
             <span><i class="inactive"></i>No auxiliary event anchor</span>
+            <span><i class="unusable"></i>Potentially unusable region</span>
           </div>
         </div>
         <div class="canvas-shell">

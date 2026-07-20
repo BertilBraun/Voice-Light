@@ -157,14 +157,15 @@ async function loadSamples() {
   const samplesPayload = await fetchJson(
     `/api/dataset-dashboard/sample-summaries?${parameters}`,
   );
-  const [summary, completeness] = await Promise.all([
+  const [summary, completeness, conversationRegions] = await Promise.all([
     fetchJson(`/api/dataset-dashboard/conversation-summary?${parameters}`),
     fetchJson(`/api/dataset-dashboard/completeness?${completenessParameters}`),
+    fetchJson(`/api/dataset-dashboard/conversation-regions/summary?${parameters}`),
   ]);
   state.samples = samplesPayload.samples;
   elements.status.textContent = `${state.datasets.length} datasets, ${state.samples.length} samples`;
   renderSamples();
-  renderConversationSummary(summary);
+  renderConversationSummary(summary, conversationRegions);
   renderCompletenessSummary(completeness);
 }
 
@@ -272,7 +273,7 @@ function createCompletenessTable(title, columnLabels, rows) {
   return section;
 }
 
-function renderConversationSummary(summary) {
+function renderConversationSummary(summary, conversationRegions) {
   const estimatedSection = createMetricSection("Estimated full-conversation totals", [
     ["Analyzed samples", summary.analyzed_sample_count, "integer"],
     ["Invalid samples", summary.invalid_sample_count, "integer"],
@@ -285,6 +286,9 @@ function renderConversationSummary(summary) {
     ["Backchannels", summary.estimated_backchannel_count, "estimatedInteger"],
     ["Interruptions", summary.estimated_interruption_count, "estimatedInteger"],
     ["Useful events", summary.estimated_usable_event_count, "estimatedInteger"],
+    ["Permissive usable audio", conversationRegions.usable_duration_seconds / 3600, "hours"],
+    ["Potentially unusable audio", conversationRegions.unusable_duration_seconds / 3600, "hours"],
+    ["Permissive usable ratio", conversationRegions.usable_ratio, "ratio"],
   ]);
   const observedSection = createMetricSection("Observed ASR annotations", [
     ["Analyzed audio", summary.analyzed_duration_seconds / 3600, "hours"],

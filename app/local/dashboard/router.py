@@ -8,6 +8,11 @@ from fastapi.responses import FileResponse, Response
 from pydantic import Field
 
 from app.local.config import DATABASE_URL
+from app.local.conversation_regions.models import (
+    CONVERSATION_REGION_ANALYSIS_VERSION,
+    ConversationRegionDatasetSummary,
+)
+from app.local.conversation_regions.repository import ConversationRegionRepository
 from app.local.db.models import (
     ConversationDatasetSummary,
     DashboardSample,
@@ -26,7 +31,11 @@ from app.local.ingestion.local_audio import materialize_sample_track
 from app.local.ingestion.manifest_service import ManifestIngestionService
 from app.local.ingestion.service import IngestionService
 from app.shared.audio.wav import capped_audio_wave_bytes
-from app.shared.audio.waveform import capped_waveform_envelope, full_waveform_envelope
+from app.shared.audio.waveform import (
+    capped_waveform_envelope,
+    full_waveform_envelope,
+    windowed_waveform_envelope,
+)
 from app.shared.base_model import FrozenBaseModel
 from app.shared.quality import METRIC_VERSION
 
@@ -74,6 +83,7 @@ class WaveformPointResponse(FrozenBaseModel):
 
 
 class WaveformResponse(FrozenBaseModel):
+    start_seconds: float
     duration_seconds: float
     sample_rate: int
     points: tuple[WaveformPointResponse, ...]
@@ -83,6 +93,12 @@ def repository() -> Repository:
     if not DATABASE_URL:
         raise ValueError("VOICE_LIGHT_DATABASE_URL is required for dataset dashboard APIs.")
     return Repository(DATABASE_URL)
+
+
+def conversation_region_repository() -> ConversationRegionRepository:
+    if not DATABASE_URL:
+        raise ValueError("VOICE_LIGHT_DATABASE_URL is required for dataset dashboard APIs.")
+    return ConversationRegionRepository(DATABASE_URL)
 
 
 @router.get("/datasets")
@@ -110,6 +126,25 @@ def conversation_summary(
                 flag=flag,
                 language_status=language_status,
             )
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/conversation-regions/summary")
+def conversation_region_summary(
+    dataset_id: UUID | None = None,
+    quality_min: float | None = Query(default=None, ge=0.0, le=1.0),
+    overlap_ratio_max: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> ConversationRegionDatasetSummary:
+    try:
+        return conversation_region_repository().dataset_summary(
+            dataset_id=dataset_id,
+            analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+            metric_version=METRIC_VERSION,
+            annotation_version=ANNOTATION_VERSION,
+            minimum_quality=quality_min,
+            maximum_overlap_ratio=overlap_ratio_max,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -289,17 +324,32 @@ def sample_waveform(
     side: TrackSide,
     points: int = Query(default=1200, ge=100, le=5000),
     trimmed: bool = False,
+    start_seconds: float | None = Query(default=None, ge=0.0),
+    duration_seconds: float | None = Query(default=None, gt=0.0, le=300.0),
 ) -> WaveformResponse:
     source_path = sample_track_path(sample_id=sample_id, side=side)
     try:
-        envelope = (
-            capped_waveform_envelope(wave_path=source_path, point_count=points)
-            if trimmed
-            else full_waveform_envelope(wave_path=source_path, point_count=points)
-        )
+        if (start_seconds is None) != (duration_seconds is None):
+            raise ValueError("start_seconds and duration_seconds must be provided together.")
+        if start_seconds is not None and duration_seconds is not None:
+            envelope = windowed_waveform_envelope(
+                wave_path=source_path,
+                point_count=points,
+                start_seconds=start_seconds,
+                duration_seconds=duration_seconds,
+            )
+            envelope_start_seconds = start_seconds
+        else:
+            envelope = (
+                capped_waveform_envelope(wave_path=source_path, point_count=points)
+                if trimmed
+                else full_waveform_envelope(wave_path=source_path, point_count=points)
+            )
+            envelope_start_seconds = 0.0
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return WaveformResponse(
+        start_seconds=envelope_start_seconds,
         duration_seconds=envelope.duration_seconds,
         sample_rate=envelope.sample_rate,
         points=tuple(
