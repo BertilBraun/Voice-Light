@@ -87,9 +87,6 @@ const contextOverviewController = createConversationContextOverview({
   commitSelection: () => {
     void loadPreview(false);
   },
-  reportError: (error) => {
-    setStatus(error instanceof Error ? error.message : String(error), true);
-  },
 });
 
 async function loadDatasets() {
@@ -489,12 +486,12 @@ function drawSourceAnnotationTimeline() {
     {
       label: `USER AUDIO · ${prettySide(preview.user_side)}`,
       points: preview.user_waveform,
-      color: "#267d74",
+      color: "#0057d9",
     },
     {
       label: `ASSISTANT AUDIO · ${prettySide(preview.assistant_side)}`,
       points: preview.assistant_waveform,
-      color: "#b9772b",
+      color: "#7a1fa2",
     },
   ];
   waveformRows.forEach((row, rowIndex) => {
@@ -590,20 +587,30 @@ function drawBurnInOverlay(context, left, top, width, height, burnRatio) {
 }
 
 function drawWaveform(context, left, top, width, height) {
-  drawWaveformPoints(context, preview.user_waveform, left, top, width, height, "#267d74");
+  drawWaveformPoints(context, preview.user_waveform, left, top, width, height, "#0057d9");
 }
 
 function drawWaveformPoints(context, points, left, top, width, height, color) {
   const middle = top + height / 2;
+  const peakAmplitude = points.reduce(
+    (maximum, point) =>
+      Math.max(
+        maximum,
+        Math.abs(point.minimum_amplitude),
+        Math.abs(point.maximum_amplitude),
+      ),
+    0.01,
+  );
+  const amplitudeScale = (height * 0.43) / peakAmplitude;
   context.fillStyle = "#f7f9f8";
   context.fillRect(left, top, width, height);
   context.strokeStyle = color;
-  context.lineWidth = 1;
+  context.lineWidth = 2;
   points.forEach((point, index) => {
     const x = left + (index / Math.max(1, points.length - 1)) * width;
     context.beginPath();
-    context.moveTo(x, middle - point.maximum_amplitude * height * 0.45);
-    context.lineTo(x, middle - point.minimum_amplitude * height * 0.45);
+    context.moveTo(x, middle - point.maximum_amplitude * amplitudeScale);
+    context.lineTo(x, middle - point.minimum_amplitude * amplitudeScale);
     context.stroke();
   });
 }
@@ -985,7 +992,7 @@ nextRandomButton.addEventListener("click", loadNextRandomSample);
 positionSlider.addEventListener("input", () => {
   const startSeconds = Number(positionSlider.value);
   startInput.value = startSeconds.toFixed(2);
-  contextOverviewController.schedule(startSeconds);
+  contextOverviewController.draw();
 });
 positionSlider.addEventListener("change", () => loadPreview(false));
 startInput.addEventListener("input", () => {
@@ -993,18 +1000,14 @@ startInput.addEventListener("input", () => {
     return;
   }
   positionSlider.value = startInput.value;
-  contextOverviewController.schedule(Number(startInput.value));
+  contextOverviewController.draw();
 });
+startInput.addEventListener("change", () => loadPreview(false));
 playButton.addEventListener("click", togglePlayback);
 playBothInput.addEventListener("change", updatePlaybackMode);
 userAudio.addEventListener("timeupdate", trackPlayback);
 userAudio.addEventListener("ended", pausePlayback);
 timeline.addEventListener("click", selectFrameAtEvent);
-timeline.addEventListener("pointermove", (event) => {
-  if (event.buttons === 0) {
-    selectFrameAtEvent(event);
-  }
-});
 window.addEventListener("resize", () => {
   drawTimeline();
   drawSourceAnnotationTimeline();

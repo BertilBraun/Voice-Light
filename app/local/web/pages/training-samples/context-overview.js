@@ -1,4 +1,4 @@
-const CONTEXT_DURATION_SECONDS = 120;
+const CONTEXT_DURATION_SECONDS = 180;
 const CONTEXT_WAVEFORM_POINTS = 1200;
 
 export function createConversationContextOverview(options) {
@@ -9,11 +9,9 @@ export function createConversationContextOverview(options) {
     getSelectedStartSeconds,
     setSelectedStartSeconds,
     commitSelection,
-    reportError,
   } = options;
   let waveforms = null;
   let requestGeneration = 0;
-  let loadTimer = null;
   let dragging = false;
 
   async function load(selectedStartSeconds) {
@@ -63,17 +61,6 @@ export function createConversationContextOverview(options) {
     draw();
   }
 
-  function schedule(selectedStartSeconds) {
-    if (loadTimer !== null) {
-      window.clearTimeout(loadTimer);
-    }
-    draw();
-    loadTimer = window.setTimeout(() => {
-      loadTimer = null;
-      void load(selectedStartSeconds).catch(reportError);
-    }, 140);
-  }
-
   function reset() {
     waveforms = null;
     requestGeneration += 1;
@@ -96,17 +83,27 @@ export function createConversationContextOverview(options) {
     const left = 112;
     const right = 18;
     const plotWidth = displayWidth - left - right;
+    drawUnusableRegionOverlay(
+      context,
+      preview.conversation_regions,
+      left,
+      18,
+      plotWidth,
+      150,
+      waveforms.startSeconds,
+      waveforms.endSeconds,
+    );
     const waveformRows = [
       {
         label: `USER · ${prettySide(preview.user_side)}`,
         points: waveforms.user,
-        color: "#267d74",
+        color: "#0057d9",
         spans: recordingSpeechSpans(preview, "user"),
       },
       {
         label: `ASSISTANT · ${prettySide(preview.assistant_side)}`,
         points: waveforms.assistant,
-        color: "#b9772b",
+        color: "#7a1fa2",
         spans: recordingSpeechSpans(preview, "assistant"),
       },
     ];
@@ -134,16 +131,6 @@ export function createConversationContextOverview(options) {
         waveforms.endSeconds,
       );
     });
-    drawUnusableRegionOverlay(
-      context,
-      preview.conversation_regions,
-      left,
-      18,
-      plotWidth,
-      150,
-      waveforms.startSeconds,
-      waveforms.endSeconds,
-    );
     drawSelection(
       context,
       preview,
@@ -188,7 +175,6 @@ export function createConversationContextOverview(options) {
     );
     setSelectedStartSeconds(startSeconds);
     draw();
-    schedule(startSeconds);
   }
 
   function showInspection(event) {
@@ -246,7 +232,7 @@ export function createConversationContextOverview(options) {
   });
   canvas.addEventListener("pointerleave", restoreLabel);
 
-  return { load, schedule, reset, draw };
+  return { load, reset, draw };
 }
 
 export function drawUnusableRegionOverlay(
@@ -266,9 +252,9 @@ export function drawUnusableRegionOverlay(
   patternCanvas.width = 8;
   patternCanvas.height = 8;
   const patternContext = patternCanvas.getContext("2d");
-  patternContext.fillStyle = "rgba(242, 153, 74, 0.18)";
+  patternContext.fillStyle = "rgba(242, 153, 74, 0.12)";
   patternContext.fillRect(0, 0, 8, 8);
-  patternContext.strokeStyle = "rgba(202, 80, 16, 0.58)";
+  patternContext.strokeStyle = "rgba(202, 80, 16, 0.42)";
   patternContext.lineWidth = 2;
   patternContext.beginPath();
   patternContext.moveTo(-2, 8);
@@ -325,15 +311,25 @@ function recordingSpeechSpans(preview, role) {
 
 function drawWaveformPoints(context, points, left, top, width, height, color) {
   const middle = top + height / 2;
+  const peakAmplitude = points.reduce(
+    (maximum, point) =>
+      Math.max(
+        maximum,
+        Math.abs(point.minimum_amplitude),
+        Math.abs(point.maximum_amplitude),
+      ),
+    0.01,
+  );
+  const amplitudeScale = (height * 0.43) / peakAmplitude;
   context.fillStyle = "#f7f9f8";
   context.fillRect(left, top, width, height);
   context.strokeStyle = color;
-  context.lineWidth = 1;
+  context.lineWidth = 2;
   points.forEach((point, index) => {
     const x = left + (index / Math.max(1, points.length - 1)) * width;
     context.beginPath();
-    context.moveTo(x, middle - point.maximum_amplitude * height * 0.45);
-    context.lineTo(x, middle - point.minimum_amplitude * height * 0.45);
+    context.moveTo(x, middle - point.maximum_amplitude * amplitudeScale);
+    context.lineTo(x, middle - point.minimum_amplitude * amplitudeScale);
     context.stroke();
   });
 }

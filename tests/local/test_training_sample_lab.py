@@ -61,6 +61,7 @@ def training_sample_script() -> Iterator[str]:
         "contextOverview",
         "createConversationContextOverview",
         "contextOverviewController",
+        "const CONTEXT_DURATION_SECONDS = 180",
         "drawUnusableRegionOverlay",
         "recording_${role}_spans",
         "conversation_regions",
@@ -80,6 +81,14 @@ def training_sample_script() -> Iterator[str]:
 )
 def test_training_sample_lab_displays_target(label_field: str, training_sample_script: str) -> None:
     assert label_field in training_sample_script
+
+
+def test_training_sample_lab_updates_positions_only_on_committed_interactions(
+    training_sample_script: str,
+) -> None:
+    assert 'timeline.addEventListener("click", selectFrameAtEvent)' in training_sample_script
+    assert 'timeline.addEventListener("pointermove"' not in training_sample_script
+    assert "contextOverviewController.schedule" not in training_sample_script
 
 
 def test_assistant_speaking_is_an_input_and_respects_playback_pauses() -> None:
