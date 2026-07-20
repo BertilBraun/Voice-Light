@@ -102,6 +102,7 @@ def transcript_record(
         model_id=AsrModelId.PARAKEET_TDT,
         transcript_text="",
         words=(),
+        language_estimate=None,
         source_duration_seconds=10.0,
         prepared_duration_seconds=10.0,
         processing_time_seconds=1.0,

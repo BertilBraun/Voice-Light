@@ -118,6 +118,7 @@ def test_full_recording_track_transcodes_calls_remote_and_persists(tmp_path: Pat
                     model_id=AsrModelId.PARAKEET_TDT,
                     text="hello",
                     words=(TimestampedWord(text="hello", start_seconds=0.1, end_seconds=0.4),),
+                    language_estimate=None,
                     processing_time_seconds=0.25,
                     runtime=AsrRuntimeStats(
                         processing_time_seconds=0.25,
@@ -174,6 +175,7 @@ def test_cached_full_recording_transcript_prevents_remote_call(tmp_path: Path) -
                 model_id=AsrModelId.PARAKEET_TDT,
                 text="cached",
                 words=(),
+                language_estimate=None,
             ),
         )
     finally:
@@ -196,6 +198,7 @@ def test_cached_full_recording_transcript_prevents_remote_call(tmp_path: Path) -
                 model_id=AsrModelId.PARAKEET_TDT,
                 text="",
                 words=(),
+                language_estimate=None,
                 error="GPU out of memory",
             ),
             "GPU out of memory",
@@ -205,6 +208,7 @@ def test_cached_full_recording_transcript_prevents_remote_call(tmp_path: Path) -
                 model_id=AsrModelId.PARAKEET_TDT,
                 text="late",
                 words=(TimestampedWord(text="late", start_seconds=1.2, end_seconds=None),),
+                language_estimate=None,
             ),
             "starts beyond",
         ),
@@ -213,6 +217,7 @@ def test_cached_full_recording_transcript_prevents_remote_call(tmp_path: Path) -
                 model_id=AsrModelId.PARAKEET_TDT,
                 text="negative",
                 words=(TimestampedWord(text="negative", start_seconds=None, end_seconds=-0.1),),
+                language_estimate=None,
             ),
             "ends before",
         ),
@@ -271,6 +276,7 @@ def transcript_record(
         model_id=transcript.model_id,
         transcript_text=transcript.text,
         words=transcript.words,
+        language_estimate=transcript.language_estimate,
         source_duration_seconds=source_duration_seconds,
         prepared_duration_seconds=prepared_duration_seconds,
         processing_time_seconds=transcript.processing_time_seconds,

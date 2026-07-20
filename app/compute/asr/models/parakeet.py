@@ -10,6 +10,7 @@ from app.compute.asr.chunking import (
 )
 from app.compute.asr.models.base import (
     BatchInferenceExecutor,
+    BatchModelOutput,
     ModelTranscription,
     PreparedAsrAudio,
     cuda_device,
@@ -55,9 +56,10 @@ class ParakeetAsrModel:
             result = self.inference_executor.execute(batch, self)
             inference_queue_time_seconds += result.queue_time_seconds
             model_execution_time_seconds += result.execution_time_seconds
-            words.extend(word for chunk_words in result.outputs for word in chunk_words)
+            words.extend(word for output in result.outputs for word in output.words)
         return ModelTranscription(
             words=tuple(words),
+            language_estimate=None,
             inference_queue_time_seconds=inference_queue_time_seconds,
             audio_loading_time_seconds=audio.loading_time_seconds,
             model_execution_time_seconds=model_execution_time_seconds,
@@ -66,7 +68,7 @@ class ParakeetAsrModel:
     def transcribe_batch(
         self,
         chunks: tuple[ParakeetAudioChunk, ...],
-    ) -> tuple[tuple[TimestampedWord, ...], ...]:
+    ) -> tuple[BatchModelOutput, ...]:
         inputs = self.processor(
             [chunk.samples for chunk in chunks],
             sampling_rate=self.sample_rate,
@@ -81,9 +83,12 @@ class ParakeetAsrModel:
         if not isinstance(decoded_timestamps, list) or len(decoded_timestamps) != len(chunks):
             raise ValueError("Parakeet did not return one timestamp sequence per audio chunk.")
         return tuple(
-            global_chunk_words(
-                chunk=chunk,
-                words=tuple(words_from_parakeet_timestamps(chunk_timestamps)),
+            BatchModelOutput(
+                words=global_chunk_words(
+                    chunk=chunk,
+                    words=tuple(words_from_parakeet_timestamps(chunk_timestamps)),
+                ),
+                language_estimate=None,
             )
             for chunk, chunk_timestamps in zip(chunks, decoded_timestamps, strict=True)
         )

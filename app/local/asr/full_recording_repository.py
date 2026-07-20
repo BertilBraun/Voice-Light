@@ -14,7 +14,13 @@ from app.local.asr.full_recording_models import (
     FullRecordingAsrTranscriptRecord,
 )
 from app.local.db.models import TrackSide
-from app.shared.asr import AsrModelId, AsrRuntimeStats, AsrTranscriptResult, TimestampedWord
+from app.shared.asr import (
+    AsrModelId,
+    AsrRuntimeStats,
+    AsrTranscriptResult,
+    LanguageEstimate,
+    TimestampedWord,
+)
 
 
 class FullRecordingAsrRepository:
@@ -136,15 +142,19 @@ class FullRecordingAsrRepository:
                 INSERT INTO full_recording_asr_transcripts (
                   sample_track_id, source_audio_sha256, prepared_audio_sha256,
                   audio_filename, model_id, transcript_text, words,
+                  language_estimate,
                   source_duration_seconds, prepared_duration_seconds,
                   processing_time_seconds, runtime, error, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                VALUES (
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                )
                 ON CONFLICT (sample_track_id, source_audio_sha256, model_id) DO UPDATE
                 SET prepared_audio_sha256 = EXCLUDED.prepared_audio_sha256,
                     audio_filename = EXCLUDED.audio_filename,
                     transcript_text = EXCLUDED.transcript_text,
                     words = EXCLUDED.words,
+                    language_estimate = EXCLUDED.language_estimate,
                     source_duration_seconds = EXCLUDED.source_duration_seconds,
                     prepared_duration_seconds = EXCLUDED.prepared_duration_seconds,
                     processing_time_seconds = EXCLUDED.processing_time_seconds,
@@ -161,6 +171,11 @@ class FullRecordingAsrRepository:
                     transcript.model_id.value,
                     transcript.text,
                     Jsonb([word.model_dump(mode="json") for word in transcript.words]),
+                    (
+                        Jsonb(transcript.language_estimate.model_dump(mode="json"))
+                        if transcript.language_estimate is not None
+                        else None
+                    ),
                     source_duration_seconds,
                     prepared_duration_seconds,
                     transcript.processing_time_seconds,
@@ -221,10 +236,13 @@ def transcript_select_query(where_clause: str) -> str:
 def transcript_record(row: dict[str, object]) -> FullRecordingAsrTranscriptRecord:
     words_value = json_value(row["words"])
     runtime_value = json_value(row["runtime"])
+    language_value = json_value(row["language_estimate"])
     if not isinstance(words_value, list):
         raise ValueError("Full-recording ASR words must be a JSON array.")
     if not isinstance(runtime_value, dict):
         raise ValueError("Full-recording ASR runtime must be a JSON object.")
+    if language_value is not None and not isinstance(language_value, dict):
+        raise ValueError("Full-recording ASR language estimate must be a JSON object.")
     return FullRecordingAsrTranscriptRecord(
         id=uuid_from_row(row["id"]),
         sample_track_id=uuid_from_row(row["sample_track_id"]),
@@ -237,6 +255,9 @@ def transcript_record(row: dict[str, object]) -> FullRecordingAsrTranscriptRecor
         model_id=AsrModelId(string_from_row(row["model_id"])),
         transcript_text=string_from_row(row["transcript_text"]),
         words=tuple(TimestampedWord.model_validate(word) for word in words_value),
+        language_estimate=LanguageEstimate.model_validate(language_value)
+        if language_value is not None
+        else None,
         source_duration_seconds=float_from_row(row["source_duration_seconds"]),
         prepared_duration_seconds=float_from_row(row["prepared_duration_seconds"]),
         processing_time_seconds=optional_float_from_row(row["processing_time_seconds"]),
@@ -254,6 +275,7 @@ def transcript_result_from_record(
         model_id=record.model_id,
         text=record.transcript_text,
         words=record.words,
+        language_estimate=record.language_estimate,
         processing_time_seconds=record.processing_time_seconds,
         runtime=record.runtime,
         error=record.error,

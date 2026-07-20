@@ -360,6 +360,7 @@ def transcript_record(
                 end_seconds=2.0,
             ),
         ),
+        language_estimate=None,
         source_duration_seconds=10.0,
         prepared_duration_seconds=10.0,
         processing_time_seconds=1.0,

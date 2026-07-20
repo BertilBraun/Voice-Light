@@ -7,12 +7,19 @@ from huggingface_hub import snapshot_download
 
 from app.compute.asr.models.base import (
     BatchInferenceExecutor,
+    BatchModelOutput,
     ModelTranscription,
     PreparedAsrAudio,
     cuda_device,
     load_time_seconds,
 )
-from app.shared.asr import WHISPER_IDENTIFIER, WHISPER_REVISION, AsrModelId, TimestampedWord
+from app.shared.asr import (
+    WHISPER_IDENTIFIER,
+    WHISPER_REVISION,
+    AsrModelId,
+    LanguageEstimate,
+    TimestampedWord,
+)
 
 
 class WhisperxAsrModel:
@@ -37,7 +44,8 @@ class WhisperxAsrModel:
             self,
         )
         return ModelTranscription(
-            words=result.outputs[0],
+            words=result.outputs[0].words,
+            language_estimate=result.outputs[0].language_estimate,
             inference_queue_time_seconds=result.queue_time_seconds,
             audio_loading_time_seconds=audio.loading_time_seconds,
             model_execution_time_seconds=result.execution_time_seconds,
@@ -46,8 +54,8 @@ class WhisperxAsrModel:
     def transcribe_batch(
         self,
         audio_paths: tuple[Path, ...],
-    ) -> tuple[tuple[TimestampedWord, ...], ...]:
-        transcriptions: list[tuple[TimestampedWord, ...]] = []
+    ) -> tuple[BatchModelOutput, ...]:
+        transcriptions: list[BatchModelOutput] = []
         for audio_path in audio_paths:
             segments, transcription_info = self.model.transcribe(
                 str(audio_path),
@@ -55,17 +63,23 @@ class WhisperxAsrModel:
                 word_timestamps=True,
                 vad_filter=False,
             )
+            words = tuple(
+                TimestampedWord(
+                    text=word.word,
+                    start_seconds=word.start,
+                    end_seconds=word.end,
+                    confidence=word.probability,
+                )
+                for segment in segments
+                for word in (segment.words or ())
+            )
             transcriptions.append(
-                tuple(
-                    TimestampedWord(
-                        text=word.word,
-                        start_seconds=word.start,
-                        end_seconds=word.end,
-                        confidence=word.probability,
-                    )
-                    for segment in segments
-                    for word in (segment.words or ())
+                BatchModelOutput(
+                    words=words,
+                    language_estimate=LanguageEstimate(
+                        language_code=transcription_info.language,
+                        confidence=transcription_info.language_probability,
+                    ),
                 )
             )
-            del transcription_info
         return tuple(transcriptions)

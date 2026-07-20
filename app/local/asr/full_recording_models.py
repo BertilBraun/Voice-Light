@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from app.local.db.models import TrackSide
-from app.shared.asr import AsrModelId, AsrRuntimeStats, TimestampedWord
+from app.shared.asr import AsrModelId, AsrRuntimeStats, LanguageEstimate, TimestampedWord
 from app.shared.base_model import FrozenBaseModel
 
 
@@ -20,6 +20,7 @@ class FullRecordingAsrTranscriptRecord(FrozenBaseModel):
     model_id: AsrModelId
     transcript_text: str
     words: tuple[TimestampedWord, ...]
+    language_estimate: LanguageEstimate | None
     source_duration_seconds: float
     prepared_duration_seconds: float
     processing_time_seconds: float | None

@@ -25,6 +25,7 @@ def test_transcription_result_from_cached_asr_preserves_words_and_runtime() -> N
                 TimestampedWord(text="hello", start_seconds=0.0, end_seconds=0.5),
                 TimestampedWord(text="world", start_seconds=0.6, end_seconds=1.0),
             ),
+            language_estimate=None,
             processing_time_seconds=1.5,
             runtime=AsrRuntimeStats(
                 processing_time_seconds=1.5,
@@ -58,6 +59,7 @@ def test_clipped_ingested_transcript_matches_analysis_audio_duration() -> None:
             TimestampedWord(text="boundary", start_seconds=1.8, end_seconds=2.2),
             TimestampedWord(text="outside", start_seconds=2.5, end_seconds=3.0),
         ),
+        language_estimate=None,
     )
 
     clipped = clipped_ingested_transcript(

@@ -51,10 +51,16 @@ class AsrRuntimeStats(FrozenBaseModel):
     package_versions: dict[str, str] = Field(default_factory=dict)
 
 
+class LanguageEstimate(FrozenBaseModel):
+    language_code: str = Field(min_length=2)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class AsrTranscriptResult(FrozenBaseModel):
     model_id: AsrModelId
     text: str
     words: tuple[TimestampedWord, ...]
+    language_estimate: LanguageEstimate | None
     processing_time_seconds: float | None = None
     error: str | None = None
     runtime: AsrRuntimeStats | None = None

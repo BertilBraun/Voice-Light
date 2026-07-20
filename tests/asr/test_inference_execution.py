@@ -8,6 +8,7 @@ import pytest
 from app.compute.asr.models.base import (
     MAX_CONCURRENT_ASR_INFERENCE_CALLS,
     BatchInferenceExecutor,
+    BatchModelOutput,
     inference_batches,
 )
 from app.shared.asr import TimestampedWord
@@ -20,10 +21,13 @@ class BarrierTranscriber:
     def transcribe_batch(
         self,
         inputs: tuple[int, ...],
-    ) -> tuple[tuple[TimestampedWord, ...], ...]:
+    ) -> tuple[BatchModelOutput, ...]:
         self.barrier.wait(timeout=2.0)
         return tuple(
-            (TimestampedWord(text=str(value * 2), start_seconds=0.0, end_seconds=1.0),)
+            BatchModelOutput(
+                words=(TimestampedWord(text=str(value * 2), start_seconds=0.0, end_seconds=1.0),),
+                language_estimate=None,
+            )
             for value in inputs
         )
 
@@ -32,9 +36,14 @@ class InvalidCardinalityTranscriber:
     def transcribe_batch(
         self,
         inputs: tuple[str, ...],
-    ) -> tuple[tuple[TimestampedWord, ...], ...]:
+    ) -> tuple[BatchModelOutput, ...]:
         del inputs
-        return ((TimestampedWord(text="result", start_seconds=0.0, end_seconds=1.0),),)
+        return (
+            BatchModelOutput(
+                words=(TimestampedWord(text="result", start_seconds=0.0, end_seconds=1.0),),
+                language_estimate=None,
+            ),
+        )
 
 
 def test_inference_batches_groups_typed_items() -> None:
@@ -63,7 +72,7 @@ def test_batch_inference_executor_allows_four_simultaneous_calls() -> None:
             for value in range(MAX_CONCURRENT_ASR_INFERENCE_CALLS)
         )
 
-    assert tuple(future.result().outputs[0][0].text for future in futures) == (
+    assert tuple(future.result().outputs[0].words[0].text for future in futures) == (
         "0",
         "2",
         "4",

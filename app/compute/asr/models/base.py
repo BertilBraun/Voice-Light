@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from app.shared.asr import AsrModelId, TimestampedWord
+from app.shared.asr import AsrModelId, LanguageEstimate, TimestampedWord
 from app.shared.audio import load_audio
 from app.shared.audio.transport import CANONICAL_MODEL_AUDIO_SPEC
 from app.shared.storage.local import LocalStorageBackend
@@ -32,16 +32,22 @@ class PreparedAsrAudio:
 
 @dataclass(frozen=True)
 class BatchInferenceResult:
-    outputs: tuple[tuple[TimestampedWord, ...], ...]
+    outputs: tuple[BatchModelOutput, ...]
     queue_time_seconds: float
     execution_time_seconds: float
+
+
+@dataclass(frozen=True)
+class BatchModelOutput:
+    words: tuple[TimestampedWord, ...]
+    language_estimate: LanguageEstimate | None
 
 
 class BatchTranscriber(Protocol[InferenceInput]):
     def transcribe_batch(
         self,
         inputs: tuple[InferenceInput, ...],
-    ) -> tuple[tuple[TimestampedWord, ...], ...]: ...
+    ) -> tuple[BatchModelOutput, ...]: ...
 
 
 class BatchInferenceExecutor:
@@ -91,6 +97,7 @@ class LoadedAsrModel(Protocol):
 @dataclass(frozen=True)
 class ModelTranscription:
     words: tuple[TimestampedWord, ...]
+    language_estimate: LanguageEstimate | None
     inference_queue_time_seconds: float
     audio_loading_time_seconds: float
     model_execution_time_seconds: float
@@ -100,6 +107,7 @@ class ModelTranscription:
 class TimedTranscription:
     model_id: AsrModelId
     words: tuple[TimestampedWord, ...]
+    language_estimate: LanguageEstimate | None
     model_loading_time_seconds: float
     inference_time_seconds: float
     package_names: tuple[str, ...]
@@ -147,6 +155,7 @@ def timed_transcription(model: LoadedAsrModel, audio: PreparedAsrAudio) -> Timed
     return TimedTranscription(
         model_id=model.model_id,
         words=transcription.words,
+        language_estimate=transcription.language_estimate,
         model_loading_time_seconds=model.model_loading_time_seconds,
         inference_time_seconds=inference_time_seconds,
         inference_queue_time_seconds=transcription.inference_queue_time_seconds,

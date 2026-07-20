@@ -165,6 +165,7 @@ def transcript_result(model_id: AsrModelId, text: str) -> AsrTranscriptResult:
         model_id=model_id,
         text=text,
         words=(TimestampedWord(text=text, start_seconds=0.0, end_seconds=1.0),),
+        language_estimate=None,
     )
 
 

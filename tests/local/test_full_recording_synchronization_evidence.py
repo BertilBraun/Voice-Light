@@ -212,6 +212,7 @@ def _transcript(
             )
             for index, start_seconds in enumerate(range(0, 390, 10))
         ),
+        language_estimate=None,
         source_duration_seconds=400.0,
         prepared_duration_seconds=400.0,
         processing_time_seconds=10.0,

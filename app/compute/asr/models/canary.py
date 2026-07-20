@@ -20,6 +20,7 @@ from app.compute.asr.chunking import (
 )
 from app.compute.asr.models.base import (
     BatchInferenceExecutor,
+    BatchModelOutput,
     ModelTranscription,
     PreparedAsrAudio,
     cuda_device,
@@ -88,11 +89,11 @@ class CanaryAsrModel:
                     )
                     inference_queue_time_seconds += result.queue_time_seconds
                     model_execution_time_seconds += result.execution_time_seconds
-                    for chunk, chunk_words in zip(batch, result.outputs, strict=True):
+                    for chunk, output in zip(batch, result.outputs, strict=True):
                         words.extend(
                             global_canary_chunk_words(
                                 chunk=chunk,
-                                words=chunk_words,
+                                words=output.words,
                             )
                         )
                 finally:
@@ -100,6 +101,7 @@ class CanaryAsrModel:
                         chunk_path.unlink(missing_ok=True)
         return ModelTranscription(
             words=tuple(words),
+            language_estimate=None,
             inference_queue_time_seconds=inference_queue_time_seconds,
             audio_loading_time_seconds=audio_loading_time_seconds,
             model_execution_time_seconds=model_execution_time_seconds,
@@ -108,7 +110,7 @@ class CanaryAsrModel:
     def transcribe_batch(
         self,
         chunk_paths: tuple[Path, ...],
-    ) -> tuple[tuple[TimestampedWord, ...], ...]:
+    ) -> tuple[BatchModelOutput, ...]:
         with self.model_state_lock:
             hypotheses: list[Hypothesis] = self.model.transcribe(
                 [str(chunk_path) for chunk_path in chunk_paths],
@@ -120,7 +122,10 @@ class CanaryAsrModel:
         if len(hypotheses) != len(chunk_paths):
             raise ValueError("Canary did not return one hypothesis per audio chunk.")
         return tuple(
-            tuple(words_from_nemo_timestamps(hypothesis.timestamp["word"]))
+            BatchModelOutput(
+                words=tuple(words_from_nemo_timestamps(hypothesis.timestamp["word"])),
+                language_estimate=None,
+            )
             for hypothesis in hypotheses
         )
 

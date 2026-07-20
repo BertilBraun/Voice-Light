@@ -5,6 +5,7 @@ from transformers import AutoModelForRNNT, AutoProcessor
 
 from app.compute.asr.models.base import (
     BatchInferenceExecutor,
+    BatchModelOutput,
     ModelTranscription,
     PreparedAsrAudio,
     cuda_device,
@@ -48,7 +49,8 @@ class NemotronAsrModel:
             self,
         )
         return ModelTranscription(
-            words=result.outputs[0],
+            words=result.outputs[0].words,
+            language_estimate=None,
             inference_queue_time_seconds=result.queue_time_seconds,
             audio_loading_time_seconds=audio.loading_time_seconds,
             model_execution_time_seconds=result.execution_time_seconds,
@@ -57,8 +59,8 @@ class NemotronAsrModel:
     def transcribe_batch(
         self,
         audio_batch: tuple[PreparedAsrAudio, ...],
-    ) -> tuple[tuple[TimestampedWord, ...], ...]:
-        transcriptions: list[tuple[TimestampedWord, ...]] = []
+    ) -> tuple[BatchModelOutput, ...]:
+        transcriptions: list[BatchModelOutput] = []
         for audio in audio_batch:
             inputs = self.processor(
                 audio.samples,
@@ -70,14 +72,19 @@ class NemotronAsrModel:
             output = self.model.generate(**inputs, return_dict_in_generate=True)
             decoded_text = self.decoded_text(output.sequences)
             transcriptions.append(
-                ()
-                if not decoded_text.strip()
-                else (
-                    TimestampedWord(
-                        text=decoded_text.strip(),
-                        start_seconds=0.0,
-                        end_seconds=audio.duration_seconds,
+                BatchModelOutput(
+                    words=(
+                        ()
+                        if not decoded_text.strip()
+                        else (
+                            TimestampedWord(
+                                text=decoded_text.strip(),
+                                start_seconds=0.0,
+                                end_seconds=audio.duration_seconds,
+                            ),
+                        )
                     ),
+                    language_estimate=None,
                 )
             )
         return tuple(transcriptions)

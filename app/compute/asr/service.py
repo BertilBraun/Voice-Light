@@ -246,6 +246,7 @@ def transcript_result_from_model_output(
         model_id=transcription.model_id,
         text=transcript_text(words=transcription.words),
         words=transcription.words,
+        language_estimate=transcription.language_estimate,
         processing_time_seconds=processing_time_seconds,
         error=None,
         runtime=AsrRuntimeStats(

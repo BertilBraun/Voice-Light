@@ -11,7 +11,7 @@ from fastapi import HTTPException, UploadFile
 
 from app.compute.asr.models.base import PreparedAsrAudio, TimedTranscription, prepare_asr_audio
 from app.compute.asr.service import transcribe_requested_models, transcribe_uploaded_request
-from app.shared.asr import AsrModelId, RemoteAsrUploadRequest, TimestampedWord
+from app.shared.asr import AsrModelId, LanguageEstimate, RemoteAsrUploadRequest, TimestampedWord
 from app.shared.audio import probe_local_audio_metadata
 from app.shared.audio.transport import ASR_AUDIO_TRANSPORT_SPEC, prepare_audio_transport
 from app.shared.quality import AudioMetadata
@@ -51,6 +51,11 @@ class RecordingModelCache:
                     end_seconds=2.0,
                 ),
             ),
+            language_estimate=(
+                LanguageEstimate(language_code="en", confidence=0.97)
+                if model_id is AsrModelId.WHISPERX
+                else None
+            ),
             model_loading_time_seconds=3.0,
             inference_time_seconds=4.0,
             package_names=(),
@@ -81,6 +86,11 @@ def test_remote_endpoint_transcribes_requested_models_with_one_audio_path(tmp_pa
     assert tuple(result.words[0].text for result in results) == (
         f"{AsrModelId.PARAKEET_TDT}-word",
         f"{AsrModelId.WHISPERX}-word",
+    )
+    assert results[0].language_estimate is None
+    assert results[1].language_estimate == LanguageEstimate(
+        language_code="en",
+        confidence=0.97,
     )
     assert tuple(result.runtime.real_time_factor for result in results if result.runtime) == (
         4.0,
