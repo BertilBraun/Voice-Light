@@ -41,7 +41,12 @@ from app.local.db.repository import (
 )
 from app.local.ingestion.alignment import pad_audio_tracks_to_shared_timeline
 from app.local.ingestion.conversation import analyze_conversation
-from app.local.ingestion.discovery import DatasetLayout, DiscoveredSample, discover_samples
+from app.local.ingestion.discovery import (
+    DatasetLayout,
+    DiscoveredSample,
+    discover_samples,
+    track_durations_are_compatible,
+)
 from app.local.ingestion.language import (
     LanguagePreflightService,
     LanguageTrack,
@@ -67,9 +72,6 @@ from app.shared.storage.base import StorageBackend
 from app.shared.storage.local import LocalStorageBackend
 
 logger = logging.getLogger(__name__)
-
-MAXIMUM_TRACK_DURATION_DIFFERENCE_SECONDS = 20.0
-MAXIMUM_TRACK_DURATION_DIFFERENCE_RATIO = 0.01
 
 
 @dataclass(frozen=True)
@@ -381,18 +383,6 @@ def duration_validated_samples(
         )
         target.append(sample)
     return DurationValidatedSamples(accepted=accepted, excluded=excluded)
-
-
-def track_durations_are_compatible(
-    speaker1_duration_seconds: float,
-    speaker2_duration_seconds: float,
-) -> bool:
-    shorter_duration_seconds = min(speaker1_duration_seconds, speaker2_duration_seconds)
-    difference_seconds = abs(speaker1_duration_seconds - speaker2_duration_seconds)
-    return (
-        difference_seconds <= MAXIMUM_TRACK_DURATION_DIFFERENCE_SECONDS
-        and difference_seconds <= shorter_duration_seconds * MAXIMUM_TRACK_DURATION_DIFFERENCE_RATIO
-    )
 
 
 def select_duration_limited_samples(

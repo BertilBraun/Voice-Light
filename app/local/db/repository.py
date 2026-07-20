@@ -50,7 +50,7 @@ class SampleTrackInput:
     sample_rate: int | None
     channels: int | None
     sample_count: int | None
-    audio_sha256: str
+    audio_sha256: str | None
 
 
 @dataclass(frozen=True)

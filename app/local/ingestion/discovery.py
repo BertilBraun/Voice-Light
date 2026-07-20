@@ -8,6 +8,8 @@ from pathlib import PurePosixPath
 from app.shared.storage.base import StorageBackend
 
 AUDIO_SUFFIXES = frozenset({".wav", ".mp3", ".m4a", ".ogg", ".flac"})
+MAXIMUM_TRACK_DURATION_DIFFERENCE_SECONDS = 20.0
+MAXIMUM_TRACK_DURATION_DIFFERENCE_RATIO = 0.01
 
 
 class DatasetLayout(StrEnum):
@@ -20,6 +22,18 @@ class DiscoveredSample:
     external_id: str
     speaker1_path: str
     speaker2_path: str
+
+
+def track_durations_are_compatible(
+    speaker1_duration_seconds: float,
+    speaker2_duration_seconds: float,
+) -> bool:
+    shorter_duration_seconds = min(speaker1_duration_seconds, speaker2_duration_seconds)
+    difference_seconds = abs(speaker1_duration_seconds - speaker2_duration_seconds)
+    return (
+        difference_seconds <= MAXIMUM_TRACK_DURATION_DIFFERENCE_SECONDS
+        and difference_seconds <= shorter_duration_seconds * MAXIMUM_TRACK_DURATION_DIFFERENCE_RATIO
+    )
 
 
 def discover_samples(

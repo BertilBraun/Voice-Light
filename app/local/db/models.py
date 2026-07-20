@@ -8,6 +8,7 @@ from pydantic import Field
 
 from app.shared.base_model import FrozenBaseModel
 from app.shared.language import LanguageProbeWindow, TrackLanguageStatus
+from app.shared.quality import TrackVadResult
 
 
 class DatasetStorageKind(StrEnum):
@@ -95,7 +96,7 @@ class SampleTrackRecord(FrozenBaseModel):
     sample_rate: int | None
     channels: int | None
     sample_count: int | None
-    audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    audio_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
     updated_at: datetime
 
@@ -108,6 +109,15 @@ class AudioMetadataRecord(FrozenBaseModel):
     channels: int
     sample_count: int | None
     payload: dict[str, object]
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrackVadRecord(FrozenBaseModel):
+    sample_track_id: UUID
+    source_audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    vad_version: str
+    result: TrackVadResult
     created_at: datetime
     updated_at: datetime
 
