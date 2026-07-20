@@ -5,14 +5,26 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
+from app.local.conversation_regions.models import (
+    CONVERSATION_REGION_ANALYSIS_VERSION,
+    ConversationRegionAnalysis,
+    ConversationRegionConfig,
+    ConversationRegionReason,
+    UnusableConversationRegion,
+)
 from app.local.main import app
+from app.local.training_samples.models import TrainingSamplePropositionKind
 from app.local.training_samples.service import (
     ProbabilitySpan,
+    PropositionAnchor,
+    _build_proposition,
     _interesting_location_score,
     build_frame_previews,
 )
 from app.shared.quality import (
+    AnnotationEvidenceSource,
     AnnotationSpan,
+    SegmentAnnotationTarget,
     SpeakerConversationAnnotation,
     SpeakerSide,
 )
@@ -52,6 +64,9 @@ def training_sample_script() -> Iterator[str]:
         "loadNextRandomSample",
         "/api/training-samples/options?${parameters}",
         "/api/training-samples/random-preview",
+        "/api/training-samples/propositions",
+        "renderPropositions",
+        "masked_supervised_seconds",
         "playBothInput",
         "assistantAudio",
         "synchronizeAudioTracks",
@@ -148,11 +163,62 @@ def test_interesting_location_score_rewards_dense_events_or_ambiguous_targets() 
     assert ambiguous_score > quiet_score
 
 
+def test_proposition_allows_short_masked_region_with_explicit_coverage() -> None:
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        speech_segments=(AnnotationSpan(start_seconds=0.0, end_seconds=30.0, text="speech"),),
+        segment_targets=(
+            SegmentAnnotationTarget(
+                start_seconds=0.0,
+                end_seconds=30.0,
+                text="speech",
+                evidence_source=AnnotationEvidenceSource.TRANSCRIPT,
+                keep_playing_confidence=0.9,
+                turn_confidence=0.1,
+                interruption_confidence=0.0,
+            ),
+        ),
+    )
+    proposition = _build_proposition(
+        anchor=PropositionAnchor(
+            kind=TrainingSamplePropositionKind.HOLD_PAUSE,
+            time_seconds=12.0,
+            confidence=0.9,
+            description="Short masked hold",
+        ),
+        duration_seconds=30.0,
+        user=user,
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+        conversation_regions=ConversationRegionAnalysis(
+            analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+            annotation_version="test",
+            config=ConversationRegionConfig(),
+            duration_seconds=30.0,
+            usable_duration_seconds=29.0,
+            unusable_duration_seconds=1.0,
+            usable_ratio=29.0 / 30.0,
+            unusable_regions=(
+                UnusableConversationRegion(
+                    start_seconds=10.0,
+                    end_seconds=11.0,
+                    reasons=(ConversationRegionReason.DUAL_SILENCE,),
+                ),
+            ),
+        ),
+    )
+
+    assert proposition.masked_supervised_seconds == pytest.approx(1.0)
+    assert proposition.masked_supervised_ratio == pytest.approx(1.0 / 16.0)
+    assert proposition.primary_supervision_ratio == pytest.approx(1.0)
+    assert proposition.score > 0.8
+
+
 def _speaker_annotation(
     side: SpeakerSide,
     speech_segments: tuple[AnnotationSpan, ...] = (),
     pauses: tuple[AnnotationSpan, ...] = (),
     backchannels: tuple[AnnotationSpan, ...] = (),
+    segment_targets: tuple[SegmentAnnotationTarget, ...] = (),
 ) -> SpeakerConversationAnnotation:
     return SpeakerConversationAnnotation(
         side=side,
@@ -161,7 +227,7 @@ def _speaker_annotation(
         backchannels=backchannels,
         turns=(),
         interruptions=(),
-        segment_targets=(),
+        segment_targets=segment_targets,
         connection_targets=(),
         speech_duration_seconds=sum(
             span.end_seconds - span.start_seconds for span in speech_segments

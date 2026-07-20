@@ -14,9 +14,13 @@ from app.local.ingestion.conversation import ANNOTATION_VERSION
 from app.local.training_samples.models import (
     TrainingSampleOption,
     TrainingSamplePreview,
+    TrainingSampleProposition,
     TrainingSampleSelectionMode,
 )
-from app.local.training_samples.service import build_training_sample_preview
+from app.local.training_samples.service import (
+    build_training_sample_preview,
+    build_training_sample_propositions,
+)
 from app.shared.quality import METRIC_VERSION
 
 router = APIRouter(prefix="/api/training-samples", tags=["training-samples"])
@@ -87,6 +91,31 @@ def list_training_sample_options(
         )
         for record in records
     )
+
+
+@router.get("/propositions")
+def training_sample_propositions(
+    sample_id: UUID,
+    response: Response,
+    user_side: TrackSide = TrackSide.SPEAKER2,
+    limit: int = Query(default=15, ge=1, le=30),
+) -> tuple[TrainingSampleProposition, ...]:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        dashboard_sample = repository().get_dashboard_sample(sample_id)
+        region_record = conversation_region_repository().get_current(
+            sample_id=sample_id,
+            analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+            annotation_version=ANNOTATION_VERSION,
+        )
+        return build_training_sample_propositions(
+            dashboard_sample=dashboard_sample,
+            user_side=user_side,
+            conversation_regions=(region_record.analysis if region_record is not None else None),
+            limit=limit,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("/random-preview")

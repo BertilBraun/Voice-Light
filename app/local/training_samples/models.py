@@ -44,6 +44,14 @@ class TrainingSampleSelectionMode(StrEnum):
     INTERESTING = "interesting"
 
 
+class TrainingSamplePropositionKind(StrEnum):
+    TURN_SHIFT = "turn_shift"
+    HOLD_PAUSE = "hold_pause"
+    NON_FLOOR_FEEDBACK = "non_floor_feedback"
+    OVERLAP_INTERRUPTION = "overlap_interruption"
+    BACKGROUND = "background"
+
+
 class EventTargetDistribution(FrozenBaseModel):
     turn_completion: float
     continuation_pause: float
@@ -160,3 +168,19 @@ class TrainingSampleOption(FrozenBaseModel):
     represented_duration_seconds: float
     usable_event_count: int
     quality_score: float | None
+
+
+class TrainingSampleProposition(FrozenBaseModel):
+    kind: TrainingSamplePropositionKind
+    start_seconds: float
+    end_seconds: float
+    anchor_seconds: float
+    score: float
+    category_confidence: float
+    primary_supervision_ratio: float
+    future_activity_supervision_ratio: float
+    masked_supervised_seconds: float
+    masked_supervised_ratio: float
+    event_anchor_count: int
+    masked_reasons: tuple[str, ...]
+    description: str

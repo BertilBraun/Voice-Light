@@ -24,6 +24,8 @@ from app.local.training_samples.models import (
     SupervisionMaskReason,
     TrainingFramePreview,
     TrainingSamplePreview,
+    TrainingSampleProposition,
+    TrainingSamplePropositionKind,
     TrainingSampleQuality,
     TrainingSampleSelectionMode,
 )
@@ -49,6 +51,8 @@ MAXIMUM_CANDIDATE_SILENCE_SECONDS = 2.0
 FUTURE_ACTIVITY_WINDOWS_MILLISECONDS = ((0, 200), (200, 500), (500, 1000), (1000, 1500))
 INTERESTING_RANDOM_LOCATION_COUNT = 24
 INTERESTING_ANCHOR_LIMIT = 64
+PROPOSITION_ANCHOR_LIMIT_PER_KIND = 18
+PROPOSITION_EVENT_OFFSET_SECONDS = 12.0
 HIGH_CONFIDENCE = 0.8
 LOW_CONFIDENCE = 0.2
 USER_YIELD_HORIZON_SECONDS = 0.5
@@ -84,6 +88,14 @@ class ProbabilitySpan:
     start_seconds: float
     end_seconds: float
     yield_probability: float
+
+
+@dataclass(frozen=True)
+class PropositionAnchor:
+    kind: TrainingSamplePropositionKind
+    time_seconds: float
+    confidence: float
+    description: str
 
 
 def build_training_sample_preview(
@@ -226,6 +238,349 @@ def build_training_sample_preview(
         conversation_regions=conversation_regions,
         frames=frames,
     )
+
+
+def build_training_sample_propositions(
+    dashboard_sample: DashboardSample,
+    user_side: TrackSide,
+    conversation_regions: ConversationRegionAnalysis | None,
+    limit: int,
+) -> tuple[TrainingSampleProposition, ...]:
+    if limit <= 0:
+        raise ValueError("limit must be positive.")
+    annotation = _conversation_annotation(dashboard_sample)
+    represented_duration_seconds = (
+        dashboard_sample.sample.duration_seconds
+        if dashboard_sample.sample.duration_seconds is not None
+        else annotation.analyzed_duration_seconds
+    )
+    eligible_duration_seconds = min(
+        represented_duration_seconds, annotation.analyzed_duration_seconds
+    )
+    user = _speaker_annotation(annotation, user_side)
+    assistant = _speaker_annotation(annotation, _other_side(user_side))
+    anchors = _proposition_anchors(
+        user=user,
+        assistant=assistant,
+        duration_seconds=eligible_duration_seconds,
+    )
+    selected_anchors = _balanced_proposition_anchors(
+        anchors=anchors,
+        duration_seconds=eligible_duration_seconds,
+        conversation_regions=conversation_regions,
+        limit=limit,
+    )
+    propositions = tuple(
+        _build_proposition(
+            anchor=anchor,
+            duration_seconds=eligible_duration_seconds,
+            user=user,
+            assistant=assistant,
+            conversation_regions=conversation_regions,
+        )
+        for anchor in selected_anchors
+    )
+    return tuple(
+        sorted(
+            propositions,
+            key=lambda proposition: (
+                tuple(TrainingSamplePropositionKind).index(proposition.kind),
+                -proposition.score,
+            ),
+        )
+    )
+
+
+def _balanced_proposition_anchors(
+    anchors: Sequence[PropositionAnchor],
+    duration_seconds: float,
+    conversation_regions: ConversationRegionAnalysis | None,
+    limit: int,
+) -> tuple[PropositionAnchor, ...]:
+    ranked_by_kind = tuple(
+        tuple(
+            sorted(
+                (anchor for anchor in anchors if anchor.kind is proposition_kind),
+                key=lambda anchor: _anchor_preference(
+                    anchor=anchor,
+                    duration_seconds=duration_seconds,
+                    conversation_regions=conversation_regions,
+                ),
+                reverse=True,
+            )
+        )
+        for proposition_kind in TrainingSamplePropositionKind
+    )
+    selected: list[PropositionAnchor] = []
+    rank = 0
+    while len(selected) < limit:
+        added = False
+        for candidates in ranked_by_kind:
+            if rank < len(candidates):
+                selected.append(candidates[rank])
+                added = True
+                if len(selected) == limit:
+                    break
+        if not added:
+            break
+        rank += 1
+    return tuple(selected)
+
+
+def _anchor_preference(
+    anchor: PropositionAnchor,
+    duration_seconds: float,
+    conversation_regions: ConversationRegionAnalysis | None,
+) -> tuple[float, float]:
+    maximum_start_seconds = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
+    start_seconds = min(
+        maximum_start_seconds,
+        max(0.0, anchor.time_seconds - PROPOSITION_EVENT_OFFSET_SECONDS),
+    )
+    end_seconds = min(duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
+    supervision_start_seconds = min(end_seconds, start_seconds + BURN_IN_SECONDS)
+    masked_seconds, _ = _masked_supervision(
+        start_seconds=supervision_start_seconds,
+        end_seconds=end_seconds,
+        conversation_regions=conversation_regions,
+    )
+    masked_ratio = _ratio(
+        masked_seconds,
+        max(0.0, end_seconds - supervision_start_seconds),
+    )
+    return (
+        anchor.confidence - 0.8 * max(0.0, masked_ratio - 0.2),
+        -masked_ratio,
+    )
+
+
+def _proposition_anchors(
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    duration_seconds: float,
+) -> tuple[PropositionAnchor, ...]:
+    turn_shift_anchors = (
+        *(
+            PropositionAnchor(
+                kind=TrainingSamplePropositionKind.TURN_SHIFT,
+                time_seconds=point.time_seconds,
+                confidence=point.confidence if point.confidence is not None else 0.6,
+                description="User releases the floor",
+            )
+            for point in user.turns
+        ),
+        *(
+            PropositionAnchor(
+                kind=TrainingSamplePropositionKind.TURN_SHIFT,
+                time_seconds=point.time_seconds,
+                confidence=point.confidence if point.confidence is not None else 0.6,
+                description="User can take the floor after the other speaker",
+            )
+            for point in assistant.turns
+        ),
+    )
+    hold_pause_anchors = tuple(
+        PropositionAnchor(
+            kind=TrainingSamplePropositionKind.HOLD_PAUSE,
+            time_seconds=(connection.earlier_end_seconds + connection.later_start_seconds) / 2.0,
+            confidence=connection.merge_confidence,
+            description=(f"User resumes after a {connection.gap_seconds:.2f} s continuation pause"),
+        )
+        for connection in user.connection_targets
+        if connection.gap_seconds >= 0.25 and connection.merge_confidence >= 0.5
+    )
+    feedback_anchors = tuple(
+        PropositionAnchor(
+            kind=TrainingSamplePropositionKind.NON_FLOOR_FEEDBACK,
+            time_seconds=(span.start_seconds + span.end_seconds) / 2.0,
+            confidence=0.8,
+            description="Short user response should remain non-floor feedback",
+        )
+        for span in user.backchannels
+    )
+    interruption_anchors = tuple(
+        PropositionAnchor(
+            kind=TrainingSamplePropositionKind.OVERLAP_INTERRUPTION,
+            time_seconds=point.time_seconds,
+            confidence=point.confidence if point.confidence is not None else 0.7,
+            description="User begins an interruption attempt",
+        )
+        for point in user.interruptions
+    )
+    overlap_anchors = tuple(
+        PropositionAnchor(
+            kind=TrainingSamplePropositionKind.OVERLAP_INTERRUPTION,
+            time_seconds=time_seconds,
+            confidence=0.65,
+            description="Both speakers are active at the same time",
+        )
+        for time_seconds in _overlap_onsets(user.speech_segments, assistant.speech_segments)
+    )
+    maximum_start_seconds = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
+    background_count = min(24, max(1, math.ceil(duration_seconds / 120.0)))
+    background_anchors = tuple(
+        PropositionAnchor(
+            kind=TrainingSamplePropositionKind.BACKGROUND,
+            time_seconds=(
+                PROPOSITION_EVENT_OFFSET_SECONDS
+                if maximum_start_seconds == 0.0
+                else maximum_start_seconds * (index + 0.5) / background_count
+                + PROPOSITION_EVENT_OFFSET_SECONDS
+            ),
+            confidence=0.5,
+            description="Ordinary conversational context for baseline supervision",
+        )
+        for index in range(background_count)
+    )
+    return (
+        *_spread_anchors(turn_shift_anchors),
+        *_spread_anchors(hold_pause_anchors),
+        *_spread_anchors(feedback_anchors),
+        *_spread_anchors((*interruption_anchors, *overlap_anchors)),
+        *_spread_anchors(background_anchors),
+    )
+
+
+def _spread_anchors(
+    anchors: Sequence[PropositionAnchor],
+) -> tuple[PropositionAnchor, ...]:
+    ordered = tuple(
+        sorted(
+            anchors,
+            key=lambda anchor: (
+                anchor.time_seconds,
+                anchor.kind.value,
+                anchor.description,
+            ),
+        )
+    )
+    if len(ordered) <= PROPOSITION_ANCHOR_LIMIT_PER_KIND:
+        return ordered
+    selected_indices = {
+        round(index * (len(ordered) - 1) / (PROPOSITION_ANCHOR_LIMIT_PER_KIND - 1))
+        for index in range(PROPOSITION_ANCHOR_LIMIT_PER_KIND)
+    }
+    return tuple(ordered[index] for index in sorted(selected_indices))
+
+
+def _overlap_onsets(
+    user_spans: Sequence[AnnotationSpan],
+    assistant_spans: Sequence[AnnotationSpan],
+) -> tuple[float, ...]:
+    onsets: list[float] = []
+    user_index = 0
+    assistant_index = 0
+    while user_index < len(user_spans) and assistant_index < len(assistant_spans):
+        user_span = user_spans[user_index]
+        assistant_span = assistant_spans[assistant_index]
+        start_seconds = max(user_span.start_seconds, assistant_span.start_seconds)
+        end_seconds = min(user_span.end_seconds, assistant_span.end_seconds)
+        if end_seconds > start_seconds:
+            onsets.append(start_seconds)
+        if user_span.end_seconds <= assistant_span.end_seconds:
+            user_index += 1
+        else:
+            assistant_index += 1
+    return tuple(onsets)
+
+
+def _build_proposition(
+    anchor: PropositionAnchor,
+    duration_seconds: float,
+    user: SpeakerConversationAnnotation,
+    assistant: SpeakerConversationAnnotation,
+    conversation_regions: ConversationRegionAnalysis | None,
+) -> TrainingSampleProposition:
+    maximum_start_seconds = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
+    start_seconds = min(
+        maximum_start_seconds,
+        max(0.0, anchor.time_seconds - PROPOSITION_EVENT_OFFSET_SECONDS),
+    )
+    end_seconds = min(duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
+    frames = build_frame_previews(
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        annotation_end_seconds=duration_seconds,
+        user=user,
+        assistant=assistant,
+    )
+    supervised_frames = tuple(frame for frame in frames if frame.supervised)
+    primary_supervision_ratio = _ratio(
+        sum(frame.user_yield_valid for frame in supervised_frames),
+        len(supervised_frames),
+    )
+    future_targets = tuple(
+        target for frame in supervised_frames for target in frame.future_activity
+    )
+    future_activity_supervision_ratio = _ratio(
+        sum(target.valid for target in future_targets),
+        len(future_targets),
+    )
+    event_anchor_count = sum(frame.interaction_event_valid for frame in supervised_frames)
+    supervision_start_seconds = min(end_seconds, start_seconds + BURN_IN_SECONDS)
+    masked_supervised_seconds, masked_reasons = _masked_supervision(
+        start_seconds=supervision_start_seconds,
+        end_seconds=end_seconds,
+        conversation_regions=conversation_regions,
+    )
+    supervised_duration_seconds = max(0.0, end_seconds - supervision_start_seconds)
+    masked_supervised_ratio = _ratio(masked_supervised_seconds, supervised_duration_seconds)
+    retained_ratio = 1.0 - masked_supervised_ratio
+    event_density_score = min(1.0, event_anchor_count / 3.0)
+    excessive_mask_penalty = 0.7 * max(0.0, masked_supervised_ratio - 0.2)
+    score = min(
+        1.0,
+        max(
+            0.0,
+            0.35 * primary_supervision_ratio
+            + 0.2 * future_activity_supervision_ratio
+            + 0.2 * anchor.confidence
+            + 0.1 * event_density_score
+            + 0.15 * retained_ratio
+            - excessive_mask_penalty,
+        ),
+    )
+    return TrainingSampleProposition(
+        kind=anchor.kind,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        anchor_seconds=anchor.time_seconds,
+        score=score,
+        category_confidence=anchor.confidence,
+        primary_supervision_ratio=primary_supervision_ratio,
+        future_activity_supervision_ratio=future_activity_supervision_ratio,
+        masked_supervised_seconds=masked_supervised_seconds,
+        masked_supervised_ratio=masked_supervised_ratio,
+        event_anchor_count=event_anchor_count,
+        masked_reasons=masked_reasons,
+        description=anchor.description,
+    )
+
+
+def _masked_supervision(
+    start_seconds: float,
+    end_seconds: float,
+    conversation_regions: ConversationRegionAnalysis | None,
+) -> tuple[float, tuple[str, ...]]:
+    if conversation_regions is None:
+        return 0.0, ()
+    overlapping_regions = tuple(
+        region
+        for region in conversation_regions.unusable_regions
+        if region.end_seconds > start_seconds and region.start_seconds < end_seconds
+    )
+    masked_seconds = sum(
+        min(end_seconds, region.end_seconds) - max(start_seconds, region.start_seconds)
+        for region in overlapping_regions
+    )
+    reasons = tuple(
+        sorted({reason.value for region in overlapping_regions for reason in region.reasons})
+    )
+    return masked_seconds, reasons
+
+
+def _ratio(numerator: float | int, denominator: float | int) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
 
 
 def _conversation_annotation(dashboard_sample: DashboardSample) -> ConversationAnnotation:

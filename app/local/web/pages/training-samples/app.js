@@ -28,6 +28,8 @@ const annotationTimeline = document.querySelector("#annotation-timeline");
 const annotationSource = document.querySelector("#annotation-source");
 const contextOverview = document.querySelector("#context-overview");
 const contextLabel = document.querySelector("#context-label");
+const propositionsList = document.querySelector("#propositions-list");
+const propositionsStatus = document.querySelector("#propositions-status");
 const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
@@ -77,6 +79,8 @@ const rowDefinitions = [
 let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
+let propositionRequestGeneration = 0;
+const propositionCache = new Map();
 const playbackGainController = createMediaElementGainController([
   { id: "user", element: userAudio },
   { id: "assistant", element: assistantAudio },
@@ -187,6 +191,84 @@ async function loadPreview(randomLocation, autoplay = false) {
   }
 }
 
+async function loadPropositions() {
+  if (preview === null) {
+    return;
+  }
+  const generation = ++propositionRequestGeneration;
+  const cacheKey = `${preview.sample_id}:${preview.user_side}`;
+  const cachedPropositions = propositionCache.get(cacheKey);
+  if (cachedPropositions !== undefined) {
+    renderPropositions(cachedPropositions);
+    propositionsStatus.textContent = `${cachedPropositions.length} balanced candidates`;
+    return;
+  }
+  propositionsStatus.textContent = "Finding candidates…";
+  const parameters = new URLSearchParams({
+    sample_id: preview.sample_id,
+    user_side: preview.user_side,
+    limit: "15",
+  });
+  try {
+    const response = await fetch(`/api/training-samples/propositions?${parameters}`, {
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(errorMessage(payload, response.status));
+    }
+    if (generation !== propositionRequestGeneration) {
+      return;
+    }
+    propositionCache.set(cacheKey, payload);
+    renderPropositions(payload);
+    propositionsStatus.textContent = `${payload.length} balanced candidates`;
+  } catch (error) {
+    if (generation !== propositionRequestGeneration) {
+      return;
+    }
+    propositionsList.replaceChildren();
+    propositionsStatus.textContent =
+      error instanceof Error ? error.message : String(error);
+  }
+}
+
+function renderPropositions(propositions) {
+  propositionsList.replaceChildren(
+    ...propositions.map((proposition) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "proposition";
+      button.classList.toggle(
+        "selected",
+        Math.abs(proposition.start_seconds - preview.start_seconds) < 0.04,
+      );
+      button.innerHTML = `
+        <span class="proposition-heading">
+          <span class="proposition-kind">${propositionKindLabel(proposition.kind)}</span>
+          <span class="proposition-score">${Math.round(100 * proposition.score)} score</span>
+        </span>
+        <span class="proposition-description">${proposition.description}</span>
+        <span class="proposition-metrics">
+          <span>${formatDuration(proposition.start_seconds)}–${formatDuration(proposition.end_seconds)}</span>
+          <span>${Math.round(100 * proposition.primary_supervision_ratio)}% primary</span>
+          <span>${Math.round(100 * proposition.future_activity_supervision_ratio)}% future</span>
+          <span>${proposition.event_anchor_count} event${proposition.event_anchor_count === 1 ? "" : "s"}</span>
+          <span class="${proposition.masked_supervised_seconds > 0 ? "proposition-mask" : ""}">
+            ${proposition.masked_supervised_seconds.toFixed(1)} s masked
+          </span>
+        </span>
+      `;
+      button.addEventListener("click", () => {
+        startInput.value = proposition.start_seconds.toFixed(2);
+        positionSlider.value = String(proposition.start_seconds);
+        void loadPreview(false);
+      });
+      return button;
+    }),
+  );
+}
+
 async function applyPreview(payload, autoplay) {
   preview = payload;
   contextOverviewController.reset();
@@ -202,7 +284,10 @@ async function applyPreview(payload, autoplay) {
   renderSelectedFrame(null);
   drawTimeline();
   drawSourceAnnotationTimeline();
-  await contextOverviewController.load(preview.start_seconds);
+  await Promise.all([
+    contextOverviewController.load(preview.start_seconds),
+    loadPropositions(),
+  ]);
   const coverageMessage =
     preview.annotated_duration_seconds < preview.represented_duration_seconds
       ? `Preview ready · ${formatDuration(preview.annotated_duration_seconds)} annotated of ${formatDuration(preview.represented_duration_seconds)}`
@@ -926,6 +1011,17 @@ function errorMessage(payload, statusCode) {
 
 function sampleOptionLabel(sample) {
   return `${sample.external_id} · quality ${optionalScore(sample.quality_score)} · ${formatDuration(sample.represented_duration_seconds)} · ${sample.usable_event_count} events`;
+}
+
+function propositionKindLabel(kind) {
+  const labels = {
+    turn_shift: "Turn shift",
+    hold_pause: "Hard hold",
+    non_floor_feedback: "Non-floor feedback",
+    overlap_interruption: "Overlap / interruption",
+    background: "Background",
+  };
+  return labels[kind] ?? kind.replaceAll("_", " ");
 }
 
 function selectedMinimumQuality() {

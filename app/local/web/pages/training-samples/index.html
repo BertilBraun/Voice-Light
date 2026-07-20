@@ -63,6 +63,20 @@
         <button id="next-random-button" class="primary" type="button">Next sample</button>
       </section>
 
+      <section class="panel propositions-panel" aria-label="Suggested training crops">
+        <div class="timeline-header">
+          <div>
+            <h2>Suggested training crops</h2>
+            <p>
+              Ranked across turn shifts, hard holds, feedback, overlap, and ordinary context.
+              Short orange regions are allowed and reported for loss masking.
+            </p>
+          </div>
+          <div id="propositions-status" class="propositions-status">Finding candidates…</div>
+        </div>
+        <div id="propositions-list" class="propositions-list"></div>
+      </section>
+
       <section class="panel context-panel">
         <div class="timeline-header">
           <div>
