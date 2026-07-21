@@ -32,7 +32,7 @@ const state = {
       speaker2Second: null,
     },
     sources: [],
-    useRepaired: true,
+    alignmentMode: "piecewise",
     playbackStartedAt: null,
     playbackOffsetSeconds: 0,
     animationFrame: null,
@@ -86,7 +86,12 @@ const elements = {
   transitionMarker: document.querySelector("#transition-marker"),
   transitionRangeStart: document.querySelector("#transition-range-start"),
   transitionRangeEnd: document.querySelector("#transition-range-end"),
+  transitionEarlierWindow: document.querySelector("#transition-earlier-window"),
+  transitionLaterWindow: document.querySelector("#transition-later-window"),
+  transitionWindowLabel: document.querySelector("#transition-window-label"),
   transitionRaw: document.querySelector("#transition-raw"),
+  transitionEarly: document.querySelector("#transition-early"),
+  transitionLate: document.querySelector("#transition-late"),
   transitionRepaired: document.querySelector("#transition-repaired"),
   transitionPlay: document.querySelector("#transition-play"),
   transitionSeek: document.querySelector("#transition-seek"),
@@ -120,8 +125,18 @@ elements.repairRejected.addEventListener("click", () =>
   void submitRepairJudgment("not_plausible"),
 );
 elements.repairUnsure.addEventListener("click", () => void submitRepairJudgment("unsure"));
-elements.transitionRaw.addEventListener("click", () => setTransitionRepair(false));
-elements.transitionRepaired.addEventListener("click", () => setTransitionRepair(true));
+elements.transitionRaw.addEventListener("click", () => setTransitionAlignmentMode("raw"));
+elements.transitionEarly.addEventListener("click", () => setTransitionAlignmentMode("early"));
+elements.transitionLate.addEventListener("click", () => setTransitionAlignmentMode("late"));
+elements.transitionRepaired.addEventListener("click", () =>
+  setTransitionAlignmentMode("piecewise"),
+);
+elements.transitionEarlierWindow.addEventListener("click", () =>
+  void shiftTransitionWindow(-60),
+);
+elements.transitionLaterWindow.addEventListener("click", () =>
+  void shiftTransitionWindow(60),
+);
 elements.transitionPlay.addEventListener("click", () => void startTransitionPlayback(true));
 elements.transitionSeek.addEventListener("input", () => {
   state.transition.playbackOffsetSeconds =
@@ -508,8 +523,8 @@ async function submitRepairJudgment(judgment) {
         repair_scope: "after_change_point",
         first_part_shift_seconds: repairEstimate.first_part_shift_seconds,
         change_point_seconds: null,
-        change_interval_start_seconds: repairEstimate.change_interval_start_seconds,
-        change_interval_end_seconds: repairEstimate.change_interval_end_seconds,
+        change_interval_start_seconds: repairEstimate.conservative_first_part_end_seconds,
+        change_interval_end_seconds: repairEstimate.conservative_second_part_start_seconds,
         transition_confirmed: false,
         judgment,
       }),
@@ -715,6 +730,29 @@ async function recenterTransitionPreview() {
   }
 }
 
+async function shiftTransitionWindow(deltaSeconds) {
+  const preview = state.transition.preview;
+  if (!preview) {
+    return;
+  }
+  const currentCenter = (preview.window_start_seconds + preview.window_end_seconds) / 2;
+  const targetCenter = Math.min(
+    preview.search_end_seconds,
+    Math.max(preview.search_start_seconds, currentCenter + deltaSeconds),
+  );
+  if (Math.abs(targetCenter - currentCenter) < 0.01) {
+    return;
+  }
+  elements.transitionStatus.textContent = "Loading the adjacent transition window...";
+  try {
+    await loadTransitionPreview(targetCenter, false);
+  } catch (error) {
+    elements.transitionStatus.textContent =
+      error instanceof Error ? error.message : "Could not load the adjacent transition window.";
+    elements.transitionStatus.classList.add("warning");
+  }
+}
+
 async function submitPiecewiseTransition(judgment) {
   const candidate = currentCandidate();
   const repairEstimate = currentRepairEstimate();
@@ -760,8 +798,8 @@ async function submitPiecewiseTransition(judgment) {
         repair_scope: "after_change_point",
         first_part_shift_seconds: repairEstimate.first_part_shift_seconds,
         change_point_seconds: transitionConfirmed ? markerSeconds : null,
-        change_interval_start_seconds: repairEstimate.change_interval_start_seconds,
-        change_interval_end_seconds: repairEstimate.change_interval_end_seconds,
+        change_interval_start_seconds: repairEstimate.conservative_first_part_end_seconds,
+        change_interval_end_seconds: repairEstimate.conservative_second_part_start_seconds,
         transition_confirmed: transitionConfirmed,
         judgment,
       }),
@@ -794,22 +832,48 @@ function renderTransitionReview() {
   }
   elements.transitionSummary.textContent =
     `The beginning supports ${formatSignedSeconds(preview.first_part_shift_seconds)} and the end ` +
-    `supports ${formatSignedSeconds(preview.second_part_shift_seconds)}. Move the marker only if ` +
-    "the discontinuity is clearly elsewhere inside the audit interval.";
-  elements.transitionMarker.min = String(preview.change_interval_start_seconds);
-  elements.transitionMarker.max = String(preview.change_interval_end_seconds);
+    `supports ${formatSignedSeconds(preview.second_part_shift_seconds)}. The orange band ` +
+    `${formatAbsoluteTime(preview.change_interval_start_seconds)}-${formatAbsoluteTime(
+      preview.change_interval_end_seconds,
+    )} is an overlapping-window midpoint hint, not a hard boundary. Search the full ` +
+    `${formatAbsoluteTime(preview.search_start_seconds)}-${formatAbsoluteTime(
+      preview.search_end_seconds,
+    )} range.`;
+  elements.transitionMarker.min = String(preview.search_start_seconds);
+  elements.transitionMarker.max = String(preview.search_end_seconds);
   elements.transitionMarker.step =
-    preview.change_interval_end_seconds - preview.change_interval_start_seconds < 2 ? "0.1" : "1";
+    preview.search_end_seconds - preview.search_start_seconds < 2 ? "0.1" : "1";
   elements.transitionMarker.value = String(markerSeconds);
   elements.transitionRangeStart.textContent =
-    `Last early-alignment evidence ${formatAbsoluteTime(preview.change_interval_start_seconds)}`;
+    `Conservative search start ${formatAbsoluteTime(
+      preview.search_start_seconds,
+    )}`;
   elements.transitionRangeEnd.textContent =
-    `First late-alignment evidence ${formatAbsoluteTime(preview.change_interval_end_seconds)}`;
-  elements.transitionRaw.setAttribute("aria-pressed", String(!state.transition.useRepaired));
-  elements.transitionRepaired.setAttribute("aria-pressed", String(state.transition.useRepaired));
-  elements.transitionStatus.textContent = state.transition.useRepaired
-    ? "Ready: early alignment before the marker, verified late shift after it."
-    : "Ready: both tracks use their original timestamps throughout the window.";
+    `Conservative search end ${formatAbsoluteTime(preview.search_end_seconds)}`;
+  elements.transitionWindowLabel.textContent =
+    `Viewing ${formatAbsoluteTime(preview.window_start_seconds)}-${formatAbsoluteTime(
+      preview.window_end_seconds,
+    )}`;
+  const currentCenter = (preview.window_start_seconds + preview.window_end_seconds) / 2;
+  elements.transitionEarlierWindow.disabled = currentCenter <= preview.search_start_seconds + 0.01;
+  elements.transitionLaterWindow.disabled = currentCenter >= preview.search_end_seconds - 0.01;
+  elements.transitionRaw.setAttribute(
+    "aria-pressed",
+    String(state.transition.alignmentMode === "raw"),
+  );
+  elements.transitionEarly.setAttribute(
+    "aria-pressed",
+    String(state.transition.alignmentMode === "early"),
+  );
+  elements.transitionLate.setAttribute(
+    "aria-pressed",
+    String(state.transition.alignmentMode === "late"),
+  );
+  elements.transitionRepaired.setAttribute(
+    "aria-pressed",
+    String(state.transition.alignmentMode === "piecewise"),
+  );
+  elements.transitionStatus.textContent = transitionReadyStatus();
   elements.transitionStatus.classList.remove("warning");
   renderTransitionMarker();
   updateTransitionPlaybackDisplay();
@@ -823,17 +887,38 @@ function renderTransitionMarker() {
     `Selected ${formatAbsoluteTime(state.transition.markerSeconds)}`;
 }
 
-function setTransitionRepair(useRepaired) {
+function setTransitionAlignmentMode(alignmentMode) {
   stopTransitionPlayback();
-  state.transition.useRepaired = useRepaired;
+  state.transition.alignmentMode = alignmentMode;
   renderTransitionReview();
+}
+
+function transitionReadyStatus() {
+  switch (state.transition.alignmentMode) {
+    case "raw":
+      return "Ready: both tracks use their original timestamps throughout the window.";
+    case "early":
+      return "Ready: the early alignment shift is applied throughout the window.";
+    case "late":
+      return "Ready: the recommended late shift is applied throughout the window.";
+    case "piecewise":
+      return "Ready: early alignment before the marker, recommended late shift after it.";
+  }
 }
 
 async function startTransitionPlayback(fromUserGesture) {
   const preview = state.transition.preview;
   const markerSeconds = state.transition.markerSeconds;
   const buffers = state.transition.buffers;
-  if (!preview || markerSeconds === null || !buffers.speaker1 || !buffers.speaker2Raw) {
+  const selectedSpeaker2Buffer = transitionSpeaker2Buffer();
+  if (
+    !preview ||
+    markerSeconds === null ||
+    !buffers.speaker1 ||
+    (state.transition.alignmentMode !== "piecewise" && !selectedSpeaker2Buffer) ||
+    (state.transition.alignmentMode === "piecewise" &&
+      (!buffers.speaker2First || !buffers.speaker2Second))
+  ) {
     return;
   }
   const audioContext = await ensureAudioContext(fromUserGesture);
@@ -856,19 +941,16 @@ async function startTransitionPlayback(fromUserGesture) {
       null,
     ),
   );
-  if (!state.transition.useRepaired) {
+  if (state.transition.alignmentMode !== "piecewise") {
     state.transition.sources.push(
       scheduleAudioBuffer(
-        buffers.speaker2Raw,
+        selectedSpeaker2Buffer,
         scheduledTime,
         state.transition.playbackOffsetSeconds,
         null,
       ),
     );
   } else {
-    if (!buffers.speaker2First || !buffers.speaker2Second) {
-      return;
-    }
     const changeOffsetSeconds = markerSeconds - preview.window_start_seconds;
     if (state.transition.playbackOffsetSeconds < changeOffsetSeconds) {
       const firstDurationSeconds = changeOffsetSeconds - state.transition.playbackOffsetSeconds;
@@ -899,11 +981,35 @@ async function startTransitionPlayback(fromUserGesture) {
   }
   state.transition.playbackStartedAt =
     scheduledTime - state.transition.playbackOffsetSeconds;
-  elements.transitionStatus.textContent = state.transition.useRepaired
-    ? `Playing the piecewise timeline with the boundary at ${formatAbsoluteTime(markerSeconds)}.`
-    : "Playing both original tracks with no reconstruction.";
+  elements.transitionStatus.textContent = transitionPlaybackStatus(markerSeconds);
   elements.transitionStatus.classList.remove("warning");
   scheduleTransitionPlaybackUpdate();
+}
+
+function transitionSpeaker2Buffer() {
+  switch (state.transition.alignmentMode) {
+    case "raw":
+      return state.transition.buffers.speaker2Raw;
+    case "early":
+      return state.transition.buffers.speaker2First;
+    case "late":
+      return state.transition.buffers.speaker2Second;
+    case "piecewise":
+      return null;
+  }
+}
+
+function transitionPlaybackStatus(markerSeconds) {
+  switch (state.transition.alignmentMode) {
+    case "raw":
+      return "Playing both original tracks with no reconstruction.";
+    case "early":
+      return "Playing the early alignment shift throughout the window.";
+    case "late":
+      return "Playing the recommended late shift throughout the window.";
+    case "piecewise":
+      return `Playing the piecewise timeline with the boundary at ${formatAbsoluteTime(markerSeconds)}.`;
+  }
 }
 
 function scheduleAudioBuffer(buffer, startTime, offsetSeconds, durationSeconds) {
@@ -981,23 +1087,45 @@ function drawTransitionTimelines() {
     preview.speaker1_waveform,
     preview.speaker1,
   );
-  const speaker2Waveform = state.transition.useRepaired
-    ? piecewiseWaveform(
-        preview.speaker2_first_alignment_waveform,
-        preview.speaker2_second_alignment_waveform,
-      )
-    : preview.speaker2_raw_waveform;
-  const speaker2Annotation = state.transition.useRepaired
-    ? piecewiseAnnotation(
-        preview.speaker2_first_alignment,
-        preview.speaker2_second_alignment,
-      )
-    : preview.speaker2_raw;
+  const speaker2Waveform = transitionSpeaker2Waveform(preview);
+  const speaker2Annotation = transitionSpeaker2Annotation(preview);
   drawTransitionTrack(
     elements.transitionSpeaker2Timeline,
     speaker2Waveform,
     speaker2Annotation,
   );
+}
+
+function transitionSpeaker2Waveform(preview) {
+  switch (state.transition.alignmentMode) {
+    case "raw":
+      return preview.speaker2_raw_waveform;
+    case "early":
+      return preview.speaker2_first_alignment_waveform;
+    case "late":
+      return preview.speaker2_second_alignment_waveform;
+    case "piecewise":
+      return piecewiseWaveform(
+        preview.speaker2_first_alignment_waveform,
+        preview.speaker2_second_alignment_waveform,
+      );
+  }
+}
+
+function transitionSpeaker2Annotation(preview) {
+  switch (state.transition.alignmentMode) {
+    case "raw":
+      return preview.speaker2_raw;
+    case "early":
+      return preview.speaker2_first_alignment;
+    case "late":
+      return preview.speaker2_second_alignment;
+    case "piecewise":
+      return piecewiseAnnotation(
+        preview.speaker2_first_alignment,
+        preview.speaker2_second_alignment,
+      );
+  }
 }
 
 function drawTransitionTrack(canvas, waveform, annotation) {
@@ -1051,22 +1179,27 @@ function drawTransitionTrack(canvas, waveform, annotation) {
     context.fillStyle = "rgba(224, 151, 25, 0.12)";
     context.fillRect(intervalX, 0, intervalWidth, 132);
   }
-  const selectedBoxStart = Math.max(preview.window_start_seconds, markerSeconds - 5);
-  const selectedBoxEnd = Math.min(preview.window_end_seconds, markerSeconds + 5);
-  const selectedBoxX = transitionTimelineX(selectedBoxStart, width);
-  const selectedBoxWidth = transitionTimelineX(selectedBoxEnd, width) - selectedBoxX;
-  context.fillStyle = "rgba(224, 151, 25, 0.24)";
-  context.strokeStyle = "#d08700";
-  context.lineWidth = 1;
-  context.fillRect(selectedBoxX, 0, selectedBoxWidth, 132);
-  context.strokeRect(selectedBoxX, 0, selectedBoxWidth, 132);
-  context.strokeStyle = "#b85f00";
-  context.lineWidth = 3;
-  const markerX = transitionTimelineX(markerSeconds, width);
-  context.beginPath();
-  context.moveTo(markerX, 0);
-  context.lineTo(markerX, 132);
-  context.stroke();
+  if (
+    markerSeconds >= preview.window_start_seconds &&
+    markerSeconds <= preview.window_end_seconds
+  ) {
+    const selectedBoxStart = Math.max(preview.window_start_seconds, markerSeconds - 5);
+    const selectedBoxEnd = Math.min(preview.window_end_seconds, markerSeconds + 5);
+    const selectedBoxX = transitionTimelineX(selectedBoxStart, width);
+    const selectedBoxWidth = transitionTimelineX(selectedBoxEnd, width) - selectedBoxX;
+    context.fillStyle = "rgba(224, 151, 25, 0.24)";
+    context.strokeStyle = "#d08700";
+    context.lineWidth = 1;
+    context.fillRect(selectedBoxX, 0, selectedBoxWidth, 132);
+    context.strokeRect(selectedBoxX, 0, selectedBoxWidth, 132);
+    context.strokeStyle = "#b85f00";
+    context.lineWidth = 3;
+    const markerX = transitionTimelineX(markerSeconds, width);
+    context.beginPath();
+    context.moveTo(markerX, 0);
+    context.lineTo(markerX, 132);
+    context.stroke();
+  }
   const progressX = (transitionPlaybackSeconds() / transitionDuration()) * width;
   context.strokeStyle = "#111827";
   context.lineWidth = 1.5;
@@ -1176,7 +1309,7 @@ function resetTransitionReview() {
     speaker2First: null,
     speaker2Second: null,
   };
-  state.transition.useRepaired = true;
+  state.transition.alignmentMode = "piecewise";
   state.transition.playbackOffsetSeconds = 0;
 }
 
@@ -1318,6 +1451,22 @@ function setDecisionDisabled(disabled) {
   elements.transitionConfirm.disabled = disabled;
   elements.transitionReject.disabled = disabled;
   elements.transitionCancel.disabled = disabled;
+  elements.transitionRaw.disabled = disabled;
+  elements.transitionEarly.disabled = disabled;
+  elements.transitionLate.disabled = disabled;
+  elements.transitionRepaired.disabled = disabled;
+  const transitionPreview = state.transition.preview;
+  const transitionCenter = transitionPreview
+    ? (transitionPreview.window_start_seconds + transitionPreview.window_end_seconds) / 2
+    : null;
+  elements.transitionEarlierWindow.disabled =
+    disabled ||
+    transitionPreview === null ||
+    transitionCenter <= transitionPreview.search_start_seconds + 0.01;
+  elements.transitionLaterWindow.disabled =
+    disabled ||
+    transitionPreview === null ||
+    transitionCenter >= transitionPreview.search_end_seconds - 0.01;
 }
 
 function renderProgress() {

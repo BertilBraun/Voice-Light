@@ -82,6 +82,8 @@ def misalignment_lab_assets() -> Iterator[tuple[str, str]]:
         "estimated change interval",
         "Save this transition",
         "No single transition",
+        "Earlier 60 s",
+        "Late shift throughout",
         "Prediction sounds plausible",
         "Prediction does not fix it",
     ),
@@ -121,6 +123,9 @@ def test_misalignment_lab_exposes_rapid_triage_controls(
         "/api/misalignment-lab/transition-preview/",
         "submitPiecewiseTransition",
         "piecewiseWaveform",
+        "alignmentMode",
+        "shiftTransitionWindow",
+        "search_start_seconds",
         "change_point_seconds",
         'judgment: "likely_misaligned"',
     ),
@@ -358,11 +363,12 @@ def test_piecewise_repair_requires_confirmed_change_point() -> None:
         repair_scope=MisalignmentRepairScope.AFTER_CHANGE_POINT,
         first_part_shift_seconds=estimate.first_part_shift_seconds,
         change_point_seconds=(
-            estimate.change_interval_start_seconds + estimate.change_interval_end_seconds
+            estimate.conservative_first_part_end_seconds
+            + estimate.conservative_second_part_start_seconds
         )
         / 2.0,
-        change_interval_start_seconds=estimate.change_interval_start_seconds,
-        change_interval_end_seconds=estimate.change_interval_end_seconds,
+        change_interval_start_seconds=estimate.conservative_first_part_end_seconds,
+        change_interval_end_seconds=estimate.conservative_second_part_start_seconds,
         transition_confirmed=True,
         judgment=MisalignmentRepairJudgment.PLAUSIBLE,
     )
@@ -373,6 +379,23 @@ def test_piecewise_repair_requires_confirmed_change_point() -> None:
     _validate_repair_transition(request=confirmed, audit_result=audit_result)
     with pytest.raises(ValueError, match="confirmed transition point"):
         _validate_repair_transition(request=missing_location, audit_result=audit_result)
+
+    outside_midpoint_hint = confirmed.model_copy(
+        update={
+            "change_point_seconds": estimate.conservative_second_part_start_seconds - 1.0,
+        }
+    )
+    outside_conservative_range = confirmed.model_copy(
+        update={
+            "change_point_seconds": estimate.conservative_second_part_start_seconds + 1.0,
+        }
+    )
+    _validate_repair_transition(request=outside_midpoint_hint, audit_result=audit_result)
+    with pytest.raises(ValueError, match="outside the conservative interval"):
+        _validate_repair_transition(
+            request=outside_conservative_range,
+            audit_result=audit_result,
+        )
 
 
 @pytest.mark.parametrize(

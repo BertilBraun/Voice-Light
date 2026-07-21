@@ -554,12 +554,12 @@ def build_transition_preview(
     ) / 2.0
     selected_center = estimated_change_point if center_seconds is None else center_seconds
     if not (
-        repair_estimate.change_interval_start_seconds
+        repair_estimate.conservative_first_part_end_seconds
         <= selected_center
-        <= repair_estimate.change_interval_end_seconds
+        <= repair_estimate.conservative_second_part_start_seconds
     ):
         raise ValueError(
-            "Transition preview center must stay inside the estimated change interval."
+            "Transition preview center must stay inside the conservative search interval."
         )
     window_start, window_end = _transition_window(
         duration_seconds=annotated_sample.duration_seconds,
@@ -606,6 +606,8 @@ def build_transition_preview(
         estimated_change_point_seconds=round(estimated_change_point, 3),
         change_interval_start_seconds=repair_estimate.change_interval_start_seconds,
         change_interval_end_seconds=repair_estimate.change_interval_end_seconds,
+        search_start_seconds=repair_estimate.conservative_first_part_end_seconds,
+        search_end_seconds=repair_estimate.conservative_second_part_start_seconds,
         first_part_shift_seconds=repair_estimate.first_part_shift_seconds,
         second_part_shift_seconds=repair_estimate.predicted_second_part_shift_seconds,
         speaker1_waveform=speaker1_waveform,

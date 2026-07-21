@@ -127,6 +127,8 @@ class MisalignmentTransitionPreview(FrozenBaseModel):
     estimated_change_point_seconds: float
     change_interval_start_seconds: float
     change_interval_end_seconds: float
+    search_start_seconds: float
+    search_end_seconds: float
     first_part_shift_seconds: float
     second_part_shift_seconds: float
     speaker1_waveform: tuple[PreviewWaveformPoint, ...]

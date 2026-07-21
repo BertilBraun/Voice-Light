@@ -346,19 +346,19 @@ def _validate_repair_transition(
         raise ValueError("No conservative piecewise transition exists for this session.")
     if (
         request.first_part_shift_seconds != estimate.first_part_shift_seconds
-        or request.change_interval_start_seconds != estimate.change_interval_start_seconds
-        or request.change_interval_end_seconds != estimate.change_interval_end_seconds
+        or request.change_interval_start_seconds != estimate.conservative_first_part_end_seconds
+        or request.change_interval_end_seconds != estimate.conservative_second_part_start_seconds
     ):
         raise ValueError("Transition estimate is stale; reload the review queue.")
     if request.judgment is MisalignmentRepairJudgment.PLAUSIBLE:
         if not request.transition_confirmed or request.change_point_seconds is None:
             raise ValueError("A plausible piecewise repair requires a confirmed transition point.")
         if not (
-            estimate.change_interval_start_seconds
+            estimate.conservative_first_part_end_seconds
             <= request.change_point_seconds
-            <= estimate.change_interval_end_seconds
+            <= estimate.conservative_second_part_start_seconds
         ):
-            raise ValueError("Confirmed transition point is outside the estimated interval.")
+            raise ValueError("Confirmed transition point is outside the conservative interval.")
         return
     if request.transition_confirmed or request.change_point_seconds is not None:
         raise ValueError("An unaccepted repair cannot contain a confirmed transition point.")
