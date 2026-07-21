@@ -185,6 +185,70 @@ def wave_window_bytes(
     return playback_wave_bytes(audio=audio)
 
 
+def resampled_wave_window_bytes(
+    wave_path: Path,
+    start_seconds: float,
+    maximum_duration_seconds: float,
+    sample_rate: int,
+) -> bytes:
+    if start_seconds < 0.0:
+        raise ValueError("start_seconds must be non-negative")
+    if maximum_duration_seconds <= 0.0:
+        raise ValueError("maximum_duration_seconds must be positive")
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+    output_buffer = io.BytesIO()
+    with wave.open(str(wave_path), "rb") as wave_reader:
+        source_sample_rate = wave_reader.getframerate()
+        source_sample_width = wave_reader.getsampwidth()
+        channel_count = wave_reader.getnchannels()
+        source_frame_count = wave_reader.getnframes()
+        start_frame = min(source_frame_count, round(start_seconds * source_sample_rate))
+        remaining_frames = min(
+            source_frame_count - start_frame,
+            round(maximum_duration_seconds * source_sample_rate),
+        )
+        wave_reader.setpos(start_frame)
+        source_maximum_amplitude = float((1 << (source_sample_width * 8 - 1)) - 1)
+        target_maximum_amplitude = float((1 << (PLAYBACK_SAMPLE_WIDTH_BYTES * 8 - 1)) - 1)
+        with wave.open(output_buffer, "wb") as wave_writer:
+            wave_writer.setnchannels(1)
+            wave_writer.setsampwidth(PLAYBACK_SAMPLE_WIDTH_BYTES)
+            wave_writer.setframerate(sample_rate)
+            while remaining_frames > 0:
+                chunk_frame_count = min(source_sample_rate, remaining_frames)
+                samples = mono_samples(
+                    fragment=wave_reader.readframes(chunk_frame_count),
+                    sample_width=source_sample_width,
+                    channel_count=channel_count,
+                )
+                target_frame_count = max(
+                    1,
+                    round(len(samples) * sample_rate / source_sample_rate),
+                )
+                target_positions = (
+                    np.arange(target_frame_count, dtype=np.float64)
+                    * source_sample_rate
+                    / sample_rate
+                )
+                resampled_samples = np.interp(
+                    target_positions,
+                    np.arange(len(samples), dtype=np.float64),
+                    samples,
+                )
+                scaled_samples = np.round(
+                    resampled_samples * (target_maximum_amplitude / source_maximum_amplitude)
+                )
+                clipped_samples = np.clip(
+                    scaled_samples,
+                    -target_maximum_amplitude - 1,
+                    target_maximum_amplitude,
+                )
+                wave_writer.writeframesraw(clipped_samples.astype("<i2").tobytes())
+                remaining_frames -= len(samples)
+    return output_buffer.getvalue()
+
+
 def playback_wave_bytes(audio: MonoWaveAudio) -> bytes:
     fragment = playback_pcm16_fragment(audio=audio)
 

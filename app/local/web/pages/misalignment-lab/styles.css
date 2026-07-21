@@ -75,7 +75,7 @@ button {
 button:hover:not(:disabled) { border-color: #146b63; }
 button:disabled { cursor: default; opacity: .48; }
 button.primary { background: #146b63; border-color: #146b63; color: #fff; }
-#seek { flex: 1; }
+#seek, #transition-seek { flex: 1; }
 .clock { font-variant-numeric: tabular-nums; min-width: 112px; text-align: right; }
 .playback-status { font-size: 13px; margin: 8px 0 0; }
 .playback-status.warning { color: #8a4b0f; }
@@ -108,6 +108,26 @@ canvas { cursor: pointer; display: block; height: 132px; width: 100%; }
 .keep-swatch { background: #d8c9f0; border: 1px solid #6c3eb4; }
 .pause-swatch { background: rgba(224, 173, 42, .55); border-bottom: 3px solid #146b63; }
 .eot-swatch { border-left: 2px solid #c2322d; }
+.transition-panel { border-color: #d99a2b; }
+.transition-heading { align-items: flex-start; display: flex; gap: 20px; justify-content: space-between; }
+.transition-heading h3 { margin: 3px 0 5px; }
+.transition-heading p { margin-bottom: 0; }
+.transition-time {
+  background: #fff2d5;
+  border: 1px solid #d99a2b;
+  border-radius: 7px;
+  color: #704900;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  padding: 8px 11px;
+  white-space: nowrap;
+}
+#transition-marker { margin-top: 8px; width: 100%; }
+.transition-range-labels { color: #74520b; display: flex; font-size: 12px; justify-content: space-between; }
+.transition-comparison { border-bottom: 0; border-top: 1px solid #e1e6e8; margin: 16px 0 0; padding: 16px 0; }
+.transition-swatch { background: rgba(224, 151, 25, .28); border: 1px solid #d08700; }
+.marker-swatch { border-left: 3px solid #b85f00; }
+.transition-decisions { margin-top: 18px; }
 .decision-panel { border-color: #aebbb8; }
 .decision-panel p { margin-bottom: 14px; }
 .decision-buttons { display: grid; gap: 12px; grid-template-columns: 1fr 1fr 1fr; }
@@ -123,14 +143,14 @@ dd { font-variant-numeric: tabular-nums; }
 .empty-state { color: #5a666b; }
 
 @media (max-width: 750px) {
-  .page-header, .candidate-header { align-items: flex-start; flex-direction: column; }
+  .page-header, .candidate-header, .transition-heading { align-items: flex-start; flex-direction: column; }
   .mode-switch { display: grid; grid-template-columns: 1fr; }
   .progress-panel { grid-template-columns: 1fr 1fr; }
   .decision-buttons { grid-template-columns: 1fr; }
   .playback-controls { align-items: stretch; flex-wrap: wrap; }
   .comparison-controls { align-items: stretch; flex-direction: column; }
   .comparison-buttons { display: grid; grid-template-columns: 1fr; }
-  #seek { flex-basis: 100%; order: 3; }
+  #seek, #transition-seek { flex-basis: 100%; order: 3; }
   dl { grid-template-columns: 1fr; }
   dd { padding-top: 0; }
 }

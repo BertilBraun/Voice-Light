@@ -15,10 +15,13 @@ from app.local.misalignment_lab.models import (
     MisalignmentJudgmentRequest,
     MisalignmentJudgmentResponse,
     MisalignmentQueueResponse,
+    MisalignmentRepairJudgment,
     MisalignmentRepairJudgmentRequest,
     MisalignmentRepairJudgmentResponse,
     MisalignmentRepairQueueResponse,
+    MisalignmentRepairScope,
     MisalignmentStoredJudgment,
+    MisalignmentTransitionPreview,
 )
 from app.local.misalignment_lab.repository import MisalignmentLabRepository
 from app.local.misalignment_lab.service import (
@@ -27,11 +30,16 @@ from app.local.misalignment_lab.service import (
     build_misalignment_preview,
     build_misalignment_queue,
     build_misalignment_repair_queue,
+    build_transition_preview,
+    estimate_piecewise_repair,
     misalignment_progress,
     validate_judgment_candidate,
 )
 from app.local.synchronization_review.audit import SYNCHRONIZATION_AUDIT_PATH
-from app.local.synchronization_review.models import SynchronizationAuditReport
+from app.local.synchronization_review.models import (
+    SynchronizationAuditReport,
+    SynchronizationAuditResult,
+)
 
 router = APIRouter(prefix="/api/misalignment-lab", tags=["misalignment-lab"])
 SAMPLE_PAGE_SIZE = 200
@@ -104,6 +112,25 @@ def misalignment_preview(
             dashboard_sample=sample_repository().get_dashboard_sample(sample_id),
             audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
             candidate_id=candidate_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/transition-preview/{sample_id}/{candidate_id}")
+def misalignment_transition_preview(
+    sample_id: UUID,
+    candidate_id: UUID,
+    response: Response,
+    center_seconds: float | None = Query(default=None, ge=0.0),
+) -> MisalignmentTransitionPreview:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        return build_transition_preview(
+            dashboard_sample=sample_repository().get_dashboard_sample(sample_id),
+            audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            candidate_id=candidate_id,
+            center_seconds=center_seconds,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -184,6 +211,24 @@ def save_misalignment_repair_judgment(
             or abs(recommendation.shift_seconds - request.predicted_shift_seconds) > 1e-6
         ):
             raise ValueError("Offset recommendation is stale; reload the review queue.")
+        if recommendation.repair_scope is not request.repair_scope:
+            raise ValueError("Repair scope is stale; reload the review queue.")
+        audit_result = (
+            next(
+                (
+                    result
+                    for result in audit_report.results
+                    if result.sample_id == request.sample_id
+                ),
+                None,
+            )
+            if audit_report is not None
+            else None
+        )
+        _validate_repair_transition(
+            request=request,
+            audit_result=audit_result,
+        )
         stored = reviews.save_repair_judgment(request=request)
         repair_judgments = reviews.list_repair_judgments()
         samples = _quarantined_dashboard_samples(
@@ -272,3 +317,48 @@ def _audit_report(path: Path) -> SynchronizationAuditReport | None:
     if not path.is_file():
         return None
     return SynchronizationAuditReport.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def _validate_repair_transition(
+    request: MisalignmentRepairJudgmentRequest,
+    audit_result: SynchronizationAuditResult | None,
+) -> None:
+    if request.repair_scope is MisalignmentRepairScope.GLOBAL_OFFSET:
+        if any(
+            value is not None
+            for value in (
+                request.first_part_shift_seconds,
+                request.change_point_seconds,
+                request.change_interval_start_seconds,
+                request.change_interval_end_seconds,
+            )
+        ):
+            raise ValueError("A global offset cannot contain a transition location.")
+        if request.transition_confirmed is not (
+            request.judgment is MisalignmentRepairJudgment.PLAUSIBLE
+        ):
+            raise ValueError("Global transition confirmation does not match the repair judgment.")
+        return
+    if audit_result is None:
+        raise ValueError("No synchronization audit exists for the piecewise repair.")
+    estimate = estimate_piecewise_repair(audit_result=audit_result)
+    if estimate is None:
+        raise ValueError("No conservative piecewise transition exists for this session.")
+    if (
+        request.first_part_shift_seconds != estimate.first_part_shift_seconds
+        or request.change_interval_start_seconds != estimate.change_interval_start_seconds
+        or request.change_interval_end_seconds != estimate.change_interval_end_seconds
+    ):
+        raise ValueError("Transition estimate is stale; reload the review queue.")
+    if request.judgment is MisalignmentRepairJudgment.PLAUSIBLE:
+        if not request.transition_confirmed or request.change_point_seconds is None:
+            raise ValueError("A plausible piecewise repair requires a confirmed transition point.")
+        if not (
+            estimate.change_interval_start_seconds
+            <= request.change_point_seconds
+            <= estimate.change_interval_end_seconds
+        ):
+            raise ValueError("Confirmed transition point is outside the estimated interval.")
+        return
+    if request.transition_confirmed or request.change_point_seconds is not None:
+        raise ValueError("An unaccepted repair cannot contain a confirmed transition point.")

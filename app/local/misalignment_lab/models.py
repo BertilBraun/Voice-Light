@@ -29,6 +29,11 @@ class MisalignmentRepairJudgment(StrEnum):
     UNSURE = "unsure"
 
 
+class MisalignmentRepairScope(StrEnum):
+    GLOBAL_OFFSET = "global_offset"
+    AFTER_CHANGE_POINT = "after_change_point"
+
+
 class AlignmentReviewCategory(StrEnum):
     LIKELY_ALIGNED = "likely_aligned"
     LIKELY_CONSTANT_OFFSET = "likely_constant_offset"
@@ -37,6 +42,7 @@ class AlignmentReviewCategory(StrEnum):
 
 class MisalignmentOffsetRecommendation(FrozenBaseModel):
     estimator_version: str
+    repair_scope: MisalignmentRepairScope
     shift_seconds: float
     confidence_score: float
     supporting_window_count: int
@@ -112,6 +118,27 @@ class MisalignmentRepairEstimate(FrozenBaseModel):
     confidence_score: float
 
 
+class MisalignmentTransitionPreview(FrozenBaseModel):
+    sample_id: UUID
+    candidate_id: UUID
+    external_id: str
+    window_start_seconds: float
+    window_end_seconds: float
+    estimated_change_point_seconds: float
+    change_interval_start_seconds: float
+    change_interval_end_seconds: float
+    first_part_shift_seconds: float
+    second_part_shift_seconds: float
+    speaker1_waveform: tuple[PreviewWaveformPoint, ...]
+    speaker2_raw_waveform: tuple[PreviewWaveformPoint, ...]
+    speaker2_first_alignment_waveform: tuple[PreviewWaveformPoint, ...]
+    speaker2_second_alignment_waveform: tuple[PreviewWaveformPoint, ...]
+    speaker1: MisalignmentWindowAnnotation
+    speaker2_raw: MisalignmentWindowAnnotation
+    speaker2_first_alignment: MisalignmentWindowAnnotation
+    speaker2_second_alignment: MisalignmentWindowAnnotation
+
+
 class MisalignmentLabProgress(FrozenBaseModel):
     reviewed_snippet_count: int
     plausibly_aligned_count: int
@@ -134,6 +161,12 @@ class MisalignmentRepairStoredJudgment(FrozenBaseModel):
     external_id: str
     predicted_shift_seconds: float
     estimator_version: str
+    repair_scope: MisalignmentRepairScope
+    first_part_shift_seconds: float | None
+    change_point_seconds: float | None
+    change_interval_start_seconds: float | None
+    change_interval_end_seconds: float | None
+    transition_confirmed: bool
     judgment: MisalignmentRepairJudgment
     created_at: datetime
     updated_at: datetime
@@ -191,6 +224,12 @@ class MisalignmentRepairJudgmentRequest(FrozenBaseModel):
     candidate_id: UUID
     predicted_shift_seconds: float
     estimator_version: str = Field(min_length=1, max_length=200)
+    repair_scope: MisalignmentRepairScope
+    first_part_shift_seconds: float | None
+    change_point_seconds: float | None
+    change_interval_start_seconds: float | None
+    change_interval_end_seconds: float | None
+    transition_confirmed: bool
     judgment: MisalignmentRepairJudgment
 
 

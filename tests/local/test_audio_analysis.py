@@ -20,6 +20,7 @@ from app.shared.audio.wav import (
     ANALYSIS_AUDIO_MAX_DURATION_SECONDS,
     capped_audio_wave_bytes,
     capped_wave_bytes,
+    resampled_wave_window_bytes,
     wave_window_bytes,
 )
 from app.shared.audio.waveform import full_waveform_envelope
@@ -168,6 +169,21 @@ def test_wave_window_bytes_reads_requested_recording_region() -> None:
         assert wave_reader.getnchannels() == 1
         assert wave_reader.getsampwidth() == 2
         assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(10.0)
+
+
+def test_resampled_wave_window_bytes_uses_requested_playback_rate() -> None:
+    wave_bytes = resampled_wave_window_bytes(
+        wave_path=Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav"),
+        start_seconds=60.0,
+        maximum_duration_seconds=2.0,
+        sample_rate=16_000,
+    )
+
+    with wave.open(io.BytesIO(wave_bytes), "rb") as wave_reader:
+        assert wave_reader.getnchannels() == 1
+        assert wave_reader.getsampwidth() == 2
+        assert wave_reader.getframerate() == 16_000
+        assert wave_reader.getnframes() / wave_reader.getframerate() == pytest.approx(2.0)
 
 
 def test_flac_playback_and_waveform_use_ffmpeg(tmp_path: Path) -> None:

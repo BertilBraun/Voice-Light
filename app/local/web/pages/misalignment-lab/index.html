@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Misalignment Lab - Voice Light</title>
-    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=4" />
+    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=6" />
   </head>
   <body>
     <main>
@@ -111,6 +111,73 @@
           </div>
         </section>
 
+        <section id="transition-review" class="panel transition-panel" hidden>
+          <div class="transition-heading">
+            <div>
+              <span class="eyebrow">Required for reconstruction</span>
+              <h3>Locate the alignment change</h3>
+              <p id="transition-summary"></p>
+            </div>
+            <span id="transition-marker-time" class="transition-time"></span>
+          </div>
+          <label for="transition-marker">
+            Proposed change point inside the orange audit interval
+          </label>
+          <input id="transition-marker" type="range" step="1" />
+          <div class="transition-range-labels">
+            <span id="transition-range-start"></span>
+            <span id="transition-range-end"></span>
+          </div>
+          <div class="comparison-controls transition-comparison">
+            <div>
+              <strong>Two-minute transition replay</strong>
+              <span>Before the marker uses the early alignment; after it uses the verified late shift.</span>
+            </div>
+            <div class="comparison-buttons">
+              <button id="transition-raw" type="button" aria-pressed="true">Raw timeline</button>
+              <button id="transition-repaired" type="button" aria-pressed="false">
+                Piecewise repair
+              </button>
+            </div>
+          </div>
+          <div class="playback-controls">
+            <button id="transition-play" type="button" class="primary">Replay transition</button>
+            <input
+              id="transition-seek"
+              type="range"
+              min="0"
+              max="1000"
+              value="0"
+              aria-label="Transition clip position"
+            />
+            <span id="transition-clock" class="clock">0:00.0 / 2:00.0</span>
+          </div>
+          <p id="transition-status" class="playback-status"></p>
+          <div class="tracks">
+            <article class="track">
+              <div class="track-heading"><strong>Speaker 1</strong></div>
+              <canvas id="transition-speaker1-timeline" height="132"></canvas>
+            </article>
+            <article class="track">
+              <div class="track-heading"><strong>Speaker 2</strong></div>
+              <canvas id="transition-speaker2-timeline" height="132"></canvas>
+            </article>
+          </div>
+          <div class="legend">
+            <span><i class="transition-swatch"></i>estimated change interval</span>
+            <span><i class="marker-swatch"></i>selected reconstruction boundary</span>
+          </div>
+          <div class="decision-buttons transition-decisions">
+            <button id="transition-confirm" type="button" class="aligned">
+              Save this transition
+            </button>
+            <button id="transition-reject" type="button" class="misaligned">
+              No single transition
+            </button>
+            <button id="transition-cancel" type="button">Back to end check</button>
+          </div>
+        </section>
+
         <section class="panel decision-panel">
           <h3 id="decision-title">Do the two raw tracks plausibly share one timeline?</h3>
           <p id="decision-description">
@@ -152,6 +219,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="/pages/misalignment-lab/app.js?v=4"></script>
+    <script type="module" src="/pages/misalignment-lab/app.js?v=6"></script>
   </body>
 </html>

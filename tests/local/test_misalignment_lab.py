@@ -18,10 +18,15 @@ from app.local.main import app
 from app.local.misalignment_lab.models import (
     AlignmentReviewCategory,
     MisalignmentJudgment,
+    MisalignmentRepairJudgment,
+    MisalignmentRepairJudgmentRequest,
+    MisalignmentRepairScope,
     MisalignmentStoredJudgment,
 )
+from app.local.misalignment_lab.router import _validate_repair_transition
 from app.local.misalignment_lab.service import (
     _candidate_starts,
+    _transition_window,
     alignment_assessment,
     build_misalignment_queue,
     estimate_piecewise_repair,
@@ -72,6 +77,11 @@ def misalignment_lab_assets() -> Iterator[tuple[str, str]]:
         "Original 0.0 s",
         "Try recommended",
         "Recommended shift fixes it",
+        "Locate the alignment change",
+        "Two-minute transition replay",
+        "estimated change interval",
+        "Save this transition",
+        "No single transition",
         "Prediction sounds plausible",
         "Prediction does not fix it",
     ),
@@ -108,6 +118,10 @@ def test_misalignment_lab_exposes_rapid_triage_controls(
         "currentOffsetRecommendation",
         "review_category",
         "submitRecommendedFix",
+        "/api/misalignment-lab/transition-preview/",
+        "submitPiecewiseTransition",
+        "piecewiseWaveform",
+        "change_point_seconds",
         'judgment: "likely_misaligned"',
     ),
 )
@@ -311,31 +325,85 @@ def test_piecewise_repair_estimate_requires_stable_distinct_second_part() -> Non
     assert estimate.conservative_second_part_start_seconds == 780.0
 
 
+def test_transition_window_is_two_minutes_and_stays_inside_shifted_audio() -> None:
+    centered = _transition_window(
+        duration_seconds=1_200.0,
+        center_seconds=600.0,
+        first_shift_seconds=0.0,
+        second_shift_seconds=4.0,
+    )
+    near_start = _transition_window(
+        duration_seconds=1_200.0,
+        center_seconds=20.0,
+        first_shift_seconds=0.0,
+        second_shift_seconds=4.0,
+    )
+
+    assert centered == (540.0, 660.0)
+    assert near_start == (4.0, 124.0)
+
+
+def test_piecewise_repair_requires_confirmed_change_point() -> None:
+    audit_result = _audit_result(
+        sample_id=uuid4(),
+        suffix_shifts=(4.0, 4.2, 4.3, 4.1, 4.2, 4.4),
+    )
+    estimate = estimate_piecewise_repair(audit_result=audit_result)
+    assert estimate is not None
+    confirmed = MisalignmentRepairJudgmentRequest(
+        sample_id=audit_result.sample_id,
+        candidate_id=uuid4(),
+        predicted_shift_seconds=estimate.predicted_second_part_shift_seconds,
+        estimator_version=estimate.estimator_version,
+        repair_scope=MisalignmentRepairScope.AFTER_CHANGE_POINT,
+        first_part_shift_seconds=estimate.first_part_shift_seconds,
+        change_point_seconds=(
+            estimate.change_interval_start_seconds + estimate.change_interval_end_seconds
+        )
+        / 2.0,
+        change_interval_start_seconds=estimate.change_interval_start_seconds,
+        change_interval_end_seconds=estimate.change_interval_end_seconds,
+        transition_confirmed=True,
+        judgment=MisalignmentRepairJudgment.PLAUSIBLE,
+    )
+    missing_location = confirmed.model_copy(
+        update={"change_point_seconds": None, "transition_confirmed": False}
+    )
+
+    _validate_repair_transition(request=confirmed, audit_result=audit_result)
+    with pytest.raises(ValueError, match="confirmed transition point"):
+        _validate_repair_transition(request=missing_location, audit_result=audit_result)
+
+
 @pytest.mark.parametrize(
-    ("kind", "suffix_shifts", "expected_category", "expected_shift"),
+    ("kind", "suffix_shifts", "expected_category", "expected_shift", "expected_scope"),
     (
         (
             SynchronizationAuditKind.STABLE_OFFSET,
             (0.18, 0.21, 0.24, 0.20),
             AlignmentReviewCategory.LIKELY_ALIGNED,
             0.21,
+            MisalignmentRepairScope.GLOBAL_OFFSET,
         ),
         (
             SynchronizationAuditKind.STABLE_OFFSET,
             (3.9, 4.0, 4.1, 4.0),
             AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
             4.0,
+            MisalignmentRepairScope.AFTER_CHANGE_POINT,
         ),
         (
             SynchronizationAuditKind.TEMPORAL_CHANGE,
             (4.0, 4.2, 4.3, 4.1, 4.2, 4.4),
             AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
             4.2,
+            MisalignmentRepairScope.AFTER_CHANGE_POINT,
         ),
         (
             SynchronizationAuditKind.TEMPORAL_CHANGE,
             (4.0, 5.5, 4.0, 5.5, 4.0),
             AlignmentReviewCategory.NON_CONSTANT_OR_UNCERTAIN,
+            None,
             None,
         ),
     ),
@@ -345,6 +413,7 @@ def test_alignment_assessment_labels_and_recommends_only_safe_offsets(
     suffix_shifts: tuple[float, ...],
     expected_category: AlignmentReviewCategory,
     expected_shift: float | None,
+    expected_scope: MisalignmentRepairScope | None,
 ) -> None:
     assessment = alignment_assessment(
         _audit_result(
@@ -358,6 +427,9 @@ def test_alignment_assessment_labels_and_recommends_only_safe_offsets(
     assert (
         assessment.recommendation.shift_seconds if assessment.recommendation is not None else None
     ) == expected_shift
+    assert (
+        assessment.recommendation.repair_scope if assessment.recommendation is not None else None
+    ) is expected_scope
 
 
 def test_queue_orders_aligned_then_one_offset_then_non_constant() -> None:

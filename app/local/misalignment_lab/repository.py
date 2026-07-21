@@ -100,14 +100,26 @@ class MisalignmentLabRepository:
                     candidate_id,
                     predicted_shift_seconds,
                     estimator_version,
+                    repair_scope,
+                    first_part_shift_seconds,
+                    change_point_seconds,
+                    change_interval_start_seconds,
+                    change_interval_end_seconds,
+                    transition_confirmed,
                     judgment,
                     updated_at
                   )
-                  VALUES (%s, %s, %s, %s, %s, now())
+                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                   ON CONFLICT (sample_id) DO UPDATE
                   SET candidate_id = EXCLUDED.candidate_id,
                       predicted_shift_seconds = EXCLUDED.predicted_shift_seconds,
                       estimator_version = EXCLUDED.estimator_version,
+                      repair_scope = EXCLUDED.repair_scope,
+                      first_part_shift_seconds = EXCLUDED.first_part_shift_seconds,
+                      change_point_seconds = EXCLUDED.change_point_seconds,
+                      change_interval_start_seconds = EXCLUDED.change_interval_start_seconds,
+                      change_interval_end_seconds = EXCLUDED.change_interval_end_seconds,
+                      transition_confirmed = EXCLUDED.transition_confirmed,
                       judgment = EXCLUDED.judgment,
                       updated_at = now()
                   RETURNING *
@@ -121,6 +133,12 @@ class MisalignmentLabRepository:
                     request.candidate_id,
                     request.predicted_shift_seconds,
                     request.estimator_version,
+                    request.repair_scope.value,
+                    request.first_part_shift_seconds,
+                    request.change_point_seconds,
+                    request.change_interval_start_seconds,
+                    request.change_interval_end_seconds,
+                    request.transition_confirmed,
                     request.judgment.value,
                 ),
             ).fetchone()

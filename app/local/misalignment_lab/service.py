@@ -23,8 +23,10 @@ from app.local.misalignment_lab.models import (
     MisalignmentRepairJudgment,
     MisalignmentRepairProgress,
     MisalignmentRepairQueueResponse,
+    MisalignmentRepairScope,
     MisalignmentRepairStoredJudgment,
     MisalignmentStoredJudgment,
+    MisalignmentTransitionPreview,
     MisalignmentWindowAnnotation,
 )
 from app.local.synchronization_review.models import (
@@ -53,6 +55,8 @@ WINDOW_STEP_SECONDS = 5.0
 RAPID_BOUNDARY_SECONDS = 1.5
 MAXIMUM_ALTERNATION_GAP_SECONDS = 6.0
 WAVEFORM_POINT_COUNT = 1000
+TRANSITION_PREVIEW_DURATION_SECONDS = 120.0
+TRANSITION_WAVEFORM_POINT_COUNT = 1200
 DEFAULT_QUEUE_SEED = "misalignment-lab-v1"
 DEFAULT_QUEUE_SIZE = 50
 REPAIR_ESTIMATOR_VERSION = "piecewise-stable-suffix-v1"
@@ -310,6 +314,27 @@ def alignment_assessment(
             summary="No synchronization audit is available; no single shift is safe to recommend.",
             recommendation=None,
         )
+    repair_estimate = estimate_piecewise_repair(audit_result=audit_result)
+    if repair_estimate is not None:
+        return AlignmentAssessment(
+            category=AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
+            likelihood_score=repair_estimate.confidence_score,
+            summary=(
+                "The later part has one stable offset relative to the aligned beginning. "
+                "Toggle the recommended late-track shift before deciding."
+            ),
+            recommendation=MisalignmentOffsetRecommendation(
+                estimator_version=repair_estimate.estimator_version,
+                repair_scope=MisalignmentRepairScope.AFTER_CHANGE_POINT,
+                shift_seconds=repair_estimate.predicted_second_part_shift_seconds,
+                confidence_score=repair_estimate.confidence_score,
+                supporting_window_count=repair_estimate.supporting_window_count,
+                summary=(
+                    f"{repair_estimate.supporting_window_count} stable late windows over "
+                    f"{repair_estimate.stable_second_part_duration_seconds / 60.0:.1f} min"
+                ),
+            ),
+        )
     if audit_result.kind is SynchronizationAuditKind.STABLE_OFFSET:
         stable_recommendation = _stable_offset_recommendation(audit_result)
         if stable_recommendation is not None:
@@ -339,27 +364,6 @@ def alignment_assessment(
                     "before deciding."
                 ),
                 recommendation=stable_recommendation,
-            )
-    if audit_result.kind is SynchronizationAuditKind.TEMPORAL_CHANGE:
-        repair_estimate = estimate_piecewise_repair(audit_result=audit_result)
-        if repair_estimate is not None:
-            return AlignmentAssessment(
-                category=AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
-                likelihood_score=repair_estimate.confidence_score,
-                summary=(
-                    "The later part has one stable offset relative to the aligned beginning. "
-                    "Toggle the recommended late-track shift before deciding."
-                ),
-                recommendation=MisalignmentOffsetRecommendation(
-                    estimator_version=repair_estimate.estimator_version,
-                    shift_seconds=repair_estimate.predicted_second_part_shift_seconds,
-                    confidence_score=repair_estimate.confidence_score,
-                    supporting_window_count=repair_estimate.supporting_window_count,
-                    summary=(
-                        f"{repair_estimate.supporting_window_count} stable late windows over "
-                        f"{repair_estimate.stable_second_part_duration_seconds / 60.0:.1f} min"
-                    ),
-                ),
             )
     return AlignmentAssessment(
         category=AlignmentReviewCategory.NON_CONSTANT_OR_UNCERTAIN,
@@ -395,6 +399,7 @@ def _stable_offset_recommendation(
     confidence = 0.6 * evidence_confidence + 0.4 * stability
     return MisalignmentOffsetRecommendation(
         estimator_version=CONSTANT_OFFSET_ESTIMATOR_VERSION,
+        repair_scope=MisalignmentRepairScope.GLOBAL_OFFSET,
         shift_seconds=round(shift, 2),
         confidence_score=round(confidence, 3),
         supporting_window_count=len(reliable_windows),
@@ -434,17 +439,9 @@ def build_misalignment_preview(
     annotated_sample = _annotated_sample(dashboard_sample)
     if annotated_sample is None:
         raise ValueError("The selected sample has no full conversation annotation.")
-    audit_result = (
-        next(
-            (
-                result
-                for result in audit_report.results
-                if result.sample_id == dashboard_sample.sample.id
-            ),
-            None,
-        )
-        if audit_report is not None
-        else None
+    audit_result = _audit_result_for_sample(
+        audit_report=audit_report,
+        sample_id=dashboard_sample.sample.id,
     )
     candidate = next(
         (
@@ -521,6 +518,156 @@ def build_misalignment_preview(
     )
 
 
+def build_transition_preview(
+    dashboard_sample: DashboardSample,
+    audit_report: SynchronizationAuditReport | None,
+    candidate_id: UUID,
+    center_seconds: float | None,
+) -> MisalignmentTransitionPreview:
+    annotated_sample = _annotated_sample(dashboard_sample)
+    if annotated_sample is None:
+        raise ValueError("The selected sample has no full conversation annotation.")
+    audit_result = _audit_result_for_sample(
+        audit_report=audit_report,
+        sample_id=dashboard_sample.sample.id,
+    )
+    if audit_result is None:
+        raise ValueError("No synchronization audit exists for this sample.")
+    repair_estimate = estimate_piecewise_repair(audit_result=audit_result)
+    if repair_estimate is None:
+        raise ValueError("No single piecewise transition can be estimated for this sample.")
+    candidate = next(
+        (
+            ranked
+            for ranked in _ranked_windows(
+                annotated_sample=annotated_sample,
+                audit_result=audit_result,
+            )
+            if ranked.candidate_id == candidate_id
+        ),
+        None,
+    )
+    if candidate is None:
+        raise ValueError("Candidate does not belong to the selected sample annotation.")
+    estimated_change_point = (
+        repair_estimate.change_interval_start_seconds + repair_estimate.change_interval_end_seconds
+    ) / 2.0
+    selected_center = estimated_change_point if center_seconds is None else center_seconds
+    if not (
+        repair_estimate.change_interval_start_seconds
+        <= selected_center
+        <= repair_estimate.change_interval_end_seconds
+    ):
+        raise ValueError(
+            "Transition preview center must stay inside the estimated change interval."
+        )
+    window_start, window_end = _transition_window(
+        duration_seconds=annotated_sample.duration_seconds,
+        center_seconds=selected_center,
+        first_shift_seconds=repair_estimate.first_part_shift_seconds,
+        second_shift_seconds=repair_estimate.predicted_second_part_shift_seconds,
+    )
+    speaker1_path = _track_path(dashboard_sample=dashboard_sample, side=TrackSide.SPEAKER1)
+    speaker2_path = _track_path(dashboard_sample=dashboard_sample, side=TrackSide.SPEAKER2)
+    _, speaker1_waveform = waveform_window(
+        path=speaker1_path,
+        start_seconds=window_start,
+        end_seconds=window_end,
+        point_count=TRANSITION_WAVEFORM_POINT_COUNT,
+    )
+    _, speaker2_raw_waveform = waveform_window(
+        path=speaker2_path,
+        start_seconds=window_start,
+        end_seconds=window_end,
+        point_count=TRANSITION_WAVEFORM_POINT_COUNT,
+    )
+    first_source_start = window_start - repair_estimate.first_part_shift_seconds
+    first_source_end = window_end - repair_estimate.first_part_shift_seconds
+    _, speaker2_first_waveform = waveform_window(
+        path=speaker2_path,
+        start_seconds=first_source_start,
+        end_seconds=first_source_end,
+        point_count=TRANSITION_WAVEFORM_POINT_COUNT,
+    )
+    second_source_start = window_start - repair_estimate.predicted_second_part_shift_seconds
+    second_source_end = window_end - repair_estimate.predicted_second_part_shift_seconds
+    _, speaker2_second_waveform = waveform_window(
+        path=speaker2_path,
+        start_seconds=second_source_start,
+        end_seconds=second_source_end,
+        point_count=TRANSITION_WAVEFORM_POINT_COUNT,
+    )
+    return MisalignmentTransitionPreview(
+        sample_id=dashboard_sample.sample.id,
+        candidate_id=candidate.candidate_id,
+        external_id=dashboard_sample.sample.external_id,
+        window_start_seconds=round(window_start, 3),
+        window_end_seconds=round(window_end, 3),
+        estimated_change_point_seconds=round(estimated_change_point, 3),
+        change_interval_start_seconds=repair_estimate.change_interval_start_seconds,
+        change_interval_end_seconds=repair_estimate.change_interval_end_seconds,
+        first_part_shift_seconds=repair_estimate.first_part_shift_seconds,
+        second_part_shift_seconds=repair_estimate.predicted_second_part_shift_seconds,
+        speaker1_waveform=speaker1_waveform,
+        speaker2_raw_waveform=speaker2_raw_waveform,
+        speaker2_first_alignment_waveform=speaker2_first_waveform,
+        speaker2_second_alignment_waveform=speaker2_second_waveform,
+        speaker1=_window_annotation(
+            annotation=annotated_sample.annotation.speaker1,
+            side=SpeakerSide.SPEAKER1,
+            start_seconds=window_start,
+            end_seconds=window_end,
+        ),
+        speaker2_raw=_window_annotation(
+            annotation=annotated_sample.annotation.speaker2,
+            side=SpeakerSide.SPEAKER2,
+            start_seconds=window_start,
+            end_seconds=window_end,
+        ),
+        speaker2_first_alignment=_shift_window_annotation(
+            annotation=_window_annotation(
+                annotation=annotated_sample.annotation.speaker2,
+                side=SpeakerSide.SPEAKER2,
+                start_seconds=first_source_start,
+                end_seconds=first_source_end,
+            ),
+            shift_seconds=repair_estimate.first_part_shift_seconds,
+        ),
+        speaker2_second_alignment=_shift_window_annotation(
+            annotation=_window_annotation(
+                annotation=annotated_sample.annotation.speaker2,
+                side=SpeakerSide.SPEAKER2,
+                start_seconds=second_source_start,
+                end_seconds=second_source_end,
+            ),
+            shift_seconds=repair_estimate.predicted_second_part_shift_seconds,
+        ),
+    )
+
+
+def _transition_window(
+    duration_seconds: float,
+    center_seconds: float,
+    first_shift_seconds: float,
+    second_shift_seconds: float,
+) -> tuple[float, float]:
+    earliest_output_seconds = max(0.0, first_shift_seconds, second_shift_seconds)
+    latest_output_seconds = min(
+        duration_seconds,
+        duration_seconds + first_shift_seconds,
+        duration_seconds + second_shift_seconds,
+    )
+    available_duration = latest_output_seconds - earliest_output_seconds
+    if available_duration <= 0.0:
+        raise ValueError("No common audio range exists for the estimated shifts.")
+    preview_duration = min(TRANSITION_PREVIEW_DURATION_SECONDS, available_duration)
+    window_start = min(
+        max(center_seconds - preview_duration / 2.0, earliest_output_seconds),
+        latest_output_seconds - preview_duration,
+    )
+    return window_start, window_start + preview_duration
+
+
 def validate_judgment_candidate(
     dashboard_sample: DashboardSample,
     audit_report: SynchronizationAuditReport | None,
@@ -531,17 +678,9 @@ def validate_judgment_candidate(
     annotated_sample = _annotated_sample(dashboard_sample)
     if annotated_sample is None:
         raise ValueError("The selected sample has no full conversation annotation.")
-    audit_result = (
-        next(
-            (
-                result
-                for result in audit_report.results
-                if result.sample_id == dashboard_sample.sample.id
-            ),
-            None,
-        )
-        if audit_report is not None
-        else None
+    audit_result = _audit_result_for_sample(
+        audit_report=audit_report,
+        sample_id=dashboard_sample.sample.id,
     )
     candidate = next(
         (
@@ -562,6 +701,18 @@ def validate_judgment_candidate(
     ):
         raise ValueError("Judgment window does not match the generated candidate.")
     return candidate
+
+
+def _audit_result_for_sample(
+    audit_report: SynchronizationAuditReport | None,
+    sample_id: UUID,
+) -> SynchronizationAuditResult | None:
+    if audit_report is None:
+        return None
+    return next(
+        (result for result in audit_report.results if result.sample_id == sample_id),
+        None,
+    )
 
 
 def misalignment_progress(

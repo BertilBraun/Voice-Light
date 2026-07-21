@@ -23,7 +23,7 @@ from app.local.synchronization_review.service import (
     speech_only_gain_normalization,
     synchronization_candidates,
 )
-from app.shared.audio.wav import wave_window_bytes
+from app.shared.audio.wav import resampled_wave_window_bytes, wave_window_bytes
 from app.shared.quality import QualityResult
 
 router = APIRouter(
@@ -69,14 +69,25 @@ def synchronization_audio_window(
     side: TrackSide,
     start_seconds: float = Query(ge=0.0),
     duration_seconds: float = Query(default=180.0, gt=0.0, le=180.0),
+    sample_rate: int | None = Query(default=None, ge=8_000, le=48_000),
 ) -> Response:
     try:
         dashboard_sample = Repository(DATABASE_URL).get_dashboard_sample(sample_id=sample_id)
+        wave_path = track_path(dashboard_sample=dashboard_sample, side=side)
         return Response(
-            content=wave_window_bytes(
-                wave_path=track_path(dashboard_sample=dashboard_sample, side=side),
-                start_seconds=start_seconds,
-                maximum_duration_seconds=duration_seconds,
+            content=(
+                wave_window_bytes(
+                    wave_path=wave_path,
+                    start_seconds=start_seconds,
+                    maximum_duration_seconds=duration_seconds,
+                )
+                if sample_rate is None
+                else resampled_wave_window_bytes(
+                    wave_path=wave_path,
+                    start_seconds=start_seconds,
+                    maximum_duration_seconds=duration_seconds,
+                    sample_rate=sample_rate,
+                )
             ),
             media_type="audio/wav",
             headers={"Cache-Control": "private, max-age=3600"},
