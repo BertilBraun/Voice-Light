@@ -68,7 +68,6 @@ def training_sample_script() -> Iterator[str]:
         "nextRandomButton",
         "loadNextPreparedSample",
         "prepareNextReviewSample",
-        "preparedNextPreview",
         "/api/training-samples/options?${parameters}",
         "/api/training-samples/random-preview",
         "/api/training-samples/propositions",
@@ -77,6 +76,11 @@ def training_sample_script() -> Iterator[str]:
         "synchronizeAudioTracks",
         "minimumQualityInput",
         "samplingModeSelect",
+        "randomizeInitialInput",
+        "PREPARED_PREVIEW_TARGET = 2",
+        "preparedPreviewQueue",
+        "fillPreparedPreviewQueue",
+        "readJsonResponse",
         "datasetSelect",
         "contextOverview",
         "createConversationContextOverview",
@@ -130,6 +134,7 @@ def test_source_annotation_and_frame_preview_precede_context() -> None:
     frame_index = page.index("Frame preview")
     assert annotation_index < frame_index < context_index
     assert "Suggested training crops" not in page
+    assert "Random first conversation" in page
 
 
 def test_prefetched_crop_autoplays_after_selection(training_sample_script: str) -> None:

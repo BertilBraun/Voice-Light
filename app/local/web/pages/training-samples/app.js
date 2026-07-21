@@ -12,6 +12,7 @@ const userSideSelect = document.querySelector("#user-side-select");
 const startInput = document.querySelector("#start-input");
 const minimumQualityInput = document.querySelector("#minimum-quality-input");
 const samplingModeSelect = document.querySelector("#sampling-mode-select");
+const randomizeInitialInput = document.querySelector("#randomize-initial-input");
 const loadButton = document.querySelector("#load-button");
 const randomButton = document.querySelector("#random-button");
 const nextRandomButton = document.querySelector("#next-random-button");
@@ -35,6 +36,7 @@ const frameDetails = document.querySelector("#frame-details");
 const NO_AUXILIARY_ANNOTATION_REASON = "No auxiliary annotation applies at this frame";
 const OUTSIDE_USER_YIELD_CONTEXT_REASON = "Outside the user-yield decision window";
 const BURN_IN_REASON = "Burn-in recurrent-state warm-up";
+const PREPARED_PREVIEW_TARGET = 2;
 
 const rowDefinitions = [
   { label: "User waveform", field: "waveform" },
@@ -80,7 +82,7 @@ let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
 let candidateQueue = [];
-let preparedNextPreview = null;
+let preparedPreviewQueue = [];
 let nextPreviewPreparation = null;
 let candidateQueueSource = null;
 let reviewQueueGeneration = 0;
@@ -110,7 +112,7 @@ async function loadDatasets() {
   const response = await fetch("/api/dataset-dashboard/datasets", {
     cache: "no-store",
   });
-  const payload = await response.json();
+  const payload = await readJsonResponse(response);
   if (!response.ok) {
     throw new Error(errorMessage(payload, response.status));
   }
@@ -145,7 +147,7 @@ async function loadSamples() {
     const response = await fetch(`/api/training-samples/options?${parameters}`, {
       cache: "no-store",
     });
-    const samples = await response.json();
+    const samples = await readJsonResponse(response);
     if (!response.ok) {
       throw new Error(errorMessage(samples, response.status));
     }
@@ -159,6 +161,10 @@ async function loadSamples() {
     );
     if (samples.length === 0) {
       throw new Error("No annotated dataset samples are available.");
+    }
+    if (randomizeInitialInput.checked) {
+      const randomIndex = Math.floor(Math.random() * samples.length);
+      sampleSelect.value = samples[randomIndex].sample_id;
     }
     setStatus(`${samples.length} recent annotated samples loaded`, false);
     await loadPreview(true);
@@ -186,7 +192,7 @@ async function loadPreview(randomLocation, autoplay = false) {
     const response = await fetch(`/api/training-samples/preview?${parameters.toString()}`, {
       cache: "no-store",
     });
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok) {
       throw new Error(errorMessage(payload, response.status));
     }
@@ -199,46 +205,59 @@ async function loadPreview(randomLocation, autoplay = false) {
 function resetReviewQueue() {
   reviewQueueGeneration += 1;
   candidateQueue = [];
-  preparedNextPreview = null;
+  preparedPreviewQueue = [];
   nextPreviewPreparation = null;
   candidateQueueSource = null;
-  nextRandomButton.disabled = true;
-  nextRandomButton.textContent = "Preparing next sample…";
+  updateNextSampleButton();
 }
 
 async function prepareNextReviewSample() {
   if (
     preview === null ||
-    preparedNextPreview !== null ||
-    nextPreviewPreparation !== null
+    nextPreviewPreparation !== null ||
+    preparedPreviewQueue.length >= PREPARED_PREVIEW_TARGET
   ) {
     return;
   }
   const generation = reviewQueueGeneration;
-  const sourcePreview = preview;
-  nextRandomButton.disabled = true;
-  nextRandomButton.textContent = "Preparing next sample…";
-  nextPreviewPreparation = buildNextReviewPreview(sourcePreview, generation);
+  updateNextSampleButton();
+  nextPreviewPreparation = fillPreparedPreviewQueue(generation);
   try {
-    const payload = await nextPreviewPreparation;
-    if (generation !== reviewQueueGeneration || payload === null) {
-      return;
-    }
-    preparedNextPreview = payload;
-    nextRandomButton.disabled = false;
-    nextRandomButton.textContent = "Next sample";
+    await nextPreviewPreparation;
   } catch (error) {
     if (generation !== reviewQueueGeneration) {
       return;
     }
-    nextRandomButton.disabled = false;
-    nextRandomButton.textContent = "Retry next sample";
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     if (generation === reviewQueueGeneration) {
       nextPreviewPreparation = null;
+      updateNextSampleButton();
     }
   }
+}
+
+async function fillPreparedPreviewQueue(generation) {
+  let sourcePreview = preparedPreviewQueue.at(-1) ?? preview;
+  while (
+    generation === reviewQueueGeneration &&
+    preparedPreviewQueue.length < PREPARED_PREVIEW_TARGET
+  ) {
+    const payload = await buildNextReviewPreview(sourcePreview, generation);
+    if (payload === null || generation !== reviewQueueGeneration) {
+      return;
+    }
+    preparedPreviewQueue.push(payload);
+    sourcePreview = payload;
+    updateNextSampleButton();
+  }
+}
+
+function updateNextSampleButton() {
+  const preparedCount = preparedPreviewQueue.length;
+  nextRandomButton.disabled = preparedCount === 0;
+  nextRandomButton.textContent =
+    preparedCount === 0 ? "Preparing next sample…" : `Next sample (${preparedCount} ready)`;
 }
 
 async function buildNextReviewPreview(sourcePreview, generation) {
@@ -277,7 +296,7 @@ async function fillCandidateQueue(sourcePreview, generation) {
   const response = await fetch(`/api/training-samples/propositions?${parameters}`, {
     cache: "no-store",
   });
-  const payload = await response.json();
+  const payload = await readJsonResponse(response);
   if (!response.ok) {
     throw new Error(errorMessage(payload, response.status));
   }
@@ -307,7 +326,7 @@ async function fetchExactPreview(location) {
   const response = await fetch(`/api/training-samples/preview?${parameters}`, {
     cache: "no-store",
   });
-  const payload = await response.json();
+  const payload = await readJsonResponse(response);
   if (!response.ok) {
     throw new Error(errorMessage(payload, response.status));
   }
@@ -328,7 +347,7 @@ async function fetchNextConversationPreview(sourcePreview) {
     `/api/training-samples/random-preview?${parameters}`,
     { cache: "no-store" },
   );
-  const payload = await response.json();
+  const payload = await readJsonResponse(response);
   if (!response.ok) {
     throw new Error(errorMessage(payload, response.status));
   }
@@ -442,17 +461,17 @@ async function startPlayback() {
 }
 
 async function loadNextPreparedSample() {
-  if (preparedNextPreview === null) {
+  if (preparedPreviewQueue.length === 0) {
     await prepareNextReviewSample();
     if (nextPreviewPreparation !== null) {
       await nextPreviewPreparation;
     }
   }
-  if (preparedNextPreview === null) {
+  if (preparedPreviewQueue.length === 0) {
     return;
   }
-  const payload = preparedNextPreview;
-  preparedNextPreview = null;
+  const payload = preparedPreviewQueue.shift();
+  updateNextSampleButton();
   pausePlayback();
   await applyPreview(payload, true);
 }
@@ -1081,8 +1100,20 @@ function setStatus(message, isError) {
   status.classList.toggle("error", isError);
 }
 
+async function readJsonResponse(response) {
+  const responseText = await response.text();
+  try {
+    return JSON.parse(responseText);
+  } catch {
+    const responseDescription = responseText.trim() || response.statusText || "Empty response";
+    throw new Error(`Request failed (${response.status}): ${responseDescription}`);
+  }
+}
+
 function errorMessage(payload, statusCode) {
-  return typeof payload.detail === "string" ? payload.detail : `Request failed (${statusCode})`;
+  return payload !== null && typeof payload === "object" && typeof payload.detail === "string"
+    ? payload.detail
+    : `Request failed (${statusCode})`;
 }
 
 function sampleOptionLabel(sample) {
