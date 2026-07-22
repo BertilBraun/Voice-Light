@@ -11,6 +11,9 @@ from app.local.db.models import DashboardSample, SampleListFilter
 from app.local.db.repository import Repository
 from app.local.misalignment_lab.models import (
     MisalignmentCandidatePreview,
+    MisalignmentGlobalCountercheckQueueResponse,
+    MisalignmentGlobalCountercheckRequest,
+    MisalignmentGlobalCountercheckResponse,
     MisalignmentJudgment,
     MisalignmentJudgmentRequest,
     MisalignmentJudgmentResponse,
@@ -20,6 +23,7 @@ from app.local.misalignment_lab.models import (
     MisalignmentRepairJudgmentResponse,
     MisalignmentRepairQueueResponse,
     MisalignmentRepairScope,
+    MisalignmentRepairStoredJudgment,
     MisalignmentStoredJudgment,
     MisalignmentTransitionPreview,
 )
@@ -27,6 +31,8 @@ from app.local.misalignment_lab.repository import MisalignmentLabRepository
 from app.local.misalignment_lab.service import (
     DEFAULT_QUEUE_SEED,
     DEFAULT_QUEUE_SIZE,
+    build_global_countercheck_preview,
+    build_global_countercheck_queue,
     build_misalignment_preview,
     build_misalignment_queue,
     build_misalignment_repair_queue,
@@ -100,6 +106,27 @@ def misalignment_repair_queue(response: Response) -> MisalignmentRepairQueueResp
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@router.get("/global-countercheck-queue")
+def misalignment_global_countercheck_queue(
+    response: Response,
+) -> MisalignmentGlobalCountercheckQueueResponse:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        reviews = judgment_repository()
+        audit_report = _audit_report(SYNCHRONIZATION_AUDIT_PATH)
+        return build_global_countercheck_queue(
+            dashboard_samples=_audited_dashboard_samples(
+                repository=sample_repository(),
+                audit_report=audit_report,
+            ),
+            audit_report=audit_report,
+            repair_judgments=reviews.list_repair_judgments(),
+            counterchecks=reviews.list_global_counterchecks(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @router.get("/preview/{sample_id}/{candidate_id}")
 def misalignment_preview(
     sample_id: UUID,
@@ -111,6 +138,29 @@ def misalignment_preview(
         return build_misalignment_preview(
             dashboard_sample=sample_repository().get_dashboard_sample(sample_id),
             audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            candidate_id=candidate_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/global-countercheck-preview/{sample_id}/{candidate_id}")
+def misalignment_global_countercheck_preview(
+    sample_id: UUID,
+    candidate_id: UUID,
+    response: Response,
+) -> MisalignmentCandidatePreview:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        reviews = judgment_repository()
+        provisional_repair = _provisional_global_repair(
+            sample_id=sample_id,
+            repair_judgments=reviews.list_repair_judgments(),
+        )
+        return build_global_countercheck_preview(
+            dashboard_sample=sample_repository().get_dashboard_sample(sample_id),
+            audit_report=_audit_report(SYNCHRONIZATION_AUDIT_PATH),
+            provisional_repair=provisional_repair,
             candidate_id=candidate_id,
         )
     except ValueError as error:
@@ -249,6 +299,66 @@ def save_misalignment_repair_judgment(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@router.post("/global-counterchecks")
+def save_misalignment_global_countercheck(
+    request: MisalignmentGlobalCountercheckRequest,
+    response: Response,
+) -> MisalignmentGlobalCountercheckResponse:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        reviews = judgment_repository()
+        repair_judgments = reviews.list_repair_judgments()
+        provisional_repair = _provisional_global_repair(
+            sample_id=request.sample_id,
+            repair_judgments=repair_judgments,
+        )
+        if (
+            provisional_repair.estimator_version != request.estimator_version
+            or abs(provisional_repair.predicted_shift_seconds - request.predicted_shift_seconds)
+            > 1e-6
+        ):
+            raise ValueError("Provisional offset changed; reload the countercheck queue.")
+        repository = sample_repository()
+        audit_report = _audit_report(SYNCHRONIZATION_AUDIT_PATH)
+        queue = build_global_countercheck_queue(
+            dashboard_samples=(repository.get_dashboard_sample(request.sample_id),),
+            audit_report=audit_report,
+            repair_judgments=(provisional_repair,),
+            counterchecks=(),
+        )
+        if len(queue.candidates) != 1:
+            raise ValueError("No beginning/end countercheck exists for this recording.")
+        candidate = queue.candidates[0]
+        if (
+            candidate.beginning.candidate_id != request.beginning_candidate_id
+            or candidate.ending.candidate_id != request.ending_candidate_id
+        ):
+            raise ValueError("Countercheck windows changed; reload the queue.")
+        stored = reviews.save_global_countercheck(
+            request=request,
+            beginning_start_seconds=candidate.beginning.window_start_seconds,
+            beginning_end_seconds=candidate.beginning.window_end_seconds,
+            ending_start_seconds=candidate.ending.window_start_seconds,
+            ending_end_seconds=candidate.ending.window_end_seconds,
+        )
+        all_counterchecks = reviews.list_global_counterchecks()
+        full_queue = build_global_countercheck_queue(
+            dashboard_samples=_audited_dashboard_samples(
+                repository=repository,
+                audit_report=audit_report,
+            ),
+            audit_report=audit_report,
+            repair_judgments=repair_judgments,
+            counterchecks=all_counterchecks,
+        )
+        return MisalignmentGlobalCountercheckResponse(
+            stored=stored,
+            progress=full_queue.progress,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 def _all_dashboard_samples(repository: Repository) -> tuple[DashboardSample, ...]:
     samples: list[DashboardSample] = []
     offset = 0
@@ -311,6 +421,25 @@ def _quarantined_dashboard_samples(
         key=str,
     )
     return tuple(repository.get_dashboard_sample(sample_id) for sample_id in sample_ids)
+
+
+def _provisional_global_repair(
+    sample_id: UUID,
+    repair_judgments: tuple[MisalignmentRepairStoredJudgment, ...],
+) -> MisalignmentRepairStoredJudgment:
+    repair = next(
+        (
+            judgment
+            for judgment in repair_judgments
+            if judgment.sample_id == sample_id
+            and judgment.repair_scope is MisalignmentRepairScope.GLOBAL_OFFSET
+            and judgment.judgment is MisalignmentRepairJudgment.PLAUSIBLE
+        ),
+        None,
+    )
+    if repair is None:
+        raise ValueError("No plausible provisional global repair exists for this recording.")
+    return repair
 
 
 def _audit_report(path: Path) -> SynchronizationAuditReport | None:

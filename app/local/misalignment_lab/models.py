@@ -34,6 +34,13 @@ class MisalignmentRepairScope(StrEnum):
     AFTER_CHANGE_POINT = "after_change_point"
 
 
+class MisalignmentGlobalCountercheckJudgment(StrEnum):
+    NEEDS_TRANSITION = "needs_transition"
+    GLOBAL_OFFSET_CONFIRMED = "global_offset_confirmed"
+    NOT_REPAIRABLE = "not_repairable"
+    UNSURE = "unsure"
+
+
 class AlignmentReviewCategory(StrEnum):
     LIKELY_ALIGNED = "likely_aligned"
     LIKELY_CONSTANT_OFFSET = "likely_constant_offset"
@@ -194,6 +201,43 @@ class MisalignmentRepairQueueResponse(FrozenBaseModel):
     progress: MisalignmentRepairProgress
 
 
+class MisalignmentGlobalCountercheckStored(FrozenBaseModel):
+    sample_id: UUID
+    external_id: str
+    beginning_candidate_id: UUID
+    ending_candidate_id: UUID
+    beginning_start_seconds: float
+    beginning_end_seconds: float
+    ending_start_seconds: float
+    ending_end_seconds: float
+    predicted_shift_seconds: float
+    estimator_version: str
+    judgment: MisalignmentGlobalCountercheckJudgment
+    created_at: datetime
+    updated_at: datetime
+
+
+class MisalignmentGlobalCountercheckCandidate(FrozenBaseModel):
+    beginning: MisalignmentCandidateSummary
+    ending: MisalignmentCandidateSummary
+    provisional_repair: MisalignmentRepairStoredJudgment
+    stored_judgment: MisalignmentGlobalCountercheckStored | None
+
+
+class MisalignmentGlobalCountercheckProgress(FrozenBaseModel):
+    candidate_count: int
+    reviewed_count: int
+    needs_transition_count: int
+    global_offset_confirmed_count: int
+    not_repairable_count: int
+    unsure_count: int
+
+
+class MisalignmentGlobalCountercheckQueueResponse(FrozenBaseModel):
+    candidates: tuple[MisalignmentGlobalCountercheckCandidate, ...]
+    progress: MisalignmentGlobalCountercheckProgress
+
+
 class MisalignmentJudgmentRequest(FrozenBaseModel):
     candidate_id: UUID
     sample_id: UUID
@@ -238,3 +282,17 @@ class MisalignmentRepairJudgmentRequest(FrozenBaseModel):
 class MisalignmentRepairJudgmentResponse(FrozenBaseModel):
     stored: MisalignmentRepairStoredJudgment
     progress: MisalignmentRepairProgress
+
+
+class MisalignmentGlobalCountercheckRequest(FrozenBaseModel):
+    sample_id: UUID
+    beginning_candidate_id: UUID
+    ending_candidate_id: UUID
+    predicted_shift_seconds: float
+    estimator_version: str = Field(min_length=1, max_length=200)
+    judgment: MisalignmentGlobalCountercheckJudgment
+
+
+class MisalignmentGlobalCountercheckResponse(FrozenBaseModel):
+    stored: MisalignmentGlobalCountercheckStored
+    progress: MisalignmentGlobalCountercheckProgress

@@ -2,8 +2,8 @@ import { drawAnnotationTimelineRow } from "/pages/shared/annotation-timeline.js"
 
 const QUEUE_SIZE = 50;
 const QUEUE_SEED = "misalignment-lab-v1";
-const initialMode =
-  new URLSearchParams(window.location.search).get("mode") === "repairs" ? "repairs" : "triage";
+const requestedMode = new URLSearchParams(window.location.search).get("mode");
+const initialMode = ["repairs", "global"].includes(requestedMode) ? requestedMode : "triage";
 const state = {
   mode: initialMode,
   queue: [],
@@ -22,6 +22,7 @@ const state = {
   playbackOffsetSeconds: 0,
   animationFrame: null,
   judging: false,
+  globalWindow: "beginning",
   transition: {
     preview: null,
     markerSeconds: null,
@@ -45,8 +46,13 @@ const elements = {
   alignedCount: document.querySelector("#aligned-count"),
   quarantinedCount: document.querySelector("#quarantined-count"),
   unsureCount: document.querySelector("#unsure-count"),
+  reviewedLabel: document.querySelector("#reviewed-label"),
+  alignedLabel: document.querySelector("#aligned-label"),
+  quarantinedLabel: document.querySelector("#quarantined-label"),
+  unsureLabel: document.querySelector("#unsure-label"),
   triageMode: document.querySelector("#triage-mode"),
   repairMode: document.querySelector("#repair-mode"),
+  globalCountercheckMode: document.querySelector("#global-countercheck-mode"),
   emptyState: document.querySelector("#empty-state"),
   review: document.querySelector("#review"),
   sampleName: document.querySelector("#sample-name"),
@@ -62,6 +68,9 @@ const elements = {
   predictedShift: document.querySelector("#predicted-shift"),
   predictedShiftLabel: document.querySelector("#predicted-shift-label"),
   recommendedFixes: document.querySelector("#recommended-fixes"),
+  globalWindowControls: document.querySelector("#global-window-controls"),
+  beginningWindow: document.querySelector("#beginning-window"),
+  endingWindow: document.querySelector("#ending-window"),
   play: document.querySelector("#play"),
   seek: document.querySelector("#seek"),
   clock: document.querySelector("#clock"),
@@ -80,6 +89,11 @@ const elements = {
   repairPlausible: document.querySelector("#repair-plausible"),
   repairRejected: document.querySelector("#repair-rejected"),
   repairUnsure: document.querySelector("#repair-unsure"),
+  globalCountercheckDecisions: document.querySelector("#global-countercheck-decisions"),
+  globalNeedsTransition: document.querySelector("#global-needs-transition"),
+  globalConfirmed: document.querySelector("#global-confirmed"),
+  globalNotRepairable: document.querySelector("#global-not-repairable"),
+  globalUnsure: document.querySelector("#global-unsure"),
   transitionReview: document.querySelector("#transition-review"),
   transitionSummary: document.querySelector("#transition-summary"),
   transitionMarkerTime: document.querySelector("#transition-marker-time"),
@@ -107,6 +121,9 @@ const elements = {
 
 elements.triageMode.addEventListener("click", () => void switchMode("triage"));
 elements.repairMode.addEventListener("click", () => void switchMode("repairs"));
+elements.globalCountercheckMode.addEventListener("click", () => void switchMode("global"));
+elements.beginningWindow.addEventListener("click", () => void selectGlobalWindow("beginning"));
+elements.endingWindow.addEventListener("click", () => void selectGlobalWindow("ending"));
 elements.play.addEventListener("click", () => void startPlayback(true));
 elements.seek.addEventListener("input", () => {
   state.playbackOffsetSeconds = (Number(elements.seek.value) / 1000) * clipDuration();
@@ -125,6 +142,18 @@ elements.repairRejected.addEventListener("click", () =>
   void submitRepairJudgment("not_plausible"),
 );
 elements.repairUnsure.addEventListener("click", () => void submitRepairJudgment("unsure"));
+elements.globalNeedsTransition.addEventListener("click", () =>
+  void submitGlobalCountercheck("needs_transition"),
+);
+elements.globalConfirmed.addEventListener("click", () =>
+  void submitGlobalCountercheck("global_offset_confirmed"),
+);
+elements.globalNotRepairable.addEventListener("click", () =>
+  void submitGlobalCountercheck("not_repairable"),
+);
+elements.globalUnsure.addEventListener("click", () =>
+  void submitGlobalCountercheck("unsure"),
+);
 elements.transitionRaw.addEventListener("click", () => setTransitionAlignmentMode("raw"));
 elements.transitionEarly.addEventListener("click", () => setTransitionAlignmentMode("early"));
 elements.transitionLate.addEventListener("click", () => setTransitionAlignmentMode("late"));
@@ -201,8 +230,10 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key.toLowerCase() === "u") {
     if (state.mode === "triage") {
       void submitJudgment("unsure");
-    } else {
+    } else if (state.mode === "repairs") {
       void submitRepairJudgment("unsure");
+    } else {
+      void submitGlobalCountercheck("unsure");
     }
   } else if (event.key.toLowerCase() === "f") {
     if (state.mode === "repairs") {
@@ -231,18 +262,21 @@ void loadQueue();
 async function loadQueue() {
   try {
     renderMode();
-    showLoading(
-      state.mode === "repairs"
-        ? "Loading conservative repair candidates..."
-        : "Loading high-value alignment checks...",
-    );
-    const queueUrl =
-      state.mode === "repairs"
-        ? "/api/misalignment-lab/repair-queue"
-        : `/api/misalignment-lab/queue?${new URLSearchParams({
-            seed: QUEUE_SEED,
-            limit: String(QUEUE_SIZE),
-          }).toString()}`;
+    const loadingMessages = {
+      triage: "Loading high-value alignment checks...",
+      repairs: "Loading conservative repair candidates...",
+      global: "Loading beginning/end checks for provisional global shifts...",
+    };
+    showLoading(loadingMessages[state.mode]);
+    const queueUrls = {
+      repairs: "/api/misalignment-lab/repair-queue",
+      global: "/api/misalignment-lab/global-countercheck-queue",
+      triage: `/api/misalignment-lab/queue?${new URLSearchParams({
+        seed: QUEUE_SEED,
+        limit: String(QUEUE_SIZE),
+      }).toString()}`,
+    };
+    const queueUrl = queueUrls[state.mode];
     const response = await fetch(queueUrl);
     const payload = await response.json();
     if (!response.ok) {
@@ -252,11 +286,12 @@ async function loadQueue() {
     state.progress = payload.progress;
     renderProgress();
     if (state.queue.length === 0) {
-      showEmpty(
-        state.mode === "repairs"
-          ? "No quarantined sessions have a conservative piecewise repair estimate."
-          : "No unreviewed, non-quarantined annotated sessions remain.",
-      );
+      const emptyMessages = {
+        triage: "No unreviewed, non-quarantined annotated sessions remain.",
+        repairs: "No quarantined sessions have a conservative piecewise repair estimate.",
+        global: "No provisional global-offset approvals require a beginning/end countercheck.",
+      };
+      showEmpty(emptyMessages[state.mode]);
       return;
     }
     await loadCandidate(0, true);
@@ -265,12 +300,15 @@ async function loadQueue() {
   }
 }
 
-async function loadCandidate(index, autoplay) {
+async function loadCandidate(index, autoplay, resetGlobalWindow = true) {
   if (index < 0 || index >= state.queue.length) {
     showEmpty(`Queue complete. Reviewed ${state.queue.length} high-value clips in this pass.`);
     return;
   }
   state.index = index;
+  if (state.mode === "global" && resetGlobalWindow) {
+    state.globalWindow = "beginning";
+  }
   state.preview = null;
   state.playbackOffsetSeconds = 0;
   state.usePredictedShift = false;
@@ -291,8 +329,12 @@ async function loadCandidate(index, autoplay) {
   elements.review.hidden = false;
   elements.emptyState.hidden = true;
   try {
+    const previewPath =
+      state.mode === "global"
+        ? "/api/misalignment-lab/global-countercheck-preview/"
+        : "/api/misalignment-lab/preview/";
     const previewRequest = fetch(
-      `/api/misalignment-lab/preview/${candidate.sample_id}/${candidate.candidate_id}`,
+      `${previewPath}${candidate.sample_id}/${candidate.candidate_id}`,
     );
     const originalAudioRequests = ["speaker1", "speaker2"].map((side) => {
       const query = new URLSearchParams({
@@ -344,6 +386,14 @@ async function loadCandidate(index, autoplay) {
       error instanceof Error ? error.message : "Could not load this candidate.";
     setDecisionDisabled(false);
   }
+}
+
+async function selectGlobalWindow(windowName) {
+  if (state.mode !== "global" || state.globalWindow === windowName || state.judging) {
+    return;
+  }
+  state.globalWindow = windowName;
+  await loadCandidate(state.index, true, false);
 }
 
 async function decodeAudioWindows(responses) {
@@ -540,6 +590,45 @@ async function submitRepairJudgment(judgment) {
   } catch (error) {
     elements.playbackStatus.textContent =
       error instanceof Error ? error.message : "Could not save the repair judgment.";
+    elements.playbackStatus.classList.add("warning");
+    setDecisionDisabled(false);
+  } finally {
+    state.judging = false;
+  }
+}
+
+async function submitGlobalCountercheck(judgment) {
+  const item = currentQueueItem();
+  if (!item || state.mode !== "global" || state.judging) {
+    return;
+  }
+  state.judging = true;
+  stopPlayback();
+  setDecisionDisabled(true);
+  try {
+    const response = await fetch("/api/misalignment-lab/global-counterchecks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sample_id: item.beginning.sample_id,
+        beginning_candidate_id: item.beginning.candidate_id,
+        ending_candidate_id: item.ending.candidate_id,
+        predicted_shift_seconds: item.provisional_repair.predicted_shift_seconds,
+        estimator_version: item.provisional_repair.estimator_version,
+        judgment,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `Countercheck failed (${response.status})`);
+    }
+    item.stored_judgment = payload.stored;
+    state.progress = payload.progress;
+    renderProgress();
+    await loadCandidate(state.index + 1, true);
+  } catch (error) {
+    elements.playbackStatus.textContent =
+      error instanceof Error ? error.message : "Could not save the countercheck.";
     elements.playbackStatus.classList.add("warning");
     setDecisionDisabled(false);
   } finally {
@@ -1320,7 +1409,14 @@ function renderCandidate() {
     return;
   }
   const interaction = candidate.interaction;
+  const locationPrefix =
+    state.mode === "global"
+      ? state.globalWindow === "beginning"
+        ? "Beginning check (inside the first 3 minutes). "
+        : "Ending check. "
+      : "";
   elements.candidateReason.textContent =
+    locationPrefix +
     `${interaction.alternating_speaker_boundaries} alternating boundaries, ` +
     `${interaction.backchannel_count} backchannels, ${interaction.interruption_count} interruptions; ` +
     `${formatDuration(candidate.seconds_from_recording_end)} before recording end.`;
@@ -1328,6 +1424,14 @@ function renderCandidate() {
   elements.speaker2Events.textContent = annotationSummary(activeSpeaker2Annotation());
   renderReviewCategory();
   renderOffsetComparison();
+  elements.beginningWindow.setAttribute(
+    "aria-pressed",
+    String(state.globalWindow === "beginning"),
+  );
+  elements.endingWindow.setAttribute(
+    "aria-pressed",
+    String(state.globalWindow === "ending"),
+  );
   const repairEstimate = currentRepairEstimate();
   elements.repairPlausible.firstChild.textContent = repairEstimate
     ? "Shift sounds right - locate transition "
@@ -1447,6 +1551,12 @@ function setDecisionDisabled(disabled) {
   elements.repairPlausible.disabled = disabled;
   elements.repairRejected.disabled = disabled;
   elements.repairUnsure.disabled = disabled;
+  elements.globalNeedsTransition.disabled = disabled;
+  elements.globalConfirmed.disabled = disabled;
+  elements.globalNotRepairable.disabled = disabled;
+  elements.globalUnsure.disabled = disabled;
+  elements.beginningWindow.disabled = disabled;
+  elements.endingWindow.disabled = disabled;
   elements.recommendedFixes.disabled = disabled;
   elements.transitionConfirm.disabled = disabled;
   elements.transitionReject.disabled = disabled;
@@ -1474,6 +1584,10 @@ function renderProgress() {
     return;
   }
   if (state.mode === "repairs") {
+    elements.reviewedLabel.textContent = "Repair decisions";
+    elements.alignedLabel.textContent = "Plausible repairs";
+    elements.quarantinedLabel.textContent = "Repair candidates / quarantined";
+    elements.unsureLabel.textContent = "Unsure";
     elements.reviewedCount.textContent = String(state.progress.reviewed_repair_count);
     elements.alignedCount.textContent = String(state.progress.plausible_repair_count);
     elements.quarantinedCount.textContent =
@@ -1481,6 +1595,23 @@ function renderProgress() {
     elements.unsureCount.textContent = String(state.progress.unsure_repair_count);
     return;
   }
+  if (state.mode === "global") {
+    elements.reviewedLabel.textContent = "Counterchecked";
+    elements.alignedLabel.textContent = "Need transition";
+    elements.quarantinedLabel.textContent = "Truly global / candidates";
+    elements.unsureLabel.textContent = "Rejected / unsure";
+    elements.reviewedCount.textContent = String(state.progress.reviewed_count);
+    elements.alignedCount.textContent = String(state.progress.needs_transition_count);
+    elements.quarantinedCount.textContent =
+      `${state.progress.global_offset_confirmed_count} / ${state.progress.candidate_count}`;
+    elements.unsureCount.textContent =
+      `${state.progress.not_repairable_count} / ${state.progress.unsure_count}`;
+    return;
+  }
+  elements.reviewedLabel.textContent = "Reviewed";
+  elements.alignedLabel.textContent = "Plausibly aligned";
+  elements.quarantinedLabel.textContent = "Quarantined sessions";
+  elements.unsureLabel.textContent = "Unsure";
   elements.reviewedCount.textContent = String(state.progress.reviewed_snippet_count);
   elements.alignedCount.textContent = String(state.progress.plausibly_aligned_count);
   elements.quarantinedCount.textContent = String(state.progress.quarantined_session_count);
@@ -1499,8 +1630,8 @@ async function switchMode(mode) {
   stopPlayback();
   resetTransitionReview();
   const url = new URL(window.location.href);
-  if (mode === "repairs") {
-    url.searchParams.set("mode", "repairs");
+  if (mode === "repairs" || mode === "global") {
+    url.searchParams.set("mode", mode);
   } else {
     url.searchParams.delete("mode");
   }
@@ -1510,17 +1641,29 @@ async function switchMode(mode) {
 
 function renderMode() {
   const repairMode = state.mode === "repairs";
-  elements.triageMode.setAttribute("aria-pressed", String(!repairMode));
+  const globalMode = state.mode === "global";
+  elements.triageMode.setAttribute("aria-pressed", String(state.mode === "triage"));
   elements.repairMode.setAttribute("aria-pressed", String(repairMode));
-  elements.comparisonControls.hidden = !repairMode;
-  elements.triageDecisions.hidden = repairMode;
+  elements.globalCountercheckMode.setAttribute("aria-pressed", String(globalMode));
+  elements.comparisonControls.hidden = state.mode === "triage";
+  elements.globalWindowControls.hidden = !globalMode;
+  elements.triageDecisions.hidden = state.mode !== "triage";
   elements.repairDecisions.hidden = !repairMode;
-  elements.decisionTitle.textContent = repairMode
-    ? "Does the predicted second-part shift plausibly repair this clip?"
-    : "Do the two raw tracks plausibly share one timeline?";
-  elements.decisionDescription.textContent = repairMode
-    ? "Toggle repeatedly between the raw and predicted timelines. This only records your assessment; no audio is rewritten."
-    : "Plausibly aligned accepts the recording; likely misaligned quarantines it. Unsure asks for a different exchange later. No audio is rewritten.";
+  elements.globalCountercheckDecisions.hidden = !globalMode;
+  if (globalMode) {
+    elements.decisionTitle.textContent = "Does the same shift belong at both the beginning and end?";
+    elements.decisionDescription.textContent =
+      "Expected result: raw is aligned at the beginning, while the recommended shift only repairs the end. Choose needs transition in that case. Existing global approvals are provisional and no audio is rewritten.";
+  } else if (repairMode) {
+    elements.decisionTitle.textContent =
+      "Does the predicted second-part shift plausibly repair this clip?";
+    elements.decisionDescription.textContent =
+      "Toggle repeatedly between the raw and predicted timelines. This only records your assessment; no audio is rewritten.";
+  } else {
+    elements.decisionTitle.textContent = "Do the two raw tracks plausibly share one timeline?";
+    elements.decisionDescription.textContent =
+      "Plausibly aligned accepts the recording; likely misaligned quarantines it. Unsure asks for a different exchange later. No audio is rewritten.";
+  }
 }
 
 function renderReviewCategory() {
@@ -1543,7 +1686,7 @@ function renderOffsetComparison() {
     return;
   }
   elements.comparisonControls.hidden = false;
-  elements.recommendedFixes.hidden = state.mode === "repairs";
+  elements.recommendedFixes.hidden = state.mode !== "triage";
   elements.recommendedFixes.firstChild.textContent =
     recommendation.repair_scope === "after_change_point"
       ? "Shift sounds right - locate transition "
@@ -1621,7 +1764,13 @@ function showLoading(message) {
 
 function currentCandidate() {
   const item = currentQueueItem();
-  return item ? item.candidate ?? item : null;
+  if (!item) {
+    return null;
+  }
+  if (state.mode === "global") {
+    return state.globalWindow === "beginning" ? item.beginning : item.ending;
+  }
+  return item.candidate ?? item;
 }
 
 function currentQueueItem() {
@@ -1629,6 +1778,9 @@ function currentQueueItem() {
 }
 
 function currentRepairEstimate() {
+  if (state.mode === "global") {
+    return null;
+  }
   const item = currentQueueItem();
   return item?.repair_estimate ?? state.preview?.repair_estimate ?? null;
 }

@@ -14,6 +14,11 @@ from app.local.misalignment_lab.models import (
     InteractionWindowMetrics,
     MisalignmentCandidatePreview,
     MisalignmentCandidateSummary,
+    MisalignmentGlobalCountercheckCandidate,
+    MisalignmentGlobalCountercheckJudgment,
+    MisalignmentGlobalCountercheckProgress,
+    MisalignmentGlobalCountercheckQueueResponse,
+    MisalignmentGlobalCountercheckStored,
     MisalignmentJudgment,
     MisalignmentLabProgress,
     MisalignmentOffsetRecommendation,
@@ -49,6 +54,7 @@ from app.shared.quality import (
 )
 
 CLIP_DURATION_SECONDS = 20.0
+BEGINNING_REVIEW_END_SECONDS = 180.0
 LATE_REGION_SECONDS = 360.0
 LATE_REGION_START_RATIO = 0.6
 WINDOW_STEP_SECONDS = 5.0
@@ -103,6 +109,66 @@ class AlignmentAssessment:
     likelihood_score: float
     summary: str
     recommendation: MisalignmentOffsetRecommendation | None
+
+
+def build_global_countercheck_queue(
+    dashboard_samples: Sequence[DashboardSample],
+    audit_report: SynchronizationAuditReport | None,
+    repair_judgments: Sequence[MisalignmentRepairStoredJudgment],
+    counterchecks: Sequence[MisalignmentGlobalCountercheckStored],
+) -> MisalignmentGlobalCountercheckQueueResponse:
+    provisional_repairs = tuple(
+        judgment
+        for judgment in repair_judgments
+        if judgment.repair_scope is MisalignmentRepairScope.GLOBAL_OFFSET
+        and judgment.judgment is MisalignmentRepairJudgment.PLAUSIBLE
+    )
+    dashboard_by_sample_id = {sample.sample.id: sample for sample in dashboard_samples}
+    audit_by_sample_id = (
+        {result.sample_id: result for result in audit_report.results}
+        if audit_report is not None
+        else {}
+    )
+    countercheck_by_sample_id = {
+        countercheck.sample_id: countercheck for countercheck in counterchecks
+    }
+    candidates: list[MisalignmentGlobalCountercheckCandidate] = []
+    for provisional_repair in provisional_repairs:
+        dashboard_sample = dashboard_by_sample_id.get(provisional_repair.sample_id)
+        if dashboard_sample is None:
+            continue
+        annotated_sample = _annotated_sample(dashboard_sample)
+        if annotated_sample is None:
+            continue
+        beginning, ending = _global_countercheck_windows(
+            annotated_sample=annotated_sample,
+            audit_result=audit_by_sample_id.get(provisional_repair.sample_id),
+            provisional_repair=provisional_repair,
+        )
+        candidates.append(
+            MisalignmentGlobalCountercheckCandidate(
+                beginning=beginning,
+                ending=ending,
+                provisional_repair=provisional_repair,
+                stored_judgment=countercheck_by_sample_id.get(provisional_repair.sample_id),
+            )
+        )
+    ordered = tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.stored_judgment is not None,
+                candidate.beginning.external_id,
+            ),
+        )
+    )
+    return MisalignmentGlobalCountercheckQueueResponse(
+        candidates=ordered,
+        progress=global_countercheck_progress(
+            candidate_count=len(ordered),
+            counterchecks=counterchecks,
+        ),
+    )
 
 
 def build_misalignment_queue(
@@ -459,6 +525,63 @@ def misalignment_repair_progress(
     )
 
 
+def global_countercheck_progress(
+    candidate_count: int,
+    counterchecks: Sequence[MisalignmentGlobalCountercheckStored],
+) -> MisalignmentGlobalCountercheckProgress:
+    return MisalignmentGlobalCountercheckProgress(
+        candidate_count=candidate_count,
+        reviewed_count=len({countercheck.sample_id for countercheck in counterchecks}),
+        needs_transition_count=sum(
+            countercheck.judgment is MisalignmentGlobalCountercheckJudgment.NEEDS_TRANSITION
+            for countercheck in counterchecks
+        ),
+        global_offset_confirmed_count=sum(
+            countercheck.judgment is MisalignmentGlobalCountercheckJudgment.GLOBAL_OFFSET_CONFIRMED
+            for countercheck in counterchecks
+        ),
+        not_repairable_count=sum(
+            countercheck.judgment is MisalignmentGlobalCountercheckJudgment.NOT_REPAIRABLE
+            for countercheck in counterchecks
+        ),
+        unsure_count=sum(
+            countercheck.judgment is MisalignmentGlobalCountercheckJudgment.UNSURE
+            for countercheck in counterchecks
+        ),
+    )
+
+
+def build_global_countercheck_preview(
+    dashboard_sample: DashboardSample,
+    audit_report: SynchronizationAuditReport | None,
+    provisional_repair: MisalignmentRepairStoredJudgment,
+    candidate_id: UUID,
+) -> MisalignmentCandidatePreview:
+    annotated_sample = _annotated_sample(dashboard_sample)
+    if annotated_sample is None:
+        raise ValueError("The selected sample has no full conversation annotation.")
+    audit_result = _audit_result_for_sample(
+        audit_report=audit_report,
+        sample_id=dashboard_sample.sample.id,
+    )
+    candidates = _global_countercheck_windows(
+        annotated_sample=annotated_sample,
+        audit_result=audit_result,
+        provisional_repair=provisional_repair,
+    )
+    candidate = next(
+        (candidate for candidate in candidates if candidate.candidate_id == candidate_id),
+        None,
+    )
+    if candidate is None:
+        raise ValueError("Countercheck window does not belong to this provisional repair.")
+    return _build_candidate_preview(
+        annotated_sample=annotated_sample,
+        candidate=candidate,
+        audit_result=audit_result,
+    )
+
+
 def build_misalignment_preview(
     dashboard_sample: DashboardSample,
     audit_report: SynchronizationAuditReport | None,
@@ -484,6 +607,19 @@ def build_misalignment_preview(
     )
     if candidate is None:
         raise ValueError("Candidate does not belong to the selected sample annotation.")
+    return _build_candidate_preview(
+        annotated_sample=annotated_sample,
+        candidate=candidate,
+        audit_result=audit_result,
+    )
+
+
+def _build_candidate_preview(
+    annotated_sample: AnnotatedSample,
+    candidate: MisalignmentCandidateSummary,
+    audit_result: SynchronizationAuditResult | None,
+) -> MisalignmentCandidatePreview:
+    dashboard_sample = annotated_sample.dashboard_sample
     speaker1_path = _track_path(dashboard_sample=dashboard_sample, side=TrackSide.SPEAKER1)
     speaker2_path = _track_path(dashboard_sample=dashboard_sample, side=TrackSide.SPEAKER2)
     _, speaker1_waveform = waveform_window(
@@ -819,6 +955,134 @@ def _annotated_sample(dashboard_sample: DashboardSample) -> AnnotatedSample | No
             side=TrackSide.SPEAKER2,
         ).audio_sha256,
     )
+
+
+def _global_countercheck_windows(
+    annotated_sample: AnnotatedSample,
+    audit_result: SynchronizationAuditResult | None,
+    provisional_repair: MisalignmentRepairStoredJudgment,
+) -> tuple[MisalignmentCandidateSummary, MisalignmentCandidateSummary]:
+    if provisional_repair.sample_id != annotated_sample.dashboard_sample.sample.id:
+        raise ValueError("Provisional repair does not belong to the selected sample.")
+    if (
+        provisional_repair.repair_scope is not MisalignmentRepairScope.GLOBAL_OFFSET
+        or provisional_repair.judgment is not MisalignmentRepairJudgment.PLAUSIBLE
+    ):
+        raise ValueError("Counterchecks require a plausible provisional global repair.")
+    current_assessment = alignment_assessment(audit_result=audit_result)
+    current_recommendation = current_assessment.recommendation
+    confidence_score = (
+        current_recommendation.confidence_score
+        if current_recommendation is not None
+        and current_recommendation.estimator_version == provisional_repair.estimator_version
+        and abs(current_recommendation.shift_seconds - provisional_repair.predicted_shift_seconds)
+        <= 1e-6
+        else 0.0
+    )
+    supporting_window_count = (
+        current_recommendation.supporting_window_count if current_recommendation is not None else 0
+    )
+    alignment = AlignmentAssessment(
+        category=AlignmentReviewCategory.LIKELY_CONSTANT_OFFSET,
+        likelihood_score=confidence_score,
+        summary=(
+            "Provisional late-clip approval only. Compare the manually aligned beginning with "
+            "the end before assigning a repair scope."
+        ),
+        recommendation=MisalignmentOffsetRecommendation(
+            estimator_version=provisional_repair.estimator_version,
+            repair_scope=MisalignmentRepairScope.GLOBAL_OFFSET,
+            shift_seconds=provisional_repair.predicted_shift_seconds,
+            confidence_score=confidence_score,
+            supporting_window_count=supporting_window_count,
+            summary="Previously approved from one late clip; beginning was not checked.",
+        ),
+    )
+    minimum_start = max(0.0, provisional_repair.predicted_shift_seconds)
+    maximum_start = min(
+        annotated_sample.duration_seconds - CLIP_DURATION_SECONDS,
+        annotated_sample.duration_seconds
+        + provisional_repair.predicted_shift_seconds
+        - CLIP_DURATION_SECONDS,
+    )
+    beginning_maximum = min(
+        maximum_start,
+        BEGINNING_REVIEW_END_SECONDS - CLIP_DURATION_SECONDS,
+    )
+    ending_minimum = max(minimum_start, _late_region_start(annotated_sample.duration_seconds))
+    if beginning_maximum < minimum_start or maximum_start < ending_minimum:
+        raise ValueError("No valid beginning and ending windows exist for this offset.")
+    beginning = _highest_interaction_candidate(
+        annotated_sample=annotated_sample,
+        audit_result=audit_result,
+        alignment=alignment,
+        minimum_start=minimum_start,
+        maximum_start=beginning_maximum,
+    )
+    ending = _highest_interaction_candidate(
+        annotated_sample=annotated_sample,
+        audit_result=audit_result,
+        alignment=alignment,
+        minimum_start=ending_minimum,
+        maximum_start=maximum_start,
+    )
+    return beginning, ending
+
+
+def _highest_interaction_candidate(
+    annotated_sample: AnnotatedSample,
+    audit_result: SynchronizationAuditResult | None,
+    alignment: AlignmentAssessment,
+    minimum_start: float,
+    maximum_start: float,
+) -> MisalignmentCandidateSummary:
+    starts = _candidate_starts_between(
+        annotation=annotated_sample.annotation,
+        minimum_start=minimum_start,
+        maximum_start=maximum_start,
+    )
+    candidates = tuple(
+        _candidate_summary(
+            annotated_sample=annotated_sample,
+            audit_result=audit_result,
+            start_seconds=start_seconds,
+            alignment=alignment,
+        )
+        for start_seconds in starts
+    )
+    return max(
+        candidates,
+        key=lambda candidate: (
+            candidate.interaction.interaction_score,
+            candidate.window_start_seconds,
+        ),
+    )
+
+
+def _candidate_starts_between(
+    annotation: ConversationAnnotation,
+    minimum_start: float,
+    maximum_start: float,
+) -> tuple[float, ...]:
+    grid_start = math.ceil(minimum_start / WINDOW_STEP_SECONDS) * WINDOW_STEP_SECONDS
+    starts = {
+        round(start, 3) for start in _float_range(grid_start, maximum_start, WINDOW_STEP_SECONDS)
+    }
+    event_times = (
+        *(point.time_seconds for point in annotation.speaker1.turns),
+        *(point.time_seconds for point in annotation.speaker2.turns),
+        *(span.start_seconds for span in annotation.speaker1.backchannels),
+        *(span.start_seconds for span in annotation.speaker2.backchannels),
+        *(point.time_seconds for point in annotation.speaker1.interruptions),
+        *(point.time_seconds for point in annotation.speaker2.interruptions),
+    )
+    for event_time in event_times:
+        centered_start = event_time - CLIP_DURATION_SECONDS / 2.0
+        if minimum_start <= centered_start <= maximum_start:
+            starts.add(round(centered_start, 3))
+    starts.add(round(minimum_start, 3))
+    starts.add(round(maximum_start, 3))
+    return tuple(sorted(starts))
 
 
 def _ranked_windows(

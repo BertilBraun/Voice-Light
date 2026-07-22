@@ -17,10 +17,13 @@ from app.local.db.models import (
 from app.local.main import app
 from app.local.misalignment_lab.models import (
     AlignmentReviewCategory,
+    MisalignmentGlobalCountercheckJudgment,
+    MisalignmentGlobalCountercheckStored,
     MisalignmentJudgment,
     MisalignmentRepairJudgment,
     MisalignmentRepairJudgmentRequest,
     MisalignmentRepairScope,
+    MisalignmentRepairStoredJudgment,
     MisalignmentStoredJudgment,
 )
 from app.local.misalignment_lab.router import _validate_repair_transition
@@ -28,6 +31,7 @@ from app.local.misalignment_lab.service import (
     _candidate_starts,
     _transition_window,
     alignment_assessment,
+    build_global_countercheck_queue,
     build_misalignment_queue,
     estimate_piecewise_repair,
     interaction_window_metrics,
@@ -86,6 +90,11 @@ def misalignment_lab_assets() -> Iterator[tuple[str, str]]:
         "Late shift throughout",
         "Prediction sounds plausible",
         "Prediction does not fix it",
+        "Recheck provisional global shifts",
+        "Beginning (first 3 min)",
+        "End of recording",
+        "Raw start + shifted end: needs transition",
+        "Shift works at both: truly global",
     ),
 )
 def test_misalignment_lab_exposes_rapid_triage_controls(
@@ -128,6 +137,10 @@ def test_misalignment_lab_exposes_rapid_triage_controls(
         "search_start_seconds",
         "change_point_seconds",
         'judgment: "likely_misaligned"',
+        "/api/misalignment-lab/global-countercheck-queue",
+        "/api/misalignment-lab/global-countercheck-preview/",
+        "/api/misalignment-lab/global-counterchecks",
+        "submitGlobalCountercheck",
     ),
 )
 def test_misalignment_lab_uses_zero_shift_shared_clock_and_auto_advance(
@@ -190,6 +203,67 @@ def test_short_recording_candidates_stay_in_final_forty_percent() -> None:
     )
 
     assert min(starts) >= 180.0
+
+
+def test_global_countercheck_compares_first_three_minutes_with_recording_end() -> None:
+    sample = _dashboard_sample(external_id="pmt_global", dense_late_exchange=True)
+    provisional_repair = _stored_global_repair(sample=sample, shift_seconds=4.5)
+
+    queue = build_global_countercheck_queue(
+        dashboard_samples=(sample,),
+        audit_report=None,
+        repair_judgments=(provisional_repair,),
+        counterchecks=(),
+    )
+
+    assert len(queue.candidates) == 1
+    candidate = queue.candidates[0]
+    assert candidate.beginning.window_end_seconds <= 180.0
+    assert candidate.ending.window_start_seconds >= 360.0
+    assert candidate.beginning.offset_recommendation is not None
+    assert candidate.ending.offset_recommendation is not None
+    assert candidate.beginning.offset_recommendation.shift_seconds == 4.5
+    assert candidate.ending.offset_recommendation.shift_seconds == 4.5
+
+
+def test_global_countercheck_progress_keeps_provisional_repair_separate() -> None:
+    sample = _dashboard_sample(external_id="pmt_global_reviewed", dense_late_exchange=True)
+    provisional_repair = _stored_global_repair(sample=sample, shift_seconds=-1.5)
+    initial = build_global_countercheck_queue(
+        dashboard_samples=(sample,),
+        audit_report=None,
+        repair_judgments=(provisional_repair,),
+        counterchecks=(),
+    )
+    candidate = initial.candidates[0]
+    now = datetime.now(UTC)
+    countercheck = MisalignmentGlobalCountercheckStored(
+        sample_id=sample.sample.id,
+        external_id=sample.sample.external_id,
+        beginning_candidate_id=candidate.beginning.candidate_id,
+        ending_candidate_id=candidate.ending.candidate_id,
+        beginning_start_seconds=candidate.beginning.window_start_seconds,
+        beginning_end_seconds=candidate.beginning.window_end_seconds,
+        ending_start_seconds=candidate.ending.window_start_seconds,
+        ending_end_seconds=candidate.ending.window_end_seconds,
+        predicted_shift_seconds=-1.5,
+        estimator_version="test-global",
+        judgment=MisalignmentGlobalCountercheckJudgment.NEEDS_TRANSITION,
+        created_at=now,
+        updated_at=now,
+    )
+
+    reviewed = build_global_countercheck_queue(
+        dashboard_samples=(sample,),
+        audit_report=None,
+        repair_judgments=(provisional_repair,),
+        counterchecks=(countercheck,),
+    )
+
+    assert reviewed.progress.reviewed_count == 1
+    assert reviewed.progress.needs_transition_count == 1
+    assert reviewed.candidates[0].provisional_repair == provisional_repair
+    assert reviewed.candidates[0].stored_judgment == countercheck
 
 
 def test_candidate_identity_changes_when_audio_is_replaced() -> None:
@@ -740,6 +814,29 @@ def _stored_judgment(
         window_end_seconds=590.0,
         judgment=judgment,
         queue_seed="test",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _stored_global_repair(
+    sample: DashboardSample,
+    shift_seconds: float,
+) -> MisalignmentRepairStoredJudgment:
+    now = datetime.now(UTC)
+    return MisalignmentRepairStoredJudgment(
+        sample_id=sample.sample.id,
+        candidate_id=uuid4(),
+        external_id=sample.sample.external_id,
+        predicted_shift_seconds=shift_seconds,
+        estimator_version="test-global",
+        repair_scope=MisalignmentRepairScope.GLOBAL_OFFSET,
+        first_part_shift_seconds=None,
+        change_point_seconds=None,
+        change_interval_start_seconds=None,
+        change_interval_end_seconds=None,
+        transition_confirmed=True,
+        judgment=MisalignmentRepairJudgment.PLAUSIBLE,
         created_at=now,
         updated_at=now,
     )

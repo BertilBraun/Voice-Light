@@ -4,6 +4,8 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.local.misalignment_lab.models import (
+    MisalignmentGlobalCountercheckRequest,
+    MisalignmentGlobalCountercheckStored,
     MisalignmentJudgmentRequest,
     MisalignmentRepairJudgmentRequest,
     MisalignmentRepairStoredJudgment,
@@ -145,3 +147,79 @@ class MisalignmentLabRepository:
         if row is None:
             raise ValueError(f"Sample not found: {request.sample_id}")
         return MisalignmentRepairStoredJudgment.model_validate(row)
+
+    def list_global_counterchecks(
+        self,
+    ) -> tuple[MisalignmentGlobalCountercheckStored, ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                  misalignment_lab_global_counterchecks.*,
+                  samples.external_id
+                FROM misalignment_lab_global_counterchecks
+                JOIN samples ON samples.id = misalignment_lab_global_counterchecks.sample_id
+                ORDER BY misalignment_lab_global_counterchecks.created_at, sample_id
+                """
+            ).fetchall()
+        return tuple(MisalignmentGlobalCountercheckStored.model_validate(row) for row in rows)
+
+    def save_global_countercheck(
+        self,
+        request: MisalignmentGlobalCountercheckRequest,
+        beginning_start_seconds: float,
+        beginning_end_seconds: float,
+        ending_start_seconds: float,
+        ending_end_seconds: float,
+    ) -> MisalignmentGlobalCountercheckStored:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                WITH stored AS (
+                  INSERT INTO misalignment_lab_global_counterchecks (
+                    sample_id,
+                    beginning_candidate_id,
+                    ending_candidate_id,
+                    beginning_start_seconds,
+                    beginning_end_seconds,
+                    ending_start_seconds,
+                    ending_end_seconds,
+                    predicted_shift_seconds,
+                    estimator_version,
+                    judgment,
+                    updated_at
+                  )
+                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                  ON CONFLICT (sample_id) DO UPDATE
+                  SET beginning_candidate_id = EXCLUDED.beginning_candidate_id,
+                      ending_candidate_id = EXCLUDED.ending_candidate_id,
+                      beginning_start_seconds = EXCLUDED.beginning_start_seconds,
+                      beginning_end_seconds = EXCLUDED.beginning_end_seconds,
+                      ending_start_seconds = EXCLUDED.ending_start_seconds,
+                      ending_end_seconds = EXCLUDED.ending_end_seconds,
+                      predicted_shift_seconds = EXCLUDED.predicted_shift_seconds,
+                      estimator_version = EXCLUDED.estimator_version,
+                      judgment = EXCLUDED.judgment,
+                      updated_at = now()
+                  RETURNING *
+                )
+                SELECT stored.*, samples.external_id
+                FROM stored
+                JOIN samples ON samples.id = stored.sample_id
+                """,
+                (
+                    request.sample_id,
+                    request.beginning_candidate_id,
+                    request.ending_candidate_id,
+                    beginning_start_seconds,
+                    beginning_end_seconds,
+                    ending_start_seconds,
+                    ending_end_seconds,
+                    request.predicted_shift_seconds,
+                    request.estimator_version,
+                    request.judgment.value,
+                ),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Sample not found: {request.sample_id}")
+        return MisalignmentGlobalCountercheckStored.model_validate(row)

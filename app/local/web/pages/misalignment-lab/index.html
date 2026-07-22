@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Misalignment Lab - Voice Light</title>
-    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=7" />
+    <link rel="stylesheet" href="/pages/misalignment-lab/styles.css?v=8" />
   </head>
   <body>
     <main>
@@ -23,23 +23,24 @@
       <nav class="mode-switch" aria-label="Misalignment lab mode">
         <button id="triage-mode" type="button">Review new clips</button>
         <button id="repair-mode" type="button">Test quarantine repairs</button>
+        <button id="global-countercheck-mode" type="button">Recheck provisional global shifts</button>
       </nav>
 
       <section class="panel progress-panel">
         <div>
-          <span class="label">Reviewed</span>
+          <span id="reviewed-label" class="label">Reviewed</span>
           <strong id="reviewed-count">0</strong>
         </div>
         <div>
-          <span class="label">Plausibly aligned</span>
+          <span id="aligned-label" class="label">Plausibly aligned</span>
           <strong id="aligned-count">0</strong>
         </div>
         <div>
-          <span class="label">Quarantined sessions</span>
+          <span id="quarantined-label" class="label">Quarantined sessions</span>
           <strong id="quarantined-count">0</strong>
         </div>
         <div>
-          <span class="label">Unsure</span>
+          <span id="unsure-label" class="label">Unsure</span>
           <strong id="unsure-count">0</strong>
         </div>
       </section>
@@ -61,6 +62,20 @@
         </section>
 
         <section class="panel playback-panel">
+          <div id="global-window-controls" class="global-window-controls" hidden>
+            <div>
+              <strong>Countercheck location</strong>
+              <span>Use both locations before assigning a repair scope.</span>
+            </div>
+            <div class="comparison-buttons">
+              <button id="beginning-window" type="button" aria-pressed="true">
+                Beginning (first 3 min)
+              </button>
+              <button id="ending-window" type="button" aria-pressed="false">
+                End of recording
+              </button>
+            </div>
+          </div>
           <div id="comparison-controls" class="comparison-controls" hidden>
             <div>
               <strong>Speaker 2 alignment</strong>
@@ -217,6 +232,20 @@
               Unsure <kbd>U</kbd>
             </button>
           </div>
+          <div id="global-countercheck-decisions" class="decision-buttons" hidden>
+            <button id="global-needs-transition" type="button" class="aligned">
+              Raw start + shifted end: needs transition
+            </button>
+            <button id="global-confirmed" type="button">
+              Shift works at both: truly global
+            </button>
+            <button id="global-not-repairable" type="button" class="misaligned">
+              Neither pattern is reliable
+            </button>
+            <button id="global-unsure" type="button">
+              Unsure
+            </button>
+          </div>
         </section>
 
         <section class="panel detail-panel">
@@ -230,6 +259,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="/pages/misalignment-lab/app.js?v=8"></script>
+    <script type="module" src="/pages/misalignment-lab/app.js?v=9"></script>
   </body>
 </html>
