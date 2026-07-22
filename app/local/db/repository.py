@@ -1193,7 +1193,7 @@ def minimum_quality_filter(
 ) -> tuple[str, tuple[object, ...]]:
     if minimum_quality is None:
         return "", ()
-    return "AND latest_quality.total_quality_score >= %s", (minimum_quality,)
+    return "AND latest_quality.total_quality_score > %s", (minimum_quality,)
 
 
 def annotated_sample_id(row: dict[str, object] | None) -> UUID:

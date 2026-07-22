@@ -81,12 +81,9 @@ const rowDefinitions = [
 let preview = null;
 let selectedFrameIndex = null;
 let playbackSeconds = 0;
-let candidateQueue = [];
 let preparedPreviewQueue = [];
 let nextPreviewPreparation = null;
-let candidateQueueSource = null;
 let reviewQueueGeneration = 0;
-const reviewedCandidateKeys = new Set();
 const playbackGainController = createMediaElementGainController([
   { id: "user", element: userAudio },
   { id: "assistant", element: assistantAudio },
@@ -204,10 +201,8 @@ async function loadPreview(randomLocation, autoplay = false) {
 
 function resetReviewQueue() {
   reviewQueueGeneration += 1;
-  candidateQueue = [];
   preparedPreviewQueue = [];
   nextPreviewPreparation = null;
-  candidateQueueSource = null;
   updateNextSampleButton();
 }
 
@@ -261,76 +256,8 @@ function updateNextSampleButton() {
 }
 
 async function buildNextReviewPreview(sourcePreview, generation) {
-  await fillCandidateQueue(sourcePreview, generation);
-  if (generation !== reviewQueueGeneration) {
-    return null;
-  }
-  if (candidateQueue.length === 0) {
-    const nextConversation = await fetchNextConversationPreview(sourcePreview);
-    if (generation !== reviewQueueGeneration) {
-      return null;
-    }
-    await fillCandidateQueue(nextConversation, generation);
-    if (generation !== reviewQueueGeneration) {
-      return null;
-    }
-    if (candidateQueue.length === 0) {
-      return nextConversation;
-    }
-  }
-  const location = candidateQueue.shift();
-  reviewedCandidateKeys.add(candidateLocationKey(location));
-  return fetchExactPreview(location);
-}
-
-async function fillCandidateQueue(sourcePreview, generation) {
-  const sourceKey = `${sourcePreview.sample_id}:${sourcePreview.user_side}`;
-  if (candidateQueueSource === sourceKey) {
-    return;
-  }
-  const parameters = new URLSearchParams({
-    sample_id: sourcePreview.sample_id,
-    user_side: sourcePreview.user_side,
-    limit: "30",
-  });
-  const response = await fetch(`/api/training-samples/propositions?${parameters}`, {
-    cache: "no-store",
-  });
-  const payload = await readJsonResponse(response);
-  if (!response.ok) {
-    throw new Error(errorMessage(payload, response.status));
-  }
-  if (generation !== reviewQueueGeneration) {
-    return;
-  }
-  candidateQueueSource = sourceKey;
-  candidateQueue = payload
-    .map((proposition) => ({
-      sampleId: sourcePreview.sample_id,
-      userSide: sourcePreview.user_side,
-      startSeconds: proposition.start_seconds,
-    }))
-    .filter(
-      (location) =>
-        Math.abs(location.startSeconds - sourcePreview.start_seconds) >= 0.04 &&
-        !reviewedCandidateKeys.has(candidateLocationKey(location)),
-    );
-}
-
-async function fetchExactPreview(location) {
-  const parameters = new URLSearchParams({
-    sample_id: location.sampleId,
-    user_side: location.userSide,
-    start_seconds: String(location.startSeconds),
-  });
-  const response = await fetch(`/api/training-samples/preview?${parameters}`, {
-    cache: "no-store",
-  });
-  const payload = await readJsonResponse(response);
-  if (!response.ok) {
-    throw new Error(errorMessage(payload, response.status));
-  }
-  return payload;
+  const nextConversation = await fetchNextConversationPreview(sourcePreview);
+  return generation === reviewQueueGeneration ? nextConversation : null;
 }
 
 async function fetchNextConversationPreview(sourcePreview) {
@@ -352,10 +279,6 @@ async function fetchNextConversationPreview(sourcePreview) {
     throw new Error(errorMessage(payload, response.status));
   }
   return payload;
-}
-
-function candidateLocationKey(location) {
-  return `${location.sampleId}:${location.userSide}:${location.startSeconds.toFixed(2)}`;
 }
 
 async function applyPreview(payload, autoplay) {
@@ -1219,7 +1142,7 @@ randomButton.addEventListener("click", () => loadPreview(true));
 nextRandomButton.addEventListener("click", loadNextPreparedSample);
 minimumQualityInput.addEventListener("change", () => {
   resetReviewQueue();
-  void prepareNextReviewSample();
+  void loadSamples();
 });
 samplingModeSelect.addEventListener("change", () => {
   resetReviewQueue();

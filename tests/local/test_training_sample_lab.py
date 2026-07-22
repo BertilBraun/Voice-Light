@@ -12,6 +12,7 @@ from app.local.conversation_regions.models import (
     ConversationRegionReason,
     UnusableConversationRegion,
 )
+from app.local.db.repository import minimum_quality_filter
 from app.local.main import app
 from app.local.training_samples.models import TrainingSamplePropositionKind
 from app.local.training_samples.service import (
@@ -25,6 +26,7 @@ from app.local.training_samples.service import (
 from app.shared.quality import (
     AnnotationEvidenceSource,
     AnnotationSpan,
+    ConnectionAnnotationTarget,
     SegmentAnnotationTarget,
     SpeakerConversationAnnotation,
     SpeakerSide,
@@ -70,7 +72,6 @@ def training_sample_script() -> Iterator[str]:
         "prepareNextReviewSample",
         "/api/training-samples/options?${parameters}",
         "/api/training-samples/random-preview",
-        "/api/training-samples/propositions",
         "playBothInput",
         "assistantAudio",
         "synchronizeAudioTracks",
@@ -141,6 +142,28 @@ def test_prefetched_crop_autoplays_after_selection(training_sample_script: str) 
     assert "await applyPreview(payload, true);" in training_sample_script
 
 
+def test_next_sample_fetches_a_new_conversation(training_sample_script: str) -> None:
+    assert "const nextConversation = await fetchNextConversationPreview(sourcePreview);" in (
+        training_sample_script
+    )
+    assert "fillCandidateQueue" not in training_sample_script
+
+
+def test_minimum_quality_change_reloads_filtered_conversations(
+    training_sample_script: str,
+) -> None:
+    listener_start = training_sample_script.index('minimumQualityInput.addEventListener("change"')
+    listener = training_sample_script[listener_start : listener_start + 120]
+    assert "loadSamples()" in listener
+
+
+def test_training_sample_minimum_quality_is_strict() -> None:
+    filter_sql, parameters = minimum_quality_filter(0.9)
+
+    assert filter_sql == "AND latest_quality.total_quality_score > %s"
+    assert parameters == (0.9,)
+
+
 def test_space_toggles_playback_independent_of_focus(training_sample_script: str) -> None:
     assert 'event.code !== "Space"' in training_sample_script
     assert "event.preventDefault();" in training_sample_script
@@ -172,6 +195,51 @@ def test_assistant_floor_is_a_soft_input_and_excludes_backchannels() -> None:
     assert frames[7].assistant_has_floor_input == pytest.approx(1.0)
     assert frames[15].assistant_has_floor_input == pytest.approx(1.0)
     assert frames[34].assistant_has_floor_input == pytest.approx(0.0)
+
+
+def test_assistant_backchannel_inside_pause_retains_pause_floor_state() -> None:
+    earlier_segment = _segment_target(start_seconds=0.0, end_seconds=1.0)
+    later_segment = _segment_target(start_seconds=2.0, end_seconds=3.0)
+    backchannel_segment = SegmentAnnotationTarget(
+        start_seconds=1.3,
+        end_seconds=1.5,
+        text="mhm",
+        evidence_source=AnnotationEvidenceSource.TRANSCRIPT,
+        keep_playing_confidence=0.95,
+        turn_confidence=0.0,
+        interruption_confidence=0.0,
+    )
+    assistant = _speaker_annotation(
+        side=SpeakerSide.SPEAKER1,
+        speech_segments=(
+            AnnotationSpan(start_seconds=0.0, end_seconds=1.0, text="first"),
+            AnnotationSpan(start_seconds=1.3, end_seconds=1.5, text="mhm"),
+            AnnotationSpan(start_seconds=2.0, end_seconds=3.0, text="second"),
+        ),
+        pauses=(AnnotationSpan(start_seconds=1.0, end_seconds=2.0, text=None),),
+        backchannels=(AnnotationSpan(start_seconds=1.3, end_seconds=1.5, text="mhm"),),
+        segment_targets=(earlier_segment, backchannel_segment, later_segment),
+        connection_targets=(
+            ConnectionAnnotationTarget(
+                earlier_end_seconds=1.0,
+                later_start_seconds=2.0,
+                gap_seconds=1.0,
+                pause_confidence=0.75,
+                merge_confidence=0.9,
+            ),
+        ),
+    )
+
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=3.0,
+        annotation_end_seconds=3.0,
+        user=_speaker_annotation(side=SpeakerSide.SPEAKER2),
+        assistant=assistant,
+    )
+    backchannel_frame = min(frames, key=lambda frame: abs(frame.time_seconds - 1.4))
+
+    assert backchannel_frame.assistant_has_floor_input == pytest.approx(0.5625)
 
 
 def test_interesting_location_score_rewards_dense_events_or_ambiguous_targets() -> None:
@@ -299,6 +367,7 @@ def _speaker_annotation(
     pauses: tuple[AnnotationSpan, ...] = (),
     backchannels: tuple[AnnotationSpan, ...] = (),
     segment_targets: tuple[SegmentAnnotationTarget, ...] = (),
+    connection_targets: tuple[ConnectionAnnotationTarget, ...] = (),
 ) -> SpeakerConversationAnnotation:
     return SpeakerConversationAnnotation(
         side=side,
@@ -308,7 +377,7 @@ def _speaker_annotation(
         turns=(),
         interruptions=(),
         segment_targets=segment_targets,
-        connection_targets=(),
+        connection_targets=connection_targets,
         speech_duration_seconds=sum(
             span.end_seconds - span.start_seconds for span in speech_segments
         ),

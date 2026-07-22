@@ -1068,46 +1068,12 @@ def _speaker_floor_state_supervision(
     )
     if active_transcript_segment is not None:
         return _valid_scalar(active_transcript_segment.turn_confidence)
-    active_connection = next(
-        (
-            connection
-            for connection in speaker.connection_targets
-            if connection.earlier_end_seconds <= time_seconds < connection.later_start_seconds
-        ),
-        None,
+    connection_floor_state = _connection_floor_state_supervision(
+        time_seconds=time_seconds,
+        speaker=speaker,
     )
-    if active_connection is not None:
-        earlier_segment = next(
-            (
-                segment
-                for segment in speaker.segment_targets
-                if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
-                and abs(segment.end_seconds - active_connection.earlier_end_seconds)
-                <= FRAME_SECONDS
-            ),
-            None,
-        )
-        later_segment = next(
-            (
-                segment
-                for segment in speaker.segment_targets
-                if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
-                and abs(segment.start_seconds - active_connection.later_start_seconds)
-                <= FRAME_SECONDS
-            ),
-            None,
-        )
-        if earlier_segment is None or later_segment is None:
-            return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
-        # A gap holds the floor only to the extent that it joins two floor-taking segments.
-        return _valid_scalar(
-            active_connection.merge_confidence
-            * (1.0 - (1.0 - PAUSE_FLOOR_RETENTION) * active_connection.pause_confidence)
-            * min(
-                earlier_segment.turn_confidence,
-                later_segment.turn_confidence,
-            )
-        )
+    if connection_floor_state is not None:
+        return connection_floor_state
     active_audio_activity = any(
         segment.evidence_source is AnnotationEvidenceSource.AUDIO_ACTIVITY
         and segment.start_seconds <= time_seconds < segment.end_seconds
@@ -1116,6 +1082,50 @@ def _speaker_floor_state_supervision(
     if active_audio_activity:
         return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
     return _valid_scalar(0.0)
+
+
+def _connection_floor_state_supervision(
+    time_seconds: float,
+    speaker: SpeakerConversationAnnotation,
+) -> ScalarSupervision | None:
+    active_connection = next(
+        (
+            connection
+            for connection in speaker.connection_targets
+            if connection.earlier_end_seconds <= time_seconds < connection.later_start_seconds
+        ),
+        None,
+    )
+    if active_connection is None:
+        return None
+    earlier_segment = next(
+        (
+            segment
+            for segment in speaker.segment_targets
+            if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+            and abs(segment.end_seconds - active_connection.earlier_end_seconds) <= FRAME_SECONDS
+        ),
+        None,
+    )
+    later_segment = next(
+        (
+            segment
+            for segment in speaker.segment_targets
+            if segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+            and abs(segment.start_seconds - active_connection.later_start_seconds) <= FRAME_SECONDS
+        ),
+        None,
+    )
+    if earlier_segment is None or later_segment is None:
+        return _masked_scalar(SupervisionMaskReason.AMBIGUOUS_ANNOTATION)
+    return _valid_scalar(
+        active_connection.merge_confidence
+        * (1.0 - (1.0 - PAUSE_FLOOR_RETENTION) * active_connection.pause_confidence)
+        * min(
+            earlier_segment.turn_confidence,
+            later_segment.turn_confidence,
+        )
+    )
 
 
 def _detector_turn_point_at(
@@ -1142,6 +1152,16 @@ def _assistant_has_floor_input(
     assistant: SpeakerConversationAnnotation,
 ) -> float:
     if _inside_span(time_seconds, assistant.backchannels):
+        connection_floor_state = _connection_floor_state_supervision(
+            time_seconds=time_seconds,
+            speaker=assistant,
+        )
+        if (
+            connection_floor_state is not None
+            and connection_floor_state.valid
+            and connection_floor_state.target is not None
+        ):
+            return connection_floor_state.target
         return 0.0
     floor_state = _speaker_floor_state_supervision(
         time_seconds=time_seconds,
