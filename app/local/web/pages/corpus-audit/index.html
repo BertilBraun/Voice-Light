@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Training Corpus Audit · Voice Light</title>
+    <link rel="stylesheet" href="/pages/corpus-audit/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <a class="back-link" href="/">← Voice Light</a>
+          <h1>Training corpus audit</h1>
+          <p>
+            Enumerate deterministic 20-second inputs with four seconds of burn-in, a 16-second
+            stride, and both speaker orientations.
+          </p>
+        </div>
+        <div id="status" class="status">Loading datasets…</div>
+      </header>
+
+      <section class="panel controls" aria-label="Corpus audit controls">
+        <fieldset>
+          <legend>Datasets</legend>
+          <div id="dataset-options" class="dataset-options"></div>
+        </fieldset>
+        <label>
+          Quality must exceed
+          <input id="minimum-quality" type="number" min="0" max="1" step="0.01" value="0.95" />
+        </label>
+        <label>
+          Maximum masked ratio
+          <input id="maximum-masked-ratio" type="number" min="0" max="1" step="0.05" value="0.35" />
+        </label>
+        <label>
+          Minimum primary coverage
+          <input id="minimum-primary-ratio" type="number" min="0" max="1" step="0.05" value="0.90" />
+        </label>
+        <label>
+          Minimum future coverage
+          <input id="minimum-future-ratio" type="number" min="0" max="1" step="0.05" value="0.95" />
+        </label>
+        <button id="run-button" class="primary" type="button">Run corpus audit</button>
+      </section>
+
+      <section id="summary" class="summary-grid" aria-label="Corpus summary"></section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>Pilot readiness</h2>
+            <p>Unique physical event inventory is not doubled by speaker orientation.</p>
+          </div>
+        </div>
+        <div id="pilot-readiness" class="readiness-list empty">Run an audit to calculate readiness.</div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>Dataset yield</h2>
+            <p>Effective supervision excludes both invalid primary targets and masked regions.</p>
+          </div>
+        </div>
+        <div class="table-shell"><table id="dataset-table"></table></div>
+      </section>
+
+      <section class="two-column">
+        <section class="panel">
+          <h2>Window balance</h2>
+          <p>Each accepted window has one dominant bucket; rare interactions take priority.</p>
+          <div class="table-shell"><table id="category-table"></table></div>
+        </section>
+        <section class="panel">
+          <h2>Rejections</h2>
+          <p>A window may contribute to more than one rejection reason.</p>
+          <div class="table-shell"><table id="rejection-table"></table></div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>Conversation yield</h2>
+            <p>Lowest-yield conversations appear first so masking and annotation failures are visible.</p>
+          </div>
+        </div>
+        <div class="table-shell conversation-shell"><table id="conversation-table"></table></div>
+      </section>
+
+      <section class="panel note">
+        <h2>Selection contract</h2>
+        <p>
+          Windows begin every 16 seconds. The preceding four seconds warm recurrent state and carry
+          no loss. Both tracks independently become the user input, while their windows remain in
+          the same conversation-level train, validation, or test split. Long silence, one-sided
+          activity, and slow exchange are currently treated as permissive mask regions; this audit
+          reports their effect without downloading audio.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="/pages/corpus-audit/app.js"></script>
+  </body>
+</html>
