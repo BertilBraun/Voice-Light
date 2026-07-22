@@ -35,6 +35,7 @@ from app.local.db.models import (
     TrackLanguageAssessment,
     TrackSide,
 )
+from app.local.timeline_repair.models import TIMELINE_REPAIR_PLAN_VERSION
 from app.shared.quality import METRIC_VERSION
 
 INTERESTING_SAMPLE_POOL_SIZE = 64
@@ -989,7 +990,7 @@ class Repository:
                   latest_quality.total_quality_score AS quality_score
                 FROM samples
                 JOIN LATERAL (
-                  SELECT usable_event_count, total_quality_score, payload
+                  SELECT id, usable_event_count, total_quality_score, payload
                   FROM quality_results
                   WHERE quality_results.sample_id = samples.id
                     AND quality_results.metric_version = %s
@@ -1002,6 +1003,7 @@ class Repository:
                 ) AS latest_quality ON true
                 WHERE samples.dataset_id = %s
                   AND samples.is_unusable = FALSE
+                  {training_timeline_eligibility_sql()}
                   AND jsonb_typeof(
                     latest_quality.payload -> 'conversation_annotation'
                   ) = 'object'
@@ -1034,7 +1036,7 @@ class Repository:
                 SELECT samples.id AS sample_id
                 FROM samples
                 JOIN LATERAL (
-                  SELECT total_quality_score, payload
+                  SELECT id, total_quality_score, payload
                   FROM quality_results
                   WHERE quality_results.sample_id = samples.id
                     AND quality_results.metric_version = %s
@@ -1047,6 +1049,7 @@ class Repository:
                 ) AS latest_quality ON true
                 WHERE samples.dataset_id = %s
                   AND samples.is_unusable = FALSE
+                  {training_timeline_eligibility_sql()}
                   AND jsonb_typeof(
                     latest_quality.payload -> 'conversation_annotation'
                   ) = 'object'
@@ -1084,6 +1087,7 @@ class Repository:
                   FROM samples
                   JOIN LATERAL (
                     SELECT
+                      id,
                       conversation_events_per_hour,
                       usable_event_count,
                       total_quality_score,
@@ -1100,6 +1104,7 @@ class Repository:
                   ) AS latest_quality ON true
                   WHERE samples.dataset_id = %s
                     AND samples.is_unusable = FALSE
+                    {training_timeline_eligibility_sql()}
                     AND jsonb_typeof(
                       latest_quality.payload -> 'conversation_annotation'
                     ) = 'object'
@@ -1124,6 +1129,46 @@ class Repository:
                 ),
             ).fetchone()
         return annotated_sample_id(row)
+
+
+def training_timeline_eligibility_sql() -> str:
+    return f"""
+      AND (
+        NOT (
+          EXISTS (
+            SELECT 1
+            FROM misalignment_lab_global_counterchecks AS global_countercheck
+            WHERE global_countercheck.sample_id = samples.id
+              AND global_countercheck.judgment = 'global_offset_confirmed'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM misalignment_lab_repair_reviews AS repair_review
+            WHERE repair_review.sample_id = samples.id
+              AND repair_review.repair_scope = 'after_change_point'
+              AND repair_review.judgment = 'plausible'
+              AND repair_review.transition_confirmed = TRUE
+          )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM virtual_timeline_repair_plans AS repair_plan
+          JOIN sample_tracks AS repaired_speaker1
+            ON repaired_speaker1.sample_id = samples.id
+           AND repaired_speaker1.side = 'speaker1'
+          JOIN sample_tracks AS repaired_speaker2
+            ON repaired_speaker2.sample_id = samples.id
+           AND repaired_speaker2.side = 'speaker2'
+          WHERE repair_plan.sample_id = samples.id
+            AND repair_plan.plan_version = '{TIMELINE_REPAIR_PLAN_VERSION}'
+            AND repair_plan.quality_result_id = latest_quality.id
+            AND repair_plan.speaker1_audio_sha256 = repaired_speaker1.audio_sha256
+            AND repair_plan.speaker2_audio_sha256 = repaired_speaker2.audio_sha256
+            AND repair_plan.derived_annotation IS NOT NULL
+            AND repair_plan.conversation_regions IS NOT NULL
+        )
+      )
+    """
 
 
 def dashboard_filter_sql(sample_filter: SampleListFilter) -> DashboardFilterSql:

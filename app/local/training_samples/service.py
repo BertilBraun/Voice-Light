@@ -10,9 +10,17 @@ from pathlib import Path
 
 import numpy as np
 
+from app.local.asr.transcript import SpeakerTrack
 from app.local.conversation_regions.models import ConversationRegionAnalysis
 from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
 from app.local.ingestion.local_audio import materialize_sample_track
+from app.local.timeline_repair.generation import timeline_repair
+from app.local.timeline_repair.models import TimelineRepairPlanRecord
+from app.local.timeline_repair.transform import (
+    CanonicalInterval,
+    canonical_available_intervals,
+    map_canonical_audio_interval,
+)
 from app.local.training_samples.models import (
     AuxiliaryTarget,
     CandidateSource,
@@ -112,8 +120,9 @@ def build_training_sample_preview(
     selection_mode: TrainingSampleSelectionMode,
     generator: random.Random,
     conversation_regions: ConversationRegionAnalysis | None,
+    repair_plan: TimelineRepairPlanRecord | None = None,
 ) -> TrainingSamplePreview:
-    annotation = _conversation_annotation(dashboard_sample)
+    annotation = _timeline_annotation(dashboard_sample, repair_plan)
     quality = dashboard_sample.latest_quality
     assert quality is not None
     represented_duration_seconds = (
@@ -123,6 +132,11 @@ def build_training_sample_preview(
     )
     eligible_duration_seconds = min(
         represented_duration_seconds, annotation.analyzed_duration_seconds
+    )
+    available_intervals = _available_intervals(
+        dashboard_sample=dashboard_sample,
+        repair_plan=repair_plan,
+        eligible_duration_seconds=eligible_duration_seconds,
     )
     assistant_side = _other_side(user_side)
     user_annotation = _speaker_annotation(annotation, user_side)
@@ -138,22 +152,35 @@ def build_training_sample_preview(
         user=user_annotation,
         assistant=assistant_annotation,
         generator=generator,
+        available_intervals=available_intervals,
     )
     end_seconds = min(eligible_duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
     user_track = _track(dashboard_sample, user_side)
     assistant_track = _track(dashboard_sample, assistant_side)
     user_track_path = _track_path(user_track)
     assistant_track_path = _track_path(assistant_track)
-    sample_rate, waveform = waveform_window(
-        path=user_track_path,
+    user_mapping = _audio_mapping(
+        track=user_track,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
+        repair_plan=repair_plan,
+    )
+    assistant_mapping = _audio_mapping(
+        track=assistant_track,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        repair_plan=repair_plan,
+    )
+    sample_rate, waveform = waveform_window(
+        path=user_track_path,
+        start_seconds=user_mapping.start_seconds,
+        end_seconds=user_mapping.end_seconds,
         point_count=WAVEFORM_POINT_COUNT,
     )
     assistant_sample_rate, assistant_waveform = waveform_window(
         path=assistant_track_path,
-        start_seconds=start_seconds,
-        end_seconds=end_seconds,
+        start_seconds=assistant_mapping.start_seconds,
+        end_seconds=assistant_mapping.end_seconds,
         point_count=WAVEFORM_POINT_COUNT,
     )
     frames = build_frame_previews(
@@ -167,14 +194,20 @@ def build_training_sample_preview(
         dataset_id=dashboard_sample.sample.dataset_id,
         sample_id=dashboard_sample.sample.id,
         external_id=dashboard_sample.sample.external_id,
+        repair_plan_id=repair_plan.id if repair_plan is not None else None,
+        timeline_fingerprint=(repair_plan.plan_fingerprint if repair_plan is not None else None),
         user_side=user_side,
         assistant_side=assistant_side,
         user_audio_sha256=required_track_sha256(user_track),
         assistant_audio_sha256=required_track_sha256(assistant_track),
+        user_source_start_seconds=user_mapping.start_seconds,
+        assistant_source_start_seconds=assistant_mapping.start_seconds,
         user_gain=user_gain,
         assistant_gain=assistant_gain,
         annotation_version=annotation.annotation_version,
-        annotation_generated_at=quality.created_at,
+        annotation_generated_at=(
+            repair_plan.created_at if repair_plan is not None else quality.created_at
+        ),
         quality_metric_version=quality.metric_version,
         quality=_training_sample_quality(dashboard_sample),
         represented_duration_seconds=represented_duration_seconds,
@@ -252,10 +285,11 @@ def build_training_sample_propositions(
     user_side: TrackSide,
     conversation_regions: ConversationRegionAnalysis | None,
     limit: int,
+    repair_plan: TimelineRepairPlanRecord | None = None,
 ) -> tuple[TrainingSampleProposition, ...]:
     if limit <= 0:
         raise ValueError("limit must be positive.")
-    annotation = _conversation_annotation(dashboard_sample)
+    annotation = _timeline_annotation(dashboard_sample, repair_plan)
     represented_duration_seconds = (
         dashboard_sample.sample.duration_seconds
         if dashboard_sample.sample.duration_seconds is not None
@@ -263,6 +297,11 @@ def build_training_sample_propositions(
     )
     eligible_duration_seconds = min(
         represented_duration_seconds, annotation.analyzed_duration_seconds
+    )
+    available_intervals = _available_intervals(
+        dashboard_sample=dashboard_sample,
+        repair_plan=repair_plan,
+        eligible_duration_seconds=eligible_duration_seconds,
     )
     user = _speaker_annotation(annotation, user_side)
     assistant = _speaker_annotation(annotation, _other_side(user_side))
@@ -291,6 +330,11 @@ def build_training_sample_propositions(
     return tuple(
         proposition
         for proposition in propositions
+        if _interval_is_available(
+            proposition.start_seconds,
+            proposition.end_seconds,
+            available_intervals,
+        )
         if proposition.score >= MINIMUM_PROPOSITION_SCORE
         and proposition.primary_supervision_ratio >= MINIMUM_PROPOSITION_PRIMARY_COVERAGE
         and proposition.future_activity_supervision_ratio >= MINIMUM_PROPOSITION_FUTURE_COVERAGE
@@ -668,6 +712,94 @@ def _conversation_annotation(dashboard_sample: DashboardSample) -> ConversationA
     return result.conversation_annotation
 
 
+def _timeline_annotation(
+    dashboard_sample: DashboardSample,
+    repair_plan: TimelineRepairPlanRecord | None,
+) -> ConversationAnnotation:
+    if repair_plan is None:
+        return _conversation_annotation(dashboard_sample)
+    if repair_plan.sample_id != dashboard_sample.sample.id:
+        raise ValueError("Repair plan belongs to a different training sample.")
+    if repair_plan.derived_annotation is None:
+        raise ValueError("Repair plan has no regenerated conversation annotation.")
+    return repair_plan.derived_annotation
+
+
+def _available_intervals(
+    dashboard_sample: DashboardSample,
+    repair_plan: TimelineRepairPlanRecord | None,
+    eligible_duration_seconds: float,
+) -> tuple[CanonicalInterval, ...]:
+    full_interval = CanonicalInterval(
+        start_seconds=0.0,
+        end_seconds=eligible_duration_seconds,
+    )
+    if repair_plan is None:
+        return (full_interval,)
+    repair = timeline_repair(repair_plan)
+    intervals = (full_interval,)
+    for side in (TrackSide.SPEAKER1, TrackSide.SPEAKER2):
+        track = _track(dashboard_sample, side)
+        if track.duration_seconds is None:
+            raise ValueError(f"Track has no duration: {track.id}")
+        track_intervals = canonical_available_intervals(
+            track=_speaker_track(side),
+            source_duration_seconds=track.duration_seconds,
+            repair=repair,
+        )
+        intervals = _intersect_intervals(intervals, track_intervals)
+    usable = tuple(
+        interval
+        for interval in intervals
+        if interval.end_seconds - interval.start_seconds >= INPUT_DURATION_SECONDS
+    )
+    if not usable:
+        raise ValueError("Repair plan leaves no complete training window.")
+    return usable
+
+
+def _intersect_intervals(
+    first: Sequence[CanonicalInterval],
+    second: Sequence[CanonicalInterval],
+) -> tuple[CanonicalInterval, ...]:
+    intersections: list[CanonicalInterval] = []
+    for first_interval in first:
+        for second_interval in second:
+            start_seconds = max(first_interval.start_seconds, second_interval.start_seconds)
+            end_seconds = min(first_interval.end_seconds, second_interval.end_seconds)
+            if end_seconds > start_seconds:
+                intersections.append(CanonicalInterval(start_seconds, end_seconds))
+    return tuple(intersections)
+
+
+def _audio_mapping(
+    track: SampleTrackRecord,
+    start_seconds: float,
+    end_seconds: float,
+    repair_plan: TimelineRepairPlanRecord | None,
+) -> CanonicalInterval:
+    if repair_plan is None or track.side is TrackSide.SPEAKER1:
+        return CanonicalInterval(start_seconds, end_seconds)
+    if track.duration_seconds is None:
+        raise ValueError(f"Track has no duration: {track.id}")
+    mapping = map_canonical_audio_interval(
+        track=SpeakerTrack.SPEAKER2,
+        canonical_start_seconds=start_seconds,
+        canonical_end_seconds=end_seconds,
+        source_duration_seconds=track.duration_seconds,
+        repair=timeline_repair(repair_plan),
+    )
+    return CanonicalInterval(mapping.source_start_seconds, mapping.source_end_seconds)
+
+
+def _speaker_track(side: TrackSide) -> SpeakerTrack:
+    match side:
+        case TrackSide.SPEAKER1:
+            return SpeakerTrack.SPEAKER1
+        case TrackSide.SPEAKER2:
+            return SpeakerTrack.SPEAKER2
+
+
 def _training_sample_gains(
     dashboard_sample: DashboardSample,
     user_side: TrackSide,
@@ -714,12 +846,14 @@ def _select_start_seconds(
     user: SpeakerConversationAnnotation,
     assistant: SpeakerConversationAnnotation,
     generator: random.Random,
+    available_intervals: Sequence[CanonicalInterval],
 ) -> float:
     if requested_start_seconds is not None:
         return _sample_start_seconds(
             duration_seconds=duration_seconds,
             requested_start_seconds=requested_start_seconds,
             generator=generator,
+            available_intervals=available_intervals,
         )
     match selection_mode:
         case TrainingSampleSelectionMode.RANDOM:
@@ -727,6 +861,7 @@ def _select_start_seconds(
                 duration_seconds=duration_seconds,
                 requested_start_seconds=None,
                 generator=generator,
+                available_intervals=available_intervals,
             )
         case TrainingSampleSelectionMode.INTERESTING:
             return _interesting_start_seconds(
@@ -734,6 +869,7 @@ def _select_start_seconds(
                 user=user,
                 assistant=assistant,
                 generator=generator,
+                available_intervals=available_intervals,
             )
 
 
@@ -741,14 +877,32 @@ def _sample_start_seconds(
     duration_seconds: float,
     requested_start_seconds: float | None,
     generator: random.Random,
+    available_intervals: Sequence[CanonicalInterval],
 ) -> float:
-    maximum_start = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
     if requested_start_seconds is None:
-        return generator.uniform(0.0, maximum_start) if maximum_start > 0.0 else 0.0
-    if requested_start_seconds < 0.0 or requested_start_seconds > maximum_start:
-        raise ValueError(
-            f"start_seconds must be between 0 and {maximum_start:.3f} for this sample."
+        start_ranges = tuple(
+            (
+                interval.start_seconds,
+                interval.end_seconds - INPUT_DURATION_SECONDS,
+            )
+            for interval in available_intervals
         )
+        total_width = sum(end - start for start, end in start_ranges)
+        if total_width <= 0.0:
+            return start_ranges[generator.randrange(len(start_ranges))][0]
+        selection = generator.uniform(0.0, total_width)
+        for start, end in start_ranges:
+            width = end - start
+            if selection <= width:
+                return start + selection
+            selection -= width
+        return start_ranges[-1][1]
+    if not _interval_is_available(
+        requested_start_seconds,
+        requested_start_seconds + INPUT_DURATION_SECONDS,
+        available_intervals,
+    ):
+        raise ValueError("Requested training window crosses unavailable repaired audio.")
     return requested_start_seconds
 
 
@@ -757,6 +911,7 @@ def _interesting_start_seconds(
     user: SpeakerConversationAnnotation,
     assistant: SpeakerConversationAnnotation,
     generator: random.Random,
+    available_intervals: Sequence[CanonicalInterval],
 ) -> float:
     maximum_start = max(0.0, duration_seconds - INPUT_DURATION_SECONDS)
     if maximum_start == 0.0:
@@ -773,8 +928,23 @@ def _interesting_start_seconds(
         min(maximum_start, max(0.0, anchor - INPUT_DURATION_SECONDS / 2.0)) for anchor in anchors
     }
     candidate_starts.update(
-        generator.uniform(0.0, maximum_start) for _ in range(INTERESTING_RANDOM_LOCATION_COUNT)
+        _sample_start_seconds(
+            duration_seconds=duration_seconds,
+            requested_start_seconds=None,
+            generator=generator,
+            available_intervals=available_intervals,
+        )
+        for _ in range(INTERESTING_RANDOM_LOCATION_COUNT)
     )
+    candidate_starts = {
+        start_seconds
+        for start_seconds in candidate_starts
+        if _interval_is_available(
+            start_seconds,
+            start_seconds + INPUT_DURATION_SECONDS,
+            available_intervals,
+        )
+    }
     ranked_starts = sorted(
         (
             _interesting_location_score(
@@ -789,6 +959,17 @@ def _interesting_start_seconds(
     )
     top_starts = ranked_starts[-min(5, len(ranked_starts)) :]
     return top_starts[generator.randrange(len(top_starts))][1]
+
+
+def _interval_is_available(
+    start_seconds: float,
+    end_seconds: float,
+    available_intervals: Sequence[CanonicalInterval],
+) -> bool:
+    return any(
+        start_seconds >= interval.start_seconds and end_seconds <= interval.end_seconds
+        for interval in available_intervals
+    )
 
 
 def _activity_event_times(

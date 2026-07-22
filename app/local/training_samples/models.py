@@ -130,10 +130,14 @@ class TrainingSamplePreview(FrozenBaseModel):
     dataset_id: UUID
     sample_id: UUID
     external_id: str
+    repair_plan_id: UUID | None
+    timeline_fingerprint: str | None
     user_side: TrackSide
     assistant_side: TrackSide
     user_audio_sha256: str
     assistant_audio_sha256: str
+    user_source_start_seconds: float
+    assistant_source_start_seconds: float
     user_gain: TrackGainNormalization
     assistant_gain: TrackGainNormalization
     annotation_version: str

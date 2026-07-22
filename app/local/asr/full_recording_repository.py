@@ -55,6 +55,25 @@ class FullRecordingAsrRepository:
             ).fetchall()
         return tuple(transcript_record(row) for row in rows)
 
+    def get_transcripts_by_ids(
+        self,
+        transcript_ids: Sequence[UUID],
+    ) -> tuple[FullRecordingAsrTranscriptRecord, ...]:
+        if not transcript_ids:
+            return ()
+        with self.connection() as connection:
+            rows = connection.execute(
+                transcript_select_query("WHERE transcripts.id = ANY(%s)"),
+                (list(transcript_ids),),
+            ).fetchall()
+        records_by_id = {record.id: record for record in (transcript_record(row) for row in rows)}
+        missing_ids = tuple(
+            transcript_id for transcript_id in transcript_ids if transcript_id not in records_by_id
+        )
+        if missing_ids:
+            raise ValueError(f"Full-recording transcripts not found: {missing_ids}")
+        return tuple(records_by_id[transcript_id] for transcript_id in transcript_ids)
+
     def get_exact_transcript_pair(
         self,
         sample_id: UUID,

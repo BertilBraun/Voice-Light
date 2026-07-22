@@ -38,7 +38,7 @@ class TimelineRepairRepository:
     def create_plan(self, request: TimelineRepairPlanCreate) -> TimelineRepairPlanRecord:
         with self.connection() as connection:
             eligible_rows = connection.execute(
-                eligible_source_query("AND samples.id = %s"),
+                eligible_source_query("AND eligible.sample_id = %s"),
                 (request.source.sample_id,),
             ).fetchall()
             if len(eligible_rows) != 1:

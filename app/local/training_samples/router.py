@@ -11,6 +11,11 @@ from app.local.conversation_regions.repository import ConversationRegionReposito
 from app.local.db.models import TrackSide
 from app.local.db.repository import Repository
 from app.local.ingestion.conversation import ANNOTATION_VERSION
+from app.local.timeline_repair.models import (
+    TIMELINE_REPAIR_PLAN_VERSION,
+    TimelineRepairPlanRecord,
+)
+from app.local.timeline_repair.repository import TimelineRepairRepository
 from app.local.training_samples.models import (
     TrainingSampleOption,
     TrainingSamplePreview,
@@ -38,6 +43,23 @@ def conversation_region_repository() -> ConversationRegionRepository:
     return ConversationRegionRepository(DATABASE_URL)
 
 
+def timeline_repair_repository() -> TimelineRepairRepository:
+    if not DATABASE_URL:
+        raise ValueError("VOICE_LIGHT_DATABASE_URL is required for training sample APIs.")
+    return TimelineRepairRepository(DATABASE_URL)
+
+
+def training_timeline_plan(sample_id: UUID) -> TimelineRepairPlanRecord | None:
+    plan_repository = timeline_repair_repository()
+    plan = plan_repository.get_complete_plan(
+        sample_id=sample_id,
+        plan_version=TIMELINE_REPAIR_PLAN_VERSION,
+    )
+    if plan is None and plan_repository.sample_requires_repair(sample_id):
+        raise ValueError("The selected sample requires a completed virtual timeline repair.")
+    return plan
+
+
 @router.get("/preview")
 def preview_training_sample(
     sample_id: UUID,
@@ -48,10 +70,17 @@ def preview_training_sample(
     try:
         response.headers["Cache-Control"] = "no-store"
         dashboard_sample = repository().get_dashboard_sample(sample_id)
-        region_record = conversation_region_repository().get_current(
-            sample_id=sample_id,
-            analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
-            annotation_version=ANNOTATION_VERSION,
+        if dashboard_sample.sample.is_unusable:
+            raise ValueError("The selected sample is marked unusable.")
+        repair_plan = training_timeline_plan(sample_id)
+        region_record = (
+            conversation_region_repository().get_current(
+                sample_id=sample_id,
+                analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+                annotation_version=ANNOTATION_VERSION,
+            )
+            if repair_plan is None
+            else None
         )
         return build_training_sample_preview(
             dashboard_sample=dashboard_sample,
@@ -59,7 +88,14 @@ def preview_training_sample(
             requested_start_seconds=start_seconds,
             selection_mode=TrainingSampleSelectionMode.RANDOM,
             generator=random.SystemRandom(),
-            conversation_regions=region_record.analysis if region_record is not None else None,
+            conversation_regions=(
+                repair_plan.conversation_regions
+                if repair_plan is not None
+                else region_record.analysis
+                if region_record is not None
+                else None
+            ),
+            repair_plan=repair_plan,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -103,16 +139,30 @@ def training_sample_propositions(
     try:
         response.headers["Cache-Control"] = "no-store"
         dashboard_sample = repository().get_dashboard_sample(sample_id)
-        region_record = conversation_region_repository().get_current(
-            sample_id=sample_id,
-            analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
-            annotation_version=ANNOTATION_VERSION,
+        if dashboard_sample.sample.is_unusable:
+            raise ValueError("The selected sample is marked unusable.")
+        repair_plan = training_timeline_plan(sample_id)
+        region_record = (
+            conversation_region_repository().get_current(
+                sample_id=sample_id,
+                analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+                annotation_version=ANNOTATION_VERSION,
+            )
+            if repair_plan is None
+            else None
         )
         return build_training_sample_propositions(
             dashboard_sample=dashboard_sample,
             user_side=user_side,
-            conversation_regions=(region_record.analysis if region_record is not None else None),
+            conversation_regions=(
+                repair_plan.conversation_regions
+                if repair_plan is not None
+                else region_record.analysis
+                if region_record is not None
+                else None
+            ),
             limit=limit,
+            repair_plan=repair_plan,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -150,10 +200,15 @@ def random_training_sample_preview(
         user_sides = (TrackSide.SPEAKER1, TrackSide.SPEAKER2)
         user_side = user_sides[generator.randrange(len(user_sides))]
         dashboard_sample = sample_repository.get_dashboard_sample(sample_id)
-        region_record = conversation_region_repository().get_current(
-            sample_id=sample_id,
-            analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
-            annotation_version=ANNOTATION_VERSION,
+        repair_plan = training_timeline_plan(sample_id)
+        region_record = (
+            conversation_region_repository().get_current(
+                sample_id=sample_id,
+                analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+                annotation_version=ANNOTATION_VERSION,
+            )
+            if repair_plan is None
+            else None
         )
         return build_training_sample_preview(
             dashboard_sample=dashboard_sample,
@@ -161,7 +216,14 @@ def random_training_sample_preview(
             requested_start_seconds=None,
             selection_mode=sampling_mode,
             generator=generator,
-            conversation_regions=region_record.analysis if region_record is not None else None,
+            conversation_regions=(
+                repair_plan.conversation_regions
+                if repair_plan is not None
+                else region_record.analysis
+                if region_record is not None
+                else None
+            ),
+            repair_plan=repair_plan,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

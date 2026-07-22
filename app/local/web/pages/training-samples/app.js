@@ -342,14 +342,14 @@ function configureAudio() {
     preview.assistant_side,
     preview.assistant_audio_sha256,
   );
-  userAudio.currentTime = preview.start_seconds;
-  assistantAudio.currentTime = preview.start_seconds;
+  setCanonicalPlaybackTime(preview.start_seconds);
 }
 
 function configureAudioElement(audioElement, side, audioSha256) {
   const sourceUrl =
     `/api/dataset-dashboard/audio/${preview.sample_id}/${side}` +
-    `?v=${encodeURIComponent(audioSha256)}`;
+    `?v=${encodeURIComponent(audioSha256)}` +
+    `&timeline=${encodeURIComponent(preview.timeline_fingerprint ?? "raw")}`;
   if (audioElement.dataset.sourceUrl === sourceUrl) {
     return;
   }
@@ -480,8 +480,12 @@ function renderSummary() {
 }
 
 function renderAnnotationSource() {
+  const timelineIdentity =
+    preview.timeline_fingerprint === null
+      ? "raw timeline"
+      : `repaired timeline ${preview.timeline_fingerprint.slice(0, 12)}…`;
   annotationSource.textContent =
-    `${preview.annotation_version} · stored quality annotation generated ` +
+    `${preview.annotation_version} · ${timelineIdentity} · annotation generated ` +
     `${formatDateTime(preview.annotation_generated_at)} · ` +
     `user audio ${preview.user_audio_sha256.slice(0, 12)}… · ` +
     `assistant audio ${preview.assistant_audio_sha256.slice(0, 12)}…`;
@@ -929,8 +933,7 @@ function selectFrameAtEvent(event) {
   );
   const frame = preview.frames[selectedFrameIndex];
   playbackSeconds = frame.time_seconds;
-  userAudio.currentTime = playbackSeconds;
-  assistantAudio.currentTime = playbackSeconds;
+  setCanonicalPlaybackTime(playbackSeconds);
   renderSelectedFrame(frame);
   updateTimeReadout();
   drawTimeline();
@@ -945,9 +948,9 @@ async function togglePlayback() {
     pausePlayback();
     return;
   }
-  if (userAudio.currentTime < preview.start_seconds || userAudio.currentTime >= preview.end_seconds) {
-    userAudio.currentTime = preview.start_seconds;
-    assistantAudio.currentTime = preview.start_seconds;
+  const canonicalTime = canonicalPlaybackTime();
+  if (canonicalTime < preview.start_seconds || canonicalTime >= preview.end_seconds) {
+    setCanonicalPlaybackTime(preview.start_seconds);
   }
   await startPlayback();
 }
@@ -973,14 +976,13 @@ function trackPlayback() {
   if (preview === null) {
     return;
   }
-  playbackSeconds = userAudio.currentTime;
+  playbackSeconds = canonicalPlaybackTime();
   if (playbackSeconds >= preview.end_seconds) {
-    userAudio.currentTime = preview.end_seconds;
-    assistantAudio.currentTime = preview.end_seconds;
+    setCanonicalPlaybackTime(preview.end_seconds);
     playbackSeconds = preview.end_seconds;
     pausePlayback();
-  } else if (playBothInput.checked && Math.abs(assistantAudio.currentTime - playbackSeconds) > 0.08) {
-    assistantAudio.currentTime = playbackSeconds;
+  } else if (playBothInput.checked && audioSeparationSeconds() > 0.08) {
+    setCanonicalPlaybackTime(playbackSeconds);
   }
   updateTimeReadout();
   drawTimeline();
@@ -988,7 +990,42 @@ function trackPlayback() {
 }
 
 function synchronizeAudioTracks() {
-  assistantAudio.currentTime = userAudio.currentTime;
+  setCanonicalPlaybackTime(canonicalPlaybackTime());
+}
+
+function canonicalPlaybackTime() {
+  if (preview === null) {
+    return 0;
+  }
+  const sourceTime =
+    preview.user_side === "speaker1"
+      ? userAudio.currentTime
+      : assistantAudio.currentTime;
+  const sourceStart =
+    preview.user_side === "speaker1"
+      ? preview.user_source_start_seconds
+      : preview.assistant_source_start_seconds;
+  return preview.start_seconds + sourceTime - sourceStart;
+}
+
+function setCanonicalPlaybackTime(canonicalSeconds) {
+  if (preview === null) {
+    return;
+  }
+  const relativeSeconds = canonicalSeconds - preview.start_seconds;
+  userAudio.currentTime = preview.user_source_start_seconds + relativeSeconds;
+  assistantAudio.currentTime =
+    preview.assistant_source_start_seconds + relativeSeconds;
+}
+
+function audioSeparationSeconds() {
+  if (preview === null) {
+    return 0;
+  }
+  const userRelative = userAudio.currentTime - preview.user_source_start_seconds;
+  const assistantRelative =
+    assistantAudio.currentTime - preview.assistant_source_start_seconds;
+  return Math.abs(userRelative - assistantRelative);
 }
 
 async function updatePlaybackMode() {
