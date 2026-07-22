@@ -25,6 +25,7 @@ from app.local.misalignment_lab.models import (
     MisalignmentRepairScope,
     MisalignmentRepairStoredJudgment,
     MisalignmentStoredJudgment,
+    MisalignmentTransitionLocationSource,
 )
 from app.local.misalignment_lab.router import _validate_repair_transition
 from app.local.misalignment_lab.service import (
@@ -35,6 +36,7 @@ from app.local.misalignment_lab.service import (
     build_misalignment_queue,
     estimate_piecewise_repair,
     interaction_window_metrics,
+    transition_exclusion_window,
 )
 from app.local.synchronization_review.models import (
     SynchronizationAuditKind,
@@ -224,6 +226,8 @@ def test_global_countercheck_compares_first_three_minutes_with_recording_end() -
     assert candidate.ending.offset_recommendation is not None
     assert candidate.beginning.offset_recommendation.shift_seconds == 4.5
     assert candidate.ending.offset_recommendation.shift_seconds == 4.5
+    assert queue.exclusion_policy.manual_margin_seconds == 10.0
+    assert queue.exclusion_policy.automatic_margin_seconds == 120.0
 
 
 def test_global_countercheck_progress_keeps_provisional_repair_separate() -> None:
@@ -453,6 +457,39 @@ def test_transition_window_is_two_minutes_and_stays_inside_shifted_audio() -> No
 
     assert centered == (540.0, 660.0)
     assert near_start == (4.0, 124.0)
+
+
+@pytest.mark.parametrize(
+    ("location_source", "expected_start", "expected_end"),
+    (
+        (MisalignmentTransitionLocationSource.MANUAL, 490.0, 510.0),
+        (MisalignmentTransitionLocationSource.AUTOMATIC, 380.0, 620.0),
+    ),
+)
+def test_transition_exclusion_depends_on_location_source(
+    location_source: MisalignmentTransitionLocationSource,
+    expected_start: float,
+    expected_end: float,
+) -> None:
+    exclusion = transition_exclusion_window(
+        change_point_seconds=500.0,
+        duration_seconds=1_000.0,
+        location_source=location_source,
+    )
+
+    assert exclusion.start_seconds == expected_start
+    assert exclusion.end_seconds == expected_end
+
+
+def test_transition_exclusion_clamps_to_recording_bounds() -> None:
+    exclusion = transition_exclusion_window(
+        change_point_seconds=30.0,
+        duration_seconds=100.0,
+        location_source=MisalignmentTransitionLocationSource.AUTOMATIC,
+    )
+
+    assert exclusion.start_seconds == 0.0
+    assert exclusion.end_seconds == 100.0
 
 
 def test_piecewise_repair_requires_confirmed_change_point() -> None:

@@ -10,6 +10,7 @@ const state = {
   index: 0,
   preview: null,
   progress: null,
+  exclusionPolicy: null,
   audioContext: null,
   buffers: {
     speaker1: null,
@@ -284,6 +285,8 @@ async function loadQueue() {
     }
     state.queue = payload.candidates;
     state.progress = payload.progress;
+    state.exclusionPolicy = payload.exclusion_policy ?? null;
+    renderMode();
     renderProgress();
     if (state.queue.length === 0) {
       const emptyMessages = {
@@ -927,7 +930,9 @@ function renderTransitionReview() {
     )} is an overlapping-window midpoint hint, not a hard boundary. Review the full ` +
     `${formatAbsoluteTime(preview.search_start_seconds)}-${formatAbsoluteTime(
       preview.search_end_seconds,
-    )} range.`;
+    )} range. Saving this exact marker excludes ${formatExclusionMargin(
+      state.exclusionPolicy?.manual_margin_seconds,
+    )} on each side.`;
   elements.transitionMarker.min = String(preview.search_start_seconds);
   elements.transitionMarker.max = String(preview.search_end_seconds);
   elements.transitionMarker.step =
@@ -1627,6 +1632,7 @@ async function switchMode(mode) {
   state.index = 0;
   state.preview = null;
   state.progress = null;
+  state.exclusionPolicy = null;
   stopPlayback();
   resetTransitionReview();
   const url = new URL(window.location.href);
@@ -1651,9 +1657,14 @@ function renderMode() {
   elements.repairDecisions.hidden = !repairMode;
   elements.globalCountercheckDecisions.hidden = !globalMode;
   if (globalMode) {
+    const automaticMargin = formatExclusionMargin(
+      state.exclusionPolicy?.automatic_margin_seconds,
+    );
+    elements.globalNeedsTransition.textContent =
+      `Raw start + shifted end: needs transition (automatic ${automaticMargin} each side)`;
     elements.decisionTitle.textContent = "Does the same shift belong at both the beginning and end?";
     elements.decisionDescription.textContent =
-      "Expected result: raw is aligned at the beginning, while the recommended shift only repairs the end. Choose needs transition in that case. Existing global approvals are provisional and no audio is rewritten.";
+      `Expected result: raw is aligned at the beginning, while the recommended shift only repairs the end. Choose needs transition in that case. An automatically located transition excludes ${automaticMargin} on each side; existing global approvals remain provisional.`;
   } else if (repairMode) {
     elements.decisionTitle.textContent =
       "Does the predicted second-part shift plausibly repair this clip?";
@@ -1831,6 +1842,10 @@ function formatClipTime(seconds) {
 
 function formatDuration(seconds) {
   return seconds < 60 ? `${seconds.toFixed(0)} s` : `${(seconds / 60).toFixed(1)} min`;
+}
+
+function formatExclusionMargin(seconds) {
+  return typeof seconds === "number" ? formatDuration(seconds) : "the configured margin";
 }
 
 function formatPercent(value) {

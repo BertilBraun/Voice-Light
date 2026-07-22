@@ -34,6 +34,16 @@ class MisalignmentRepairScope(StrEnum):
     AFTER_CHANGE_POINT = "after_change_point"
 
 
+class MisalignmentTransitionLocationSource(StrEnum):
+    MANUAL = "manual"
+    AUTOMATIC = "automatic"
+
+
+class MisalignmentTransitionExclusionPolicy(FrozenBaseModel):
+    manual_margin_seconds: float
+    automatic_margin_seconds: float
+
+
 class MisalignmentGlobalCountercheckJudgment(StrEnum):
     NEEDS_TRANSITION = "needs_transition"
     GLOBAL_OFFSET_CONFIRMED = "global_offset_confirmed"
@@ -199,6 +209,7 @@ class MisalignmentRepairProgress(FrozenBaseModel):
 class MisalignmentRepairQueueResponse(FrozenBaseModel):
     candidates: tuple[MisalignmentRepairCandidate, ...]
     progress: MisalignmentRepairProgress
+    exclusion_policy: MisalignmentTransitionExclusionPolicy
 
 
 class MisalignmentGlobalCountercheckStored(FrozenBaseModel):
@@ -236,6 +247,7 @@ class MisalignmentGlobalCountercheckProgress(FrozenBaseModel):
 class MisalignmentGlobalCountercheckQueueResponse(FrozenBaseModel):
     candidates: tuple[MisalignmentGlobalCountercheckCandidate, ...]
     progress: MisalignmentGlobalCountercheckProgress
+    exclusion_policy: MisalignmentTransitionExclusionPolicy
 
 
 class MisalignmentJudgmentRequest(FrozenBaseModel):

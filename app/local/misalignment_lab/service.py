@@ -31,6 +31,8 @@ from app.local.misalignment_lab.models import (
     MisalignmentRepairScope,
     MisalignmentRepairStoredJudgment,
     MisalignmentStoredJudgment,
+    MisalignmentTransitionExclusionPolicy,
+    MisalignmentTransitionLocationSource,
     MisalignmentTransitionPreview,
     MisalignmentWindowAnnotation,
 )
@@ -55,6 +57,8 @@ from app.shared.quality import (
 
 CLIP_DURATION_SECONDS = 20.0
 BEGINNING_REVIEW_END_SECONDS = 180.0
+MANUAL_TRANSITION_EXCLUSION_MARGIN_SECONDS = 10.0
+AUTOMATIC_TRANSITION_EXCLUSION_MARGIN_SECONDS = 120.0
 LATE_REGION_SECONDS = 360.0
 LATE_REGION_START_RATIO = 0.6
 WINDOW_STEP_SECONDS = 5.0
@@ -109,6 +113,37 @@ class AlignmentAssessment:
     likelihood_score: float
     summary: str
     recommendation: MisalignmentOffsetRecommendation | None
+
+
+@dataclass(frozen=True)
+class TransitionExclusionWindow:
+    start_seconds: float
+    end_seconds: float
+
+
+def transition_exclusion_policy() -> MisalignmentTransitionExclusionPolicy:
+    return MisalignmentTransitionExclusionPolicy(
+        manual_margin_seconds=MANUAL_TRANSITION_EXCLUSION_MARGIN_SECONDS,
+        automatic_margin_seconds=AUTOMATIC_TRANSITION_EXCLUSION_MARGIN_SECONDS,
+    )
+
+
+def transition_exclusion_window(
+    change_point_seconds: float,
+    duration_seconds: float,
+    location_source: MisalignmentTransitionLocationSource,
+) -> TransitionExclusionWindow:
+    if not 0.0 <= change_point_seconds <= duration_seconds:
+        raise ValueError("Transition point must lie inside the recording duration.")
+    margin_seconds = (
+        MANUAL_TRANSITION_EXCLUSION_MARGIN_SECONDS
+        if location_source is MisalignmentTransitionLocationSource.MANUAL
+        else AUTOMATIC_TRANSITION_EXCLUSION_MARGIN_SECONDS
+    )
+    return TransitionExclusionWindow(
+        start_seconds=max(0.0, change_point_seconds - margin_seconds),
+        end_seconds=min(duration_seconds, change_point_seconds + margin_seconds),
+    )
 
 
 def build_global_countercheck_queue(
@@ -168,6 +203,7 @@ def build_global_countercheck_queue(
             candidate_count=len(ordered),
             counterchecks=counterchecks,
         ),
+        exclusion_policy=transition_exclusion_policy(),
     )
 
 
@@ -332,6 +368,7 @@ def build_misalignment_repair_queue(
             repair_candidate_count=len(ordered),
             repair_judgments=repair_judgments,
         ),
+        exclusion_policy=transition_exclusion_policy(),
     )
 
 
