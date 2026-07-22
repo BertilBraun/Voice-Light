@@ -524,7 +524,7 @@ async function submitRepairJudgment(judgment) {
         first_part_shift_seconds: repairEstimate.first_part_shift_seconds,
         change_point_seconds: null,
         change_interval_start_seconds: repairEstimate.conservative_first_part_end_seconds,
-        change_interval_end_seconds: repairEstimate.conservative_second_part_start_seconds,
+        change_interval_end_seconds: repairEstimate.stable_second_part_end_seconds,
         transition_confirmed: false,
         judgment,
       }),
@@ -799,7 +799,7 @@ async function submitPiecewiseTransition(judgment) {
         first_part_shift_seconds: repairEstimate.first_part_shift_seconds,
         change_point_seconds: transitionConfirmed ? markerSeconds : null,
         change_interval_start_seconds: repairEstimate.conservative_first_part_end_seconds,
-        change_interval_end_seconds: repairEstimate.conservative_second_part_start_seconds,
+        change_interval_end_seconds: repairEstimate.stable_second_part_end_seconds,
         transition_confirmed: transitionConfirmed,
         judgment,
       }),
@@ -835,7 +835,7 @@ function renderTransitionReview() {
     `supports ${formatSignedSeconds(preview.second_part_shift_seconds)}. The orange band ` +
     `${formatAbsoluteTime(preview.change_interval_start_seconds)}-${formatAbsoluteTime(
       preview.change_interval_end_seconds,
-    )} is an overlapping-window midpoint hint, not a hard boundary. Search the full ` +
+    )} is an overlapping-window midpoint hint, not a hard boundary. Review the full ` +
     `${formatAbsoluteTime(preview.search_start_seconds)}-${formatAbsoluteTime(
       preview.search_end_seconds,
     )} range.`;
@@ -845,11 +845,11 @@ function renderTransitionReview() {
     preview.search_end_seconds - preview.search_start_seconds < 2 ? "0.1" : "1";
   elements.transitionMarker.value = String(markerSeconds);
   elements.transitionRangeStart.textContent =
-    `Conservative search start ${formatAbsoluteTime(
+    `Review start ${formatAbsoluteTime(
       preview.search_start_seconds,
     )}`;
   elements.transitionRangeEnd.textContent =
-    `Conservative search end ${formatAbsoluteTime(preview.search_end_seconds)}`;
+    `Review through stable late evidence ${formatAbsoluteTime(preview.search_end_seconds)}`;
   elements.transitionWindowLabel.textContent =
     `Viewing ${formatAbsoluteTime(preview.window_start_seconds)}-${formatAbsoluteTime(
       preview.window_end_seconds,

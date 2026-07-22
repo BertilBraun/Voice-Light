@@ -363,12 +363,11 @@ def test_piecewise_repair_requires_confirmed_change_point() -> None:
         repair_scope=MisalignmentRepairScope.AFTER_CHANGE_POINT,
         first_part_shift_seconds=estimate.first_part_shift_seconds,
         change_point_seconds=(
-            estimate.conservative_first_part_end_seconds
-            + estimate.conservative_second_part_start_seconds
+            estimate.conservative_first_part_end_seconds + estimate.stable_second_part_end_seconds
         )
         / 2.0,
         change_interval_start_seconds=estimate.conservative_first_part_end_seconds,
-        change_interval_end_seconds=estimate.conservative_second_part_start_seconds,
+        change_interval_end_seconds=estimate.stable_second_part_end_seconds,
         transition_confirmed=True,
         judgment=MisalignmentRepairJudgment.PLAUSIBLE,
     )
@@ -382,16 +381,16 @@ def test_piecewise_repair_requires_confirmed_change_point() -> None:
 
     outside_midpoint_hint = confirmed.model_copy(
         update={
-            "change_point_seconds": estimate.conservative_second_part_start_seconds - 1.0,
+            "change_point_seconds": estimate.stable_second_part_end_seconds - 1.0,
         }
     )
     outside_conservative_range = confirmed.model_copy(
         update={
-            "change_point_seconds": estimate.conservative_second_part_start_seconds + 1.0,
+            "change_point_seconds": estimate.stable_second_part_end_seconds + 1.0,
         }
     )
     _validate_repair_transition(request=outside_midpoint_hint, audit_result=audit_result)
-    with pytest.raises(ValueError, match="outside the conservative interval"):
+    with pytest.raises(ValueError, match="outside the supported review interval"):
         _validate_repair_transition(
             request=outside_conservative_range,
             audit_result=audit_result,
