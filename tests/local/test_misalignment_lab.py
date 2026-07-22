@@ -308,7 +308,40 @@ def test_unsure_judgment_resamples_session_with_a_different_exchange() -> None:
     assert len(later.candidates) == 1
     assert later.candidates[0].sample_id == reviewed.sample_id
     assert later.candidates[0].candidate_id != reviewed.candidate_id
+    assert (
+        later.candidates[0].window_end_seconds <= reviewed.window_start_seconds
+        or later.candidates[0].window_start_seconds >= reviewed.window_end_seconds
+    )
     assert later.progress.unsure_count == 1
+
+
+def test_unsure_session_is_deprioritized_behind_unreviewed_session() -> None:
+    unsure_sample = _dashboard_sample(external_id="pmt_204", dense_late_exchange=True)
+    unreviewed_sample = _dashboard_sample(external_id="pmt_205", dense_late_exchange=True)
+    initial = build_misalignment_queue(
+        dashboard_samples=(unsure_sample,),
+        audit_report=None,
+        judgments=(),
+        seed="unsure",
+        limit=1,
+    )
+    reviewed = initial.candidates[0]
+    judgment = _stored_judgment(
+        candidate_id=reviewed.candidate_id,
+        sample_id=reviewed.sample_id,
+        external_id=reviewed.external_id,
+        judgment=MisalignmentJudgment.UNSURE,
+    )
+
+    later = build_misalignment_queue(
+        dashboard_samples=(unsure_sample, unreviewed_sample),
+        audit_report=None,
+        judgments=(judgment,),
+        seed="unsure",
+        limit=2,
+    )
+
+    assert later.candidates[0].sample_id == unreviewed_sample.sample.id
 
 
 def test_piecewise_repair_estimate_requires_stable_distinct_second_part() -> None:

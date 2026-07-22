@@ -127,6 +127,15 @@ def build_misalignment_queue(
         else {}
     )
     reviewed_candidate_ids = {judgment.candidate_id for judgment in judgments}
+    reviewed_windows_by_sample_id: dict[UUID, tuple[MisalignmentStoredJudgment, ...]] = {
+        sample_id: tuple(judgment for judgment in judgments if judgment.sample_id == sample_id)
+        for sample_id in {judgment.sample_id for judgment in judgments}
+    }
+    unsure_sample_ids = {
+        judgment.sample_id
+        for judgment in judgments
+        if judgment.judgment is MisalignmentJudgment.UNSURE
+    }
     decided_sample_ids = {
         judgment.sample_id
         for judgment in judgments
@@ -149,6 +158,13 @@ def build_misalignment_queue(
                 candidate
                 for candidate in ranked_windows
                 if candidate.candidate_id not in reviewed_candidate_ids
+                and not _overlaps_reviewed_window(
+                    candidate=candidate,
+                    reviewed_windows=reviewed_windows_by_sample_id.get(
+                        candidate.sample_id,
+                        (),
+                    ),
+                )
             ),
             None,
         )
@@ -158,6 +174,7 @@ def build_misalignment_queue(
         sorted(
             candidates,
             key=lambda candidate: (
+                candidate.sample_id in unsure_sample_ids,
                 REVIEW_CATEGORY_ORDER[candidate.review_category],
                 -candidate.alignment_likelihood_score,
                 candidate.external_id,
@@ -172,6 +189,17 @@ def build_misalignment_queue(
             judgments=judgments,
             eligible_session_count=len(annotations),
         ),
+    )
+
+
+def _overlaps_reviewed_window(
+    candidate: MisalignmentCandidateSummary,
+    reviewed_windows: Sequence[MisalignmentStoredJudgment],
+) -> bool:
+    return any(
+        candidate.window_start_seconds < reviewed.window_end_seconds
+        and candidate.window_end_seconds > reviewed.window_start_seconds
+        for reviewed in reviewed_windows
     )
 
 
