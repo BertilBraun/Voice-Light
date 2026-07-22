@@ -227,7 +227,7 @@ def test_global_countercheck_compares_first_three_minutes_with_recording_end() -
     assert candidate.beginning.offset_recommendation.shift_seconds == 4.5
     assert candidate.ending.offset_recommendation.shift_seconds == 4.5
     assert queue.exclusion_policy.manual_margin_seconds == 10.0
-    assert queue.exclusion_policy.automatic_margin_seconds == 120.0
+    assert queue.exclusion_policy.automatic_margin_seconds == 60.0
 
 
 def test_global_countercheck_progress_keeps_provisional_repair_separate() -> None:
@@ -463,7 +463,7 @@ def test_transition_window_is_two_minutes_and_stays_inside_shifted_audio() -> No
     ("location_source", "expected_start", "expected_end"),
     (
         (MisalignmentTransitionLocationSource.MANUAL, 490.0, 510.0),
-        (MisalignmentTransitionLocationSource.AUTOMATIC, 380.0, 620.0),
+        (MisalignmentTransitionLocationSource.AUTOMATIC, 440.0, 560.0),
     ),
 )
 def test_transition_exclusion_depends_on_location_source(
@@ -489,7 +489,7 @@ def test_transition_exclusion_clamps_to_recording_bounds() -> None:
     )
 
     assert exclusion.start_seconds == 0.0
-    assert exclusion.end_seconds == 100.0
+    assert exclusion.end_seconds == 90.0
 
 
 def test_piecewise_repair_requires_confirmed_change_point() -> None:
