@@ -123,6 +123,19 @@ def generate_derived_artifacts(
 
 
 def timeline_repair(plan: TimelineRepairPlanRecord) -> TimelineRepair:
+    if plan.is_materialized:
+        if plan.repair_scope is TimelineRepairScope.GLOBAL_OFFSET:
+            return GlobalTimelineRepair(shift_seconds=0.0)
+        assert plan.change_point_seconds is not None
+        assert plan.exclusion_start_seconds is not None
+        assert plan.exclusion_end_seconds is not None
+        return PiecewiseTimelineRepair(
+            first_shift_seconds=0.0,
+            second_shift_seconds=0.0,
+            canonical_transition_seconds=plan.change_point_seconds,
+            exclusion_start_seconds=plan.exclusion_start_seconds,
+            exclusion_end_seconds=plan.exclusion_end_seconds,
+        )
     match plan.repair_scope:
         case TimelineRepairScope.GLOBAL_OFFSET:
             return GlobalTimelineRepair(shift_seconds=plan.second_part_shift_seconds)
@@ -153,9 +166,15 @@ def _validated_tracks(
     tracks = {track.side: track for track in dashboard_sample.tracks}
     if set(tracks) != {TrackSide.SPEAKER1, TrackSide.SPEAKER2}:
         raise ValueError("Repair requires exactly one track for each speaker.")
+    expected_speaker2_hash = (
+        plan.materialized_speaker2_audio_sha256
+        if plan.is_materialized
+        else plan.speaker2_audio_sha256
+    )
+    assert expected_speaker2_hash is not None
     expected_hashes = {
         TrackSide.SPEAKER1: plan.speaker1_audio_sha256,
-        TrackSide.SPEAKER2: plan.speaker2_audio_sha256,
+        TrackSide.SPEAKER2: expected_speaker2_hash,
     }
     for side, expected_hash in expected_hashes.items():
         if tracks[side].audio_sha256 != expected_hash:
@@ -174,11 +193,17 @@ def _load_validated_transcripts(
         plan.speaker2_canary_transcript_id,
     )
     records = transcript_repository.get_transcripts_by_ids(transcript_ids)
+    expected_speaker2_hash = (
+        plan.materialized_speaker2_audio_sha256
+        if plan.is_materialized
+        else plan.speaker2_audio_sha256
+    )
+    assert expected_speaker2_hash is not None
     expected = (
         (TrackSide.SPEAKER1, AsrModelId.PARAKEET_TDT, plan.speaker1_audio_sha256),
-        (TrackSide.SPEAKER2, AsrModelId.PARAKEET_TDT, plan.speaker2_audio_sha256),
+        (TrackSide.SPEAKER2, AsrModelId.PARAKEET_TDT, expected_speaker2_hash),
         (TrackSide.SPEAKER1, AsrModelId.CANARY, plan.speaker1_audio_sha256),
-        (TrackSide.SPEAKER2, AsrModelId.CANARY, plan.speaker2_audio_sha256),
+        (TrackSide.SPEAKER2, AsrModelId.CANARY, expected_speaker2_hash),
     )
     for record, (side, model_id, audio_sha256) in zip(records, expected, strict=True):
         if record.sample_id != plan.sample_id:

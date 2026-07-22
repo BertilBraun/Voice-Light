@@ -160,7 +160,17 @@ class TimelineRepairRepository:
                   AND plans.derived_annotation IS NOT NULL
                   AND plans.conversation_regions IS NOT NULL
                   AND plans.speaker1_audio_sha256 = speaker1.audio_sha256
-                  AND plans.speaker2_audio_sha256 = speaker2.audio_sha256
+                  AND (
+                    (
+                      plans.materialized_at IS NULL
+                      AND plans.speaker2_audio_sha256 = speaker2.audio_sha256
+                    )
+                    OR
+                    (
+                      plans.materialized_at IS NOT NULL
+                      AND plans.materialized_speaker2_audio_sha256 = speaker2.audio_sha256
+                    )
+                  )
                   AND plans.quality_result_id = current_quality.id
                 """,
                 (sample_id, plan_version),
@@ -211,6 +221,12 @@ def eligible_source_query(eligible_filter: str = "") -> str:
             ON countercheck.sample_id = samples.id
            AND countercheck.judgment = 'global_offset_confirmed'
           WHERE samples.is_unusable = FALSE
+            AND NOT EXISTS (
+              SELECT 1
+              FROM virtual_timeline_repair_plans AS completed_plan
+              WHERE completed_plan.sample_id = samples.id
+                AND completed_plan.materialized_at IS NOT NULL
+            )
           UNION ALL
           SELECT samples.id, samples.external_id, samples.duration_seconds,
                  'after_change_point', repair.first_part_shift_seconds,
@@ -231,6 +247,12 @@ def eligible_source_query(eligible_filter: str = "") -> str:
           JOIN latest_quality AS quality ON quality.sample_id = samples.id
           JOIN misalignment_lab_repair_reviews AS repair ON repair.sample_id = samples.id
           WHERE samples.is_unusable = FALSE
+            AND NOT EXISTS (
+              SELECT 1
+              FROM virtual_timeline_repair_plans AS completed_plan
+              WHERE completed_plan.sample_id = samples.id
+                AND completed_plan.materialized_at IS NOT NULL
+            )
             AND repair.repair_scope = 'after_change_point'
             AND repair.judgment = 'plausible'
             AND repair.transition_confirmed = TRUE

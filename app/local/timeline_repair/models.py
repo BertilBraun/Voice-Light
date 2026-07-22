@@ -12,6 +12,7 @@ from app.shared.base_model import FrozenBaseModel
 from app.shared.quality import ConversationAnnotation
 
 TIMELINE_REPAIR_PLAN_VERSION = "immutable-virtual-timeline-v1"
+TIMELINE_MATERIALIZATION_VERSION = "physical-timeline-v1"
 
 
 class TimelineRepairScope(StrEnum):
@@ -105,4 +106,18 @@ class TimelineRepairPlanRecord(TimelineRepairSource):
     derived_annotation: ConversationAnnotation | None
     conversation_regions_version: str | None
     conversation_regions: ConversationRegionAnalysis | None
+    materialization_version: str | None = None
+    materialized_speaker2_audio_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    materialized_prepared_audio_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    materialized_at: datetime | None = None
     created_at: datetime
+
+    @property
+    def is_materialized(self) -> bool:
+        return self.materialized_at is not None

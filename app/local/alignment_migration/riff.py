@@ -56,6 +56,12 @@ class RewrittenWave:
     appended_silence_frame_count: int
 
 
+@dataclass(frozen=True)
+class WaveTimelineSegment:
+    output_frame_count: int
+    source_start_frame: int | None
+
+
 def inspect_pcm_wave(path: Path) -> PcmWaveMetadata:
     file_size = path.stat().st_size
     with path.open("rb") as source:
@@ -172,6 +178,80 @@ def rewrite_pcm_wave(
             frame_count=target_frame_count,
             prepended_silence_frame_count=prepended_silence_frame_count,
             appended_silence_frame_count=appended_silence_frame_count,
+        )
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
+def rewrite_pcm_wave_timeline(
+    source_path: Path,
+    output_path: Path,
+    segments: tuple[WaveTimelineSegment, ...],
+) -> RewrittenWave:
+    metadata = inspect_pcm_wave(source_path)
+    if not segments:
+        raise ValueError("Timeline rewrite requires at least one segment.")
+    target_frame_count = sum(segment.output_frame_count for segment in segments)
+    if target_frame_count <= 0:
+        raise ValueError("Timeline rewrite must produce audio frames.")
+    for segment in segments:
+        if segment.output_frame_count < 0:
+            raise ValueError("Timeline segment length cannot be negative.")
+        if segment.source_start_frame is None:
+            continue
+        if segment.source_start_frame < 0:
+            raise ValueError("Timeline source start cannot be negative.")
+        if segment.source_start_frame + segment.output_frame_count > metadata.frame_count:
+            raise ValueError("Timeline segment exceeds the source audio.")
+
+    output_data_size = target_frame_count * metadata.block_alignment
+    if output_data_size > MAXIMUM_UINT32:
+        raise ValueError(f"Aligned WAV data exceeds the RIFF chunk-size limit: {source_path}")
+    output_data_padded_size = output_data_size + (output_data_size % 2)
+    output_file_size = (
+        metadata.file_size - metadata.data_chunk.padded_payload_size + output_data_padded_size
+    )
+    if output_file_size - 8 > MAXIMUM_UINT32:
+        raise ValueError(f"Aligned WAV exceeds the RIFF file-size limit: {source_path}")
+
+    try:
+        with source_path.open("rb") as source, output_path.open("xb") as output:
+            output.write(b"RIFF")
+            output.write(struct.pack("<I", output_file_size - 8))
+            output.write(b"WAVE")
+            for chunk in metadata.chunks:
+                if chunk.identifier == b"data":
+                    output.write(b"data")
+                    output.write(struct.pack("<I", output_data_size))
+                    for segment in segments:
+                        byte_count = segment.output_frame_count * metadata.block_alignment
+                        if segment.source_start_frame is None:
+                            _write_silence_bytes(output, byte_count, metadata.bits_per_sample)
+                        else:
+                            source.seek(
+                                chunk.payload_offset
+                                + segment.source_start_frame * metadata.block_alignment
+                            )
+                            _copy_exact(source, output, byte_count)
+                    if output_data_size % 2:
+                        output.write(b"\x00")
+                else:
+                    source.seek(chunk.header_offset)
+                    _copy_exact(source, output, chunk.total_size)
+            output.flush()
+            os.fsync(output.fileno())
+        rewritten_metadata = inspect_pcm_wave(output_path)
+        if rewritten_metadata.frame_count != target_frame_count:
+            raise ValueError(f"Aligned WAV frame count is inconsistent: {output_path}")
+        silence_frames = sum(
+            segment.output_frame_count for segment in segments if segment.source_start_frame is None
+        )
+        return RewrittenWave(
+            sha256=sha256_file(output_path),
+            frame_count=target_frame_count,
+            prepended_silence_frame_count=0,
+            appended_silence_frame_count=silence_frames,
         )
     except Exception:
         output_path.unlink(missing_ok=True)

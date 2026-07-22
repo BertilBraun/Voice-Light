@@ -1163,7 +1163,18 @@ def training_timeline_eligibility_sql() -> str:
             AND repair_plan.plan_version = '{TIMELINE_REPAIR_PLAN_VERSION}'
             AND repair_plan.quality_result_id = latest_quality.id
             AND repair_plan.speaker1_audio_sha256 = repaired_speaker1.audio_sha256
-            AND repair_plan.speaker2_audio_sha256 = repaired_speaker2.audio_sha256
+            AND (
+              (
+                repair_plan.materialized_at IS NULL
+                AND repair_plan.speaker2_audio_sha256 = repaired_speaker2.audio_sha256
+              )
+              OR
+              (
+                repair_plan.materialized_at IS NOT NULL
+                AND repair_plan.materialized_speaker2_audio_sha256
+                  = repaired_speaker2.audio_sha256
+              )
+            )
             AND repair_plan.derived_annotation IS NOT NULL
             AND repair_plan.conversation_regions IS NOT NULL
         )
