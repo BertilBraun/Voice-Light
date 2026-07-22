@@ -1001,6 +1001,7 @@ class Repository:
                   LIMIT 1
                 ) AS latest_quality ON true
                 WHERE samples.dataset_id = %s
+                  AND samples.is_unusable = FALSE
                   AND jsonb_typeof(
                     latest_quality.payload -> 'conversation_annotation'
                   ) = 'object'
@@ -1045,6 +1046,7 @@ class Repository:
                   LIMIT 1
                 ) AS latest_quality ON true
                 WHERE samples.dataset_id = %s
+                  AND samples.is_unusable = FALSE
                   AND jsonb_typeof(
                     latest_quality.payload -> 'conversation_annotation'
                   ) = 'object'
@@ -1097,6 +1099,7 @@ class Repository:
                     LIMIT 1
                   ) AS latest_quality ON true
                   WHERE samples.dataset_id = %s
+                    AND samples.is_unusable = FALSE
                     AND jsonb_typeof(
                       latest_quality.payload -> 'conversation_annotation'
                     ) = 'object'

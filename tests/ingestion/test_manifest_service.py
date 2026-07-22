@@ -31,6 +31,7 @@ class RecordingManifestRepository:
             duration_seconds=None,
             quality_score=None,
             quality_flags=(),
+            is_unusable=False,
             created_at=now,
             updated_at=now,
         )

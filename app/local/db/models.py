@@ -81,6 +81,7 @@ class SampleRecord(FrozenBaseModel):
     duration_seconds: float | None
     quality_score: float | None
     quality_flags: tuple[str, ...]
+    is_unusable: bool
     created_at: datetime
     updated_at: datetime
 

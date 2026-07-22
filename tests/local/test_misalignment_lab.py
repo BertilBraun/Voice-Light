@@ -717,6 +717,7 @@ def _dashboard_sample(external_id: str, dense_late_exchange: bool) -> DashboardS
             duration_seconds=600.0,
             quality_score=1.0,
             quality_flags=(),
+            is_unusable=False,
             created_at=now,
             updated_at=now,
         ),
