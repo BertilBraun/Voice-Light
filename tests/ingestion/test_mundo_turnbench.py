@@ -150,7 +150,14 @@ class RecordingSourceAnnotationRepository:
 
 
 def write_source_parquet(source_path: Path, speaker_1_audio: bytes = b"fLaCspeaker-1") -> None:
-    event_1 = [{"start_s": 0.0, "end_s": 1.0, "label": "[turn]", "text": "speaker one"}]
+    event_1 = [
+        {
+            "start_s": 0.0,
+            "end_s": 1.0,
+            "label": "[turn]",
+            "text": "speaker one’s turn",
+        }
+    ]
     event_2 = [{"start_s": 1.1, "end_s": 2.0, "label": "[turn]", "text": "speaker two"}]
     table = arrow.Table.from_pylist(
         [

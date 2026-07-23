@@ -242,12 +242,12 @@ def verify_prepared_layout(target_samples_root: Path, plan: TurnBenchPreparation
                     f"Prepared audio hash does not match: {sample.sample_id}/{filename}"
                 )
         if MinimalSampleMetadata.model_validate_json(
-            (sample_root / "metadata.json").read_text()
+            (sample_root / "metadata.json").read_text(encoding="utf-8")
         ) != minimal_metadata(sample.sample_id):
             raise ValueError(f"Prepared metadata is invalid: {sample.sample_id}")
         annotation_path = sample_root / "source_annotations.json"
         if (
-            SourceSampleAnnotations.model_validate_json(annotation_path.read_text())
+            SourceSampleAnnotations.model_validate_json(annotation_path.read_text(encoding="utf-8"))
             != sample.annotations
         ):
             raise ValueError(f"Prepared annotations are invalid: {sample.sample_id}")
