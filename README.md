@@ -177,26 +177,34 @@ with one PowerShell command:
 .\deployment\compute\deploy-vast.ps1 `
   -SshHost '<vast-ssh-host>' `
   -SshPort <vast-ssh-port> `
-  -SshKeyPath "$HOME\.ssh\codex_vast_ed25519"
+  -SshKeyPath "$HOME\.ssh\codex_vast_ed25519" `
+  -Mode asr
 ```
 
+`-Mode asr` deploys only the batch-ASR environment: it skips vLLM, TTS, PEFT/LoRA, the voice-stack
+model downloads, and the isolated VoXtream environment. It also writes
+`VOICE_LIGHT_VOICE_STACK_ENABLED=false`, so the compute service exposes batch ASR without loading
+the conversational stack. Omit `-Mode asr` for the existing full voice-stack deployment.
+
 The command transfers the repository without requiring remote Git credentials, bootstraps the
-locked compute environment, downloads and validates the models, installs an automatically
-restarting Supervisor service, saves the new token in `.runtime/compute.env`, and verifies the
-backend through `http://127.0.0.1:8080`.
+selected locked compute environment, installs an automatically restarting Supervisor service,
+saves the new token in `.runtime/compute.env`, and verifies the backend through
+`http://127.0.0.1:8080`.
 
 To bootstrap from a shell already open on the rental instead:
 
 ```bash
 git clone <repository-url> /workspace/Voice-Light
 cd Voice-Light
-bash deployment/compute/bootstrap.sh
+bash deployment/compute/bootstrap.sh --mode asr
 bash deployment/compute/install-service.sh
 ```
 
-`bootstrap.sh` installs Linux audio/compiler packages, installs uv, synchronizes the locked Python
-3.12 environment with the `compute` dependency extra, validates the NVIDIA/CUDA runtime and at
-least 10 GiB of GPU memory, caches
+`bootstrap.sh --mode asr` installs Linux audio/compiler packages, synchronizes the locked Python
+3.12 environment with the batch-ASR dependencies, validates the NVIDIA/CUDA runtime, at least
+10 GiB of GPU memory, and at least 12 GiB of free disk. It does not pre-download a batch model;
+the selected model is cached on its first request. Use `--mode full` (the default) to additionally
+install vLLM and validate/cache the voice stack. In full mode, it caches
 required voice models, and performs a streaming TTS smoke test. Moshi, NeMo, librosa, and
 faster-whisper are compute-only dependencies and are not installed for the local app. The script
 creates an ignored `.env.compute` containing a new bearer token and

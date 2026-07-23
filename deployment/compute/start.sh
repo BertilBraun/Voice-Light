@@ -19,7 +19,12 @@ set -a
 source .env.compute
 set +a
 
-uv sync --frozen --python 3.12 --extra compute
+if [[ "${VOICE_LIGHT_VOICE_STACK_ENABLED:-true}" == "false" ]]; then
+  uv sync --frozen --python 3.12 --extra compute \
+    --no-install-package moshi --no-install-package peft
+else
+  uv sync --frozen --python 3.12 --extra compute
+fi
 
 supervisor_status=""
 if command -v supervisorctl >/dev/null 2>&1; then

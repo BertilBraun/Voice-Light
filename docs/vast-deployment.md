@@ -14,19 +14,26 @@ key path into this PowerShell command from the local repository root:
 .\deployment\compute\deploy-vast.ps1 `
   -SshHost '203.0.113.10' `
   -SshPort 42022 `
-  -SshKeyPath "$HOME\.ssh\codex_vast_ed25519"
+  -SshKeyPath "$HOME\.ssh\codex_vast_ed25519" `
+  -Mode asr
 ```
+
+`-Mode asr` is for batch ASR on disk-constrained rentals. It installs the batch-ASR dependencies,
+disables the voice stack, skips vLLM/TTS/VoXtream, and does not download any model until a batch
+ASR request selects one. It requires at least 12 GiB free disk space in addition to the CUDA/VRAM
+checks. Omit the mode parameter for the full voice-stack deployment.
 
 The deployment command refuses uncommitted tracked changes. It creates a Git bundle from the
 current branch, transfers that exact revision without requiring Git credentials on the rental,
 and then performs the following operations:
 
 1. Clones or fast-forwards `/workspace/Voice-Light`.
-2. Installs system packages, Python 3.12, the locked compute dependencies, and the isolated locked
-   vLLM environment.
+2. Installs system packages, Python 3.12, and the selected locked dependency set. Full mode also
+   installs the isolated locked vLLM environment.
 3. Creates a fresh `.env.compute` token when the instance does not already have one.
-4. Downloads and validates the required models, the pinned conversational LoRA adapter, and the
-   CUDA environment.
+4. In full mode, downloads and validates the required voice models and the pinned conversational
+   LoRA adapter. ASR-only mode validates the CUDA and batch-ASR runtime without downloading a
+   model.
 5. Installs the compute server as a Supervisor service with automatic restart.
 6. Copies the compute environment to the ignored local `.runtime/compute.env` file.
 7. Replaces the tracked SSH tunnel and verifies the service through `127.0.0.1:8080`.

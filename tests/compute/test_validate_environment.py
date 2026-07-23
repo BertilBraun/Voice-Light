@@ -57,3 +57,24 @@ def test_compute_environment_rejects_incapable_gpu(
             memory_bytes=memory_bytes,
             cuda_version=cuda_version,
         )
+
+
+def test_asr_only_disk_preflight_accepts_sufficient_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DiskUsage:
+        free = 13 * 1024**3
+
+    monkeypatch.setattr(validate_environment.shutil, "disk_usage", lambda _path: DiskUsage())
+
+    validate_environment.validate_asr_only_disk_space(validate_environment.REPOSITORY_ROOT)
+
+
+def test_asr_only_disk_preflight_rejects_insufficient_space(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DiskUsage:
+        free = 11 * 1024**3
+
+    monkeypatch.setattr(validate_environment.shutil, "disk_usage", lambda _path: DiskUsage())
+
+    with pytest.raises(RuntimeError, match="at least 12 GiB"):
+        validate_environment.validate_asr_only_disk_space(validate_environment.REPOSITORY_ROOT)

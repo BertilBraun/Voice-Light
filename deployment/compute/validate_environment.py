@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import importlib
 import os
+import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -33,20 +34,25 @@ from app.compute.voice.tts_selection import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VLLM_PYTHON_PATH = REPOSITORY_ROOT / "deployment/compute/vllm/.venv/bin/python"
 MINIMUM_GPU_MEMORY_BYTES = 10 * 1024**3
+MINIMUM_ASR_ONLY_DISK_BYTES = 12 * 1024**3
 
 
 def main(arguments: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--download-models", action="store_true")
+    parser.add_argument("--mode", choices=("full", "asr"), default="full")
     options = parser.parse_args(arguments)
-    speech_synthesis_settings = SpeechSynthesisSettings.from_environment(
-        os.environ,
-        REPOSITORY_ROOT,
-    )
     validate_nvidia_gpu()
-    validate_imports()
-    validate_vllm_environment()
-    if options.download_models:
+    validate_imports(mode=options.mode)
+    if options.mode == "asr":
+        validate_asr_only_disk_space(REPOSITORY_ROOT)
+    else:
+        speech_synthesis_settings = SpeechSynthesisSettings.from_environment(
+            os.environ,
+            REPOSITORY_ROOT,
+        )
+        validate_vllm_environment()
+    if options.download_models and options.mode == "full":
         language_model_configuration = language_model_configuration_from_environment(os.environ)
         download_required_models(speech_synthesis_settings, language_model_configuration)
         smoke_test_tts(speech_synthesis_settings)
@@ -78,19 +84,32 @@ def validate_gpu_properties(
         raise RuntimeError("The installed PyTorch build has no CUDA runtime.")
 
 
-def validate_imports() -> None:
-    for module_name in (
+def validate_imports(mode: str) -> None:
+    asr_modules = (
         "av",
         "faster_whisper",
         "librosa",
         "nemo.collections.asr",
-        "moshi",
-        "peft",
         "soundfile",
         "transformers",
-    ):
+    )
+    full_only_modules = ("moshi", "peft")
+    module_names = asr_modules if mode == "asr" else (*asr_modules, *full_only_modules)
+    for module_name in module_names:
         importlib.import_module(module_name)
-    print("Runtime import smoke tests passed.")
+    print(f"{mode} runtime import smoke tests passed.")
+
+
+def validate_asr_only_disk_space(repository_root: Path) -> None:
+    free_bytes = shutil.disk_usage(repository_root).free
+    if free_bytes < MINIMUM_ASR_ONLY_DISK_BYTES:
+        free_gib = free_bytes / 1024**3
+        required_gib = MINIMUM_ASR_ONLY_DISK_BYTES / 1024**3
+        raise RuntimeError(
+            "ASR-only deployment has "
+            f"{free_gib:.1f} GiB free; at least {required_gib:.0f} GiB is required."
+        )
+    print(f"ASR-only disk preflight passed: {free_bytes / 1024**3:.1f} GiB free.")
 
 
 def validate_vllm_environment() -> None:

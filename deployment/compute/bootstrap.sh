@@ -4,6 +4,18 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repository_root"
 
+deployment_mode="full"
+if [[ "$#" -eq 2 && "$1" == "--mode" ]]; then
+  deployment_mode="$2"
+elif [[ "$#" -ne 0 ]]; then
+  echo "Usage: bootstrap.sh [--mode full|asr]" >&2
+  exit 1
+fi
+if [[ "$deployment_mode" != "full" && "$deployment_mode" != "asr" ]]; then
+  echo "Deployment mode must be either 'full' or 'asr'." >&2
+  exit 1
+fi
+
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "bootstrap.sh requires Ubuntu Linux." >&2
   exit 1
@@ -19,21 +31,22 @@ else
 fi
 
 "${sudo_command[@]}" apt-get update
-"${sudo_command[@]}" apt-get install -y \
+system_packages=(
   build-essential \
   ca-certificates \
-  clang \
   curl \
-  espeak-ng \
   ffmpeg \
   git \
   git-lfs \
-  iproute2 \
   libsndfile1 \
   libsndfile1-dev \
-  libsox-dev \
   pkg-config \
   sox
+)
+if [[ "$deployment_mode" == "full" ]]; then
+  system_packages+=(clang espeak-ng iproute2 libsox-dev)
+fi
+"${sudo_command[@]}" apt-get install -y "${system_packages[@]}"
 
 if ! command -v nvidia-smi >/dev/null 2>&1; then
   echo "nvidia-smi is missing. Rent an NVIDIA CUDA instance before bootstrapping." >&2
@@ -51,22 +64,40 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 uv python install 3.12
-uv sync --frozen --python 3.12 --extra compute
-bash deployment/compute/install_vllm.sh
+if [[ "$deployment_mode" == "asr" ]]; then
+  uv sync --frozen --python 3.12 --extra compute \
+    --no-install-package moshi --no-install-package peft
+else
+  uv sync --frozen --python 3.12 --extra compute
+  bash deployment/compute/install_vllm.sh
+fi
 
 mkdir -p .cache/compute/huggingface .cache/compute/torch logs/compute run/compute
 if [[ ! -f .env.compute ]]; then
-  .venv/bin/python deployment/compute/configure_environment.py "$repository_root"
+  .venv/bin/python deployment/compute/configure_environment.py \
+    "$repository_root" --mode "$deployment_mode"
   echo "Created .env.compute with a new bearer token. Copy that token to the local app securely."
+else
+  voice_stack_enabled="true"
+  if [[ "$deployment_mode" == "asr" ]]; then
+    voice_stack_enabled="false"
+  fi
+  if grep -q '^VOICE_LIGHT_VOICE_STACK_ENABLED=' .env.compute; then
+    sed -i "s/^VOICE_LIGHT_VOICE_STACK_ENABLED=.*/VOICE_LIGHT_VOICE_STACK_ENABLED=$voice_stack_enabled/" \
+      .env.compute
+  else
+    printf '\nVOICE_LIGHT_VOICE_STACK_ENABLED=%s\n' "$voice_stack_enabled" >> .env.compute
+  fi
 fi
 
 set -a
 source .env.compute
 set +a
-if [[ "${VOICE_LIGHT_TTS_BACKEND:-kyutai}" == "voxtream" ]]; then
+if [[ "$deployment_mode" == "full" && "${VOICE_LIGHT_TTS_BACKEND:-kyutai}" == "voxtream" ]]; then
   bash deployment/compute/install_voxtream.sh
 fi
 PYTHONPATH="$repository_root" \
-  .venv/bin/python deployment/compute/validate_environment.py --download-models
+  .venv/bin/python deployment/compute/validate_environment.py \
+    --mode "$deployment_mode" --download-models
 
-echo "Bootstrap complete. Start the backend with: bash deployment/compute/start.sh"
+echo "Bootstrap complete for $deployment_mode mode. Start the backend with: bash deployment/compute/start.sh"

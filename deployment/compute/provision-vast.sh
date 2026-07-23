@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 3 ]]; then
-  echo "Usage: provision-vast.sh <bundle-path> <repository-path> <branch>" >&2
+if [[ "$#" -ne 4 ]]; then
+  echo "Usage: provision-vast.sh <bundle-path> <repository-path> <branch> <full|asr>" >&2
   exit 1
 fi
 
 bundle_path="$1"
 repository_path="$2"
 branch="$3"
+deployment_mode="$4"
+if [[ "$deployment_mode" != "full" && "$deployment_mode" != "asr" ]]; then
+  echo "Deployment mode must be either 'full' or 'asr'." >&2
+  exit 1
+fi
 trap 'rm -f "$bundle_path"' EXIT
 
 if [[ -d "$repository_path/.git" ]]; then
@@ -30,5 +35,5 @@ supervisor_status="$(supervisorctl status voice-light-compute 2>/dev/null || tru
 if [[ "$supervisor_status" == voice-light-compute* ]]; then
   supervisorctl stop voice-light-compute
 fi
-bash deployment/compute/bootstrap.sh
+bash deployment/compute/bootstrap.sh --mode "$deployment_mode"
 bash deployment/compute/install-service.sh

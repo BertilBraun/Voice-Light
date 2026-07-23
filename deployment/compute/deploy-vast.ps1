@@ -13,7 +13,11 @@ param(
 
     [Parameter()]
     [ValidateRange(1, 65535)]
-    [int] $LocalPort = 8080
+    [int] $LocalPort = 8080,
+
+    [Parameter()]
+    [ValidateSet('full', 'asr')]
+    [string] $Mode = 'full'
 )
 
 Set-StrictMode -Version Latest
@@ -73,7 +77,7 @@ Invoke-NativeCommand -Command 'scp.exe' -Arguments @(
 Invoke-NativeCommand -Command 'ssh.exe' -Arguments @(
     '-i', $resolvedKeyPath, '-p', "$SshPort", '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=15', $target, 'bash', '/tmp/provision-vast.sh',
-    '/tmp/voice-light.bundle', $remoteRepositoryPath, $branch
+    '/tmp/voice-light.bundle', $remoteRepositoryPath, $branch, $Mode
 )
 Invoke-NativeCommand -Command 'scp.exe' -Arguments @(
     '-i', $resolvedKeyPath, '-P', "$SshPort",
