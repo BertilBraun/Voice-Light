@@ -27,7 +27,9 @@ if [[ -d "$repository_path/.git" ]]; then
   git -C "$repository_path" merge --ff-only FETCH_HEAD
 else
   mkdir -p "$(dirname "$repository_path")"
-  git clone --branch "$branch" "$bundle_path" "$repository_path"
+  git init --initial-branch "$branch" "$repository_path"
+  git -C "$repository_path" fetch "$bundle_path" "refs/heads/$branch"
+  git -C "$repository_path" checkout --force -B "$branch" FETCH_HEAD
 fi
 
 cd "$repository_path"
