@@ -5,6 +5,8 @@
 .venv/
 .env.compute
 /.cache/compute/
+/.cache/huggingface/
+/.cache/luel-audit-*.json
 /.cache/local/
 /logs/compute/
 /run/compute/
