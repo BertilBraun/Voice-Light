@@ -1023,13 +1023,14 @@ class Repository:
 
     def random_annotated_sample_id(
         self,
-        dataset_id: UUID,
+        dataset_id: UUID | None,
         metric_version: str,
         annotation_version: str,
-        current_sample_id: UUID,
+        current_sample_id: UUID | None,
         minimum_quality: float | None,
     ) -> UUID:
         quality_filter, quality_parameters = minimum_quality_filter(minimum_quality)
+        dataset_filter, dataset_parameters = optional_dataset_filter(dataset_id)
         with self.connection() as connection:
             row = connection.execute(
                 f"""
@@ -1047,8 +1048,8 @@ class Repository:
                   ORDER BY created_at DESC
                   LIMIT 1
                 ) AS latest_quality ON true
-                WHERE samples.dataset_id = %s
-                  AND samples.is_unusable = FALSE
+                WHERE samples.is_unusable = FALSE
+                  {dataset_filter}
                   {training_timeline_eligibility_sql()}
                   AND jsonb_typeof(
                     latest_quality.payload -> 'conversation_annotation'
@@ -1060,7 +1061,7 @@ class Repository:
                 (
                     metric_version,
                     annotation_version,
-                    dataset_id,
+                    *dataset_parameters,
                     *quality_parameters,
                     current_sample_id,
                 ),
@@ -1069,13 +1070,14 @@ class Repository:
 
     def interesting_annotated_sample_id(
         self,
-        dataset_id: UUID,
+        dataset_id: UUID | None,
         metric_version: str,
         annotation_version: str,
-        current_sample_id: UUID,
+        current_sample_id: UUID | None,
         minimum_quality: float | None,
     ) -> UUID:
         quality_filter, quality_parameters = minimum_quality_filter(minimum_quality)
+        dataset_filter, dataset_parameters = optional_dataset_filter(dataset_id)
         with self.connection() as connection:
             row = connection.execute(
                 f"""
@@ -1102,8 +1104,8 @@ class Repository:
                     ORDER BY created_at DESC
                     LIMIT 1
                   ) AS latest_quality ON true
-                  WHERE samples.dataset_id = %s
-                    AND samples.is_unusable = FALSE
+                  WHERE samples.is_unusable = FALSE
+                    {dataset_filter}
                     {training_timeline_eligibility_sql()}
                     AND jsonb_typeof(
                       latest_quality.payload -> 'conversation_annotation'
@@ -1122,7 +1124,7 @@ class Repository:
                 (
                     metric_version,
                     annotation_version,
-                    dataset_id,
+                    *dataset_parameters,
                     *quality_parameters,
                     INTERESTING_SAMPLE_POOL_SIZE,
                     current_sample_id,
@@ -1253,6 +1255,12 @@ def minimum_quality_filter(
     if minimum_quality is None:
         return "", ()
     return "AND latest_quality.total_quality_score > %s", (minimum_quality,)
+
+
+def optional_dataset_filter(dataset_id: UUID | None) -> tuple[str, tuple[UUID, ...]]:
+    if dataset_id is None:
+        return "", ()
+    return "AND samples.dataset_id = %s", (dataset_id,)
 
 
 def annotated_sample_id(row: dict[str, object] | None) -> UUID:

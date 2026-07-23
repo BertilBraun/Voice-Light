@@ -170,9 +170,9 @@ def training_sample_propositions(
 
 @router.get("/random-preview")
 def random_training_sample_preview(
-    dataset_id: UUID,
-    current_sample_id: UUID,
     response: Response,
+    dataset_id: UUID | None = None,
+    current_sample_id: UUID | None = None,
     minimum_quality: float | None = Query(default=None, ge=0.0, le=1.0),
     sampling_mode: TrainingSampleSelectionMode = TrainingSampleSelectionMode.RANDOM,
 ) -> TrainingSamplePreview:

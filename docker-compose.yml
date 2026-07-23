@@ -33,6 +33,10 @@ services:
       VOICE_LIGHT_RELOAD: "false"
       VOICE_LIGHT_COMPUTE_URL: ${VOICE_LIGHT_COMPUTE_URL:-}
       VOICE_LIGHT_COMPUTE_TOKEN: ${VOICE_LIGHT_COMPUTE_TOKEN:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,6 +45,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./app:/app/app:ro
+      - ./.cache/local:/app/.cache/local
       - ./data:/app/data:ro
 
 volumes:

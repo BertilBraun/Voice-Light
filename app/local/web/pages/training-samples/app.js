@@ -37,6 +37,7 @@ const NO_AUXILIARY_ANNOTATION_REASON = "No auxiliary annotation applies at this 
 const OUTSIDE_USER_YIELD_CONTEXT_REASON = "Outside the user-yield decision window";
 const BURN_IN_REASON = "Burn-in recurrent-state warm-up";
 const PREPARED_PREVIEW_TARGET = 2;
+const ALL_DATASETS_VALUE = "all-datasets";
 
 const rowDefinitions = [
   { label: "User waveform", field: "waveform" },
@@ -114,6 +115,10 @@ async function loadDatasets() {
     throw new Error(errorMessage(payload, response.status));
   }
   datasetSelect.replaceChildren(
+    Object.assign(document.createElement("option"), {
+      value: ALL_DATASETS_VALUE,
+      textContent: "All eligible datasets",
+    }),
     ...payload.datasets.map((dataset) => {
       const option = document.createElement("option");
       option.value = dataset.id;
@@ -125,14 +130,21 @@ async function loadDatasets() {
   if (payload.datasets.length === 0) {
     throw new Error("No datasets are available.");
   }
-  const meetingsOption = Array.from(datasetSelect.options).find(
-    (option) => option.dataset.name === "meetings-s3",
-  );
-  datasetSelect.value = meetingsOption?.value ?? datasetSelect.options[0].value;
+  datasetSelect.value = ALL_DATASETS_VALUE;
 }
 
 async function loadSamples() {
   try {
+    if (datasetSelect.value === ALL_DATASETS_VALUE) {
+      sampleSelect.replaceChildren();
+      sampleSelect.disabled = true;
+      samplingModeSelect.value = "random";
+      resetReviewQueue();
+      setStatus("Selecting a random crop across all eligible datasets…", false);
+      await loadRandomCorpusPreview();
+      return;
+    }
+    sampleSelect.disabled = false;
     const parameters = new URLSearchParams({
       dataset_id: datasetSelect.value,
       limit: "100",
@@ -168,6 +180,18 @@ async function loadSamples() {
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   }
+}
+
+async function loadRandomCorpusPreview() {
+  const parameters = randomPreviewParameters(null);
+  const response = await fetch(`/api/training-samples/random-preview?${parameters}`, {
+    cache: "no-store",
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, response.status));
+  }
+  await applyPreview(payload, true);
 }
 
 async function loadPreview(randomLocation, autoplay = false) {
@@ -261,15 +285,7 @@ async function buildNextReviewPreview(sourcePreview, generation) {
 }
 
 async function fetchNextConversationPreview(sourcePreview) {
-  const parameters = new URLSearchParams({
-    dataset_id: sourcePreview.dataset_id,
-    current_sample_id: sourcePreview.sample_id,
-    sampling_mode: samplingModeSelect.value,
-  });
-  const minimumQuality = selectedMinimumQuality();
-  if (minimumQuality !== null) {
-    parameters.set("minimum_quality", String(minimumQuality));
-  }
+  const parameters = randomPreviewParameters(sourcePreview);
   const response = await fetch(
     `/api/training-samples/random-preview?${parameters}`,
     { cache: "no-store" },
@@ -279,6 +295,21 @@ async function fetchNextConversationPreview(sourcePreview) {
     throw new Error(errorMessage(payload, response.status));
   }
   return payload;
+}
+
+function randomPreviewParameters(sourcePreview) {
+  const parameters = new URLSearchParams({ sampling_mode: samplingModeSelect.value });
+  if (datasetSelect.value !== ALL_DATASETS_VALUE) {
+    parameters.set("dataset_id", datasetSelect.value);
+  }
+  if (sourcePreview !== null) {
+    parameters.set("current_sample_id", sourcePreview.sample_id);
+  }
+  const minimumQuality = selectedMinimumQuality();
+  if (minimumQuality !== null) {
+    parameters.set("minimum_quality", String(minimumQuality));
+  }
+  return parameters;
 }
 
 async function applyPreview(payload, autoplay) {

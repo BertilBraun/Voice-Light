@@ -12,7 +12,7 @@ from app.local.conversation_regions.models import (
     ConversationRegionReason,
     UnusableConversationRegion,
 )
-from app.local.db.repository import minimum_quality_filter
+from app.local.db.repository import minimum_quality_filter, optional_dataset_filter
 from app.local.main import app
 from app.local.training_samples.models import TrainingSamplePropositionKind
 from app.local.training_samples.service import (
@@ -79,6 +79,10 @@ def training_sample_script() -> Iterator[str]:
         "samplingModeSelect",
         "randomizeInitialInput",
         "PREPARED_PREVIEW_TARGET = 2",
+        "ALL_DATASETS_VALUE",
+        "All eligible datasets",
+        "loadRandomCorpusPreview",
+        "randomPreviewParameters",
         "preparedPreviewQueue",
         "fillPreparedPreviewQueue",
         "readJsonResponse",
@@ -162,6 +166,10 @@ def test_training_sample_minimum_quality_is_strict() -> None:
 
     assert filter_sql == "AND latest_quality.total_quality_score > %s"
     assert parameters == (0.9,)
+
+
+def test_training_sample_dataset_filter_can_span_the_corpus() -> None:
+    assert optional_dataset_filter(None) == ("", ())
 
 
 def test_space_toggles_playback_independent_of_focus(training_sample_script: str) -> None:
