@@ -41,6 +41,9 @@ def test_asr_only_deployment_installs_the_cuda_126_pytorch_runtime() -> None:
     ):
         script = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
         assert "install_asr_torch_cu126.sh" in script
+        assert "--no-install-package torch" in script
+        assert "--no-install-package torchaudio" in script
+        assert "--no-install-package torchvision" in script
 
     installer = (REPOSITORY_ROOT / "deployment/compute/install_asr_torch_cu126.sh").read_text(
         encoding="utf-8"

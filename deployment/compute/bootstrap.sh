@@ -66,7 +66,9 @@ fi
 uv python install 3.12
 if [[ "$deployment_mode" == "asr" ]]; then
   uv sync --frozen --python 3.12 --extra compute \
-    --no-install-package moshi --no-install-package peft
+    --no-install-package moshi --no-install-package peft \
+    --no-install-package torch --no-install-package torchaudio \
+    --no-install-package torchvision
   bash deployment/compute/install_asr_torch_cu126.sh
 else
   uv sync --frozen --python 3.12 --extra compute
