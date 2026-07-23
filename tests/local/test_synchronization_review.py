@@ -261,34 +261,34 @@ def test_recommended_shift_separates_static_estimate_from_variable_review_anchor
 @pytest.mark.parametrize(
     ("external_id", "expected_shift"),
     (
-        ("pmt_284", -6.8),
-        ("pmt_205", -10.0),
-        ("pmt_236", -4.8),
-        ("pmt_008", -4.2),
-        ("pmt_132", -3.2),
-        ("pmt_161", -3.2),
-        ("pmt_226", -2.5),
-        ("pmt_180", -3.6),
-        ("pmt_315", -2.6),
-        ("pmt_095", -2.9),
-        ("pmt_192", -4.0),
-        ("pmt_256", -3.6),
-        ("pmt_217", -4.2),
-        ("pmt_237", -2.4),
-        ("pmt_087", -1.6),
-        ("pmt_225", -2.8),
-        ("pmt_219", -1.4),
-        ("pmt_318", -0.4),
-        ("pmt_144", -2.0),
-        ("pmt_306", 0.8),
-        ("pmt_246", -1.2),
-        ("pmt_214", -1.6),
-        ("pmt_310", -1.6),
-        ("pmt_245", -1.2),
-        ("pmt_222", -2.6),
-        ("pmt_324", -2.4),
-        ("pmt_298", -1.2),
-        ("pmt_007", -2.0),
+        ("sample_284", -6.8),
+        ("sample_205", -10.0),
+        ("sample_236", -4.8),
+        ("sample_008", -4.2),
+        ("sample_132", -3.2),
+        ("sample_161", -3.2),
+        ("sample_226", -2.5),
+        ("sample_180", -3.6),
+        ("sample_315", -2.6),
+        ("sample_095", -2.9),
+        ("sample_192", -4.0),
+        ("sample_256", -3.6),
+        ("sample_217", -4.2),
+        ("sample_237", -2.4),
+        ("sample_087", -1.6),
+        ("sample_225", -2.8),
+        ("sample_219", -1.4),
+        ("sample_318", -0.4),
+        ("sample_144", -2.0),
+        ("sample_306", 0.8),
+        ("sample_246", -1.2),
+        ("sample_214", -1.6),
+        ("sample_310", -1.6),
+        ("sample_245", -1.2),
+        ("sample_222", -2.6),
+        ("sample_324", -2.4),
+        ("sample_298", -1.2),
+        ("sample_007", -2.0),
     ),
 )
 def test_reviewed_alignment_uses_manual_reference(
@@ -302,22 +302,22 @@ def test_reviewed_alignment_uses_manual_reference(
 
 
 def test_unreviewed_alignment_keeps_model_prediction() -> None:
-    assert reviewed_alignment(external_id="pmt_999") is None
+    assert reviewed_alignment(external_id="sample_999") is None
 
 
-def test_pmt_326_is_marked_unresolved() -> None:
-    assert reviewed_alignment(external_id="pmt_326") is None
-    assert is_unresolved_alignment(external_id="pmt_326")
+def test_sample_326_is_marked_unresolved() -> None:
+    assert reviewed_alignment(external_id="sample_326") is None
+    assert is_unresolved_alignment(external_id="sample_326")
 
 
 def test_stored_review_overrides_static_alignment_state() -> None:
     stored = ReviewedAlignment(
-        external_id="pmt_326",
+        external_id="sample_326",
         speaker2_shift_seconds=-3.4,
     )
 
     alignment = reviewed_alignment(
-        external_id="pmt_326",
+        external_id="sample_326",
         stored_alignments=(stored,),
     )
 

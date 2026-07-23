@@ -32,7 +32,7 @@ def test_full_recording_evidence_uses_whole_timeline_and_fixed_windows() -> None
 
     assert len(records) == 1
     record = records[0]
-    assert record.external_id == "pmt_001"
+    assert record.external_id == "sample_001"
     assert record.scope is EvidenceScope.FULL_RECORDING
     assert {source.source for source in record.sources} == {
         SynchronizationEvidenceSource.PARAKEET,
@@ -113,7 +113,7 @@ def test_full_recording_evidence_includes_full_annotation_windows() -> None:
     )
     annotation = StoredConversationAnnotation(
         sample_id=transcripts[0].sample_id,
-        external_id="pmt_001",
+        external_id="sample_001",
         annotation=ConversationAnnotation(
             annotation_version="test-full-annotation",
             analyzed_duration_seconds=400.0,
@@ -197,11 +197,11 @@ def _transcript(
         id=uuid4(),
         sample_track_id=uuid4(),
         sample_id=uuid4(),
-        sample_external_id="pmt_001",
+        sample_external_id="sample_001",
         side=side,
         source_audio_sha256="a" * 64,
         prepared_audio_sha256="b" * 64,
-        audio_filename=f"pmt_001_{side.value}.flac",
+        audio_filename=f"sample_001_{side.value}.flac",
         model_id=model_id,
         transcript_text="test words",
         words=tuple(

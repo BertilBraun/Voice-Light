@@ -151,9 +151,9 @@ def test_retry_preflight_allows_684_cache_rows_after_invalid_database_deletion(
 @pytest.mark.parametrize(
     ("filename", "expected"),
     (
-        ("pmt_123_speaker1.flac", "pmt_123"),
-        ("pmt_123_speaker2.flac", "pmt_123"),
-        ("pmt_123_speaker1_asr_analysis_token-7.wav", "pmt_123"),
+        ("sample_123_speaker1.flac", "sample_123"),
+        ("sample_123_speaker2.flac", "sample_123"),
+        ("sample_123_speaker1_asr_analysis_token-7.wav", "sample_123"),
         ("smoke_speaker1.flac", None),
     ),
 )
@@ -164,20 +164,20 @@ def test_cached_asr_external_id_accepts_only_exact_patterns(
     assert cached_asr_external_id(filename) == expected
 
 
-def test_cache_classifier_rejects_unknown_pmt_prefixed_filename() -> None:
+def test_cache_classifier_rejects_unknown_sample_prefixed_filename() -> None:
     record = CachedAsrMigrationRecord(
         id=UUID(int=1),
-        audio_filename="pmt_123_speaker1.wav",
+        audio_filename="sample_123_speaker1.wav",
     )
 
     with pytest.raises(ValueError, match="Unrecognized"):
-        classify_cached_asr((record,), {"pmt_123"})
+        classify_cached_asr((record,), {"sample_123"})
 
 
 def test_cache_classifier_deletes_by_typed_row_identity() -> None:
     dataset_record = CachedAsrMigrationRecord(
         id=UUID(int=1),
-        audio_filename="pmt_123_speaker1.flac",
+        audio_filename="sample_123_speaker1.flac",
     )
     smoke_record = CachedAsrMigrationRecord(
         id=UUID(int=2),
@@ -186,7 +186,7 @@ def test_cache_classifier_deletes_by_typed_row_identity() -> None:
 
     classified = classify_cached_asr(
         (dataset_record, smoke_record),
-        {"pmt_123"},
+        {"sample_123"},
     )
 
     assert classified.dataset_records == (dataset_record,)
@@ -228,7 +228,7 @@ def test_timestamp_shift_never_clips_out_of_bounds_words() -> None:
 def test_timestamp_validation_allows_local_backward_chunk_overlap() -> None:
     record = FullAsrMigrationRecord(
         id=UUID(int=1),
-        sample_external_id="pmt_001",
+        sample_external_id="sample_001",
         sample_track_id=UUID(int=2),
         side=AlignmentSide.SPEAKER1,
         model_id=AsrModelId.PARAKEET_TDT,
@@ -254,11 +254,11 @@ def test_timestamp_validation_allows_local_backward_chunk_overlap() -> None:
 
 
 def test_invalid_stage_paths_are_contained_by_sessions_root(tmp_path: Path) -> None:
-    stage = invalid_directory_stage(tmp_path, "pmt_201")
+    stage = invalid_directory_stage(tmp_path, "sample_201")
 
     assert stage.canonical.parent == tmp_path.resolve()
     assert stage.staged.parent == tmp_path.resolve()
-    assert stage.staged.name == ".pmt_201.alignment-invalid.staged"
+    assert stage.staged.name == ".sample_201.alignment-invalid.staged"
 
 
 def test_invalid_stage_paths_reject_traversal(tmp_path: Path) -> None:
@@ -267,10 +267,10 @@ def test_invalid_stage_paths_reject_traversal(tmp_path: Path) -> None:
 
 
 def test_sample_reconciliation_reads_real_riff_channel_count(tmp_path: Path) -> None:
-    sample_directory = tmp_path / "pmt_999"
+    sample_directory = tmp_path / "sample_999"
     sample_directory.mkdir()
-    speaker1_path = sample_directory / "pmt_999_speaker1.wav"
-    speaker2_path = sample_directory / "pmt_999_speaker2.wav"
+    speaker1_path = sample_directory / "sample_999_speaker1.wav"
+    speaker2_path = sample_directory / "sample_999_speaker2.wav"
     write_wave(speaker1_path, channels=2)
     write_wave(speaker2_path, channels=2)
     tracks = (
@@ -279,7 +279,7 @@ def test_sample_reconciliation_reads_real_riff_channel_count(tmp_path: Path) -> 
     )
     sample = MigrationSample(
         id=UUID(int=3),
-        external_id="pmt_999",
+        external_id="sample_999",
         duration_seconds=1.0,
         tracks=tracks,
     )
@@ -356,10 +356,10 @@ def test_sample_reconciliation_reads_real_riff_channel_count(tmp_path: Path) -> 
 def test_changed_tracks_reuse_one_prepared_provenance_per_model_pair(
     tmp_path: Path,
 ) -> None:
-    sample_directory = tmp_path / "pmt_998"
+    sample_directory = tmp_path / "sample_998"
     sample_directory.mkdir()
-    speaker1_path = sample_directory / "pmt_998_speaker1.wav"
-    speaker2_path = sample_directory / "pmt_998_speaker2.wav"
+    speaker1_path = sample_directory / "sample_998_speaker1.wav"
+    speaker2_path = sample_directory / "sample_998_speaker2.wav"
     write_wave(speaker1_path)
     write_wave(speaker2_path)
     tracks = (
@@ -369,7 +369,7 @@ def test_changed_tracks_reuse_one_prepared_provenance_per_model_pair(
     original_hashes = {track.id: sha256_file(track.access_uri) for track in tracks}
     sample = MigrationSample(
         id=UUID(int=3),
-        external_id="pmt_998",
+        external_id="sample_998",
         duration_seconds=1.0,
         tracks=tracks,
     )
@@ -560,7 +560,7 @@ def test_database_reconciliation_requires_canonical_sample_duration(
 
 def migration_snapshot(root: Path) -> MigrationRepositorySnapshot:
     static_ids = [alignment.external_id for alignment in REVIEWED_ALIGNMENTS]
-    generated_ids = [f"pmt_{number}" for number in range(400, 537)]
+    generated_ids = [f"sample_{number}" for number in range(400, 537)]
     retained_ids = static_ids + generated_ids
     assert len(retained_ids) == 165
     all_ids = retained_ids + sorted(INVALID_SAMPLE_IDS)

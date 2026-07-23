@@ -26,7 +26,7 @@ from app.local.synchronization_review.optimized_alignment import (
 )
 
 AUDIT_ESTIMATOR_VERSION = f"{ESTIMATOR_VERSION}-overlap-audit-v1"
-SYNCHRONIZATION_AUDIT_PATH = DATA_ROOT / "luel" / "synchronization-audit.json"
+SYNCHRONIZATION_AUDIT_PATH = DATA_ROOT / "dataset_1" / "synchronization-audit.json"
 SYNCHRONIZATION_AUDIT_STATIC_PATH = (
     WEB_ROOT / "pages" / "synchronization-review" / "synchronization-audit.generated.json"
 )

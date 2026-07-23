@@ -20,7 +20,7 @@ TRANSCRIPT_IDS = tuple(UUID(f"00000000-0000-0000-0000-{index:012d}") for index i
 def repair_source(**overrides: object) -> TimelineRepairSource:
     values: dict[str, object] = {
         "sample_id": SAMPLE_ID,
-        "external_id": "pmt_001",
+        "external_id": "sample_001",
         "duration_seconds": 1_000.0,
         "repair_scope": TimelineRepairScope.AFTER_CHANGE_POINT,
         "first_part_shift_seconds": 0.0,

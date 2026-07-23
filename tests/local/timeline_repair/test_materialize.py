@@ -87,7 +87,7 @@ def _plan(
     return TimelineRepairPlanRecord(
         id=uuid4(),
         sample_id=uuid4(),
-        external_id="pmt_test",
+        external_id="sample_test",
         duration_seconds=10.0,
         plan_version="test",
         plan_fingerprint="a" * 64,

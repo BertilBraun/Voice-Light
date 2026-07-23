@@ -4,11 +4,11 @@ Small local browser app for inspecting conversational speech data and analysis o
 
 ## Data
 
-Place the dataset under the repository root `data/` folder. The current app expects LUEL
+Place the dataset under the repository root `data/` folder. The current app expects local dataset
 sessions at:
 
 ```text
-data/luel/sessions/
+data/dataset_1/samples/
 ```
 
 The root `data/` folder is intentionally ignored by Git.
@@ -59,10 +59,10 @@ line is an H1 title and whose first paragraph is a short summary for the index c
 code or navigation update is required.
 
 The Compose app mounts the repository `data/` directory at `/app/data` in the
-container. For local LUEL ingestion, use:
+container. For local dataset ingestion, use:
 
 ```text
-/app/data/luel/sessions
+/app/data/dataset_1/samples
 ```
 
 Postgres data is stored in the `voice-light-postgres` Docker volume.

@@ -210,7 +210,7 @@ def turnsense_detector() -> TurnsenseDetector:
             label="Turnsense",
             description=(
                 "Transcript-only speaker 1 end-of-utterance detection using "
-                "latishab/turnsense SmolLM2-135M quantized ONNX over LUEL word-timing "
+                "latishab/turnsense SmolLM2-135M quantized ONNX over local dataset word-timing "
                 "candidate boundaries inside the 180 s analysis cap."
             ),
         ),

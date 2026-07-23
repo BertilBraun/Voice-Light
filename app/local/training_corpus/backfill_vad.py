@@ -21,7 +21,7 @@ VAD_MINIMUM_SPEECH_SECONDS = 0.12
 VAD_MINIMUM_SILENCE_SECONDS = 0.4
 
 
-def backfill_luel_vad(local_sessions_root: Path, minimum_quality: float) -> int:
+def backfill_dataset_1_vad(local_sessions_root: Path, minimum_quality: float) -> int:
     if not DATABASE_URL:
         raise ValueError("VOICE_LIGHT_DATABASE_URL is required for VAD backfill.")
     dataset_id = UUID("22647172-7eb6-4e72-97fd-a3e0b4885e3a")
@@ -45,9 +45,7 @@ def backfill_luel_vad(local_sessions_root: Path, minimum_quality: float) -> int:
                 raise ValueError(f"Missing audio duration for {track.id}")
             if vad_repository.get_current(track.id, track.audio_sha256, VAD_VERSION) is not None:
                 continue
-            wave_path = (
-                local_sessions_root / item.external_id / f"{item.external_id}_{side.value}.wav"
-            )
+            wave_path = local_sessions_root / item.external_id / f"speaker_{side.value[-1]}.wav"
             baseline = run_naive_vad_floor_full_recording(
                 wave_path=wave_path,
                 result_name=VAD_VERSION,
@@ -108,11 +106,11 @@ def main() -> None:
     parser.add_argument("--local-sessions-root", type=Path, required=True)
     parser.add_argument("--minimum-quality", type=float, default=0.95)
     options = parser.parse_args()
-    count = backfill_luel_vad(
+    count = backfill_dataset_1_vad(
         local_sessions_root=options.local_sessions_root,
         minimum_quality=options.minimum_quality,
     )
-    print(f"Backfilled VAD for {count} Luel recordings.")
+    print(f"Backfilled VAD for {count} Local dataset recordings.")
 
 
 if __name__ == "__main__":

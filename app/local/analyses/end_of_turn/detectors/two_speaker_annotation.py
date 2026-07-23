@@ -127,7 +127,7 @@ def two_speaker_annotation_detector() -> TwoSpeakerAnnotationDetector:
             mode=EndOfTurnDetectorMode.TWO_SPEAKER_ANNOTATION,
             label="Two speaker annotation",
             description=(
-                "Speaker 1 labels from both LUEL speakers plus naive VAD-only "
+                "Speaker 1 labels from both local dataset speakers plus naive VAD-only "
                 "backchannels outside Speaker 1 turns; ambiguous short transcript turns "
                 "remain speech."
             ),

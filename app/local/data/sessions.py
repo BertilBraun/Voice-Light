@@ -10,8 +10,8 @@ from app.shared.base_model import FrozenBaseModel
 
 
 class SpeakerName(StrEnum):
-    SPEAKER1 = "speaker1"
-    SPEAKER2 = "speaker2"
+    SPEAKER1 = "speaker_1"
+    SPEAKER2 = "speaker_2"
 
 
 class SessionEntry(FrozenBaseModel):
@@ -26,13 +26,12 @@ class SessionEntry(FrozenBaseModel):
 @lru_cache(maxsize=1)
 def list_sessions() -> tuple[SessionEntry, ...]:
     session_entries: list[SessionEntry] = []
-    for session_directory in SESSIONS_ROOT.glob("pmt_*"):
+    for session_directory in SESSIONS_ROOT.glob("sample_*"):
         if not session_directory.is_dir():
             continue
-        identifier = session_directory.name
-        speaker1_path = session_directory / f"{identifier}_speaker1.wav"
-        speaker2_path = session_directory / f"{identifier}_speaker2.wav"
-        metadata_path = session_directory / f"{identifier}.json"
+        speaker1_path = session_directory / "speaker_1.wav"
+        speaker2_path = session_directory / "speaker_2.wav"
+        metadata_path = session_directory / "metadata.json"
         if not speaker1_path.exists() or not speaker2_path.exists() or not metadata_path.exists():
             continue
         session_entries.append(_session_entry_from_metadata(metadata_path=metadata_path))
@@ -41,18 +40,18 @@ def list_sessions() -> tuple[SessionEntry, ...]:
 
 
 def session_audio_path(identifier: str, speaker_name: SpeakerName) -> Path:
-    if not identifier.startswith("pmt_") or "/" in identifier or "\\" in identifier:
+    if not identifier.startswith("sample_") or "/" in identifier or "\\" in identifier:
         raise ValueError("Invalid session identifier.")
-    wave_path = SESSIONS_ROOT / identifier / f"{identifier}_{speaker_name.value}.wav"
+    wave_path = SESSIONS_ROOT / identifier / f"{speaker_name.value}.wav"
     if not wave_path.exists():
         raise ValueError(f"Missing audio file for {identifier} {speaker_name.value}.")
     return wave_path
 
 
 def session_metadata_path(identifier: str) -> Path:
-    if not identifier.startswith("pmt_") or "/" in identifier or "\\" in identifier:
+    if not identifier.startswith("sample_") or "/" in identifier or "\\" in identifier:
         raise ValueError("Invalid session identifier.")
-    metadata_path = SESSIONS_ROOT / identifier / f"{identifier}.json"
+    metadata_path = SESSIONS_ROOT / identifier / "metadata.json"
     if not metadata_path.exists():
         raise ValueError(f"Missing metadata file for {identifier}.")
     return metadata_path

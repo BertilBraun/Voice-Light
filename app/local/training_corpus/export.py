@@ -419,8 +419,8 @@ def _audio_reference(
 
 
 def _audio_path(dataset_name: str, external_id: str, track: SampleTrackRecord) -> str:
-    if dataset_name == "luel-local":
-        return f"luel/{external_id}/{external_id}_{track.side.value}.flac"
+    if dataset_name == "dataset_1-local":
+        return f"dataset_1/{external_id}/{external_id}_{track.side.value}.flac"
     prefix = f"s3://{HUGGING_FACE_S3_BUCKET}/"
     if dataset_name == "meetings-s3" and track.storage_uri.startswith(prefix):
         return track.storage_uri.removeprefix(prefix)
@@ -428,8 +428,8 @@ def _audio_path(dataset_name: str, external_id: str, track: SampleTrackRecord) -
 
 
 def _recording_directory(dataset_name: str, external_id: str) -> PurePosixPath:
-    if dataset_name == "luel-local":
-        return PurePosixPath("luel") / external_id
+    if dataset_name == "dataset_1-local":
+        return PurePosixPath("dataset_1") / external_id
     if dataset_name == "meetings-s3":
         return PurePosixPath(external_id)
     raise ValueError(f"No metadata path mapping for dataset: {dataset_name}")

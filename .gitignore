@@ -6,7 +6,8 @@
 .env.compute
 /.cache/compute/
 /.cache/huggingface/
-/.cache/luel-audit-*.json
+/.cache/dataset_1_source_manifest.csv
+/.cache/voice_light_before_dataset_restructure.dump
 /.cache/local/
 /logs/compute/
 /run/compute/

@@ -18,7 +18,7 @@ from app.local.synchronization_review.models import (
 from app.shared.asr import AsrModelId, TimestampedWord
 from app.shared.quality import AudioQualityMetrics, ConversationAnnotation
 
-FILENAME_PATTERN = re.compile(r"^(pmt_\d+)_(speaker1|speaker2)\.flac$")
+FILENAME_PATTERN = re.compile(r"^(sample_\d+)_(speaker_1|speaker_2)\.flac$")
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class SynchronizationReviewRepository:
                 continue
             external_id, side_value = filename_match.groups()
             model_id = AsrModelId(str(row["model_id"]))
-            side = SpeakerTrack(side_value)
+            side = SpeakerTrack(f"speaker{side_value[-1]}")
             transcripts[(external_id, model_id, side)] = _timestamped_words(row["words"])
 
         pairs: list[TranscriptPair] = []
@@ -85,13 +85,13 @@ class SynchronizationReviewRepository:
                 )
         return tuple(pairs)
 
-    def count_pmt_samples(self) -> int:
+    def count_local_samples(self) -> int:
         with self.connection() as connection:
             row = connection.execute(
                 """
                 SELECT count(*) AS sample_count
                 FROM samples
-                WHERE external_id ~ '^pmt_[0-9]+$'
+                WHERE external_id ~ '^sample_[0-9]+$'
                 """
             ).fetchone()
         assert row is not None

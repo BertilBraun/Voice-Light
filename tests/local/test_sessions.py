@@ -20,15 +20,15 @@ def isolated_sessions_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> I
 def test_list_sessions_caches_session_metadata_for_process_lifetime(
     isolated_sessions_root: Path,
 ) -> None:
-    session_directory = isolated_sessions_root / "pmt_001"
+    session_directory = isolated_sessions_root / "sample_001"
     session_directory.mkdir()
-    (session_directory / "pmt_001_speaker1.wav").touch()
-    (session_directory / "pmt_001_speaker2.wav").touch()
-    metadata_path = session_directory / "pmt_001.json"
+    (session_directory / "sample_001_speaker1.wav").touch()
+    (session_directory / "sample_001_speaker2.wav").touch()
+    metadata_path = session_directory / "sample_001.json"
     metadata_path.write_text(
         json.dumps(
             {
-                "name": "pmt_001",
+                "name": "sample_001",
                 "durationSeconds": 42.5,
                 "topic": "Caching",
                 "sampleRate": 16_000,
@@ -42,7 +42,7 @@ def test_list_sessions_caches_session_metadata_for_process_lifetime(
     second_result = sessions.list_sessions()
 
     assert second_result is first_result
-    assert second_result[0].identifier == "pmt_001"
+    assert second_result[0].identifier == "sample_001"
 
 
 def test_sessions_api_allows_immutable_browser_caching(isolated_sessions_root: Path) -> None:

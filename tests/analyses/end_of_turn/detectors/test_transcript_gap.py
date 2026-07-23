@@ -21,8 +21,8 @@ from app.local.analyses.end_of_turn.service import (
 def test_transcript_gap_detector_builds_turns_and_events_from_speaker1_words(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=12.0,
@@ -66,8 +66,8 @@ def test_transcript_gap_detector_builds_turns_and_events_from_speaker1_words(
 def test_transcript_gap_detector_clips_words_and_trailing_silence_to_analysis_cap(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=240.0,
@@ -100,8 +100,8 @@ def test_transcript_gap_detector_clips_words_and_trailing_silence_to_analysis_ca
 def test_transcript_gap_detector_marks_short_acknowledgements_as_backchannels(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=7.0,
@@ -147,8 +147,8 @@ def test_transcript_gap_detector_marks_short_acknowledgements_as_backchannels(
 def test_transcript_gap_detector_keeps_contentful_acknowledgement_turns_as_speech(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=5.0,
@@ -166,7 +166,7 @@ def test_transcript_gap_detector_keeps_contentful_acknowledgement_turns_as_speec
 
 
 def test_transcript_gap_detector_raises_for_missing_metadata(tmp_path: Path) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
 
     with pytest.raises(ValueError, match="Missing transcript metadata"):
         _detector().analyze(speaker1_path=speaker1_path)
@@ -175,8 +175,8 @@ def test_transcript_gap_detector_raises_for_missing_metadata(tmp_path: Path) -> 
 def test_transcript_gap_detector_raises_for_missing_speaker1_transcript(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=12.0,
@@ -243,7 +243,7 @@ def _write_metadata(
     metadata_path.write_text(
         json.dumps(
             {
-                "name": "pmt_326",
+                "name": "sample_326",
                 "durationSeconds": duration_seconds,
                 "speakerTranscript": speaker_transcript,
             }

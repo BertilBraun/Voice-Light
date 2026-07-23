@@ -110,7 +110,7 @@ class SourceMetrics:
 def synchronization_candidates(
     repository: SynchronizationReviewRepository,
 ) -> SynchronizationCandidateListResponse:
-    total_session_count = repository.count_pmt_samples()
+    total_session_count = repository.count_local_samples()
     stored_alignments = repository.load_reviewed_alignments()
     stored_predictions = repository.load_unreviewed_predictions(estimator_version=ESTIMATOR_VERSION)
     prediction_by_sample_id = {

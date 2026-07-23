@@ -21,8 +21,8 @@ from app.local.analyses.end_of_turn.service import EndOfTurnEvent, SpeechSegment
 def test_turnsense_detector_classifies_speaker1_candidate_boundaries(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=12.0,
@@ -81,8 +81,8 @@ def test_turnsense_detector_classifies_speaker1_candidate_boundaries(
 def test_turnsense_detector_keeps_final_unfinished_segment_without_event(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=10.0,
@@ -123,8 +123,8 @@ def test_turnsense_detector_keeps_final_unfinished_segment_without_event(
 def test_turnsense_detector_clips_trailing_silence_to_analysis_cap(
     tmp_path: Path,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_326_speaker1.wav"
-    metadata_path = tmp_path / "pmt_326.json"
+    speaker1_path = tmp_path / "sample_326_speaker1.wav"
+    metadata_path = tmp_path / "sample_326.json"
     _write_metadata(
         metadata_path=metadata_path,
         duration_seconds=240.0,
@@ -224,7 +224,7 @@ def _write_metadata(
     metadata_path.write_text(
         json.dumps(
             {
-                "name": "pmt_326",
+                "name": "sample_326",
                 "durationSeconds": duration_seconds,
                 "speakerTranscript": speaker_transcript,
             }

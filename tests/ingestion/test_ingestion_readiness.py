@@ -67,7 +67,7 @@ class RegistrationRepository:
     ) -> SampleRecord:
         assert sample_id == self.sample_id
         assert duration_seconds > 0.0
-        return self.upsert_sample(dataset_id=uuid4(), external_id="pmt_001")
+        return self.upsert_sample(dataset_id=uuid4(), external_id="sample_001")
 
     def upsert_sample_track(
         self,
@@ -188,8 +188,8 @@ def test_registration_hashes_each_physical_track_once_and_persists_hash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    speaker1_path = tmp_path / "pmt_001_speaker1.wav"
-    speaker2_path = tmp_path / "pmt_001_speaker2.wav"
+    speaker1_path = tmp_path / "sample_001_speaker1.wav"
+    speaker2_path = tmp_path / "sample_001_speaker2.wav"
     _write_silent_wave(speaker1_path)
     _write_silent_wave(speaker2_path)
     real_sha256_file = ingestion_service_module.sha256_file
@@ -207,7 +207,7 @@ def test_registration_hashes_each_physical_track_once_and_persists_hash(
         dataset_id=uuid4(),
         storage=LocalStorageBackend(),
         discovered=DiscoveredSample(
-            external_id="pmt_001",
+            external_id="sample_001",
             speaker1_path=speaker1_path.as_posix(),
             speaker2_path=speaker2_path.as_posix(),
         ),
@@ -330,7 +330,7 @@ def registered_sample() -> RegisteredSample:
     )
     return RegisteredSample(
         discovered=DiscoveredSample(
-            external_id="pmt_001",
+            external_id="sample_001",
             speaker1_path="speaker1.wav",
             speaker2_path="speaker2.wav",
         ),

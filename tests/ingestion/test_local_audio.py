@@ -45,13 +45,15 @@ def test_host_data_path_is_remapped_to_container_data_mount(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_root = tmp_path / "data"
-    audio_path = data_root / "luel" / "sessions" / "pmt_001" / "speaker.wav"
+    audio_path = data_root / "dataset_1" / "sessions" / "sample_001" / "speaker.wav"
     audio_path.parent.mkdir(parents=True)
     audio_path.write_bytes(b"audio")
     monkeypatch.setattr(local_audio_module, "DATA_ROOT", data_root)
 
     result = materialize_sample_track(
-        track_record("C:\\Projects\\Voice-Light\\data\\luel\\sessions\\pmt_001\\speaker.wav")
+        track_record(
+            "C:\\Projects\\Voice-Light\\data\\dataset_1\\sessions\\sample_001\\speaker.wav"
+        )
     )
 
     assert result == audio_path.resolve()

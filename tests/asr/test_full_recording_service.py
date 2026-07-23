@@ -107,7 +107,7 @@ def test_prepare_full_recording_audio_streams_mono_16khz_ogg_opus(tmp_path: Path
 
 
 def test_full_recording_track_transcodes_calls_remote_and_persists(tmp_path: Path) -> None:
-    source_path = tmp_path / "pmt_001_speaker1.wav"
+    source_path = tmp_path / "sample_001_speaker1.wav"
     write_wave(source_path=source_path, sample_rate=16_000, channel_count=1, duration_seconds=1.0)
     track = full_recording_track(access_uri=str(source_path))
     store = MemoryFullRecordingStore()
@@ -158,7 +158,7 @@ def test_full_recording_track_transcodes_calls_remote_and_persists(tmp_path: Pat
 
 
 def test_cached_full_recording_transcript_prevents_remote_call(tmp_path: Path) -> None:
-    source_path = tmp_path / "pmt_001_speaker1.wav"
+    source_path = tmp_path / "sample_001_speaker1.wav"
     write_wave(source_path=source_path, sample_rate=16_000, channel_count=1, duration_seconds=1.0)
     track = full_recording_track(access_uri=str(source_path))
     store = MemoryFullRecordingStore()
@@ -268,7 +268,7 @@ def transcript_record(
         id=uuid4(),
         sample_track_id=sample_track_id,
         sample_id=uuid4(),
-        sample_external_id="pmt_001",
+        sample_external_id="sample_001",
         side=TrackSide.SPEAKER1,
         source_audio_sha256=source_audio_sha256,
         prepared_audio_sha256=prepared_audio_sha256,

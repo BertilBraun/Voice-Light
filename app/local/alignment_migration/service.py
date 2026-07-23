@@ -55,18 +55,18 @@ from app.shared.storage.local import LocalStorageBackend
 
 INVALID_SAMPLE_IDS = frozenset(
     {
-        "pmt_201",
-        "pmt_204",
-        "pmt_211",
-        "pmt_234",
-        "pmt_252",
-        "pmt_265",
-        "pmt_269",
-        "pmt_274",
-        "pmt_277",
-        "pmt_280",
-        "pmt_287",
-        "pmt_323",
+        "sample_201",
+        "sample_204",
+        "sample_211",
+        "sample_234",
+        "sample_252",
+        "sample_265",
+        "sample_269",
+        "sample_274",
+        "sample_277",
+        "sample_280",
+        "sample_287",
+        "sample_323",
     }
 )
 EXPECTED_SOURCE_SAMPLE_COUNT = 177
@@ -80,8 +80,8 @@ EXPECTED_INVALID_TRANSCRIPT_COUNT = 24
 EXPECTED_UNRELATED_CACHE_COUNT = 6
 MAXIMUM_OFFSET_SECONDS = 12.0
 
-_PRIMARY_CACHE_PATTERN = re.compile(r"^(pmt_\d+)_speaker[12]\.flac$")
-_ANALYSIS_CACHE_PATTERN = re.compile(r"^(pmt_\d+)_speaker[12]_asr_analysis_[A-Za-z0-9_-]+\.wav$")
+_PRIMARY_CACHE_PATTERN = re.compile(r"^(sample_\d+)_speaker[12]\.flac$")
+_ANALYSIS_CACHE_PATTERN = re.compile(r"^(sample_\d+)_speaker[12]_asr_analysis_[A-Za-z0-9_-]+\.wav$")
 
 
 class PreparedAudioFactory(Protocol):
@@ -537,7 +537,7 @@ def classify_cached_asr(
     for record in records:
         external_id = cached_asr_external_id(record.audio_filename)
         if external_id is None:
-            if record.audio_filename.startswith("pmt_"):
+            if record.audio_filename.startswith("sample_"):
                 raise ValueError(
                     f"Unrecognized dataset cached ASR filename: {record.audio_filename}"
                 )

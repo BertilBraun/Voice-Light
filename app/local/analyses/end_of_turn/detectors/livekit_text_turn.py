@@ -149,7 +149,8 @@ def livekit_text_turn_detector() -> LiveKitTextTurnDetector:
             mode=LIVEKIT_TEXT_TURN_MODE,
             label="LiveKit Text Turn",
             description=(
-                "LUEL word-level transcript turns propose speaker-1 candidate boundaries after "
+                "Local-dataset word-level transcript turns propose speaker-1 candidate "
+                "boundaries after "
                 "500 ms of speaker-1 silence; LiveKit's multilingual text turn detector "
                 "scores the recent Qwen-formatted dialogue context and emits an end-of-turn "
                 "event when the calibrated language threshold is met."
@@ -240,24 +241,19 @@ def _load_transcript_for_wave(speaker_path: Path) -> Transcript:
 
 
 def _metadata_path_for_wave_path(speaker_path: Path) -> Path:
-    match = re.fullmatch(r"(?P<session>.+)_speaker(?P<speaker_number>[12])", speaker_path.stem)
+    match = re.fullmatch(r"speaker_(?P<speaker_number>[12])", speaker_path.stem)
     if match is None:
-        raise ValueError(
-            f"Expected LUEL speaker WAV name like `session_speaker1.wav`: {speaker_path.name}"
-        )
-    session_identifier = match.group("session")
-    metadata_path = speaker_path.with_name(f"{session_identifier}.json")
+        raise ValueError(f"Expected a generic speaker WAV name: {speaker_path.name}")
+    metadata_path = speaker_path.with_name("metadata.json")
     if not metadata_path.exists():
-        raise ValueError(f"Missing LUEL metadata JSON beside WAV: {metadata_path}")
+        raise ValueError(f"Missing local dataset metadata JSON beside WAV: {metadata_path}")
     return metadata_path
 
 
 def _speaker_label_from_wave_path(speaker_path: Path) -> str:
-    match = re.fullmatch(r".+_speaker(?P<speaker_number>[12])", speaker_path.stem)
+    match = re.fullmatch(r"speaker_(?P<speaker_number>[12])", speaker_path.stem)
     if match is None:
-        raise ValueError(
-            f"Expected LUEL speaker WAV name like `session_speaker1.wav`: {speaker_path.name}"
-        )
+        raise ValueError(f"Expected a generic speaker WAV name: {speaker_path.name}")
     return f"Speaker{match.group('speaker_number')}"
 
 

@@ -73,16 +73,16 @@ def wave_bytes(
 
 @pytest.fixture
 def alignment_paths(tmp_path: Path) -> AlignmentTransactionPaths:
-    sample_directory = tmp_path / "pmt_001"
+    sample_directory = tmp_path / "sample_001"
     sample_directory.mkdir()
-    (sample_directory / "pmt_001_speaker1.wav").write_bytes(
+    (sample_directory / "sample_001_speaker1.wav").write_bytes(
         wave_bytes(
             pcm_data=b"\x11\x12\x21\x22\x31\x32",
             format_tag=0xFFFE,
             chunks_before_data=(riff_chunk(b"JUNK", b"abc", padding_byte=b"\x7f"),),
         )
     )
-    (sample_directory / "pmt_001_speaker2.wav").write_bytes(
+    (sample_directory / "sample_001_speaker2.wav").write_bytes(
         wave_bytes(
             pcm_data=b"\x41\x42\x51\x52\x61\x62\x71\x72",
             chunks_after_data=(riff_chunk(b"LIST", b"metadata!"),),
@@ -90,7 +90,7 @@ def alignment_paths(tmp_path: Path) -> AlignmentTransactionPaths:
     )
     return AlignmentTransactionPaths.create(
         sample_directory=sample_directory,
-        sample_external_id="pmt_001",
-        speaker1_filename="pmt_001_speaker1.wav",
-        speaker2_filename="pmt_001_speaker2.wav",
+        sample_external_id="sample_001",
+        speaker1_filename="sample_001_speaker1.wav",
+        speaker2_filename="sample_001_speaker2.wav",
     )

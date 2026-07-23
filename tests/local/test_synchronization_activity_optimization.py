@@ -73,7 +73,7 @@ def test_activity_evaluation_reports_recording_level_out_of_fold_metrics() -> No
     )
     examples = tuple(
         _reviewed_curve(
-            external_id=f"pmt_{index:03d}",
+            external_id=f"sample_{index:03d}",
             reviewed_shift_seconds=-0.1 if index % 2 else 0.1,
         )
         for index in range(10)

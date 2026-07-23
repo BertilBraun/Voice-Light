@@ -23,10 +23,12 @@ from app.local.synchronization_review.models import SynchronizationEvidenceSourc
 
 def test_database_review_overrides_static_calibration_provenance() -> None:
     labels = reviewed_offset_labels(
-        stored_alignments=(ReviewedAlignment(external_id="pmt_284", speaker2_shift_seconds=-5.4),)
+        stored_alignments=(
+            ReviewedAlignment(external_id="sample_284", speaker2_shift_seconds=-5.4),
+        )
     )
 
-    label = next(label for label in labels if label.external_id == "pmt_284")
+    label = next(label for label in labels if label.external_id == "sample_284")
 
     assert label.speaker2_shift_seconds == pytest.approx(-5.4)
     assert label.provenance is ReviewProvenance.DATABASE
@@ -34,7 +36,7 @@ def test_database_review_overrides_static_calibration_provenance() -> None:
 
 def test_zero_fallback_rejects_catastrophic_weak_evidence_shift() -> None:
     evidence = _evidence_record(
-        external_id="pmt_001",
+        external_id="sample_001",
         source_shifts=(-12.0, -11.8, 8.0),
         improvement=0.005,
         joint_reduction=0.001,
@@ -54,7 +56,7 @@ def test_zero_fallback_rejects_catastrophic_weak_evidence_shift() -> None:
 
 def test_static_prediction_is_independent_of_variable_windows() -> None:
     evidence = _evidence_record(
-        external_id="pmt_001",
+        external_id="sample_001",
         source_shifts=(-3.0, -3.0, -3.0),
         improvement=0.1,
         joint_reduction=0.05,
@@ -182,7 +184,7 @@ def _reviewed_example(
     provenance: ReviewProvenance,
     scope: EvidenceScope = EvidenceScope.INITIAL_180_SECONDS,
 ) -> ReviewedOffsetExample:
-    external_id = f"pmt_{index:03d}"
+    external_id = f"sample_{index:03d}"
     return ReviewedOffsetExample(
         label=OffsetLabel(
             external_id=external_id,

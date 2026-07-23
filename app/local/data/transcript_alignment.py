@@ -23,7 +23,7 @@ class TranscriptAlignment:
 
 
 def transcript_alignment(metadata_path: Path) -> TranscriptAlignment:
-    sidecar_path = metadata_path.with_suffix(".alignment.json")
+    sidecar_path = metadata_path.with_name("alignment.json")
     if not sidecar_path.is_file():
         return TranscriptAlignment(
             speaker1_offset_seconds=0.0,
@@ -31,7 +31,7 @@ def transcript_alignment(metadata_path: Path) -> TranscriptAlignment:
             aligned_duration_seconds=None,
         )
     sidecar = AlignmentSidecar.model_validate_json(sidecar_path.read_text(encoding="utf-8"))
-    if sidecar.sample_external_id != metadata_path.stem:
+    if sidecar.sample_external_id != metadata_path.parent.name:
         raise ValueError(
             f"Alignment sidecar sample identifier does not match {metadata_path.name}."
         )

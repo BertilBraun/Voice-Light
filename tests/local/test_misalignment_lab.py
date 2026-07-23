@@ -173,7 +173,7 @@ def test_interaction_score_rewards_alternating_late_exchange() -> None:
 
 def test_queue_is_deterministic_unique_and_selects_late_interaction() -> None:
     samples = tuple(
-        _dashboard_sample(external_id=f"pmt_{index:03}", dense_late_exchange=True)
+        _dashboard_sample(external_id=f"sample_{index:03}", dense_late_exchange=True)
         for index in range(1, 7)
     )
 
@@ -208,7 +208,7 @@ def test_short_recording_candidates_stay_in_final_forty_percent() -> None:
 
 
 def test_global_countercheck_compares_first_three_minutes_with_recording_end() -> None:
-    sample = _dashboard_sample(external_id="pmt_global", dense_late_exchange=True)
+    sample = _dashboard_sample(external_id="sample_global", dense_late_exchange=True)
     provisional_repair = _stored_global_repair(sample=sample, shift_seconds=4.5)
 
     queue = build_global_countercheck_queue(
@@ -231,7 +231,7 @@ def test_global_countercheck_compares_first_three_minutes_with_recording_end() -
 
 
 def test_global_countercheck_progress_keeps_provisional_repair_separate() -> None:
-    sample = _dashboard_sample(external_id="pmt_global_reviewed", dense_late_exchange=True)
+    sample = _dashboard_sample(external_id="sample_global_reviewed", dense_late_exchange=True)
     provisional_repair = _stored_global_repair(sample=sample, shift_seconds=-1.5)
     initial = build_global_countercheck_queue(
         dashboard_samples=(sample,),
@@ -271,7 +271,7 @@ def test_global_countercheck_progress_keeps_provisional_repair_separate() -> Non
 
 
 def test_candidate_identity_changes_when_audio_is_replaced() -> None:
-    original = _dashboard_sample(external_id="pmt_200", dense_late_exchange=True)
+    original = _dashboard_sample(external_id="sample_200", dense_late_exchange=True)
     replacement_tracks = (
         original.tracks[0],
         original.tracks[1].model_copy(update={"audio_sha256": "3" * 64}),
@@ -298,8 +298,8 @@ def test_candidate_identity_changes_when_audio_is_replaced() -> None:
 
 def test_likely_misaligned_judgment_quarantines_whole_session() -> None:
     samples = (
-        _dashboard_sample(external_id="pmt_201", dense_late_exchange=True),
-        _dashboard_sample(external_id="pmt_202", dense_late_exchange=True),
+        _dashboard_sample(external_id="sample_201", dense_late_exchange=True),
+        _dashboard_sample(external_id="sample_202", dense_late_exchange=True),
     )
     initial = build_misalignment_queue(
         dashboard_samples=samples,
@@ -329,7 +329,7 @@ def test_likely_misaligned_judgment_quarantines_whole_session() -> None:
 
 
 def test_aligned_judgment_accepts_session_and_removes_it_from_queue() -> None:
-    sample = _dashboard_sample(external_id="pmt_203", dense_late_exchange=True)
+    sample = _dashboard_sample(external_id="sample_203", dense_late_exchange=True)
     initial = build_misalignment_queue(
         dashboard_samples=(sample,),
         audit_report=None,
@@ -359,7 +359,7 @@ def test_aligned_judgment_accepts_session_and_removes_it_from_queue() -> None:
 
 
 def test_unsure_judgment_resamples_session_with_a_different_exchange() -> None:
-    sample = _dashboard_sample(external_id="pmt_204", dense_late_exchange=True)
+    sample = _dashboard_sample(external_id="sample_204", dense_late_exchange=True)
     initial = build_misalignment_queue(
         dashboard_samples=(sample,),
         audit_report=None,
@@ -394,8 +394,8 @@ def test_unsure_judgment_resamples_session_with_a_different_exchange() -> None:
 
 
 def test_unsure_session_is_deprioritized_behind_unreviewed_session() -> None:
-    unsure_sample = _dashboard_sample(external_id="pmt_204", dense_late_exchange=True)
-    unreviewed_sample = _dashboard_sample(external_id="pmt_205", dense_late_exchange=True)
+    unsure_sample = _dashboard_sample(external_id="sample_204", dense_late_exchange=True)
+    unreviewed_sample = _dashboard_sample(external_id="sample_205", dense_late_exchange=True)
     initial = build_misalignment_queue(
         dashboard_samples=(unsure_sample,),
         audit_report=None,
@@ -599,9 +599,9 @@ def test_alignment_assessment_labels_and_recommends_only_safe_offsets(
 
 
 def test_queue_orders_aligned_then_one_offset_then_non_constant() -> None:
-    aligned = _dashboard_sample(external_id="pmt_aligned", dense_late_exchange=True)
-    constant = _dashboard_sample(external_id="pmt_constant", dense_late_exchange=True)
-    variable = _dashboard_sample(external_id="pmt_variable", dense_late_exchange=True)
+    aligned = _dashboard_sample(external_id="sample_aligned", dense_late_exchange=True)
+    constant = _dashboard_sample(external_id="sample_constant", dense_late_exchange=True)
+    variable = _dashboard_sample(external_id="sample_variable", dense_late_exchange=True)
     audit_report = SynchronizationAuditReport(
         estimator_version="test",
         window_duration_seconds=180.0,
@@ -905,7 +905,7 @@ def _audit_result(
     )
     return SynchronizationAuditResult(
         sample_id=sample_id,
-        external_id="pmt_test",
+        external_id="sample_test",
         kind=kind,
         anomaly_score=0.9,
         strongest_window_start_seconds=600.0,

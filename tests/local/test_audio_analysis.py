@@ -68,7 +68,7 @@ def test_end_of_turn_events_require_minimum_silence() -> None:
 
 
 def test_sessions_folder_does_not_require_deleted_source_manifest() -> None:
-    sessions_root = Path("data/luel/sessions")
+    sessions_root = Path("data/dataset_1/sessions")
 
     assert sessions_root.is_dir()
     assert not (sessions_root / "manifest.json").exists()
@@ -77,7 +77,7 @@ def test_sessions_folder_does_not_require_deleted_source_manifest() -> None:
 def test_session_listing_uses_session_directories() -> None:
     session_identifiers = {session_entry.identifier for session_entry in list_sessions()}
 
-    assert "pmt_001" in session_identifiers
+    assert "sample_001" in session_identifiers
 
 
 def test_available_detectors_include_vad_variants() -> None:
@@ -123,7 +123,7 @@ def test_parse_selected_detector_modes_rejects_unknown_mode() -> None:
 
 def test_read_transcript_turns_loads_session_speakers() -> None:
     transcript_turns = read_transcript_turns(
-        metadata_path=Path("data/luel/sessions/pmt_001/pmt_001.json")
+        metadata_path=Path("data/dataset_1/sessions/sample_001/sample_001.json")
     )
 
     assert transcript_turns[0].speaker == "Speaker1"
@@ -134,7 +134,7 @@ def test_read_transcript_turns_loads_session_speakers() -> None:
 
 def test_read_transcript_turns_applies_physical_alignment_sidecar() -> None:
     transcript_turns = read_transcript_turns(
-        metadata_path=Path("data/luel/sessions/pmt_284/pmt_284.json")
+        metadata_path=Path("data/dataset_1/sessions/sample_284/sample_284.json")
     )
 
     assert transcript_turns[0].speaker == "Speaker1"
@@ -148,7 +148,9 @@ def test_read_transcript_turns_applies_physical_alignment_sidecar() -> None:
 
 
 def test_capped_wave_bytes_serves_browser_seekable_pcm16() -> None:
-    wave_bytes = capped_wave_bytes(Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav"))
+    wave_bytes = capped_wave_bytes(
+        Path("data/dataset_1/sessions/sample_001/sample_001_speaker1.wav")
+    )
 
     with wave.open(io.BytesIO(wave_bytes), "rb") as wave_reader:
         assert wave_reader.getnchannels() == 1
@@ -160,7 +162,7 @@ def test_capped_wave_bytes_serves_browser_seekable_pcm16() -> None:
 
 def test_wave_window_bytes_reads_requested_recording_region() -> None:
     wave_bytes = wave_window_bytes(
-        wave_path=Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav"),
+        wave_path=Path("data/dataset_1/sessions/sample_001/sample_001_speaker1.wav"),
         start_seconds=60.0,
         maximum_duration_seconds=10.0,
     )
@@ -173,7 +175,7 @@ def test_wave_window_bytes_reads_requested_recording_region() -> None:
 
 def test_resampled_wave_window_bytes_uses_requested_playback_rate() -> None:
     wave_bytes = resampled_wave_window_bytes(
-        wave_path=Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav"),
+        wave_path=Path("data/dataset_1/sessions/sample_001/sample_001_speaker1.wav"),
         start_seconds=60.0,
         maximum_duration_seconds=2.0,
         sample_rate=16_000,
@@ -221,7 +223,7 @@ def test_flac_playback_and_waveform_use_ffmpeg(tmp_path: Path) -> None:
 
 def test_write_playback_wave_file_creates_and_deletes_capped_audio_file() -> None:
     playback_wave_path = write_playback_wave_file(
-        wave_path=Path("data/luel/sessions/pmt_001/pmt_001_speaker1.wav")
+        wave_path=Path("data/dataset_1/sessions/sample_001/sample_001_speaker1.wav")
     )
 
     try:
