@@ -44,14 +44,33 @@ encoder design in [Fast Conformer](https://arxiv.org/abs/2305.05084).
 
 ## Manifest And Sample Contract
 
-The materialized corpus is a private Hugging Face dataset at
-`BertilBraun/voice-light-audio`. The default trainer loads its 11 Parquet shards
-at startup (10,113 current crops) and downloads only the user-side FLAC needed
-by each sampled crop. `hf_hub_download` provides a persistent, content-addressed
-disk cache and cross-process download locking; pass `--hub-cache-directory` to
-place that cache on the training volume. The corpus uses 20-second crops, 250
-80-ms frames, and `-1.0` to mask individual targets. The legacy JSONL manifest
-format below remains available through `--manifest` for local experiments.
+The intended materialized training corpus will be a private Hugging Face dataset;
+it has not been published by this repository. Once a prepared corpus is available,
+the trainer can load Parquet shards at startup and download only the user-side FLAC
+needed by each sampled crop. `hf_hub_download` provides a persistent,
+content-addressed disk cache and cross-process download locking; pass
+`--hub-cache-directory` to place that cache on the training volume. The corpus
+format uses 20-second crops, 250 80-ms frames, and `-1.0` to mask individual
+targets. The JSONL manifest format below remains available through `--manifest`
+for local experiments.
+
+### Intended source preparation
+
+The first planned sources are [Mundo TurnBench dev](https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev)
+and [MagicHub Multi-stream Spontaneous Conversation Training Datasets (English)](https://magichub.com/datasets/multi-stream-spontaneous-conversation-training-datasets_english/).
+They map to generic local roots, not source-specific identifiers:
+
+| Dataset ID | Preparation | Annotation handling |
+| --- | --- | --- |
+| `dataset_2` | Prepare the locally obtained MagicHub archive into generic samples and speaker tracks. | Preserve only approved provenance needed for processing; ASR enrichment is deferred until compute is available. |
+| `dataset_3` | Import Mundo source FLAC tracks and the supplied annotation package after access is available. | Normalize the supplied transcript and timing annotations into the training schema; do not run ASR for the initial import. |
+
+Raw source data, derived audio, transcripts, annotations, credentials, and private training
+artifacts remain outside Git and are not published by this repository. Maintain private
+provenance for every materialized sample, including its source URL, source version, and applicable
+attribution or handling requirements. Before importing or using either source, check its current
+access, license, attribution, privacy, and handling terms; this document does not determine what
+those terms permit.
 
 Use conversation-disjoint JSONL manifests. Never put windows from one conversation or speaker into
 different splits. Every line validates as `TurnTakingSample` in

@@ -4,14 +4,39 @@ Small local browser app for inspecting conversational speech data and analysis o
 
 ## Data
 
-Place the dataset under the repository root `data/` folder. The current app expects local dataset
-sessions at:
+The project is being prepared around two conversational-audio sources. Raw source files, derived
+audio, transcripts, annotations, credentials, and private dataset artifacts are excluded from Git
+and are not published by this repository.
+
+| Local dataset ID | Intended source | Preparation path | Transcript path |
+| --- | --- | --- | --- |
+| `dataset_2` | [MagicHub Multi-stream Spontaneous Conversation Training Datasets (English)](https://magichub.com/datasets/multi-stream-spontaneous-conversation-training-datasets_english/) | Prepare the locally obtained archive into the generic sample layout. | Run ASR later, after a compute backend is available. |
+| `dataset_3` | [Mundo TurnBench dev](https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev) | Import source-provided FLAC tracks and annotations after access is available. | Use the source-supplied annotations; no ASR pass is planned for the initial import. |
+
+The generic local layout is:
 
 ```text
-data/dataset_1/samples/
+data/
+  dataset_2/
+    samples/
+      sample_001/
+        speaker_1.wav
+        speaker_2.wav
+        metadata.json
+  dataset_3/
+    samples/
+      sample_001/
+        speaker_1.flac
+        speaker_2.flac
+        metadata.json
+        source_annotations.json
 ```
 
-The root `data/` folder is intentionally ignored by Git.
+`data/` is intentionally ignored by Git. Preparation preserves source attribution, source URL,
+source version, and applicable terms in private provenance records. Verify the source's current
+access, attribution, license, privacy, and handling requirements before importing, training on,
+or storing any source material. This repository does not make a rights determination for either
+source.
 
 ## Run
 
@@ -59,10 +84,10 @@ line is an H1 title and whose first paragraph is a short summary for the index c
 code or navigation update is required.
 
 The Compose app mounts the repository `data/` directory at `/app/data` in the
-container. For local dataset ingestion, use:
+container. For local dataset ingestion, use a selected prepared dataset root, for example:
 
 ```text
-/app/data/dataset_1/samples
+/app/data/dataset_2/samples
 ```
 
 Postgres data is stored in the `voice-light-postgres` Docker volume.
