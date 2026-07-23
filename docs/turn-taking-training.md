@@ -44,6 +44,15 @@ encoder design in [Fast Conformer](https://arxiv.org/abs/2305.05084).
 
 ## Manifest And Sample Contract
 
+The materialized corpus is a private Hugging Face dataset at
+`BertilBraun/voice-light-audio`. The default trainer loads its 11 Parquet shards
+at startup (10,113 current crops) and downloads only the user-side FLAC needed
+by each sampled crop. `hf_hub_download` provides a persistent, content-addressed
+disk cache and cross-process download locking; pass `--hub-cache-directory` to
+place that cache on the training volume. The corpus uses 20-second crops, 250
+80-ms frames, and `-1.0` to mask individual targets. The legacy JSONL manifest
+format below remains available through `--manifest` for local experiments.
+
 Use conversation-disjoint JSONL manifests. Never put windows from one conversation or speaker into
 different splits. Every line validates as `TurnTakingSample` in
 `app/training/turn_taking/schema.py` and has this shape:
@@ -115,10 +124,11 @@ means the current data has no independent measurement; the baseline uses the exp
 neutral weight `unmeasured_reliability_weight=1.0` and reports those examples separately. It never
 copies target confidence into reliability.
 
-The only initial auxiliary heads are:
+The materialized corpus provides five independent auxiliary targets. They are
+not mutually exclusive: a backchannel may occur during a pause. Train the
+corresponding five logits with masked binary cross-entropy:
 
-- A five-way soft event distribution: turn completion, continuation pause, backchannel,
-  interruption, and other.
+- turn completion, continuation pause, assistant backchannel, non-floor feedback, and floor take;
 - Hard future user-activity targets for `[0, 200)`, `[200, 500)`, `[500, 1000)`, and
   `[1000, 1500)` milliseconds. A null bin is masked.
 
@@ -204,7 +214,7 @@ Fifty thousand optimizer steps expose about 3,556 supervised hours: roughly 12 p
 or six over 600 hours. Define iteration counts as optimizer steps, not microbatches. Compute and log
 the actual epoch count from the filtered manifest because event balancing changes samples per epoch.
 
-The loss is `1.0 soft HOLD/YIELD BCE + 0.25 soft event cross-entropy + 0.25 future-activity BCE`.
+The loss is `1.0 soft HOLD/YIELD BCE + 0.25 auxiliary BCE + 0.25 future-activity BCE`.
 Normalize every task by its own reliability-weighted valid targets. Derive any sampling or class
 weights from the training manifest after the first audit; do not silently turn target ambiguity into
 sample reliability.
@@ -212,8 +222,8 @@ sample reliability.
 Run with:
 
 ```powershell
-uv run python -m app.training.turn_taking.cli .\data\turn-taking\train.jsonl `
-  .\artifacts\turn-taking\adapter.pt --max-steps 100
+uv run python -m app.training.turn_taking.cli .\artifacts\turn-taking\adapter.pt `
+  --hub-cache-directory D:\voice-light-hf-cache --max-steps 100
 ```
 
 ## Evaluation Gates

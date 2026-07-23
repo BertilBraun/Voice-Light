@@ -13,6 +13,10 @@ from app.training.turn_taking.data import (
     WaveformAugmenter,
     collate_training_items,
 )
+from app.training.turn_taking.hub import (
+    DEFAULT_HUB_REPOSITORY,
+    HuggingFaceTurnTakingDataset,
+)
 from app.training.turn_taking.model import TurnTakingAdapter
 from app.training.turn_taking.schema import read_manifest
 from app.training.turn_taking.trainer import train
@@ -20,8 +24,11 @@ from app.training.turn_taking.trainer import train
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train the frozen-Nemotron turn-taking adapter.")
-    parser.add_argument("manifest", type=Path)
     parser.add_argument("checkpoint", type=Path)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--manifest", type=Path)
+    source.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
+    parser.add_argument("--hub-cache-directory", type=Path)
     parser.add_argument("--max-steps", type=int)
     arguments = parser.parse_args()
     base_config = TrainingConfig()
@@ -31,15 +38,22 @@ def main() -> None:
         else base_config
     )
     torch.manual_seed(config.random_seed)
-    samples = read_manifest(arguments.manifest)
-    dataset = TurnTakingDataset(
-        samples=samples,
-        frame_seconds=config.encoder_frame_seconds,
-        burn_in_seconds=config.burn_in_seconds,
-        unmeasured_reliability_weight=config.unmeasured_reliability_weight,
-        augmenter=WaveformAugmenter(),
-        random_seed=config.random_seed,
-    )
+    if arguments.manifest is not None:
+        samples = read_manifest(arguments.manifest)
+        dataset = TurnTakingDataset(
+            samples=samples,
+            frame_seconds=config.encoder_frame_seconds,
+            burn_in_seconds=config.burn_in_seconds,
+            unmeasured_reliability_weight=config.unmeasured_reliability_weight,
+            augmenter=WaveformAugmenter(),
+            random_seed=config.random_seed,
+        )
+    else:
+        dataset = HuggingFaceTurnTakingDataset(
+            repository_id=arguments.hub_repository,
+            cache_directory=arguments.hub_cache_directory,
+            sample_rate_hz=config.sample_rate_hz,
+        )
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,

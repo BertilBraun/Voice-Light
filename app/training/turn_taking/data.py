@@ -46,8 +46,7 @@ class FrameTargets:
     yield_probability: Tensor
     primary_weight: Tensor
     primary_mask: Tensor
-    event_distribution: Tensor
-    event_weight: Tensor
+    event_targets: Tensor
     event_mask: Tensor
     future_activity: Tensor
     future_activity_mask: Tensor
@@ -166,9 +165,8 @@ def build_frame_targets(
     yield_probability = torch.zeros(frame_count, dtype=torch.float32)
     primary_weight = torch.zeros(frame_count, dtype=torch.float32)
     primary_mask = torch.zeros(frame_count, dtype=torch.bool)
-    event_distribution = torch.zeros((frame_count, EVENT_CLASS_COUNT), dtype=torch.float32)
-    event_weight = torch.zeros(frame_count, dtype=torch.float32)
-    event_mask = torch.zeros(frame_count, dtype=torch.bool)
+    event_targets = torch.zeros((frame_count, EVENT_CLASS_COUNT), dtype=torch.float32)
+    event_mask = torch.zeros((frame_count, EVENT_CLASS_COUNT), dtype=torch.bool)
     future_activity = torch.zeros((frame_count, FUTURE_ACTIVITY_BIN_COUNT), dtype=torch.float32)
     future_activity_mask = torch.zeros((frame_count, FUTURE_ACTIVITY_BIN_COUNT), dtype=torch.bool)
     burn_in_end_seconds = sample.context_start_seconds + burn_in_seconds
@@ -185,11 +183,8 @@ def build_frame_targets(
             )
             primary_mask[frame_index] = True
         if decision.event_distribution is not None and after_burn_in:
-            event_distribution[frame_index] = torch.tensor(
+            event_targets[frame_index] = torch.tensor(
                 decision.event_distribution.as_tuple(), dtype=torch.float32
-            )
-            event_weight[frame_index] = _reliability_weight(
-                decision.event_reliability, unmeasured_reliability_weight
             )
             event_mask[frame_index] = True
         if after_burn_in:
@@ -208,8 +203,7 @@ def build_frame_targets(
         yield_probability=yield_probability,
         primary_weight=primary_weight,
         primary_mask=primary_mask,
-        event_distribution=event_distribution,
-        event_weight=event_weight,
+        event_targets=event_targets,
         event_mask=event_mask,
         future_activity=future_activity,
         future_activity_mask=future_activity_mask,
@@ -256,11 +250,8 @@ def collate_training_items(items: Sequence[TrainingItem]) -> TrainingBatch:
                 batch_first=True,
                 padding_value=False,
             ),
-            event_distribution=pad_sequence(
-                [item.targets.event_distribution for item in items], batch_first=True
-            ),
-            event_weight=pad_sequence(
-                [item.targets.event_weight for item in items], batch_first=True
+            event_targets=pad_sequence(
+                [item.targets.event_targets for item in items], batch_first=True
             ),
             event_mask=pad_sequence(
                 [item.targets.event_mask for item in items],

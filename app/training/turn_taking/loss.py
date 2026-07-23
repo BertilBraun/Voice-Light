@@ -32,11 +32,13 @@ def compute_loss(
         ),
         primary_weights,
     )
-    event_values = -(
-        targets.event_distribution * nn.functional.log_softmax(output.event_logits, dim=-1)
-    ).sum(dim=-1)
-    event_weights = targets.event_weight * targets.event_mask.float() * frame_mask.float()
-    events = _weighted_mean(event_values, event_weights)
+    event_mask = targets.event_mask & frame_mask.unsqueeze(-1)
+    events = _weighted_mean(
+        nn.functional.binary_cross_entropy_with_logits(
+            output.event_logits, targets.event_targets, reduction="none"
+        ),
+        event_mask.float(),
+    )
     future_mask = targets.future_activity_mask & frame_mask.unsqueeze(-1)
     future_activity = _weighted_mean(
         nn.functional.binary_cross_entropy_with_logits(
@@ -64,8 +66,7 @@ def align_targets(targets: FrameTargets, frame_count: int) -> FrameTargets:
         yield_probability=targets.yield_probability[:, indices],
         primary_weight=targets.primary_weight[:, indices],
         primary_mask=targets.primary_mask[:, indices],
-        event_distribution=targets.event_distribution[:, indices],
-        event_weight=targets.event_weight[:, indices],
+        event_targets=targets.event_targets[:, indices],
         event_mask=targets.event_mask[:, indices],
         future_activity=targets.future_activity[:, indices],
         future_activity_mask=targets.future_activity_mask[:, indices],

@@ -111,9 +111,8 @@ def _targets(batch_size: int, frame_count: int) -> FrameTargets:
         yield_probability=torch.rand(batch_size, frame_count),
         primary_weight=torch.ones(batch_size, frame_count),
         primary_mask=torch.ones(batch_size, frame_count, dtype=torch.bool),
-        event_distribution=torch.softmax(torch.rand(batch_size, frame_count, 5), dim=-1),
-        event_weight=torch.ones(batch_size, frame_count),
-        event_mask=torch.ones(batch_size, frame_count, dtype=torch.bool),
+        event_targets=torch.rand(batch_size, frame_count, 5),
+        event_mask=torch.ones(batch_size, frame_count, 5, dtype=torch.bool),
         future_activity=torch.rand(batch_size, frame_count, 4),
         future_activity_mask=torch.ones(batch_size, frame_count, 4, dtype=torch.bool),
     )

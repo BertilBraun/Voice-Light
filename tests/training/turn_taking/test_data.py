@@ -52,7 +52,8 @@ def test_frame_targets_are_sparse_soft_and_separately_weighted() -> None:
     assert targets.primary_weight[15].item() == pytest.approx(0.4)
     assert targets.primary_weight[20].item() == pytest.approx(0.75)
     assert torch.equal(targets.future_activity_mask[15], torch.tensor([True, True, False, True]))
-    assert targets.event_distribution.shape == (30, 5)
+    assert targets.event_targets.shape == (30, 5)
+    assert targets.event_mask.shape == (30, 5)
     assert targets.future_activity.shape == (30, 4)
 
     assistant_speaking = build_assistant_speaking_input(sample, frame_seconds=0.1)
