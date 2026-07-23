@@ -35,6 +35,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VLLM_PYTHON_PATH = REPOSITORY_ROOT / "deployment/compute/vllm/.venv/bin/python"
 MINIMUM_GPU_MEMORY_BYTES = 10 * 1024**3
 MINIMUM_ASR_ONLY_DISK_BYTES = 12 * 1024**3
+ASR_TORCH_CUDA_VERSION = "12.6"
 
 
 def main(arguments: Sequence[str] | None = None) -> None:
@@ -42,7 +43,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     parser.add_argument("--download-models", action="store_true")
     parser.add_argument("--mode", choices=("full", "asr"), default="full")
     options = parser.parse_args(arguments)
-    validate_nvidia_gpu()
+    validate_nvidia_gpu(mode=options.mode)
     validate_imports(mode=options.mode)
     if options.mode == "asr":
         validate_asr_only_disk_space(REPOSITORY_ROOT)
@@ -59,14 +60,14 @@ def main(arguments: Sequence[str] | None = None) -> None:
     print("Compute environment validation passed.")
 
 
-def validate_nvidia_gpu() -> None:
+def validate_nvidia_gpu(mode: str) -> None:
     subprocess.run(["nvidia-smi"], check=True, stdout=subprocess.DEVNULL)
     if not torch.cuda.is_available():
         raise RuntimeError("PyTorch cannot access CUDA.")
     device_name = torch.cuda.get_device_name(0)
     memory_bytes = torch.cuda.get_device_properties(0).total_memory
     cuda_version = torch.version.cuda
-    validate_gpu_properties(device_name, memory_bytes, cuda_version)
+    validate_gpu_properties(device_name, memory_bytes, cuda_version, mode)
     print(f"CUDA validation passed: {device_name}, PyTorch CUDA {cuda_version}.")
 
 
@@ -74,6 +75,7 @@ def validate_gpu_properties(
     device_name: str,
     memory_bytes: int,
     cuda_version: str | None,
+    mode: str = "full",
 ) -> None:
     if memory_bytes < MINIMUM_GPU_MEMORY_BYTES:
         memory_gib = memory_bytes / 1024**3
@@ -82,6 +84,11 @@ def validate_gpu_properties(
         )
     if cuda_version is None:
         raise RuntimeError("The installed PyTorch build has no CUDA runtime.")
+    if mode == "asr" and cuda_version != ASR_TORCH_CUDA_VERSION:
+        raise RuntimeError(
+            "ASR-only deployments require the CUDA "
+            f"{ASR_TORCH_CUDA_VERSION} PyTorch runtime, but found CUDA {cuda_version}."
+        )
 
 
 def validate_imports(mode: str) -> None:

@@ -22,6 +22,7 @@ set +a
 if [[ "${VOICE_LIGHT_VOICE_STACK_ENABLED:-true}" == "false" ]]; then
   uv sync --frozen --python 3.12 --extra compute \
     --no-install-package moshi --no-install-package peft
+  bash deployment/compute/install_asr_torch_cu126.sh
 else
   uv sync --frozen --python 3.12 --extra compute
 fi

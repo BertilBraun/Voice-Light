@@ -201,9 +201,11 @@ bash deployment/compute/install-service.sh
 ```
 
 `bootstrap.sh --mode asr` installs Linux audio/compiler packages, synchronizes the locked Python
-3.12 environment with the batch-ASR dependencies, validates the NVIDIA/CUDA runtime, at least
-10 GiB of GPU memory, and at least 12 GiB of free disk. It does not pre-download a batch model;
-the selected model is cached on its first request. Use `--mode full` (the default) to additionally
+3.12 environment with the batch-ASR dependencies, then replaces only its PyTorch runtime with the
+official CUDA 12.6 wheels. This keeps ASR-only rentals compatible with NVIDIA drivers that expose
+CUDA 12.6; the locked full voice-stack environment remains unchanged. It validates CUDA access,
+at least 10 GiB of GPU memory, and at least 12 GiB of free disk. It does not pre-download a batch
+model; the selected model is cached on its first request. Use `--mode full` (the default) to additionally
 install vLLM and validate/cache the voice stack. In full mode, it caches
 required voice models, and performs a streaming TTS smoke test. Moshi, NeMo, librosa, and
 faster-whisper are compute-only dependencies and are not installed for the local app. The script

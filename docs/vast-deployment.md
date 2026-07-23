@@ -19,9 +19,12 @@ key path into this PowerShell command from the local repository root:
 ```
 
 `-Mode asr` is for batch ASR on disk-constrained rentals. It installs the batch-ASR dependencies,
-disables the voice stack, skips vLLM/TTS/VoXtream, and does not download any model until a batch
-ASR request selects one. It requires at least 12 GiB free disk space in addition to the CUDA/VRAM
-checks. Omit the mode parameter for the full voice-stack deployment.
+then installs the official PyTorch CUDA 12.6 wheel set (`torch` 2.7.1, `torchaudio` 2.7.1, and
+`torchvision` 0.22.1). This deployment-specific runtime supports rentals whose NVIDIA driver
+exposes CUDA 12.6, without changing the locked full voice-stack environment. It disables the voice
+stack, skips vLLM/TTS/VoXtream, and does not download any model until a batch ASR request selects
+one. It requires at least 12 GiB free disk space in addition to the CUDA/VRAM checks. Omit the mode
+parameter for the full voice-stack deployment.
 
 The deployment command refuses uncommitted tracked changes. It creates a Git bundle from the
 current branch, transfers that exact revision without requiring Git credentials on the rental,

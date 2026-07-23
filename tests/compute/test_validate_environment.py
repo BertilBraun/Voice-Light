@@ -39,6 +39,25 @@ def test_compute_environment_accepts_capable_gpu() -> None:
     )
 
 
+def test_asr_compute_environment_accepts_cuda_126_runtime() -> None:
+    validate_environment.validate_gpu_properties(
+        device_name="NVIDIA GeForce RTX 3060",
+        memory_bytes=12 * 1024**3,
+        cuda_version="12.6",
+        mode="asr",
+    )
+
+
+def test_asr_compute_environment_rejects_incompatible_cuda_runtime() -> None:
+    with pytest.raises(RuntimeError, match="require the CUDA 12.6"):
+        validate_environment.validate_gpu_properties(
+            device_name="NVIDIA GeForce RTX 3060",
+            memory_bytes=12 * 1024**3,
+            cuda_version="12.8",
+            mode="asr",
+        )
+
+
 @pytest.mark.parametrize(
     ("memory_bytes", "cuda_version", "message"),
     [

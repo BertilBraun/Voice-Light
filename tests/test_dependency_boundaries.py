@@ -34,6 +34,23 @@ def test_compute_deployment_installs_compute_extra() -> None:
         assert "uv sync --frozen --python 3.12 --extra compute" in script
 
 
+def test_asr_only_deployment_installs_the_cuda_126_pytorch_runtime() -> None:
+    for relative_path in (
+        Path("deployment/compute/bootstrap.sh"),
+        Path("deployment/compute/start.sh"),
+    ):
+        script = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "install_asr_torch_cu126.sh" in script
+
+    installer = (REPOSITORY_ROOT / "deployment/compute/install_asr_torch_cu126.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "torch==${torch_version}" in installer
+    assert "torchaudio==${torch_version}" in installer
+    assert "torchvision==${torchvision_version}" in installer
+    assert "https://download.pytorch.org/whl/cu126" in installer
+
+
 def test_voxtream_uses_a_pinned_isolated_environment() -> None:
     bootstrap_script = (REPOSITORY_ROOT / "deployment/compute/bootstrap.sh").read_text(
         encoding="utf-8"
