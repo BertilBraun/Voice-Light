@@ -73,6 +73,7 @@ LOW_CONFIDENCE = 0.2
 USER_YIELD_HORIZON_SECONDS = 0.5
 USER_YIELD_ACTIVE_RADIUS_SECONDS = 0.5
 MINIMUM_USER_FLOOR_FOR_YIELD_SUPERVISION = 0.1
+MINIMUM_USER_FLOOR_DURATION_FOR_YIELD_SUPERVISION = 0.1
 ASSISTANT_BACKCHANNEL_HORIZON_SECONDS = 0.2
 PAUSE_FLOOR_RETENTION = 0.5
 MINIMUM_COMPLETION_INACTIVITY_SECONDS = 1.5
@@ -1269,18 +1270,11 @@ def _user_yield_context_is_active(
     time_seconds: float,
     user: SpeakerConversationAnnotation,
 ) -> bool:
-    current_floor = _speaker_floor_state_supervision(
-        time_seconds=time_seconds,
-        speaker=user,
-    )
-    if (
-        not current_floor.valid
-        or current_floor.target is None
-        or current_floor.target <= MINIMUM_USER_FLOOR_FOR_YIELD_SUPERVISION
-    ):
-        return False
     return any(
         segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
+        and segment.turn_confidence >= MINIMUM_USER_FLOOR_FOR_YIELD_SUPERVISION
+        and segment.end_seconds - segment.start_seconds
+        >= MINIMUM_USER_FLOOR_DURATION_FOR_YIELD_SUPERVISION
         and abs(time_seconds - segment.end_seconds) <= USER_YIELD_ACTIVE_RADIUS_SECONDS
         for segment in user.segment_targets
     )
