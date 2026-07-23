@@ -39,6 +39,17 @@ def test_turnbench_preparation_uses_flac_columns_and_preserves_all_human_tracks(
     assert sample.annotations.speaker_2[0].events[0].text == "speaker two"
 
 
+def test_turnbench_preparation_combines_parquet_shards_in_path_order(tmp_path: Path) -> None:
+    first_source_path = tmp_path / "dev-00000-of-00002.parquet"
+    second_source_path = tmp_path / "dev-00001-of-00002.parquet"
+    write_source_parquet(first_source_path)
+    write_source_parquet(second_source_path)
+
+    plan = build_preparation_plan((second_source_path, first_source_path))
+
+    assert [sample.sample_id for sample in plan.samples] == ["sample_001", "sample_002"]
+
+
 def test_turnbench_preparation_writes_generic_layout_and_restricted_mapping(tmp_path: Path) -> None:
     source_path = tmp_path / "source.parquet"
     target_root = tmp_path / "data" / "dataset_3" / "samples"

@@ -59,22 +59,22 @@ class TurnBenchPreparationPlan:
     samples: tuple[TurnBenchSamplePreparation, ...]
 
 
-def build_preparation_plan(source_parquet_path: Path) -> TurnBenchPreparationPlan:
-    if not source_parquet_path.is_file():
-        raise ValueError(f"TurnBench parquet file does not exist: {source_parquet_path}")
-    table = parquet.read_table(source_parquet_path, columns=list(_REQUIRED_COLUMNS))
-    missing = set(_REQUIRED_COLUMNS) - set(table.column_names)
-    if missing:
-        raise ValueError(f"TurnBench parquet is missing required columns: {sorted(missing)}")
+def build_preparation_plan(source_parquet_path: Path | Sequence[Path]) -> TurnBenchPreparationPlan:
+    source_paths = normalized_source_paths(source_parquet_path)
     samples: list[TurnBenchSamplePreparation] = []
-    for index, row in enumerate(table.to_pylist(), start=1):
-        samples.append(preparation_from_row(row, index))
+    for source_path in source_paths:
+        table = parquet.read_table(source_path, columns=list(_REQUIRED_COLUMNS))
+        missing = set(_REQUIRED_COLUMNS) - set(table.column_names)
+        if missing:
+            raise ValueError(f"TurnBench parquet is missing required columns: {sorted(missing)}")
+        for row in table.to_pylist():
+            samples.append(preparation_from_row(row, len(samples) + 1))
     if not samples:
         raise ValueError("TurnBench parquet contains no conversations.")
     return TurnBenchPreparationPlan(samples=tuple(samples))
 
 
-def download_source_parquet(download_root: Path) -> Path:
+def download_source_parquet(download_root: Path) -> tuple[Path, ...]:
     from huggingface_hub import snapshot_download
 
     snapshot_path = Path(
@@ -86,11 +86,23 @@ def download_source_parquet(download_root: Path) -> Path:
         )
     )
     parquet_paths = tuple(sorted(snapshot_path.rglob("*.parquet")))
-    if len(parquet_paths) != 1:
-        raise ValueError(
-            f"Expected exactly one TurnBench parquet source file; found {len(parquet_paths)}."
-        )
-    return parquet_paths[0]
+    if not parquet_paths:
+        raise ValueError("TurnBench download contains no parquet source files.")
+    return parquet_paths
+
+
+def normalized_source_paths(source_parquet_path: Path | Sequence[Path]) -> tuple[Path, ...]:
+    source_paths = (
+        (source_parquet_path,)
+        if isinstance(source_parquet_path, Path)
+        else tuple(source_parquet_path)
+    )
+    if not source_paths:
+        raise ValueError("TurnBench preparation requires at least one parquet source file.")
+    for path in source_paths:
+        if not path.is_file():
+            raise ValueError(f"TurnBench parquet file does not exist: {path}")
+    return tuple(sorted(source_paths))
 
 
 def preparation_from_row(row: Mapping[str, object], index: int) -> TurnBenchSamplePreparation:
@@ -109,7 +121,7 @@ def preparation_from_row(row: Mapping[str, object], index: int) -> TurnBenchSamp
 
 
 def apply_preparation(
-    source_parquet_path: Path,
+    source_parquet_path: Path | Sequence[Path],
     target_samples_root: Path,
     restricted_record_path: Path,
 ) -> TurnBenchPreparationPlan:
