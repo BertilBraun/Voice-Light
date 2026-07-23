@@ -74,6 +74,7 @@ class CorpusAuditRepository:
                  AND region_results.analysis_version = %s
                  AND region_results.annotation_version = %s
                 WHERE samples.dataset_id = ANY(%s::uuid[])
+                  AND samples.is_unusable = FALSE
                   AND latest_quality.total_quality_score > %s
                 ORDER BY datasets.name, samples.external_id
                 """,
