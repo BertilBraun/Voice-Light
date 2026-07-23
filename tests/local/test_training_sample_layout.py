@@ -77,8 +77,11 @@ def test_user_yield_predicts_floor_availability_in_500_milliseconds() -> None:
     assert speech_frame.user_has_floor_target == pytest.approx(1.0)
     assert approaching_completion_frame.user_yield_valid
     assert approaching_completion_frame.user_yield_target == pytest.approx(1.0)
-    assert post_completion_frame.user_yield_valid
-    assert post_completion_frame.user_yield_target == pytest.approx(1.0)
+    assert not post_completion_frame.user_yield_valid
+    assert (
+        post_completion_frame.user_yield_mask_reason
+        is SupervisionMaskReason.OUTSIDE_USER_YIELD_CONTEXT
+    )
     assert post_completion_frame.user_has_floor_target == pytest.approx(0.0)
     assert post_completion_frame.interaction_auxiliary.turn_completion.valid
     assert post_completion_frame.interaction_auxiliary.turn_completion.target == pytest.approx(1.0)
@@ -110,12 +113,38 @@ def test_user_yield_masks_when_its_future_floor_horizon_is_censored() -> None:
     )
 
     available_frame = _frame_at(frames, 4.84)
-    censored_frame = _frame_at(frames, 5.24)
+    censored_frame = _frame_at(frames, 5.16)
 
     assert available_frame.user_yield_valid
     assert available_frame.user_yield_target == pytest.approx(1.0)
     assert not censored_frame.user_yield_valid
     assert censored_frame.user_yield_mask_reason is SupervisionMaskReason.FUTURE_HORIZON_CENSORED
+
+
+def test_user_yield_requires_meaningful_current_user_floor() -> None:
+    user = _speaker_annotation(
+        side=SpeakerSide.SPEAKER2,
+        segment_targets=(
+            _segment_target(
+                start_seconds=4.2,
+                end_seconds=5.2,
+                turn_confidence=0.1,
+            ),
+        ),
+    )
+    frames = build_frame_previews(
+        start_seconds=0.0,
+        end_seconds=8.0,
+        annotation_end_seconds=8.0,
+        user=user,
+        assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
+    )
+
+    frame = _frame_at(frames, 4.84)
+
+    assert frame.user_has_floor_target == pytest.approx(0.1)
+    assert not frame.user_yield_valid
+    assert frame.user_yield_mask_reason is SupervisionMaskReason.OUTSIDE_USER_YIELD_CONTEXT
 
 
 def test_connection_probability_softly_supervises_floor_state_and_yield() -> None:
@@ -486,10 +515,15 @@ def test_uncertain_transcript_softly_supervises_runtime_heads() -> None:
         user=user,
         assistant=_speaker_annotation(side=SpeakerSide.SPEAKER1),
     )
+    approaching_completion_frame = _frame_at(frames, 4.84)
     post_speech_frame = _frame_at(frames, 5.24)
 
-    assert post_speech_frame.user_yield_valid
-    assert post_speech_frame.user_yield_target == pytest.approx(1.0)
+    assert approaching_completion_frame.user_yield_valid
+    assert approaching_completion_frame.user_yield_target == pytest.approx(1.0)
+    assert not post_speech_frame.user_yield_valid
+    assert (
+        post_speech_frame.user_yield_mask_reason is SupervisionMaskReason.OUTSIDE_USER_YIELD_CONTEXT
+    )
     ambiguous_speech_frame = _frame_at(frames, 4.44)
     assert ambiguous_speech_frame.user_has_floor_valid
     assert ambiguous_speech_frame.user_has_floor_target == pytest.approx(0.5)

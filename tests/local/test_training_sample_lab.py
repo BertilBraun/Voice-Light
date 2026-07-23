@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from random import Random
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,13 +15,17 @@ from app.local.conversation_regions.models import (
 )
 from app.local.db.repository import minimum_quality_filter, optional_dataset_filter
 from app.local.main import app
+from app.local.timeline_repair.transform import CanonicalInterval
 from app.local.training_samples.models import TrainingSamplePropositionKind
 from app.local.training_samples.service import (
+    MAXIMUM_PROPOSITION_MASKED_RATIO,
     ProbabilitySpan,
     PropositionAnchor,
     _build_proposition,
     _interesting_location_score,
+    _masked_supervised_ratio,
     _proposition_anchors,
+    _random_usable_start_seconds,
     build_frame_previews,
 )
 from app.shared.quality import (
@@ -326,6 +331,41 @@ def test_proposition_allows_short_masked_region_with_explicit_coverage() -> None
     assert proposition.masked_supervised_ratio == pytest.approx(1.0 / 16.0)
     assert proposition.primary_supervision_ratio == pytest.approx(1.0)
     assert proposition.score > 0.75
+
+
+def test_random_location_avoids_excessively_masked_supervision() -> None:
+    regions = ConversationRegionAnalysis(
+        analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+        annotation_version="test",
+        config=ConversationRegionConfig(),
+        duration_seconds=40.0,
+        usable_duration_seconds=28.0,
+        unusable_duration_seconds=12.0,
+        usable_ratio=0.7,
+        unusable_regions=(
+            UnusableConversationRegion(
+                start_seconds=0.0,
+                end_seconds=12.0,
+                reasons=(ConversationRegionReason.DUAL_SILENCE,),
+            ),
+        ),
+    )
+
+    start_seconds = _random_usable_start_seconds(
+        duration_seconds=40.0,
+        generator=Random(7),
+        available_intervals=(CanonicalInterval(start_seconds=0.0, end_seconds=40.0),),
+        conversation_regions=regions,
+    )
+
+    assert (
+        _masked_supervised_ratio(
+            start_seconds=start_seconds,
+            end_seconds=start_seconds + 20.0,
+            conversation_regions=regions,
+        )
+        <= MAXIMUM_PROPOSITION_MASKED_RATIO
+    )
 
 
 def test_candidate_anchors_require_tight_shifts_and_overlapping_backchannels() -> None:

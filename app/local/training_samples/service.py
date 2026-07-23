@@ -59,6 +59,7 @@ WAVEFORM_POINT_COUNT = 1000
 MAXIMUM_CANDIDATE_SILENCE_SECONDS = 2.0
 FUTURE_ACTIVITY_WINDOWS_MILLISECONDS = ((0, 200), (200, 500), (500, 1000), (1000, 1500))
 INTERESTING_RANDOM_LOCATION_COUNT = 24
+RANDOM_LOCATION_CANDIDATE_COUNT = 64
 INTERESTING_ANCHOR_LIMIT = 64
 PROPOSITION_ANCHOR_LIMIT_PER_KIND = 18
 PROPOSITION_EVENT_OFFSET_SECONDS = 12.0
@@ -71,6 +72,7 @@ HIGH_CONFIDENCE = 0.8
 LOW_CONFIDENCE = 0.2
 USER_YIELD_HORIZON_SECONDS = 0.5
 USER_YIELD_ACTIVE_RADIUS_SECONDS = 0.5
+MINIMUM_USER_FLOOR_FOR_YIELD_SUPERVISION = 0.1
 ASSISTANT_BACKCHANNEL_HORIZON_SECONDS = 0.2
 PAUSE_FLOOR_RETENTION = 0.5
 MINIMUM_COMPLETION_INACTIVITY_SECONDS = 1.5
@@ -153,6 +155,7 @@ def build_training_sample_preview(
         assistant=assistant_annotation,
         generator=generator,
         available_intervals=available_intervals,
+        conversation_regions=conversation_regions,
     )
     end_seconds = min(eligible_duration_seconds, start_seconds + INPUT_DURATION_SECONDS)
     user_track = _track(dashboard_sample, user_side)
@@ -698,6 +701,20 @@ def _masked_supervision(
     return masked_seconds, reasons
 
 
+def _masked_supervised_ratio(
+    start_seconds: float,
+    end_seconds: float,
+    conversation_regions: ConversationRegionAnalysis | None,
+) -> float:
+    supervision_start_seconds = min(end_seconds, start_seconds + BURN_IN_SECONDS)
+    masked_seconds, _ = _masked_supervision(
+        start_seconds=supervision_start_seconds,
+        end_seconds=end_seconds,
+        conversation_regions=conversation_regions,
+    )
+    return _ratio(masked_seconds, end_seconds - supervision_start_seconds)
+
+
 def _ratio(numerator: float | int, denominator: float | int) -> float:
     return float(numerator) / float(denominator) if denominator else 0.0
 
@@ -847,6 +864,7 @@ def _select_start_seconds(
     assistant: SpeakerConversationAnnotation,
     generator: random.Random,
     available_intervals: Sequence[CanonicalInterval],
+    conversation_regions: ConversationRegionAnalysis | None,
 ) -> float:
     if requested_start_seconds is not None:
         return _sample_start_seconds(
@@ -857,11 +875,11 @@ def _select_start_seconds(
         )
     match selection_mode:
         case TrainingSampleSelectionMode.RANDOM:
-            return _sample_start_seconds(
+            return _random_usable_start_seconds(
                 duration_seconds=duration_seconds,
-                requested_start_seconds=None,
                 generator=generator,
                 available_intervals=available_intervals,
+                conversation_regions=conversation_regions,
             )
         case TrainingSampleSelectionMode.INTERESTING:
             return _interesting_start_seconds(
@@ -871,6 +889,43 @@ def _select_start_seconds(
                 generator=generator,
                 available_intervals=available_intervals,
             )
+
+
+def _random_usable_start_seconds(
+    duration_seconds: float,
+    generator: random.Random,
+    available_intervals: Sequence[CanonicalInterval],
+    conversation_regions: ConversationRegionAnalysis | None,
+) -> float:
+    candidates = tuple(
+        _sample_start_seconds(
+            duration_seconds=duration_seconds,
+            requested_start_seconds=None,
+            generator=generator,
+            available_intervals=available_intervals,
+        )
+        for _ in range(RANDOM_LOCATION_CANDIDATE_COUNT)
+    )
+    acceptable_candidates = tuple(
+        candidate
+        for candidate in candidates
+        if _masked_supervised_ratio(
+            start_seconds=candidate,
+            end_seconds=min(duration_seconds, candidate + INPUT_DURATION_SECONDS),
+            conversation_regions=conversation_regions,
+        )
+        <= MAXIMUM_PROPOSITION_MASKED_RATIO
+    )
+    if acceptable_candidates:
+        return acceptable_candidates[generator.randrange(len(acceptable_candidates))]
+    return min(
+        candidates,
+        key=lambda candidate: _masked_supervised_ratio(
+            start_seconds=candidate,
+            end_seconds=min(duration_seconds, candidate + INPUT_DURATION_SECONDS),
+            conversation_regions=conversation_regions,
+        ),
+    )
 
 
 def _sample_start_seconds(
@@ -1214,6 +1269,16 @@ def _user_yield_context_is_active(
     time_seconds: float,
     user: SpeakerConversationAnnotation,
 ) -> bool:
+    current_floor = _speaker_floor_state_supervision(
+        time_seconds=time_seconds,
+        speaker=user,
+    )
+    if (
+        not current_floor.valid
+        or current_floor.target is None
+        or current_floor.target <= MINIMUM_USER_FLOOR_FOR_YIELD_SUPERVISION
+    ):
+        return False
     return any(
         segment.evidence_source is AnnotationEvidenceSource.TRANSCRIPT
         and abs(time_seconds - segment.end_seconds) <= USER_YIELD_ACTIVE_RADIUS_SECONDS
