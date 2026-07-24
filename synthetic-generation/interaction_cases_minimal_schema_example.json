@@ -1,0 +1,57 @@
+{
+  "experiment_id": "minimal_schema_example",
+  "cases": [
+    {
+      "speaker_a": {
+        "text": "[matter-of-fact] I moved the budget review to next week, because finance needs one more day to check the numbers."
+      },
+      "speaker_b": {
+        "text": "[softly] Mm-hm."
+      },
+      "placement": {
+        "type": "backchannel",
+        "anchor_text": "I moved the budget review to next week",
+        "delay_ms": 300
+      }
+    },
+    {
+      "speaker_a": {
+        "text": "[conversational, focused] I think we should send the draft by Wednesday morning, if leg-"
+      },
+      "speaker_b": {
+        "text": "[quickly, correcting] Thursday afternoon is safer."
+      },
+      "placement": {
+        "type": "interruption",
+        "anchor_text": "by Wednesday morning if",
+        "mode": "at_anchor_end",
+        "lead_ms": 0
+      }
+    },
+    {
+      "speaker_a": {
+        "text": "[conversational] That should give us enough time to review the numbers before the client call."
+      },
+      "speaker_b": {
+        "text": "[curious] Do you want me to update the deck after that?"
+      },
+      "placement": {
+        "type": "completion",
+        "pause": "short"
+      }
+    },
+    {
+      "speaker_a": {
+        "text": "[thinking] I checked the deployment logs, and the restart happened right after the backup job finished. That probably means the scheduler triggered it."
+      },
+      "speaker_b": {
+        "text": "[silent] Placeholder."
+      },
+      "placement": {
+        "type": "internal_pause",
+        "anchor_text": "the restart happened right after the backup job finished",
+        "pause": "medium"
+      }
+    }
+  ]
+}

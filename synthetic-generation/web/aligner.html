@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Synthetic Conversation Aligner</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #111317;
+    --panel: #1a1d23;
+    --soft: #222731;
+    --border: #3a404d;
+    --text: #f3f5f7;
+    --muted: #aab1bd;
+    --a: #4ea1ff;
+    --b: #f59b4a;
+    --good: #6bd18b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); }
+  main { width: min(1280px, 96vw); margin: 18px auto 36px; }
+  h1 { margin: 0 0 12px; font-size: 1.35rem; }
+  h2 { margin: 0 0 10px; font-size: 1rem; }
+  label { display: block; color: var(--muted); font-size: .84rem; margin-bottom: 5px; }
+  select, input, textarea, button {
+    width: 100%; border: 1px solid var(--border); background: #101218; color: var(--text);
+    border-radius: 6px; padding: 8px; font: inherit;
+  }
+  button { background: var(--soft); cursor: pointer; font-weight: 650; }
+  button:hover { filter: brightness(1.12); }
+  button:disabled { opacity: .45; cursor: default; }
+  textarea { min-height: 62px; resize: vertical; }
+  .panel { border: 1px solid var(--border); background: var(--panel); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .controls { display: grid; grid-template-columns: repeat(7, minmax(100px, 1fr)); gap: 8px; }
+  .variant-row { display: grid; grid-template-columns: 42px 1fr 42px; gap: 6px; align-items: end; }
+  .muted { color: var(--muted); }
+  .metric { font-size: 1.05rem; font-weight: 750; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .track { position: relative; height: 124px; border: 1px solid var(--border); background: #0c0f14; border-radius: 8px; overflow: hidden; margin-top: 8px; user-select: none; touch-action: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .status { min-height: 1.3em; color: var(--muted); }
+  .ok { color: var(--good); }
+  details summary { cursor: pointer; color: var(--muted); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; color: var(--muted); }
+  @media (max-width: 900px) {
+    .grid, .grid3 { grid-template-columns: 1fr; }
+    .controls { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Synthetic Conversation Aligner</h1>
+
+  <section class="panel" id="debugPanel" hidden>
+    <h2>Debug File Loading</h2>
+    <div class="grid">
+      <div><label for="fileA">Speaker A audio</label><input id="fileA" type="file" accept="audio/*" /></div>
+      <div><label for="fileB">Speaker B audio</label><input id="fileB" type="file" accept="audio/*" /></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="grid3">
+      <div><label for="caseSelect">Case</label><select id="caseSelect"></select></div>
+      <div><label>Speaker B onset after A start</label><div id="offsetReadout" class="metric">0 ms</div></div>
+      <div><label>Overlap</label><div id="overlapReadout" class="metric">0 ms</div></div>
+    </div>
+    <h2 id="caseTitle" style="margin-top:12px;"></h2>
+    <div id="caseDescription" class="muted"></div>
+    <div id="backchannelAnchor" class="muted" style="margin-top:6px;"></div>
+    <div id="alignmentNotes" class="muted" style="margin-top:6px;"></div>
+  </section>
+
+  <section class="panel grid">
+    <div>
+      <h2>Speaker A</h2>
+      <div class="variant-row">
+        <button id="prevA" title="Previous A variant">‹</button>
+        <div><label for="variantA">Variant</label><select id="variantA"></select></div>
+        <button id="nextA" title="Next A variant">›</button>
+      </div>
+      <label for="gainA" style="margin-top:8px;">Gain</label><input id="gainA" type="number" min="0" max="3" step="0.05" value="1" />
+      <p><strong>Text</strong><br><span id="textA" class="muted"></span></p>
+      <p><strong>Instruction</strong><br><span id="instructionA" class="muted"></span></p>
+      <p><strong>Sent text</strong><br><span id="preparedTextA" class="muted"></span></p>
+      <p><strong>Sent parameters</strong><br><span id="preparedParametersA" class="muted mono"></span></p>
+      <div id="metaA" class="status"></div>
+    </div>
+    <div>
+      <h2>Speaker B</h2>
+      <div class="variant-row">
+        <button id="prevB" title="Previous B variant">‹</button>
+        <div><label for="variantB">Variant</label><select id="variantB"></select></div>
+        <button id="nextB" title="Next B variant">›</button>
+      </div>
+      <label for="gainB" style="margin-top:8px;">Gain</label><input id="gainB" type="number" min="0" max="3" step="0.05" value="1" />
+      <label for="offsetB" style="margin-top:8px;">B offset after A start (ms)</label><input id="offsetB" type="number" step="10" value="0" />
+      <p><strong>Text</strong><br><span id="textB" class="muted"></span></p>
+      <p><strong>Instruction</strong><br><span id="instructionB" class="muted"></span></p>
+      <p><strong>Sent text</strong><br><span id="preparedTextB" class="muted"></span></p>
+      <p><strong>Sent parameters</strong><br><span id="preparedParametersB" class="muted mono"></span></p>
+      <div id="metaB" class="status"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="controls">
+      <button id="playMix">Play mix</button>
+      <button id="playA">Play A only</button>
+      <button id="playB">Play B only</button>
+      <button id="stop">Stop</button>
+      <button id="resetOffset">Reset B</button>
+      <button id="downloadMix">Download current mix</button>
+      <button id="downloadJson">Download alignment JSON</button>
+    </div>
+    <div class="track"><canvas id="timeline"></canvas></div>
+    <div id="timelineInfo" class="status"></div>
+    <div id="exportStatus" class="status"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Saved Candidates</h2>
+    <div class="grid3">
+      <div><label for="candidateNote">Note</label><input id="candidateNote" type="text" /></div>
+      <div style="align-self:end;"><button id="saveCandidate">Save candidate</button></div>
+      <div style="align-self:end;"><button id="downloadCandidates">Download all candidates</button></div>
+    </div>
+    <div id="candidateList" class="status" style="margin-top:8px;"></div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Selected variant diagnostics</summary>
+      <pre id="diagnostics"></pre>
+    </details>
+  </section>
+</main>
+
+<script>
+(() => {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioContext = new AudioCtx();
+  const trackGeometry = {
+    speakerA: { y: 18, height: 40 },
+    speakerB: { y: 68, height: 40 }
+  };
+  const state = {
+    manifestUrl: null,
+    manifest: null,
+    caseIndex: 0,
+    variantAIndex: 0,
+    variantBIndex: 0,
+    bufferA: null,
+    bufferB: null,
+    offsetB: 0,
+    gainA: 1,
+    gainB: 1,
+    playhead: 0,
+    playing: false,
+    playbackKeys: ["A", "B"],
+    sources: [],
+    startedAt: 0,
+    timelineStartAtPlay: 0,
+    animationFrame: null,
+    drag: null,
+    drawQueued: false,
+    playbackRestartQueued: false,
+    timelineBounds: { min: -5, max: 3 },
+    candidates: JSON.parse(localStorage.getItem("synthetic-aligner-candidates") || "[]"),
+    lastExport: { normalization_applied: false, normalization_gain: 1.0 }
+  };
+  const $ = id => document.getElementById(id);
+  const elements = {
+    debugPanel: $("debugPanel"), fileA: $("fileA"), fileB: $("fileB"),
+    caseSelect: $("caseSelect"), caseTitle: $("caseTitle"), caseDescription: $("caseDescription"),
+    backchannelAnchor: $("backchannelAnchor"), alignmentNotes: $("alignmentNotes"), variantA: $("variantA"), variantB: $("variantB"),
+    prevA: $("prevA"), nextA: $("nextA"), prevB: $("prevB"), nextB: $("nextB"),
+    gainA: $("gainA"), gainB: $("gainB"), offsetB: $("offsetB"), textA: $("textA"),
+    textB: $("textB"), instructionA: $("instructionA"), instructionB: $("instructionB"),
+    preparedTextA: $("preparedTextA"), preparedTextB: $("preparedTextB"),
+    preparedParametersA: $("preparedParametersA"), preparedParametersB: $("preparedParametersB"),
+    metaA: $("metaA"), metaB: $("metaB"), offsetReadout: $("offsetReadout"),
+    overlapReadout: $("overlapReadout"), playMix: $("playMix"), playA: $("playA"),
+    playB: $("playB"), stop: $("stop"), resetOffset: $("resetOffset"),
+    timeline: $("timeline"), timelineInfo: $("timelineInfo"), exportStatus: $("exportStatus"),
+    downloadMix: $("downloadMix"), downloadJson: $("downloadJson"), saveCandidate: $("saveCandidate"),
+    downloadCandidates: $("downloadCandidates"), candidateNote: $("candidateNote"),
+    candidateList: $("candidateList"), diagnostics: $("diagnostics")
+  };
+
+  function selectedCase() { return state.manifest.cases[state.caseIndex]; }
+  function successfulVariants(speaker) { return speaker.variants.filter(variant => variant.status === "success"); }
+  function selectedVariantA() { return successfulVariants(selectedCase().speaker_a)[state.variantAIndex]; }
+  function selectedVariantB() { return successfulVariants(selectedCase().speaker_b)[state.variantBIndex]; }
+  function speakerAStart() { return 0; }
+  function speakerAEnd() { return state.bufferA ? state.bufferA.duration : 0; }
+  function speakerBStart() { return state.offsetB; }
+  function speakerBEnd() { return state.bufferB ? state.offsetB + state.bufferB.duration : state.offsetB; }
+  function defaultBOffset() {
+    const variantB = selectedVariantB();
+    if (variantB?.suggested_b_offset_seconds != null) return Number(variantB.suggested_b_offset_seconds);
+    const variantA = selectedVariantA();
+    if (variantA?.suggested_b_offset_seconds != null) return Number(variantA.suggested_b_offset_seconds);
+    const interactionCase = selectedCase();
+    return Number(interactionCase.default_b_offset_seconds || 0);
+  }
+
+  async function init() {
+    const params = new URLSearchParams(window.location.search);
+    const manifestParam = params.get("manifest");
+    if (!manifestParam) {
+      elements.debugPanel.hidden = false;
+      bindDebugFileLoading();
+      queueDraw();
+      return;
+    }
+    state.manifestUrl = new URL(manifestParam, window.location.href);
+    const response = await fetch(state.manifestUrl);
+    if (!response.ok) throw new Error(`Could not load manifest: ${response.status}`);
+    state.manifest = await response.json();
+    populateCases(params.get("case"));
+    await loadCase(true);
+    renderCandidates();
+  }
+
+  function populateCases(initialCaseId) {
+    elements.caseSelect.innerHTML = "";
+    state.manifest.cases.forEach((interactionCase, index) => {
+      const option = new Option(`${interactionCase.title} (${interactionCase.case_id})`, String(index));
+      elements.caseSelect.add(option);
+      if (interactionCase.case_id === initialCaseId) state.caseIndex = index;
+    });
+    elements.caseSelect.value = String(state.caseIndex);
+  }
+
+  async function loadCase(resetOffset) {
+    stopPlayback();
+    const interactionCase = selectedCase();
+    state.variantAIndex = 0;
+    state.variantBIndex = 0;
+    if (resetOffset) state.offsetB = defaultBOffset();
+    populateVariantSelect(elements.variantA, successfulVariants(interactionCase.speaker_a));
+    populateVariantSelect(elements.variantB, successfulVariants(interactionCase.speaker_b));
+    await loadSelectedAudio(false);
+    renderCase();
+    queueDraw();
+  }
+
+  function populateVariantSelect(select, variants) {
+    select.innerHTML = "";
+    variants.forEach((variant, index) => {
+      const label = `${index + 1} / ${variants.length} - ${variant.id}`;
+      select.add(new Option(label, String(index)));
+    });
+  }
+
+  async function loadSelectedAudio(stopFirst) {
+    if (stopFirst) stopPlayback();
+    const variantA = selectedVariantA();
+    const variantB = selectedVariantB();
+    state.bufferA = variantA ? await loadAudioBuffer(variantA.audio_url) : null;
+    state.bufferB = variantB ? await loadAudioBuffer(variantB.audio_url) : null;
+    state.playhead = Math.max(0, timelineAudioBounds().min);
+    renderCase();
+    queueDraw();
+  }
+
+  async function loadAudioBuffer(audioUrl) {
+    const resolvedUrl = new URL(audioUrl, state.manifestUrl);
+    const response = await fetch(resolvedUrl);
+    if (!response.ok) throw new Error(`Could not load audio: ${resolvedUrl}`);
+    const audioData = await response.arrayBuffer();
+    return await audioContext.decodeAudioData(audioData);
+  }
+
+  function renderCase() {
+    if (!state.manifest) return;
+    const interactionCase = selectedCase();
+    const variantA = selectedVariantA();
+    const variantB = selectedVariantB();
+    elements.caseTitle.textContent = interactionCase.title;
+    elements.caseDescription.textContent = interactionCase.description;
+    elements.backchannelAnchor.textContent = placementSummary(casePlacement(interactionCase));
+    elements.alignmentNotes.textContent = interactionCase.alignment_notes || "";
+    elements.textA.textContent = interactionCase.speaker_a.text;
+    elements.textB.textContent = interactionCase.speaker_b.text;
+    elements.instructionA.textContent = interactionCase.speaker_a.instruction || "";
+    elements.instructionB.textContent = interactionCase.speaker_b.instruction || "";
+    elements.preparedTextA.textContent = variantA?.prepared_request?.text || "";
+    elements.preparedTextB.textContent = variantB?.prepared_request?.text || "";
+    elements.preparedParametersA.textContent = JSON.stringify(variantA?.prepared_request?.parameters || {});
+    elements.preparedParametersB.textContent = JSON.stringify(variantB?.prepared_request?.parameters || {});
+    elements.offsetB.value = String(Math.round(state.offsetB * 1000));
+    elements.gainA.value = String(state.gainA);
+    elements.gainB.value = String(state.gainB);
+    elements.variantA.value = String(state.variantAIndex);
+    elements.variantB.value = String(state.variantBIndex);
+    elements.metaA.textContent = variantA ? variantSummary(variantA, state.bufferA) : "No successful A variants";
+    elements.metaB.textContent = variantB ? variantSummary(variantB, state.bufferB) : "No successful B variants";
+    elements.diagnostics.textContent = JSON.stringify({ speaker_a: variantA, speaker_b: variantB }, null, 2);
+    updateMetrics();
+  }
+
+  function variantSummary(variant, buffer) {
+    const duration = buffer ? buffer.duration : variant.duration_seconds;
+    const generated = variant.generation_seconds == null ? "n/a" : `${variant.generation_seconds.toFixed(2)} s gen`;
+    const realtime = variant.real_time_factor == null ? "n/a" : `${variant.real_time_factor.toFixed(2)} RTF`;
+    const placement = variant.suggested_b_offset_seconds == null
+      ? ""
+      : `, suggested B ${Math.round(variant.suggested_b_offset_seconds * 1000)} ms`;
+    const onset = variant.audio_onset_seconds == null
+      ? ""
+      : `, onset ${Math.round(variant.audio_onset_seconds * 1000)} ms`;
+    const offset = variant.audio_offset_seconds == null
+      ? ""
+      : `, end ${Math.round(variant.audio_offset_seconds * 1000)} ms`;
+    const trim = variant.trimmed_leading_seconds == null
+      ? ""
+      : `, trim ${Math.round(variant.trimmed_leading_seconds * 1000)}/${Math.round((variant.trimmed_trailing_seconds || 0) * 1000)} ms`;
+    const placementOutput = variant.placement_output || variant.placement_metadata;
+    const internalPause = placementOutput?.measured_pause_ms == null
+      ? ""
+      : `, internal pause ${placementOutput.measured_pause_ms} ms`;
+    return `${variant.id}: ${duration.toFixed(2)} s, ${generated}, ${realtime}, seed ${variant.seed ?? "n/a"}${placement}${onset}${offset}${trim}${internalPause}`;
+  }
+
+  function casePlacement(interactionCase) {
+    if (interactionCase.placement) return interactionCase.placement;
+    if (interactionCase.backchannel_placement) {
+      return { type: "backchannel", ...interactionCase.backchannel_placement };
+    }
+    if (interactionCase.interruption_placement) {
+      return { type: "interruption", ...interactionCase.interruption_placement };
+    }
+    if (interactionCase.completion_placement) {
+      return { type: "completion", ...interactionCase.completion_placement };
+    }
+    if (interactionCase.internal_pause_placement) {
+      return { type: "internal_pause", ...interactionCase.internal_pause_placement };
+    }
+    return null;
+  }
+
+  function placementSummary(placement) {
+    if (!placement) return "";
+    if (placement.type === "backchannel") {
+      return `Backchannel after: "${placement.anchor_text}" + ${placement.delay_ms} ms`;
+    }
+    if (placement.type === "interruption") {
+      return `Interruption ${placement.mode}: "${placement.anchor_text}" - ${placement.lead_ms} ms`;
+    }
+    if (placement.type === "completion") {
+      const minDelay = placement.min_delay_ms ?? (placement.pause === "long" ? 1000 : placement.pause === "medium" ? 500 : 200);
+      const maxDelay = placement.max_delay_ms ?? (placement.pause === "long" ? 2000 : placement.pause === "medium" ? 1000 : 500);
+      return `Completion pause: ${placement.pause}, ${minDelay}-${maxDelay} ms after A ends`;
+    }
+    if (placement.type === "internal_pause") {
+      return `Internal pause after: "${placement.anchor_text}", expected ${placement.pause}`;
+    }
+    return "";
+  }
+
+  function updateMetrics() {
+    const offsetMs = Math.round(state.offsetB * 1000);
+    const overlapMs = Math.round(overlapSeconds() * 1000);
+    elements.offsetReadout.textContent = `${offsetMs} ms`;
+    elements.overlapReadout.textContent = `${overlapMs} ms`;
+  }
+
+  function overlapSeconds() {
+    if (!state.bufferA || !state.bufferB) return 0;
+    const overlapStart = Math.max(speakerAStart(), speakerBStart());
+    const overlapEnd = Math.min(speakerAEnd(), speakerBEnd());
+    return Math.max(0, overlapEnd - overlapStart);
+  }
+
+  function timelineAudioBounds() {
+    const starts = [speakerAStart(), speakerBStart()];
+    const ends = [speakerAEnd(), speakerBEnd()];
+    return { min: Math.min(...starts), max: Math.max(...ends) };
+  }
+
+  function updateTimelineBounds() {
+    const audioBounds = timelineAudioBounds();
+    const span = Math.max(0.5, audioBounds.max - audioBounds.min);
+    const padding = Math.max(0.25, span * 0.08);
+    const target = { min: audioBounds.min - padding, max: audioBounds.max + padding };
+    const current = state.timelineBounds;
+    const currentSpan = current.max - current.min;
+    const delta = Math.max(Math.abs(target.min - current.min), Math.abs(target.max - current.max));
+    if (delta < currentSpan * 0.015) return;
+    state.timelineBounds = target;
+  }
+
+  function secondsToX(seconds, width) {
+    const bounds = state.timelineBounds;
+    return ((seconds - bounds.min) / (bounds.max - bounds.min)) * width;
+  }
+
+  function xToSeconds(x, width) {
+    const bounds = state.timelineBounds;
+    return bounds.min + (x / width) * (bounds.max - bounds.min);
+  }
+
+  function queueDraw() {
+    if (state.drawQueued) return;
+    state.drawQueued = true;
+    requestAnimationFrame(() => {
+      state.drawQueued = false;
+      drawTimeline();
+    });
+  }
+
+  function drawTimeline() {
+    updateTimelineBounds();
+    updateMetrics();
+    const canvas = elements.timeline;
+    const pixelRatio = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.floor(rect.width * pixelRatio));
+    canvas.height = Math.max(1, Math.floor(rect.height * pixelRatio));
+    const context = canvas.getContext("2d");
+    context.scale(pixelRatio, pixelRatio);
+    context.clearRect(0, 0, rect.width, rect.height);
+    drawTicks(context, rect.width, rect.height);
+    drawWave(context, rect.width, trackGeometry.speakerA.y, trackGeometry.speakerA.height, state.bufferA, speakerAStart(), "#4ea1ff", "Speaker A");
+    drawWave(context, rect.width, trackGeometry.speakerB.y, trackGeometry.speakerB.height, state.bufferB, speakerBStart(), "#f59b4a", "Speaker B");
+    const zeroX = secondsToX(0, rect.width);
+    context.strokeStyle = "#ffffff";
+    context.lineWidth = 2;
+    context.beginPath(); context.moveTo(zeroX, 0); context.lineTo(zeroX, rect.height); context.stroke();
+    context.fillStyle = "#ffffff"; context.fillText("A starts", zeroX + 4, 14);
+    const playheadX = secondsToX(state.playhead, rect.width);
+    context.strokeStyle = "#c9f2d2";
+    context.lineWidth = 1.5;
+    context.beginPath(); context.moveTo(playheadX, 0); context.lineTo(playheadX, rect.height); context.stroke();
+    const audioBounds = timelineAudioBounds();
+    elements.timelineInfo.textContent = `Timeline ${audioBounds.min.toFixed(2)} s to ${audioBounds.max.toFixed(2)} s - playhead ${state.playhead.toFixed(2)} s`;
+  }
+
+  function drawTicks(context, width, height) {
+    const bounds = state.timelineBounds;
+    const span = bounds.max - bounds.min;
+    const targetTicks = Math.max(4, Math.floor(width / 120));
+    const rawStep = span / targetTicks;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const normalized = rawStep / magnitude;
+    const step = (normalized < 2 ? 2 : normalized < 5 ? 5 : 10) * magnitude;
+    const first = Math.ceil(bounds.min / step) * step;
+    context.strokeStyle = "#2b303a";
+    context.fillStyle = "#8f98a8";
+    context.font = "11px system-ui";
+    for (let tick = first; tick <= bounds.max; tick += step) {
+      const x = secondsToX(tick, width);
+      context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
+      context.fillText(`${tick.toFixed(step < 1 ? 1 : 0)}s`, x + 3, height - 6);
+    }
+  }
+
+  function drawWave(context, width, y, height, buffer, startSeconds, color, label) {
+    context.fillStyle = "#8f98a8";
+    context.fillText(label, 8, y - 3);
+    context.strokeStyle = "#303743";
+    context.beginPath(); context.moveTo(0, y + height / 2); context.lineTo(width, y + height / 2); context.stroke();
+    if (!buffer) return;
+    const startX = secondsToX(startSeconds, width);
+    const endX = secondsToX(startSeconds + buffer.duration, width);
+    const drawWidth = Math.max(1, endX - startX);
+    context.fillStyle = `${color}22`;
+    context.fillRect(startX, y, drawWidth, height);
+    const data = buffer.getChannelData(0);
+    const samplesPerPixel = Math.max(1, Math.floor(data.length / drawWidth));
+    context.strokeStyle = color;
+    context.beginPath();
+    for (let pixel = 0; pixel < drawWidth; pixel++) {
+      const sampleStart = Math.floor(pixel * samplesPerPixel);
+      const sampleEnd = Math.min(data.length, sampleStart + samplesPerPixel);
+      let minimum = 1;
+      let maximum = -1;
+      for (let sample = sampleStart; sample < sampleEnd; sample++) {
+        const value = data[sample];
+        if (value < minimum) minimum = value;
+        if (value > maximum) maximum = value;
+      }
+      const x = startX + pixel;
+      context.moveTo(x, y + (1 + minimum) * height / 2);
+      context.lineTo(x, y + (1 + maximum) * height / 2);
+    }
+    context.stroke();
+    context.lineWidth = 2;
+    context.beginPath(); context.moveTo(startX, y); context.lineTo(startX, y + height); context.stroke();
+    context.lineWidth = 1;
+  }
+
+  function stopPlayback() {
+    for (const source of state.sources) {
+      try { source.stop(); } catch {}
+    }
+    state.sources = [];
+    state.playing = false;
+    if (state.animationFrame) cancelAnimationFrame(state.animationFrame);
+    state.animationFrame = null;
+    queueDraw();
+  }
+
+  async function play(keys) {
+    stopPlayback();
+    await audioContext.resume();
+    state.playbackKeys = [...keys];
+    const tracks = [];
+    if (keys.includes("A") && state.bufferA) tracks.push({ buffer: state.bufferA, start: speakerAStart(), gain: state.gainA });
+    if (keys.includes("B") && state.bufferB) tracks.push({ buffer: state.bufferB, start: speakerBStart(), gain: state.gainB });
+    if (!tracks.length) return;
+    const earliest = Math.min(...tracks.map(track => track.start));
+    const latest = Math.max(...tracks.map(track => track.start + track.buffer.duration));
+    let startTimeline = state.playhead;
+    if (startTimeline < earliest || startTimeline >= latest) startTimeline = earliest;
+    const when = audioContext.currentTime + 0.05;
+    for (const track of tracks) {
+      const relative = startTimeline - track.start;
+      if (relative >= track.buffer.duration) continue;
+      const source = audioContext.createBufferSource();
+      const gain = audioContext.createGain();
+      source.buffer = track.buffer;
+      gain.gain.value = track.gain;
+      source.connect(gain).connect(audioContext.destination);
+      if (relative <= 0) source.start(when - relative, 0);
+      else source.start(when, relative);
+      state.sources.push(source);
+    }
+    state.playing = true;
+    state.startedAt = when;
+    state.timelineStartAtPlay = startTimeline;
+    const tick = () => {
+      if (!state.playing) return;
+      state.playhead = state.timelineStartAtPlay + Math.max(0, audioContext.currentTime - state.startedAt);
+      if (state.playhead >= latest) {
+        state.playhead = latest;
+        stopPlayback();
+        return;
+      }
+      queueDraw();
+      state.animationFrame = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  async function seekPlayback(seconds) {
+    state.playhead = seconds;
+    if (state.playing) {
+      await play(state.playbackKeys);
+      return;
+    }
+    queueDraw();
+  }
+
+  function queuePlaybackRestart() {
+    if (!state.playing || state.playbackRestartQueued) return;
+    state.playbackRestartQueued = true;
+    requestAnimationFrame(() => {
+      state.playbackRestartQueued = false;
+      if (!state.playing) return;
+      const currentPlayhead = state.playhead;
+      const playbackKeys = [...state.playbackKeys];
+      stopPlayback();
+      state.playhead = currentPlayhead;
+      play(playbackKeys);
+    });
+  }
+
+  function togglePlayback() {
+    if (state.playing) {
+      stopPlayback();
+      return;
+    }
+    play(state.playbackKeys);
+  }
+
+  async function exportMix() {
+    if (!state.bufferA || !state.bufferB) return;
+    const bounds = timelineAudioBounds();
+    const sampleRate = Math.max(state.bufferA.sampleRate, state.bufferB.sampleRate);
+    const duration = bounds.max - bounds.min;
+    const offline = new OfflineAudioContext(1, Math.ceil(duration * sampleRate), sampleRate);
+    addOfflineTrack(offline, state.bufferA, speakerAStart() - bounds.min, state.gainA);
+    addOfflineTrack(offline, state.bufferB, speakerBStart() - bounds.min, state.gainB);
+    const rendered = await offline.startRendering();
+    const samples = rendered.getChannelData(0);
+    let peak = 0;
+    for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
+    const normalizationGain = peak > 1 ? 1 / peak : 1;
+    if (normalizationGain !== 1) {
+      for (let index = 0; index < samples.length; index++) samples[index] *= normalizationGain;
+    }
+    state.lastExport = { normalization_applied: normalizationGain !== 1, normalization_gain: normalizationGain };
+    downloadBlob(encodeWav(samples, sampleRate), mixFilename(".wav"), "audio/wav");
+    elements.exportStatus.textContent = `Exported ${duration.toFixed(2)} s WAV. Normalization ${normalizationGain === 1 ? "not applied" : `applied at ${normalizationGain.toFixed(3)}`}.`;
+  }
+
+  function addOfflineTrack(offline, buffer, start, gainValue) {
+    const source = offline.createBufferSource();
+    const gain = offline.createGain();
+    source.buffer = buffer;
+    gain.gain.value = gainValue;
+    source.connect(gain).connect(offline.destination);
+    source.start(Math.max(0, start));
+  }
+
+  function encodeWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    writeString(view, 0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(view, 8, "WAVE");
+    writeString(view, 12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(view, 36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    let offset = 44;
+    for (const sample of samples) {
+      const clamped = Math.max(-1, Math.min(1, sample));
+      view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+      offset += 2;
+    }
+    return new Blob([view], { type: "audio/wav" });
+  }
+
+  function writeString(view, offset, string) {
+    for (let index = 0; index < string.length; index++) view.setUint8(offset + index, string.charCodeAt(index));
+  }
+
+  function alignmentJson() {
+    const variantA = selectedVariantA();
+    const variantB = selectedVariantB();
+    const duration = timelineAudioBounds().max - timelineAudioBounds().min;
+    return {
+      schema_version: 1,
+      experiment_id: state.manifest.experiment_id,
+      case_id: selectedCase().case_id,
+      speaker_a: {
+        variant_id: variantA.id, audio_url: variantA.audio_url, filename: variantA.filename,
+        start_seconds: speakerAStart(), end_seconds: speakerAEnd(), gain: state.gainA
+      },
+      speaker_b: {
+        variant_id: variantB.id, audio_url: variantB.audio_url, filename: variantB.filename,
+        start_seconds: speakerBStart(), end_seconds: speakerBEnd(), gain: state.gainB
+      },
+      alignment: {
+        speaker_b_offset_seconds: state.offsetB,
+        speaker_b_offset_ms: Math.round(state.offsetB * 1000),
+        speaker_b_offset_reference: "speaker_a_start",
+        overlap_seconds: overlapSeconds(),
+        mixed_duration_seconds: duration
+      },
+      export: state.lastExport
+    };
+  }
+
+  function downloadAlignmentJson() {
+    const blob = new Blob([JSON.stringify(alignmentJson(), null, 2)], { type: "application/json" });
+    downloadBlob(blob, mixFilename(".alignment.json"), "application/json");
+  }
+
+  function mixFilename(suffix) {
+    const variantA = selectedVariantA().id.replace("variant_", "");
+    const variantB = selectedVariantB().id.replace("variant_", "");
+    const offsetMs = Math.round(state.offsetB * 1000);
+    const sign = offsetMs < 0 ? "neg" : "pos";
+    return `${selectedCase().case_id}_A-${variantA}_B-${variantB}_offset-${sign}${Math.abs(offsetMs)}ms${suffix}`;
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function saveCandidate() {
+    const candidate = {
+      timestamp: new Date().toISOString(),
+      note: elements.candidateNote.value,
+      alignment: alignmentJson()
+    };
+    state.candidates.push(candidate);
+    localStorage.setItem("synthetic-aligner-candidates", JSON.stringify(state.candidates));
+    renderCandidates();
+  }
+
+  function renderCandidates() {
+    elements.candidateList.textContent = `${state.candidates.length} candidate(s) saved in this browser.`;
+  }
+
+  function downloadCandidates() {
+    const blob = new Blob([JSON.stringify({ schema_version: 1, candidates: state.candidates }, null, 2)], { type: "application/json" });
+    downloadBlob(blob, `${state.manifest?.experiment_id || "alignments"}_candidates.json`);
+  }
+
+  function bindDebugFileLoading() {
+    elements.fileA.addEventListener("change", event => loadDebugFile("A", event.target.files[0]));
+    elements.fileB.addEventListener("change", event => loadDebugFile("B", event.target.files[0]));
+  }
+
+  async function loadDebugFile(speaker, file) {
+    if (!file) return;
+    const data = await file.arrayBuffer();
+    const buffer = await audioContext.decodeAudioData(data);
+    if (speaker === "A") state.bufferA = buffer;
+    else state.bufferB = buffer;
+    queueDraw();
+  }
+
+  function moveVariant(speaker, delta) {
+    const select = speaker === "A" ? elements.variantA : elements.variantB;
+    const nextIndex = Math.max(0, Math.min(select.options.length - 1, Number(select.value) + delta));
+    select.value = String(nextIndex);
+    if (speaker === "A") state.variantAIndex = nextIndex;
+    else state.variantBIndex = nextIndex;
+    loadSelectedAudio(true);
+  }
+
+  elements.caseSelect.addEventListener("change", event => { state.caseIndex = Number(event.target.value); loadCase(true); });
+  elements.variantA.addEventListener("change", event => { state.variantAIndex = Number(event.target.value); loadSelectedAudio(true); });
+  elements.variantB.addEventListener("change", event => { state.variantBIndex = Number(event.target.value); loadSelectedAudio(true); });
+  elements.prevA.addEventListener("click", () => moveVariant("A", -1));
+  elements.nextA.addEventListener("click", () => moveVariant("A", 1));
+  elements.prevB.addEventListener("click", () => moveVariant("B", -1));
+  elements.nextB.addEventListener("click", () => moveVariant("B", 1));
+  elements.gainA.addEventListener("input", event => { state.gainA = Number(event.target.value || 1); });
+  elements.gainB.addEventListener("input", event => { state.gainB = Number(event.target.value || 1); });
+  elements.offsetB.addEventListener("input", event => { state.offsetB = Number(event.target.value || 0) / 1000; queueDraw(); });
+  elements.playMix.addEventListener("click", () => play(["A", "B"]));
+  elements.playA.addEventListener("click", () => play(["A"]));
+  elements.playB.addEventListener("click", () => play(["B"]));
+  elements.stop.addEventListener("click", stopPlayback);
+  elements.resetOffset.addEventListener("click", () => { state.offsetB = defaultBOffset(); renderCase(); queueDraw(); });
+  elements.downloadMix.addEventListener("click", exportMix);
+  elements.downloadJson.addEventListener("click", downloadAlignmentJson);
+  elements.saveCandidate.addEventListener("click", saveCandidate);
+  elements.downloadCandidates.addEventListener("click", downloadCandidates);
+  elements.timeline.addEventListener("pointerdown", event => {
+    const rect = elements.timeline.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+    const seconds = xToSeconds(pointerX, rect.width);
+    const bStartX = secondsToX(speakerBStart(), rect.width);
+    const bEndX = secondsToX(speakerBEnd(), rect.width);
+    const bTrackTop = trackGeometry.speakerB.y;
+    const bTrackBottom = trackGeometry.speakerB.y + trackGeometry.speakerB.height;
+    const isOnSpeakerB =
+      state.bufferB &&
+      pointerX >= bStartX &&
+      pointerX <= bEndX &&
+      pointerY >= bTrackTop &&
+      pointerY <= bTrackBottom;
+    if (isOnSpeakerB) {
+      state.drag = {
+        startX: event.clientX,
+        originalOffset: state.offsetB,
+        width: rect.width
+      };
+      elements.timeline.setPointerCapture(event.pointerId);
+      return;
+    }
+    seekPlayback(seconds);
+  });
+  elements.timeline.addEventListener("pointermove", event => {
+    if (!state.drag) return;
+    const span = state.timelineBounds.max - state.timelineBounds.min;
+    state.offsetB = state.drag.originalOffset + ((event.clientX - state.drag.startX) / state.drag.width) * span;
+    elements.offsetB.value = String(Math.round(state.offsetB * 1000));
+    queueDraw();
+    queuePlaybackRestart();
+  });
+  elements.timeline.addEventListener("pointerup", () => { state.drag = null; });
+  elements.timeline.addEventListener("pointercancel", () => { state.drag = null; });
+  window.addEventListener("resize", queueDraw);
+  window.addEventListener("keydown", event => {
+    const tag = event.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (event.code === "Space") { event.preventDefault(); togglePlayback(); }
+    if (event.key === "A") moveVariant("A", -1);
+    if (event.key === "a") moveVariant("A", 1);
+    if (event.key === "B") moveVariant("B", -1);
+    if (event.key === "b") moveVariant("B", 1);
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      const step = event.shiftKey ? 0.05 : 0.01;
+      state.offsetB += event.key === "ArrowLeft" ? -step : step;
+      renderCase();
+      queueDraw();
+    }
+  });
+  init().catch(error => {
+    elements.exportStatus.textContent = error.message;
+    console.error(error);
+  });
+})();
+</script>
+</body>
+</html>

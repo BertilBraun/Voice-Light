@@ -1,0 +1,54 @@
+{
+  "experiment_id": "qwen_interruptions_v1",
+  "description": "Three short interruption experiments for manual alignment.",
+  "cases": [
+    {
+      "case_id": "corrective_interruption",
+      "title": "Corrective interruption",
+      "description": "Speaker B corrects Speaker A and takes the floor.",
+      "speaker_a": {
+        "text": "We could take the train from the central station, because the last one leaves at around...",
+        "instruction": "A casually confident young adult speaking naturally to a friend at a medium conversational pace. The speaker is explaining a simple travel plan. Near the end, become less certain and trail off gently, as though another person has begun correcting the statement. Keep the delivery subtle and ordinary."
+      },
+      "speaker_b": {
+        "text": "No, they moved it to the north station.",
+        "instruction": "A clear conversational young adult voice entering quickly to correct an important detail. Speak slightly faster than normal with mild urgency, confidence, and friendliness. Begin decisively without hesitation."
+      },
+      "alignment_notes": "Try starting B 100 to 300 ms before A ends.",
+      "tags": ["interruption", "correction", "yield"],
+      "default_b_offset_seconds": -0.2
+    },
+    {
+      "case_id": "enthusiastic_interruption",
+      "title": "Enthusiastic collaborative interruption",
+      "description": "Speaker B recognizes and completes Speaker A's thought with excitement.",
+      "speaker_a": {
+        "text": "I found this tiny restaurant near the river, and apparently they make their own...",
+        "instruction": "A warm, animated young adult speaking informally to a friend. Sound genuinely pleased about a recent discovery. Use a natural medium pace and trail off with positive energy near the end."
+      },
+      "speaker_b": {
+        "text": "The fresh pasta! I've been there.",
+        "instruction": "A spontaneous, energetic young adult voice suddenly recognizing what the other speaker means. Enter quickly with genuine excitement and warmth. Emphasize fresh pasta, then relax slightly."
+      },
+      "alignment_notes": "Try starting B just before A's final word fully resolves.",
+      "tags": ["interruption", "collaborative", "enthusiasm"],
+      "default_b_offset_seconds": -0.18
+    },
+    {
+      "case_id": "clarifying_interruption",
+      "title": "Clarifying interruption",
+      "description": "Speaker B jumps in with a quick clarification before Speaker A finishes the condition.",
+      "speaker_a": {
+        "text": "If the client signs the revised contract today, then we should probably schedule the kickoff for...",
+        "instruction": "A focused project lead speaking in a calm meeting voice. Start steadily and sound practical. Near the end, slow slightly and trail off as if someone has entered with a useful clarification. Keep it conversational, not dramatic."
+      },
+      "speaker_b": {
+        "text": "Tuesday, after legal sends the countersigned copy.",
+        "instruction": "A concise colleague entering quickly with a helpful clarification. Speak with calm confidence, a little faster than normal, and sound collaborative rather than forceful."
+      },
+      "alignment_notes": "Try starting B 150 to 350 ms before A ends, then compare whether B sounds helpful or too abrupt.",
+      "tags": ["interruption", "clarification", "collaborative"],
+      "default_b_offset_seconds": -0.25
+    }
+  ]
+}

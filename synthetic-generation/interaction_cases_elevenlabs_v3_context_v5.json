@@ -1,0 +1,218 @@
+﻿{
+    "experiment_id":  "elevenlabs_v3_context_v5",
+    "description":  "ElevenLabs v3 cases with longer conversational context and backchannels anchored after complete statements.",
+    "cases":  [
+                  {
+                      "case_id":  "backchannel_budget_moved",
+                      "title":  "Backchannel after budget update",
+                      "description":  "Speaker B acknowledges after Speaker A states a complete scheduling update, while A continues with the reason.",
+                      "speaker_a":  {
+                                        "text":  "[matter-of-fact] After the morning call, I moved the budget review to next week, because finance still needs one more day to check the numbers before they sign off.",
+                                        "instruction":  "ElevenLabs v3: Speaker A keeps the floor. Text is sent exactly as written."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[softly] Mm-hm.",
+                                        "instruction":  "ElevenLabs v3: short listener acknowledgment."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the complete statement anchor.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "acknowledgment",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  3.0,
+                      "placement":  {
+                                        "type":  "backchannel",
+                                        "anchor_text":  "I moved the budget review to next week",
+                                        "delay_ms":  300
+                                    }
+                  },
+                  {
+                      "case_id":  "backchannel_logs_restart",
+                      "title":  "Backchannel after evidence statement",
+                      "description":  "Speaker B acknowledges after Speaker A states the core evidence, while A continues with the interpretation.",
+                      "speaker_a":  {
+                                        "text":  "[calm] I checked the logs from last night, and the restart happened right after the backup job finished, so the timing makes sense and I do not think it was a user action.",
+                                        "instruction":  "ElevenLabs v3: Speaker A continues the same turn."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "Yeah.",
+                                        "instruction":  "ElevenLabs v3: minimal acknowledgment, no delivery tag."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the evidence statement anchor.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "evidence_acknowledgment",
+                                   "no_backchannel_tag"
+                               ],
+                      "default_b_offset_seconds":  4.0,
+                      "placement":  {
+                                        "type":  "backchannel",
+                                        "anchor_text":  "the restart happened right after the backup job finished",
+                                        "delay_ms":  300
+                                    }
+                  },
+                  {
+                      "case_id":  "backchannel_decision_reason",
+                      "title":  "Backchannel after decision",
+                      "description":  "Speaker B acknowledges after a decision is stated, while A continues with the rationale.",
+                      "speaker_a":  {
+                                        "text":  "[steady] We decided to keep the current rollout date, because moving it again would make the support schedule harder to manage and would confuse the pilot customers.",
+                                        "instruction":  "ElevenLabs v3: Speaker A should keep the floor after the decision statement."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[quietly] Right.",
+                                        "instruction":  "ElevenLabs v3: short acknowledgment after a decision."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the decision statement anchor.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "decision_acknowledgment",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  3.0,
+                      "placement":  {
+                                        "type":  "backchannel",
+                                        "anchor_text":  "We decided to keep the current rollout date",
+                                        "delay_ms":  300
+                                    }
+                  },
+                  {
+                      "case_id":  "backchannel_upload_problem",
+                      "title":  "Backchannel after problem statement",
+                      "description":  "Speaker B acknowledges after Speaker A states the full problem, before A gives the consequence.",
+                      "speaker_a":  {
+                                        "text":  "[concerned] The main issue is that the upload sometimes fails without an error message, so the user thinks the file went through and does not try again.",
+                                        "instruction":  "ElevenLabs v3: continuous explanation with a clear problem statement before the consequence."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "Mm.",
+                                        "instruction":  "ElevenLabs v3: minimal acknowledgment, no delivery tag."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the full problem statement anchor.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "problem_acknowledgment",
+                                   "no_backchannel_tag"
+                               ],
+                      "default_b_offset_seconds":  4.0,
+                      "placement":  {
+                                        "type":  "backchannel",
+                                        "anchor_text":  "the upload sometimes fails without an error message",
+                                        "delay_ms":  300
+                                    }
+                  },
+                  {
+                      "case_id":  "interruption_deadline_context",
+                      "title":  "Deadline correction with context",
+                      "description":  "Speaker B interrupts with a correction and enough surrounding detail to sound like a coherent turn.",
+                      "speaker_a":  {
+                                        "text":  "[conversational] I think the design review is on Thursday afternoon, so if we want people to read the notes first, we should probably send the draft by Wednesday-",
+                                        "instruction":  "ElevenLabs v3: incomplete ending expressed directly in text."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[jumping in] Wednesday noon, actually. They moved the review up because the client team is traveling on Thursday.",
+                                        "instruction":  "ElevenLabs v3: correction plus explanatory context."
+                                    },
+                      "alignment_notes":  "Auto-place B 50 ms before the last word of the interruption anchor, corrected by B audio onset.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "correction",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  4.0,
+                      "placement":  {
+                                        "type":  "interruption",
+                                        "anchor_text":  "send the draft by Wednesday",
+                                        "mode":  "before_last_word",
+                                        "lead_ms":  50
+                                    }
+                  },
+                  {
+                      "case_id":  "interruption_safety_context",
+                      "title":  "Safety constraint with context",
+                      "description":  "Speaker B interrupts to add a constraint, then explains why it matters.",
+                      "speaker_a":  {
+                                        "text":  "[planning aloud] We can ship the preview build to the test group this afternoon, and then collect feedback before the wider rollout, as long as the consent copy-",
+                                        "instruction":  "ElevenLabs v3: Speaker A is planning aloud and leaves the condition unfinished."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[quickly] Only if the consent copy is updated first. The old version still says recordings are optional, and that is not true for this test.",
+                                        "instruction":  "ElevenLabs v3: quick but cooperative constraint with context."
+                                    },
+                      "alignment_notes":  "Auto-place B 50 ms before the last word of the interruption anchor, corrected by B audio onset.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "constraint",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  4.0,
+                      "placement":  {
+                                        "type":  "interruption",
+                                        "anchor_text":  "as long as the consent copy",
+                                        "mode":  "before_last_word",
+                                        "lead_ms":  50
+                                    }
+                  },
+                  {
+                      "case_id":  "interruption_dashboard_context",
+                      "title":  "Dashboard context completion",
+                      "description":  "Speaker B jumps in with missing context and a fuller explanation.",
+                      "speaker_a":  {
+                                        "text":  "[explaining] The dashboard numbers look lower this week, but I do not think traffic actually dropped. It is probably because we excluded the-",
+                                        "instruction":  "ElevenLabs v3: Speaker A starts an explanation and leaves the cause open."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[jumping in] We excluded the trial accounts. That change went live on Monday, so the comparison is not apples to apples.",
+                                        "instruction":  "ElevenLabs v3: concise context correction followed by explanation."
+                                    },
+                      "alignment_notes":  "Auto-place B 50 ms before the end of the interruption anchor, corrected by B audio onset.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "context_completion",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  4.0,
+                      "placement":  {
+                                        "type":  "interruption",
+                                        "anchor_text":  "because we excluded the",
+                                        "mode":  "at_anchor_end",
+                                        "lead_ms":  50
+                                    }
+                  },
+                  {
+                      "case_id":  "interruption_train_station_context",
+                      "title":  "Travel correction with context",
+                      "description":  "Speaker B interrupts a travel plan with a correction and concrete replacement detail.",
+                      "speaker_a":  {
+                                        "text":  "[casual] We could take the train from the central station after lunch, because the last direct one leaves from central around-",
+                                        "instruction":  "ElevenLabs v3: casual incomplete plan."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[correcting gently] No, they moved that route to the north station. If we leave from central, we will have to change twice.",
+                                        "instruction":  "ElevenLabs v3: friendly correction with useful context."
+                                    },
+                      "alignment_notes":  "Auto-place B 50 ms before the last word of the interruption anchor, corrected by B audio onset.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "travel_correction",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  4.0,
+                      "placement":  {
+                                        "type":  "interruption",
+                                        "anchor_text":  "leaves from central around",
+                                        "mode":  "before_last_word",
+                                        "lead_ms":  50
+                                    }
+                  }
+              ]
+}

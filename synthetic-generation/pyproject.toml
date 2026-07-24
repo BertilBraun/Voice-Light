@@ -1,0 +1,41 @@
+[project]
+name = "synthetic-generation"
+version = "0.1.0"
+description = "Synthetic two-speaker TTS conversation generation and alignment proof of concept."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=1.26",
+    "pydantic>=2.7",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+asr = [
+    "faster-whisper>=1.0",
+]
+qwen = [
+    "qwen-tts",
+    "torch",
+    "torchaudio",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ANN", "ARG", "PTH"]
+ignore = ["ANN401"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "integration: tests requiring external infrastructure or model/API access",
+]
+testpaths = ["tests"]

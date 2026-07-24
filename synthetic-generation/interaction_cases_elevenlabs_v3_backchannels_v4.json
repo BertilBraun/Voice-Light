@@ -1,0 +1,190 @@
+{
+    "experiment_id":  "elevenlabs_v3_backchannels_v4",
+    "description":  "ElevenLabs v3 cases with explicit tags and ASR-assisted backchannel placement anchors.",
+    "cases":  [
+                  {
+                      "case_id":  "deadline_correction_tagged",
+                      "title":  "Deadline correction, tagged",
+                      "description":  "Speaker B corrects a deadline detail while Speaker A is finishing the setup.",
+                      "speaker_a":  {
+                                        "text":  "[conversational] I think the design review is on Thursday afternoon, so we should send the notes by...",
+                                        "instruction":  "ElevenLabs v3: text is sent exactly as written."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[jumping in] Wednesday noon, actually.",
+                                        "instruction":  "ElevenLabs v3: text is sent exactly as written."
+                                    },
+                      "alignment_notes":  "Interruption case. Manually try B near the end of A.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "correction",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  2.0
+                  },
+                  {
+                      "case_id":  "collaborative_completion_tagged",
+                      "title":  "Collaborative completion, tagged",
+                      "description":  "Speaker B recognizes what Speaker A is referring to and completes the idea.",
+                      "speaker_a":  {
+                                        "text":  "[casual] The thing that finally fixed the import bug was changing that one setting in the...",
+                                        "instruction":  "ElevenLabs v3: text is sent exactly as written."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[with recognition] The parser config.",
+                                        "instruction":  "ElevenLabs v3: text is sent exactly as written."
+                                    },
+                      "alignment_notes":  "Interruption/completion case. Manually try B near the end of A.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "collaborative_completion",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  2.0
+                  },
+                  {
+                      "case_id":  "quiet_backchannel_schedule_tagged",
+                      "title":  "Quiet schedule backchannel, tagged",
+                      "description":  "Speaker B gives a low-prominence acknowledgment while Speaker A continues speaking.",
+                      "speaker_a":  {
+                                        "text":  "[matter-of-fact] After the morning call, I moved the budget review to next week, because finance still needs one more day to check the numbers.",
+                                        "instruction":  "ElevenLabs v3: Speaker A keeps the floor."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[softly] Mm-hm.",
+                                        "instruction":  "ElevenLabs v3: text is sent exactly as written."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the anchor phrase.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "listener",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  1.6,
+                      "backchannel_placement":  {
+                                                    "anchor_text":  "After the morning call",
+                                                    "delay_ms":  300
+                                                }
+                  },
+                  {
+                      "case_id":  "neutral_backchannel_logs",
+                      "title":  "Neutral log-check backchannel",
+                      "description":  "Speaker B gives a minimal acknowledgment without an audio tag, for comparison.",
+                      "speaker_a":  {
+                                        "text":  "[calm] I checked the logs from last night, and the restart happened right after the backup job finished, so the timing makes sense.",
+                                        "instruction":  "ElevenLabs v3: Speaker A continues the same turn."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "Yeah.",
+                                        "instruction":  "ElevenLabs v3: no delivery tag on the backchannel."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the anchor phrase.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "no_backchannel_tag",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  1.8,
+                      "backchannel_placement":  {
+                                                    "anchor_text":  "I checked the logs from last night",
+                                                    "delay_ms":  300
+                                                }
+                  },
+                  {
+                      "case_id":  "backchannel_after_decision",
+                      "title":  "Backchannel after decision point",
+                      "description":  "Speaker B acknowledges right after Speaker A states the actual decision, while Speaker A continues with the reason.",
+                      "speaker_a":  {
+                                        "text":  "[steady] We decided to keep the current rollout date, because moving it again would make the support schedule harder to manage.",
+                                        "instruction":  "ElevenLabs v3: Speaker A should keep the floor after the decision clause."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[softly] Right.",
+                                        "instruction":  "ElevenLabs v3: very short acknowledgment after the decision is stated."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the anchor phrase.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "decision_acknowledgment",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  2.0,
+                      "backchannel_placement":  {
+                                                    "anchor_text":  "We decided to keep the current rollout date",
+                                                    "delay_ms":  300
+                                                }
+                  },
+                  {
+                      "case_id":  "backchannel_after_problem_statement",
+                      "title":  "Backchannel after problem statement",
+                      "description":  "Speaker B acknowledges after Speaker A states the problem, then Speaker A continues with the consequence.",
+                      "speaker_a":  {
+                                        "text":  "[concerned] The main issue is that the upload sometimes fails without an error message, so the user thinks the file went through.",
+                                        "instruction":  "ElevenLabs v3: continuous explanation with a clear clause boundary after the problem statement."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "Mm.",
+                                        "instruction":  "ElevenLabs v3: no delivery tag on this backchannel."
+                                    },
+                      "alignment_notes":  "Auto-place B 300 ms after the anchor phrase.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "backchannel",
+                                   "problem_acknowledgment",
+                                   "no_backchannel_tag"
+                               ],
+                      "default_b_offset_seconds":  3.0,
+                      "backchannel_placement":  {
+                                                    "anchor_text":  "without an error message",
+                                                    "delay_ms":  300
+                                                }
+                  },
+                  {
+                      "case_id":  "interruption_safety_constraint",
+                      "title":  "Safety constraint interruption",
+                      "description":  "Speaker B interrupts to add a constraint before Speaker A completes the plan.",
+                      "speaker_a":  {
+                                        "text":  "[planning aloud] We can ship the preview build to the test group this afternoon, as long as...",
+                                        "instruction":  "ElevenLabs v3: Speaker A is planning aloud and leaves the condition unfinished."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[quickly] Only if the consent copy is updated first.",
+                                        "instruction":  "ElevenLabs v3: quick but cooperative constraint."
+                                    },
+                      "alignment_notes":  "Interruption case. Manually try B near the end of A.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "constraint",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  2.0
+                  },
+                  {
+                      "case_id":  "interruption_missing_context",
+                      "title":  "Missing context interruption",
+                      "description":  "Speaker B jumps in because a key context detail is missing.",
+                      "speaker_a":  {
+                                        "text":  "[explaining] The dashboard numbers look lower this week, but that is probably because...",
+                                        "instruction":  "ElevenLabs v3: Speaker A starts an explanation and leaves the cause open."
+                                    },
+                      "speaker_b":  {
+                                        "text":  "[jumping in] We excluded the trial accounts.",
+                                        "instruction":  "ElevenLabs v3: concise context correction."
+                                    },
+                      "alignment_notes":  "Interruption case. Manually try B near the end of A.",
+                      "tags":  [
+                                   "elevenlabs_v3",
+                                   "interruption",
+                                   "context_completion",
+                                   "explicit_tags"
+                               ],
+                      "default_b_offset_seconds":  2.0
+                  }
+              ]
+}

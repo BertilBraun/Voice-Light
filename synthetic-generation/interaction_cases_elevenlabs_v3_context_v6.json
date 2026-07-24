@@ -1,0 +1,66 @@
+{
+  "experiment_id": "elevenlabs_v3_context_v6",
+  "description": "One longer example for each typed placement mode: backchannel, interruption, completion, and internal pause.",
+  "cases": [
+    {
+      "case_id": "v6_backchannel_budget_review",
+      "title": "Backchannel after concrete update",
+      "speaker_a": {
+        "text": "[natural, matter-of-fact] I moved the budget review to next week because the finance team said they needed two more days to check the vendor numbers. After that, we can still send the summary before the client call on Friday."
+      },
+      "speaker_b": {
+        "text": "[quietly, attentive] Mm-hm."
+      },
+      "placement": {
+        "type": "backchannel",
+        "anchor_text": "I moved the budget review to next week",
+        "delay_ms": 300
+      }
+    },
+    {
+      "case_id": "v6_interruption_deadline_correction",
+      "title": "Correction after disambiguating phrase",
+      "speaker_a": {
+        "text": "[conversational, focused] I think we can send the contract draft by Thursday morning, if leg-"
+      },
+      "speaker_b": {
+        "text": "[quickly, correcting] Friday morning is safer."
+      },
+      "placement": {
+        "type": "interruption",
+        "anchor_text": "by Thursday morning if",
+        "mode": "at_anchor_end",
+        "lead_ms": 0
+      }
+    },
+    {
+      "case_id": "v6_completion_handoff",
+      "title": "Normal turn completion",
+      "speaker_a": {
+        "text": "[calm, conversational] I finished checking the exported files, and the only issue I found was a missing caption on the second chart. I fixed that already, so the package is ready for review."
+      },
+      "speaker_b": {
+        "text": "[natural, cooperative] Great, I'll send it to Mira and ask her to confirm the numbers before lunch."
+      },
+      "placement": {
+        "type": "completion",
+        "pause": "short"
+      }
+    },
+    {
+      "case_id": "v6_internal_pause_incident_timeline",
+      "title": "Internal pause inside one turn",
+      "speaker_a": {
+        "text": "[thinking aloud] I checked the incident timeline again, and the restart happened right after the backup job finished. [brief pause] That makes me think the scheduler fired correctly, but the service took too long to come back online."
+      },
+      "speaker_b": {
+        "text": "[acknowledging] Okay, that tracks."
+      },
+      "placement": {
+        "type": "internal_pause",
+        "anchor_text": "the restart happened right after the backup job finished",
+        "pause": "medium"
+      }
+    }
+  ]
+}

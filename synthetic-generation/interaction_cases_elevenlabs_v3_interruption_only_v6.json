@@ -1,0 +1,22 @@
+{
+  "experiment_id": "elevenlabs_v3_interruption_only_v6",
+  "description": "Single corrected interruption case for timing review.",
+  "cases": [
+    {
+      "case_id": "v6_interruption_deadline_correction",
+      "title": "Correction after one continuation word",
+      "speaker_a": {
+        "text": "[conversational, focused] I think we can send the contract draft by Thursday morning, if leg-"
+      },
+      "speaker_b": {
+        "text": "[quickly, correcting] Friday morning is safer."
+      },
+      "placement": {
+        "type": "interruption",
+        "anchor_text": "by Thursday morning if",
+        "mode": "at_anchor_end",
+        "lead_ms": 0
+      }
+    }
+  ]
+}

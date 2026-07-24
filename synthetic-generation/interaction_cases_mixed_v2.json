@@ -1,0 +1,102 @@
+{
+  "experiment_id": "qwen_mixed_conversation_v2",
+  "description": "Mixed synthetic conversation cases: interruptions, backchannels, and normal turn endings.",
+  "cases": [
+    {
+      "case_id": "deadline_correction",
+      "title": "Deadline correction",
+      "description": "Speaker B corrects a deadline detail while Speaker A is finishing the setup.",
+      "speaker_a": {
+        "text": "I think the design review is on Thursday afternoon, so we should send the notes by...",
+        "instruction": "A grounded adult male project lead speaking naturally in a small team meeting. Use a steady conversational pace. Near the end, leave the phrase slightly unfinished with a modest incomplete cadence, but do not slow down dramatically or sound theatrical."
+      },
+      "speaker_b": {
+        "text": "Wednesday noon, actually.",
+        "instruction": "A calm adult male colleague entering quickly with a concise correction. Speak clearly, lightly, and confidently, without sounding annoyed."
+      },
+      "alignment_notes": "Try starting B 100 to 250 ms before A ends.",
+      "tags": ["interruption", "correction", "male_voice"],
+      "default_b_offset_seconds": -0.18
+    },
+    {
+      "case_id": "collaborative_completion",
+      "title": "Collaborative completion",
+      "description": "Speaker B recognizes what Speaker A is referring to and completes the idea.",
+      "speaker_a": {
+        "text": "The thing that finally fixed the import bug was changing that one setting in the...",
+        "instruction": "A relaxed adult male software engineer explaining a recent debugging result to a teammate. Sound casual and engaged. End with a light incomplete cadence, as if the other person may know the word, but keep the delivery subtle."
+      },
+      "speaker_b": {
+        "text": "The parser config.",
+        "instruction": "A friendly adult male teammate entering with quick recognition. Speak naturally and a little brighter than neutral, as a collaborative completion rather than an interruption for control."
+      },
+      "alignment_notes": "Try starting B around 50 to 200 ms before A ends.",
+      "tags": ["interruption", "collaborative_completion", "male_voice"],
+      "default_b_offset_seconds": -0.12
+    },
+    {
+      "case_id": "quiet_backchannel_schedule",
+      "title": "Quiet schedule backchannel",
+      "description": "Speaker B gives a low-prominence acknowledgment while Speaker A continues speaking.",
+      "speaker_a": {
+        "text": "After the morning call, I moved the budget review to next week, because finance still needs one more day to check the numbers.",
+        "instruction": "A natural adult male speaker explaining a scheduling update at a moderate pace. Continue smoothly through the whole sentence. Include a small prosodic boundary after 'morning call' but do not yield the floor."
+      },
+      "speaker_b": {
+        "text": "Mm-hm.",
+        "instruction": "A very short, quiet adult male listener acknowledgment. Keep it low in prominence, brief, and supportive, without sounding like an attempt to take the floor."
+      },
+      "alignment_notes": "Try placing B near the boundary after 'morning call'.",
+      "tags": ["backchannel", "listener", "male_voice", "no_yield"],
+      "default_b_offset_seconds": -3.2
+    },
+    {
+      "case_id": "short_backchannel_confirmation",
+      "title": "Short confirmation backchannel",
+      "description": "Speaker B gives a minimal confirmation during an ongoing explanation.",
+      "speaker_a": {
+        "text": "I checked the logs from last night, and the restart happened right after the backup job finished, so the timing makes sense.",
+        "instruction": "A calm adult male engineer summarizing evidence in a normal conversational voice. Maintain the same turn throughout. Add a small phrase boundary after 'last night' but continue without pausing too long."
+      },
+      "speaker_b": {
+        "text": "Yeah.",
+        "instruction": "A soft, brief adult male backchannel that means 'I am following.' Keep it quiet, quick, and non-interrupting."
+      },
+      "alignment_notes": "Try placing B after 'last night' or during the following short boundary.",
+      "tags": ["backchannel", "confirmation", "male_voice", "no_yield"],
+      "default_b_offset_seconds": -3.6
+    },
+    {
+      "case_id": "normal_turn_handoff_question",
+      "title": "Normal handoff question",
+      "description": "Speaker A completes a turn naturally, then Speaker B asks a follow-up question after a short gap.",
+      "speaker_a": {
+        "text": "That should give us enough time to review the numbers before the client call.",
+        "instruction": "A composed adult male voice finishing a practical workplace comment. Use a natural complete sentence ending with final intonation, not a trail off."
+      },
+      "speaker_b": {
+        "text": "Do you want me to update the deck after that?",
+        "instruction": "A helpful adult male colleague asking a straightforward follow-up question. Begin naturally after the previous speaker finishes, with a small conversational pause."
+      },
+      "alignment_notes": "Try starting B 150 to 500 ms after A ends.",
+      "tags": ["normal_turn_end", "handoff", "male_voice"],
+      "default_b_offset_seconds": 0.3
+    },
+    {
+      "case_id": "normal_turn_handoff_response",
+      "title": "Normal handoff response",
+      "description": "Speaker A finishes a casual update, then Speaker B responds without overlap.",
+      "speaker_a": {
+        "text": "I dropped the package at reception, so it should be ready for pickup this afternoon.",
+        "instruction": "A natural adult male voice giving a simple update. Speak at a relaxed conversational pace and finish with a complete, ordinary turn ending."
+      },
+      "speaker_b": {
+        "text": "Great, I will grab it after lunch.",
+        "instruction": "A relaxed adult male voice responding after the other speaker has clearly finished. Sound appreciative and matter-of-fact, with normal conversational timing."
+      },
+      "alignment_notes": "Try starting B 200 to 600 ms after A ends.",
+      "tags": ["normal_turn_end", "response", "male_voice"],
+      "default_b_offset_seconds": 0.35
+    }
+  ]
+}

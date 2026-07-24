@@ -1,6 +1,8 @@
 # Local dataset files. Keep app/data source modules tracked.
 /data/
 !/app/data/
+/synthetic-generation/outputs/
+/synthetic-generation/.env
 
 .venv/
 .env.compute

@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Two-Track Conversation Aligner</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #101114;
+    --panel: #181a1f;
+    --border: #343842;
+    --text: #f1f3f5;
+    --muted: #aeb4bf;
+    --accent-a: #4ea1ff;
+    --accent-b: #ff8a4e;
+    --cursor: #e9e9e9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  main {
+    width: min(1200px, 96vw);
+    margin: 24px auto;
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(260px, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 760px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+  label { display: block; font-size: .9rem; color: var(--muted); margin-bottom: 6px; }
+  input[type=file], input[type=number], input[type=range], button {
+    width: 100%;
+  }
+  input[type=file], input[type=number] {
+    background: #0f1115;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px;
+    color: var(--text);
+  }
+  button {
+    border: 1px solid var(--border);
+    background: #242833;
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button:hover { filter: brightness(1.12); }
+  button:disabled { opacity: .45; cursor: default; }
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(110px, 1fr));
+    gap: 10px;
+  }
+  @media (max-width: 900px) {
+    .controls { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (max-width: 520px) {
+    .controls { grid-template-columns: repeat(2, 1fr); }
+  }
+  .track-meta {
+    display: grid;
+    grid-template-columns: 1fr 140px 140px;
+    gap: 10px;
+    align-items: end;
+  }
+  @media (max-width: 700px) {
+    .track-meta { grid-template-columns: 1fr; }
+  }
+  .wave-wrap {
+    position: relative;
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: #0b0d11;
+    user-select: none;
+    touch-action: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 130px;
+  }
+  .legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    color: var(--muted);
+    font-size: .85rem;
+    margin-top: 8px;
+  }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px;
+  }
+  .status { color: var(--muted); font-size: .9rem; min-height: 1.2em; }
+  .help {
+    font-size: .88rem;
+    line-height: 1.45;
+    color: var(--muted);
+  }
+  code { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Two-Track Conversation Aligner</h1>
+  <p class="sub">Load two browser-supported audio files, drag either waveform horizontally, and preview the overlap.</p>
+
+  <section class="panel grid">
+    <div>
+      <label for="fileA">Speaker A audio</label>
+      <input id="fileA" type="file" accept="audio/*" />
+    </div>
+    <div>
+      <label for="fileB">Speaker B audio</label>
+      <input id="fileB" type="file" accept="audio/*" />
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="controls">
+      <button id="playMix" disabled>Play mix</button>
+      <button id="playA" disabled>Play A</button>
+      <button id="playB" disabled>Play B</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="reset">Reset offsets</button>
+      <button id="fit">Fit timeline</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="track-meta">
+      <div>
+        <strong>Speaker A</strong>
+        <div id="nameA" class="status">No file loaded</div>
+      </div>
+      <div>
+        <label for="offsetA">Start offset (ms)</label>
+        <input id="offsetA" type="number" step="10" value="0" />
+      </div>
+      <div>
+        <label for="gainA">Gain</label>
+        <input id="gainA" type="number" step="0.05" min="0" max="3" value="1" />
+      </div>
+    </div>
+    <div id="wrapA" class="wave-wrap"><canvas id="canvasA"></canvas></div>
+  </section>
+
+  <section class="panel">
+    <div class="track-meta">
+      <div>
+        <strong>Speaker B</strong>
+        <div id="nameB" class="status">No file loaded</div>
+      </div>
+      <div>
+        <label for="offsetB">Start offset (ms)</label>
+        <input id="offsetB" type="number" step="10" value="0" />
+      </div>
+      <div>
+        <label for="gainB">Gain</label>
+        <input id="gainB" type="number" step="0.05" min="0" max="3" value="1" />
+      </div>
+    </div>
+    <div id="wrapB" class="wave-wrap"><canvas id="canvasB"></canvas></div>
+  </section>
+
+  <section class="panel">
+    <div class="legend">
+      <span><span class="dot" style="background:var(--accent-a)"></span>Speaker A</span>
+      <span><span class="dot" style="background:var(--accent-b)"></span>Speaker B</span>
+      <span>Drag a waveform to change its start time</span>
+      <span>Click the waveform to move the playhead</span>
+    </div>
+    <p id="timelineInfo" class="status"></p>
+    <p class="help">
+      The tool uses the browser's Web Audio API. MP3, WAV, M4A/AAC, OGG, and WebM support depends on the browser.
+      No files leave the device. Negative offsets are allowed; playback starts from the earliest track onset.
+    </p>
+  </section>
+</main>
+
+<script>
+(() => {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AudioCtx();
+
+  const state = {
+    A: { buffer: null, offset: 0, gain: 1, name: "", color: "#4ea1ff" },
+    B: { buffer: null, offset: 0, gain: 1, name: "", color: "#ff8a4e" },
+    duration: 8,
+    playhead: 0,
+    playing: false,
+    startedAt: 0,
+    timelineStartAtPlay: 0,
+    sources: [],
+    raf: null,
+    drag: null
+  };
+
+  const $ = id => document.getElementById(id);
+  const els = {
+    fileA: $("fileA"), fileB: $("fileB"),
+    canvasA: $("canvasA"), canvasB: $("canvasB"),
+    wrapA: $("wrapA"), wrapB: $("wrapB"),
+    offsetA: $("offsetA"), offsetB: $("offsetB"),
+    gainA: $("gainA"), gainB: $("gainB"),
+    nameA: $("nameA"), nameB: $("nameB"),
+    playMix: $("playMix"), playA: $("playA"), playB: $("playB"),
+    stop: $("stop"), reset: $("reset"), fit: $("fit"),
+    timelineInfo: $("timelineInfo")
+  };
+
+  async function loadFile(key, file) {
+    if (!file) return;
+    const data = await file.arrayBuffer();
+    try {
+      state[key].buffer = await ctx.decodeAudioData(data.slice(0));
+      state[key].name = file.name;
+      els["name" + key].textContent =
+        `${file.name} — ${state[key].buffer.duration.toFixed(2)} s`;
+      fitTimeline();
+      updateButtons();
+      drawAll();
+    } catch (err) {
+      els["name" + key].textContent = `Could not decode ${file.name}`;
+      console.error(err);
+    }
+  }
+
+  function updateButtons() {
+    const any = !!(state.A.buffer || state.B.buffer);
+    els.playMix.disabled = !any;
+    els.playA.disabled = !state.A.buffer;
+    els.playB.disabled = !state.B.buffer;
+    els.stop.disabled = !any;
+  }
+
+  function bounds() {
+    const starts = [0];
+    const ends = [1];
+    for (const key of ["A", "B"]) {
+      const t = state[key];
+      if (t.buffer) {
+        starts.push(t.offset);
+        ends.push(t.offset + t.buffer.duration);
+      }
+    }
+    const min = Math.min(...starts);
+    const max = Math.max(...ends);
+    return { min, max, span: Math.max(0.5, max - min) };
+  }
+
+  function fitTimeline() {
+    const b = bounds();
+    state.duration = Math.max(2, b.span + 1);
+    state.playhead = b.min;
+    drawAll();
+  }
+
+  function timelineBounds() {
+    const b = bounds();
+    const pad = Math.max(0.25, (state.duration - b.span) / 2);
+    return { min: b.min - pad, max: b.min - pad + state.duration };
+  }
+
+  function secondsToX(sec, width) {
+    const t = timelineBounds();
+    return ((sec - t.min) / (t.max - t.min)) * width;
+  }
+
+  function xToSeconds(x, width) {
+    const t = timelineBounds();
+    return t.min + (x / width) * (t.max - t.min);
+  }
+
+  function drawWave(canvas, key) {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    const c = canvas.getContext("2d");
+    c.scale(dpr, dpr);
+    const w = rect.width, h = rect.height;
+    c.clearRect(0, 0, w, h);
+
+    c.strokeStyle = "#222733";
+    c.lineWidth = 1;
+    const t = timelineBounds();
+    const firstTick = Math.ceil(t.min);
+    c.font = "11px system-ui";
+    c.fillStyle = "#8b93a3";
+    for (let s = firstTick; s <= t.max; s++) {
+      const x = secondsToX(s, w);
+      c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke();
+      c.fillText(`${s.toFixed(0)}s`, x + 3, 13);
+    }
+
+    c.strokeStyle = "#363d49";
+    c.beginPath(); c.moveTo(0, h / 2); c.lineTo(w, h / 2); c.stroke();
+
+    const track = state[key];
+    if (track.buffer) {
+      const startX = secondsToX(track.offset, w);
+      const endX = secondsToX(track.offset + track.buffer.duration, w);
+      const drawWidth = Math.max(1, endX - startX);
+      const data = track.buffer.getChannelData(0);
+      const samplesPerPixel = Math.max(1, Math.floor(data.length / drawWidth));
+
+      c.fillStyle = track.color + "22";
+      c.fillRect(startX, 0, drawWidth, h);
+
+      c.strokeStyle = track.color;
+      c.lineWidth = 1;
+      c.beginPath();
+      for (let px = 0; px < drawWidth; px++) {
+        const i0 = Math.floor(px * samplesPerPixel);
+        const i1 = Math.min(data.length, i0 + samplesPerPixel);
+        let min = 1, max = -1;
+        for (let i = i0; i < i1; i++) {
+          const v = data[i];
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        const x = startX + px;
+        c.moveTo(x, (1 + min) * h / 2);
+        c.lineTo(x, (1 + max) * h / 2);
+      }
+      c.stroke();
+
+      c.strokeStyle = track.color;
+      c.lineWidth = 2;
+      c.beginPath(); c.moveTo(startX, 0); c.lineTo(startX, h); c.stroke();
+    }
+
+    const cursorX = secondsToX(state.playhead, w);
+    c.strokeStyle = "#f0f0f0";
+    c.lineWidth = 1.5;
+    c.beginPath(); c.moveTo(cursorX, 0); c.lineTo(cursorX, h); c.stroke();
+  }
+
+  function drawAll() {
+    drawWave(els.canvasA, "A");
+    drawWave(els.canvasB, "B");
+    const b = bounds();
+    const overlapStart = Math.max(
+      state.A.buffer ? state.A.offset : Infinity,
+      state.B.buffer ? state.B.offset : Infinity
+    );
+    const overlapEnd = Math.min(
+      state.A.buffer ? state.A.offset + state.A.buffer.duration : -Infinity,
+      state.B.buffer ? state.B.offset + state.B.buffer.duration : -Infinity
+    );
+    const overlap = Math.max(0, overlapEnd - overlapStart);
+    els.timelineInfo.textContent =
+      `Timeline: ${b.min.toFixed(2)} s to ${b.max.toFixed(2)} s · overlap: ${(overlap * 1000).toFixed(0)} ms · playhead: ${state.playhead.toFixed(2)} s`;
+  }
+
+  function stopPlayback() {
+    for (const src of state.sources) {
+      try { src.stop(); } catch {}
+    }
+    state.sources = [];
+    state.playing = false;
+    if (state.raf) cancelAnimationFrame(state.raf);
+    state.raf = null;
+    drawAll();
+  }
+
+  async function play(keys) {
+    stopPlayback();
+    await ctx.resume();
+    const available = keys.filter(k => state[k].buffer);
+    if (!available.length) return;
+
+    const earliest = Math.min(...available.map(k => state[k].offset));
+    const latestEnd = Math.max(...available.map(k => state[k].offset + state[k].buffer.duration));
+    const startTimeline = Math.max(earliest, state.playhead);
+    if (startTimeline >= latestEnd) state.playhead = earliest;
+
+    const effectiveStart = Math.max(earliest, state.playhead);
+    const when = ctx.currentTime + 0.05;
+
+    for (const key of available) {
+      const t = state[key];
+      const relative = effectiveStart - t.offset;
+      if (relative >= t.buffer.duration) continue;
+
+      const source = ctx.createBufferSource();
+      const gain = ctx.createGain();
+      source.buffer = t.buffer;
+      gain.gain.value = Number.isFinite(t.gain) ? t.gain : 1;
+      source.connect(gain).connect(ctx.destination);
+
+      if (relative <= 0) {
+        source.start(when - relative, 0);
+      } else {
+        source.start(when, relative);
+      }
+      state.sources.push(source);
+    }
+
+    state.playing = true;
+    state.startedAt = when;
+    state.timelineStartAtPlay = effectiveStart;
+
+    const tick = () => {
+      if (!state.playing) return;
+      state.playhead = state.timelineStartAtPlay + Math.max(0, ctx.currentTime - state.startedAt);
+      if (state.playhead >= latestEnd) {
+        state.playhead = latestEnd;
+        stopPlayback();
+        return;
+      }
+      drawAll();
+      state.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  function bindCanvas(canvas, key) {
+    canvas.addEventListener("pointerdown", e => {
+      const rect = canvas.getBoundingClientRect();
+      const clickTime = xToSeconds(e.clientX - rect.left, rect.width);
+      const track = state[key];
+      if (track.buffer) {
+        const startX = secondsToX(track.offset, rect.width);
+        const endX = secondsToX(track.offset + track.buffer.duration, rect.width);
+        if (e.clientX - rect.left >= startX && e.clientX - rect.left <= endX) {
+          state.drag = {
+            key,
+            startClientX: e.clientX,
+            originalOffset: track.offset,
+            width: rect.width
+          };
+          canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+      state.playhead = clickTime;
+      drawAll();
+    });
+
+    canvas.addEventListener("pointermove", e => {
+      if (!state.drag || state.drag.key !== key) return;
+      const t = timelineBounds();
+      const dx = e.clientX - state.drag.startClientX;
+      const deltaSeconds = dx / state.drag.width * (t.max - t.min);
+      state[key].offset = state.drag.originalOffset + deltaSeconds;
+      els["offset" + key].value = Math.round(state[key].offset * 1000);
+      drawAll();
+    });
+
+    canvas.addEventListener("pointerup", () => state.drag = null);
+    canvas.addEventListener("pointercancel", () => state.drag = null);
+  }
+
+  els.fileA.addEventListener("change", e => loadFile("A", e.target.files[0]));
+  els.fileB.addEventListener("change", e => loadFile("B", e.target.files[0]));
+
+  for (const key of ["A", "B"]) {
+    els["offset" + key].addEventListener("input", e => {
+      state[key].offset = Number(e.target.value || 0) / 1000;
+      drawAll();
+    });
+    els["gain" + key].addEventListener("input", e => {
+      state[key].gain = Number(e.target.value || 1);
+    });
+  }
+
+  els.playMix.addEventListener("click", () => play(["A", "B"]));
+  els.playA.addEventListener("click", () => play(["A"]));
+  els.playB.addEventListener("click", () => play(["B"]));
+  els.stop.addEventListener("click", stopPlayback);
+  els.reset.addEventListener("click", () => {
+    state.A.offset = 0; state.B.offset = 0;
+    els.offsetA.value = 0; els.offsetB.value = 0;
+    state.playhead = 0;
+    fitTimeline();
+  });
+  els.fit.addEventListener("click", fitTimeline);
+
+  bindCanvas(els.canvasA, "A");
+  bindCanvas(els.canvasB, "B");
+  window.addEventListener("resize", drawAll);
+
+  updateButtons();
+  drawAll();
+})();
+</script>
+</body>
+</html>

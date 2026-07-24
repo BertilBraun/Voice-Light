@@ -1,0 +1,22 @@
+{
+  "experiment_id": "elevenlabs_v3_smoke",
+  "description": "Minimal ElevenLabs v3 smoke test.",
+  "cases": [
+    {
+      "case_id": "normal_turn_smoke",
+      "title": "Normal turn smoke test",
+      "description": "A short two-speaker handoff for validating ElevenLabs generation.",
+      "speaker_a": {
+        "text": "That should give us enough time to review the numbers before the client call.",
+        "instruction": "A composed adult male voice finishing a practical workplace comment. Use a natural complete sentence ending with final intonation."
+      },
+      "speaker_b": {
+        "text": "Do you want me to update the deck after that?",
+        "instruction": "A helpful adult male colleague asking a straightforward follow-up question. Begin naturally after the previous speaker finishes."
+      },
+      "alignment_notes": "Try starting B 150 to 500 ms after A ends.",
+      "tags": ["smoke", "normal_turn_end", "male_voice"],
+      "default_b_offset_seconds": 0.3
+    }
+  ]
+}
