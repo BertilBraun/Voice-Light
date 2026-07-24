@@ -4,14 +4,14 @@ Small local browser app for inspecting conversational speech data and analysis o
 
 ## Data
 
-The project is being prepared around two conversational-audio sources. Raw source files, derived
+Voice Light uses two conversational-audio sources. Raw source files, derived
 audio, transcripts, annotations, credentials, and private dataset artifacts are excluded from Git
 and are not published by this repository.
 
 | Local dataset ID | Intended source | Preparation path | Transcript path |
 | --- | --- | --- | --- |
-| `dataset_2` | [MagicHub Multi-stream Spontaneous Conversation Training Datasets (English)](https://magichub.com/datasets/multi-stream-spontaneous-conversation-training-datasets_english/) | Prepare the locally obtained archive into the generic sample layout. | Run ASR later, after a compute backend is available. |
-| `dataset_3` | [Mundo TurnBench dev](https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev) | Import source-provided FLAC tracks and annotations after access is available. | Use the source-supplied annotations; no ASR pass is planned for the initial import. |
+| `dataset_2` | [MagicHub Multi-stream Spontaneous Conversation Training Datasets (English)](https://magichub.com/datasets/multi-stream-spontaneous-conversation-training-datasets_english/) | Prepared into the generic sample layout. | Full ASR and quality analysis are complete. |
+| `dataset_3` | [Mundo TurnBench dev](https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev) | Source-provided FLAC tracks and annotations are prepared in the generic sample layout. | Supplied timestamps and transcripts are materialized into the analysis pipeline; no model inference is used. |
 
 The generic local layout is:
 
