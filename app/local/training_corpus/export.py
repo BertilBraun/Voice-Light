@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.local.config import DATABASE_URL
 from app.local.conversation_regions.models import (
@@ -37,6 +37,7 @@ from app.local.training_samples.models import TrainingFramePreview
 from app.local.training_samples.service import (
     FRAME_SECONDS,
     INPUT_DURATION_SECONDS,
+    TRAINING_LABEL_VERSION,
     build_frame_previews,
 )
 from app.shared.base_model import FrozenBaseModel
@@ -79,6 +80,7 @@ class RecordingMetadata(FrozenBaseModel):
 
 class MaterializedTrainingSample(FrozenBaseModel):
     schema_version: str
+    training_label_version: str
     dataset_name: str
     sample_id: UUID
     external_id: str
@@ -86,22 +88,73 @@ class MaterializedTrainingSample(FrozenBaseModel):
     assistant_side: TrackSide
     user_audio_path: str
     assistant_audio_path: str
-    start_seconds: float
-    end_seconds: float
-    quality_score: float
+    start_seconds: float = Field(ge=0.0)
+    end_seconds: float = Field(gt=0.0)
+    quality_score: float = Field(ge=0.0, le=1.0)
     category: str
-    assistant_has_floor: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    p_user_has_floor: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    p_user_yield: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    p_assistant_backchannel: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    future_activity_0_200: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    future_activity_200_500: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    future_activity_500_1000: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    future_activity_1000_1500: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    turn_completion: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    continuation_pause: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    non_floor_feedback: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
-    floor_take: tuple[float, ...] = Field(min_length=FRAMES_PER_SAMPLE)
+    assistant_has_floor: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    p_user_has_floor: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    p_user_yield: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    p_assistant_backchannel: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    future_activity_0_200: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    future_activity_200_500: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    future_activity_500_1000: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    future_activity_1000_1500: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    turn_completion: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    continuation_pause: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    non_floor_feedback: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    floor_take: tuple[float, ...] = Field(
+        min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+
+    @model_validator(mode="after")
+    def validate_label_values(self) -> MaterializedTrainingSample:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("Training sample end time must follow its start time.")
+        if any(value < 0.0 or value > 1.0 for value in self.assistant_has_floor):
+            raise ValueError("Assistant-floor inputs must be probabilities between zero and one.")
+        masked_targets = (
+            self.p_user_has_floor,
+            self.p_user_yield,
+            self.p_assistant_backchannel,
+            self.future_activity_0_200,
+            self.future_activity_200_500,
+            self.future_activity_500_1000,
+            self.future_activity_1000_1500,
+            self.turn_completion,
+            self.continuation_pause,
+            self.non_floor_feedback,
+            self.floor_take,
+        )
+        if any(
+            value != -1.0 and not 0.0 <= value <= 1.0
+            for target in masked_targets
+            for value in target
+        ):
+            raise ValueError("Training targets must be masked with -1 or be probabilities.")
+        return self
 
 
 class ExportManifest(FrozenBaseModel):
@@ -109,11 +162,15 @@ class ExportManifest(FrozenBaseModel):
     generated_at: datetime
     metric_version: str
     annotation_version: str
-    dataset_ids: tuple[UUID, ...]
-    minimum_quality: float
-    recording_count: int
-    training_sample_count: int
-    shard_count: int
+    region_analysis_version: str
+    training_label_version: str
+    input_duration_seconds: float = Field(gt=0.0)
+    frame_seconds: float = Field(gt=0.0)
+    dataset_ids: tuple[UUID, ...] = Field(min_length=1)
+    minimum_quality: float = Field(ge=0.0, le=1.0)
+    recording_count: int = Field(ge=0)
+    training_sample_count: int = Field(ge=0)
+    shard_count: int = Field(ge=0)
 
 
 class TrainingCorpusExportRequest(FrozenBaseModel):
@@ -168,6 +225,10 @@ def export_training_corpus(request: TrainingCorpusExportRequest) -> ExportManife
         generated_at=datetime.now(UTC),
         metric_version=METRIC_VERSION,
         annotation_version=ANNOTATION_VERSION,
+        region_analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+        training_label_version=TRAINING_LABEL_VERSION,
+        input_duration_seconds=INPUT_DURATION_SECONDS,
+        frame_seconds=FRAME_SECONDS,
         dataset_ids=request.dataset_ids,
         minimum_quality=request.minimum_quality,
         recording_count=len(evidence),
@@ -308,6 +369,7 @@ def _materialized_training_sample(
         raise ValueError("Expected four future-activity targets per frame.")
     return MaterializedTrainingSample(
         schema_version=SCHEMA_VERSION,
+        training_label_version=TRAINING_LABEL_VERSION,
         dataset_name=conversation.dataset_name,
         sample_id=conversation.sample_id,
         external_id=conversation.external_id,

@@ -524,6 +524,7 @@ function renderSummary() {
       ],
       ["Quality flags", preview.quality.flags.length === 0 ? "None" : preview.quality.flags.join(", ")],
       ["Annotation version", preview.annotation_version],
+      ["Training label version", preview.training_label_version],
       ["Annotation generated", formatDateTime(preview.annotation_generated_at)],
       ["Quality metric", preview.quality_metric_version],
       ["Input / supervised", `${preview.input_duration_seconds.toFixed(1)} s / ${preview.supervised_duration_seconds.toFixed(1)} s`],
@@ -1243,6 +1244,21 @@ function statusOptions() {
   });
 }
 
+function syncOverallReviewStatus() {
+  const componentStatuses = [
+    reviewAudioStatus.value,
+    reviewAnnotationStatus.value,
+    reviewLabelStatus.value,
+  ];
+  if (componentStatuses.includes("fail")) {
+    reviewOverallStatus.value = "fail";
+  } else if (componentStatuses.every((status) => status === "pass")) {
+    reviewOverallStatus.value = "pass";
+  } else {
+    reviewOverallStatus.value = "pending";
+  }
+}
+
 async function initializeReviewDecision() {
   if (reviewSetName === null || reviewItemId === null) {
     return;
@@ -1270,12 +1286,14 @@ async function initializeReviewDecision() {
   reviewAnnotationStatus.value = item.annotation_status;
   reviewLabelStatus.value = item.label_status;
   reviewOverallStatus.value = item.overall_status;
+  reviewOverallStatus.disabled = true;
   reviewNotes.value = item.notes;
   backToReviewLink.href = `/training/corpus-review?name=${encodeURIComponent(reviewSetName)}`;
   reviewDecisionPanel.hidden = false;
 }
 
 async function saveReviewDecision() {
+  syncOverallReviewStatus();
   const response = await fetch(`/api/corpus-review/items/${encodeURIComponent(reviewItemId)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1335,6 +1353,9 @@ saveReviewButton.addEventListener("click", () => {
     setStatus(error instanceof Error ? error.message : String(error), true);
   });
 });
+for (const select of [reviewAudioStatus, reviewAnnotationStatus, reviewLabelStatus]) {
+  select.addEventListener("change", syncOverallReviewStatus);
+}
 window.addEventListener("resize", () => {
   drawTimeline();
   drawSourceAnnotationTimeline();

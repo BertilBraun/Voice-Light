@@ -141,6 +141,7 @@ class TrainingSamplePreview(FrozenBaseModel):
     user_gain: TrackGainNormalization
     assistant_gain: TrackGainNormalization
     annotation_version: str
+    training_label_version: str
     annotation_generated_at: datetime
     quality_metric_version: str
     quality: TrainingSampleQuality

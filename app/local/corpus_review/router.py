@@ -11,10 +11,11 @@ from app.local.corpus_review.models import (
     CorpusReviewDecision,
     CorpusReviewItemRecord,
     CorpusReviewPlan,
+    CorpusReviewReadiness,
     CorpusReviewSetRequest,
 )
 from app.local.corpus_review.repository import CorpusReviewRepository
-from app.local.corpus_review.service import plan_corpus_review
+from app.local.corpus_review.service import corpus_review_readiness, plan_corpus_review
 from app.local.ingestion.conversation import ANNOTATION_VERSION
 from app.shared.quality import METRIC_VERSION
 
@@ -62,6 +63,15 @@ def get_review_set(name: str, response: Response) -> CorpusReviewPlan:
     try:
         response.headers["Cache-Control"] = "no-store"
         return review_repository().get(name)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/sets/{name}/readiness")
+def get_review_readiness(name: str, response: Response) -> CorpusReviewReadiness:
+    try:
+        response.headers["Cache-Control"] = "no-store"
+        return corpus_review_readiness(review_repository().get(name))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 

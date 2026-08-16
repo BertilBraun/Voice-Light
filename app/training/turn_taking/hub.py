@@ -77,7 +77,10 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         for shard_index in range(self.manifest.shard_count):
             path = self._download(f"training/shards/shard-{shard_index:05d}.parquet")
             rows = pq.read_table(path).to_pylist()
-            samples.extend(MaterializedTrainingSample.model_validate(row) for row in rows)
+            for row in rows:
+                sample = MaterializedTrainingSample.model_validate(row)
+                validate_sample_contract(sample=sample, manifest=self.manifest)
+                samples.append(sample)
         if len(samples) != self.manifest.training_sample_count:
             raise ValueError(
                 "Expected "
@@ -124,6 +127,34 @@ def _frame_targets(sample: MaterializedTrainingSample) -> FrameTargets:
         future_activity=future_activity,
         future_activity_mask=future_activity_mask,
     )
+
+
+def validate_sample_contract(
+    sample: MaterializedTrainingSample,
+    manifest: ExportManifest,
+) -> None:
+    if sample.schema_version != manifest.schema_version:
+        raise ValueError(
+            f"Training sample schema {sample.schema_version!r} does not match "
+            f"manifest schema {manifest.schema_version!r}."
+        )
+    if sample.training_label_version != manifest.training_label_version:
+        raise ValueError(
+            f"Training sample label version {sample.training_label_version!r} does not match "
+            f"manifest label version {manifest.training_label_version!r}."
+        )
+    expected_frame_count = round(manifest.input_duration_seconds / manifest.frame_seconds)
+    if expected_frame_count != len(sample.p_user_yield):
+        raise ValueError(
+            f"Training sample has {len(sample.p_user_yield)} frames; "
+            f"manifest contract requires {expected_frame_count}."
+        )
+    sample_duration_seconds = sample.end_seconds - sample.start_seconds
+    if abs(sample_duration_seconds - manifest.input_duration_seconds) > 1e-9:
+        raise ValueError(
+            f"Training sample duration {sample_duration_seconds} does not match "
+            f"manifest duration {manifest.input_duration_seconds}."
+        )
 
 
 def _targets_and_mask(values: tuple[float, ...]) -> tuple[Tensor, Tensor]:

@@ -55,6 +55,7 @@ from app.shared.quality import (
 INPUT_DURATION_SECONDS = 20.0
 BURN_IN_SECONDS = 4.0
 FRAME_SECONDS = 0.08
+TRAINING_LABEL_VERSION = "turn-taking-frame-labels-v1"
 WAVEFORM_POINT_COUNT = 1000
 MAXIMUM_CANDIDATE_SILENCE_SECONDS = 2.0
 FUTURE_ACTIVITY_WINDOWS_MILLISECONDS = ((0, 200), (200, 500), (500, 1000), (1000, 1500))
@@ -209,6 +210,7 @@ def build_training_sample_preview(
         user_gain=user_gain,
         assistant_gain=assistant_gain,
         annotation_version=annotation.annotation_version,
+        training_label_version=TRAINING_LABEL_VERSION,
         annotation_generated_at=(
             repair_plan.created_at if repair_plan is not None else quality.created_at
         ),

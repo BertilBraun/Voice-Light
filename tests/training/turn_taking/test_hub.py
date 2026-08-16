@@ -11,7 +11,7 @@ import torch
 
 from app.local.db.models import TrackSide
 from app.local.training_corpus.export import ExportManifest, MaterializedTrainingSample
-from app.training.turn_taking.hub import HuggingFaceTurnTakingDataset
+from app.training.turn_taking.hub import HuggingFaceTurnTakingDataset, validate_sample_contract
 
 
 def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
@@ -23,6 +23,10 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
         generated_at=datetime.now(UTC),
         metric_version="quality-v1",
         annotation_version="annotation-v1",
+        region_analysis_version="regions-v1",
+        training_label_version="labels-v1",
+        input_duration_seconds=20.0,
+        frame_seconds=0.08,
         dataset_ids=(uuid4(),),
         minimum_quality=0.95,
         recording_count=1,
@@ -70,8 +74,10 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
 
 def _sample() -> MaterializedTrainingSample:
     labels = tuple(-1.0 if index == 0 else 0.5 for index in range(250))
+    assistant_floor = (0.5,) * 250
     return MaterializedTrainingSample(
         schema_version="voice-light-turn-taking-v1",
+        training_label_version="labels-v1",
         dataset_name="test",
         sample_id=uuid4(),
         external_id="recording",
@@ -83,7 +89,7 @@ def _sample() -> MaterializedTrainingSample:
         end_seconds=32.0,
         quality_score=0.99,
         category="dense_turn_taking",
-        assistant_has_floor=labels,
+        assistant_has_floor=assistant_floor,
         p_user_has_floor=labels,
         p_user_yield=labels,
         p_assistant_backchannel=labels,
@@ -96,6 +102,36 @@ def _sample() -> MaterializedTrainingSample:
         non_floor_feedback=labels,
         floor_take=labels,
     )
+
+
+def test_training_sample_contract_rejects_mismatched_label_version() -> None:
+    sample = _sample()
+    manifest = ExportManifest(
+        schema_version=sample.schema_version,
+        generated_at=datetime.now(UTC),
+        metric_version="quality-v1",
+        annotation_version="annotation-v1",
+        region_analysis_version="regions-v1",
+        training_label_version="labels-v2",
+        input_duration_seconds=20.0,
+        frame_seconds=0.08,
+        dataset_ids=(uuid4(),),
+        minimum_quality=0.95,
+        recording_count=1,
+        training_sample_count=1,
+        shard_count=1,
+    )
+
+    with pytest.raises(ValueError, match="does not match manifest label version"):
+        validate_sample_contract(sample=sample, manifest=manifest)
+
+
+def test_materialized_sample_rejects_non_probability_training_target() -> None:
+    payload = _sample().model_dump()
+    payload["p_user_yield"] = (-0.5,) + (0.5,) * 249
+
+    with pytest.raises(ValueError, match="masked with -1 or be probabilities"):
+        MaterializedTrainingSample.model_validate(payload)
 
 
 def _write(path: Path, content: str) -> None:

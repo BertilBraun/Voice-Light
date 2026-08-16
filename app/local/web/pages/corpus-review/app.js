@@ -3,6 +3,7 @@ const reviewSetName = pageParameters.get("name") ?? "prepublish-v1";
 const statusElement = document.querySelector("#status");
 const summaryElement = document.querySelector("#summary");
 const itemsElement = document.querySelector("#review-items");
+const gateIssuesElement = document.querySelector("#gate-issues");
 
 function statusBadge(value) {
   const badge = document.createElement("span");
@@ -83,16 +84,39 @@ function renderItems(items) {
 }
 
 async function loadReview() {
-  const response = await fetch(`/api/corpus-review/sets/${encodeURIComponent(reviewSetName)}`, {
-    cache: "no-store",
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.detail ?? `Review request failed (${response.status})`);
+  const encodedName = encodeURIComponent(reviewSetName);
+  const [reviewResponse, readinessResponse] = await Promise.all([
+    fetch(`/api/corpus-review/sets/${encodedName}`, { cache: "no-store" }),
+    fetch(`/api/corpus-review/sets/${encodedName}/readiness`, { cache: "no-store" }),
+  ]);
+  const payload = await reviewResponse.json();
+  const readiness = await readinessResponse.json();
+  if (!reviewResponse.ok) {
+    throw new Error(payload.detail ?? `Review request failed (${reviewResponse.status})`);
+  }
+  if (!readinessResponse.ok) {
+    throw new Error(
+      readiness.detail ?? `Readiness request failed (${readinessResponse.status})`,
+    );
   }
   renderSummary(payload.items);
   renderItems(payload.items);
-  statusElement.textContent = `${payload.items.length} fixed crops · seed ${payload.review_set.seed}`;
+  gateIssuesElement.replaceChildren(
+    ...readiness.issues.map((issue) => {
+      const item = document.createElement("li");
+      item.textContent = issue.message;
+      return item;
+    }),
+  );
+  if (readiness.ready_to_publish) {
+    const item = document.createElement("li");
+    item.textContent = "All review evidence is current and every fixed crop passed.";
+    gateIssuesElement.append(item);
+  }
+  const gate = readiness.ready_to_publish ? "READY TO PUBLISH" : "BLOCKED";
+  statusElement.textContent =
+    `${gate} · ${payload.items.length} fixed crops · seed ${payload.review_set.seed} · ` +
+    payload.review_set.config.selection_algorithm;
 }
 
 try {
