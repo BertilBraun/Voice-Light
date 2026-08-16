@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Corpus Review · Voice Light</title>
+    <link rel="stylesheet" href="/pages/corpus-review/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <a href="/">← Voice Light</a>
+          <h1>Pre-publication corpus review</h1>
+          <p>Listen to the fixed audit crops and validate annotations and training labels.</p>
+        </div>
+        <div id="status">Loading review queue…</div>
+      </header>
+      <section id="summary" class="summary"></section>
+      <section class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Dataset</th>
+              <th>Recording</th>
+              <th>Crop</th>
+              <th>Audio</th>
+              <th>Annotation</th>
+              <th>Labels</th>
+              <th>Overall</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="review-items"></tbody>
+        </table>
+      </section>
+      <section class="panel note">
+        <h2>Publication gate</h2>
+        <p>
+          Every item must have passing audio, annotation, label, and overall decisions. Failed
+          items require a correction or an explicit corpus exclusion before publication.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="/pages/corpus-review/app.js"></script>
+  </body>
+</html>

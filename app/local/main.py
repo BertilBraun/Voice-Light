@@ -14,6 +14,7 @@ from app.local.asr.router import router as asr_router
 from app.local.backchannel_review.router import router as backchannel_review_router
 from app.local.config import WEB_ROOT
 from app.local.corpus_audit.router import router as corpus_audit_router
+from app.local.corpus_review.router import router as corpus_review_router
 from app.local.dashboard.router import router as dataset_dashboard_router
 from app.local.data.sessions import SessionEntry, SpeakerName, list_sessions, session_audio_path
 from app.local.future_work.router import router as future_work_router
@@ -36,6 +37,7 @@ app.include_router(asr_analysis_router)
 app.include_router(end_of_turn_router)
 app.include_router(dataset_dashboard_router)
 app.include_router(corpus_audit_router)
+app.include_router(corpus_review_router)
 app.include_router(training_samples_router)
 app.include_router(backchannel_review_router)
 app.include_router(synchronization_review_router)
@@ -96,6 +98,14 @@ def training_sample_lab_page() -> FileResponse:
 def corpus_audit_page() -> FileResponse:
     return FileResponse(
         WEB_ROOT / "pages" / "corpus-audit" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/training/corpus-review")
+def corpus_review_page() -> FileResponse:
+    return FileResponse(
+        WEB_ROOT / "pages" / "corpus-review" / "index.html",
         headers={"Cache-Control": "no-store"},
     )
 

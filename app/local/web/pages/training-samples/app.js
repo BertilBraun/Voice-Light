@@ -33,6 +33,23 @@ const status = document.querySelector("#status");
 const summary = document.querySelector("#summary");
 const frameTime = document.querySelector("#frame-time");
 const frameDetails = document.querySelector("#frame-details");
+const reviewDecisionPanel = document.querySelector("#review-decision-panel");
+const reviewAudioStatus = document.querySelector("#review-audio-status");
+const reviewAnnotationStatus = document.querySelector("#review-annotation-status");
+const reviewLabelStatus = document.querySelector("#review-label-status");
+const reviewOverallStatus = document.querySelector("#review-overall-status");
+const reviewNotes = document.querySelector("#review-notes");
+const saveReviewButton = document.querySelector("#save-review-button");
+const backToReviewLink = document.querySelector("#back-to-review-link");
+const pageParameters = new URLSearchParams(window.location.search);
+const reviewSetName = pageParameters.get("review_set");
+const reviewItemId = pageParameters.get("review_item_id");
+let initialReviewLocation = reviewItemId === null ? null : {
+  datasetId: pageParameters.get("dataset_id"),
+  sampleId: pageParameters.get("sample_id"),
+  userSide: pageParameters.get("user_side"),
+  startSeconds: pageParameters.get("start_seconds"),
+};
 const NO_AUXILIARY_ANNOTATION_REASON = "No auxiliary annotation applies at this frame";
 const OUTSIDE_USER_YIELD_CONTEXT_REASON = "Outside the user-yield decision window";
 const BURN_IN_REASON = "Burn-in recurrent-state warm-up";
@@ -170,6 +187,23 @@ async function loadSamples() {
     );
     if (samples.length === 0) {
       throw new Error("No annotated dataset samples are available.");
+    }
+    if (
+      initialReviewLocation !== null &&
+      initialReviewLocation.datasetId === datasetSelect.value
+    ) {
+      if (!samples.some((sample) => sample.sample_id === initialReviewLocation.sampleId)) {
+        const option = document.createElement("option");
+        option.value = initialReviewLocation.sampleId;
+        option.textContent = "Selected review conversation";
+        sampleSelect.append(option);
+      }
+      sampleSelect.value = initialReviewLocation.sampleId;
+      userSideSelect.value = initialReviewLocation.userSide;
+      startInput.value = initialReviewLocation.startSeconds;
+      initialReviewLocation = null;
+      await loadPreview(false);
+      return;
     }
     if (randomizeInitialInput.checked) {
       const randomIndex = Math.floor(Math.random() * samples.length);
@@ -1200,6 +1234,66 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString();
 }
 
+function statusOptions() {
+  return ["pending", "pass", "fail"].map((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value.toUpperCase();
+    return option;
+  });
+}
+
+async function initializeReviewDecision() {
+  if (reviewSetName === null || reviewItemId === null) {
+    return;
+  }
+  for (const select of [
+    reviewAudioStatus,
+    reviewAnnotationStatus,
+    reviewLabelStatus,
+    reviewOverallStatus,
+  ]) {
+    select.replaceChildren(...statusOptions());
+  }
+  const response = await fetch(`/api/corpus-review/sets/${encodeURIComponent(reviewSetName)}`, {
+    cache: "no-store",
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, response.status));
+  }
+  const item = payload.items.find((candidate) => candidate.id === reviewItemId);
+  if (item === undefined) {
+    throw new Error(`Review item not found: ${reviewItemId}`);
+  }
+  reviewAudioStatus.value = item.audio_status;
+  reviewAnnotationStatus.value = item.annotation_status;
+  reviewLabelStatus.value = item.label_status;
+  reviewOverallStatus.value = item.overall_status;
+  reviewNotes.value = item.notes;
+  backToReviewLink.href = `/training/corpus-review?name=${encodeURIComponent(reviewSetName)}`;
+  reviewDecisionPanel.hidden = false;
+}
+
+async function saveReviewDecision() {
+  const response = await fetch(`/api/corpus-review/items/${encodeURIComponent(reviewItemId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      audio_status: reviewAudioStatus.value,
+      annotation_status: reviewAnnotationStatus.value,
+      label_status: reviewLabelStatus.value,
+      overall_status: reviewOverallStatus.value,
+      notes: reviewNotes.value,
+    }),
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, response.status));
+  }
+  setStatus("Review decision saved", false);
+}
+
 datasetSelect.addEventListener("change", () => {
   void loadSamples();
 });
@@ -1236,11 +1330,20 @@ userAudio.addEventListener("timeupdate", trackPlayback);
 userAudio.addEventListener("ended", pausePlayback);
 timeline.addEventListener("click", selectFrameAtEvent);
 document.addEventListener("keydown", togglePlaybackFromSpace);
+saveReviewButton.addEventListener("click", () => {
+  void saveReviewDecision().catch((error) => {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  });
+});
 window.addEventListener("resize", () => {
   drawTimeline();
   drawSourceAnnotationTimeline();
   contextOverviewController.draw();
 });
 
+await initializeReviewDecision();
 await loadDatasets();
+if (initialReviewLocation !== null && initialReviewLocation.datasetId !== null) {
+  datasetSelect.value = initialReviewLocation.datasetId;
+}
 await loadSamples();

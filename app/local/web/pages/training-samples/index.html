@@ -87,6 +87,25 @@
         <audio id="assistant-audio" preload="metadata"></audio>
       </section>
 
+      <section id="review-decision-panel" class="panel review-decision-panel" hidden>
+        <div>
+          <h2>Pre-publication review decision</h2>
+          <p>Save separate judgments for what you heard, the source annotation, and the labels.</p>
+        </div>
+        <label>Audio <select id="review-audio-status"></select></label>
+        <label>Annotation <select id="review-annotation-status"></select></label>
+        <label>Training labels <select id="review-label-status"></select></label>
+        <label>Overall <select id="review-overall-status"></select></label>
+        <label class="review-notes-field">
+          Notes
+          <textarea id="review-notes" maxlength="4000" rows="3"></textarea>
+        </label>
+        <button id="save-review-button" class="primary" type="button">Save decision</button>
+        <a id="back-to-review-link" class="back-link" href="/training/corpus-review">
+          Back to review queue
+        </a>
+      </section>
+
       <section class="panel annotation-panel">
         <div class="timeline-header">
           <div>

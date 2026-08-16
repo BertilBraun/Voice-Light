@@ -438,6 +438,27 @@ code {
   padding: 2px 5px;
 }
 
+.review-decision-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+.review-decision-panel[hidden] {
+  display: none;
+}
+
+.review-decision-panel > div,
+.review-notes-field {
+  grid-column: 1 / -1;
+}
+
+.review-decision-panel textarea {
+  width: 100%;
+  resize: vertical;
+}
+
 @media (max-width: 900px) {
   .controls {
     grid-template-columns: 1fr 1fr;
