@@ -16,12 +16,13 @@ from app.local.conversation_regions.models import (
     ConversationRegionReasonDuration,
     ConversationRegionResultRecord,
 )
-from app.shared.quality import ConversationAnnotation, TrackVadResult
+from app.shared.quality import ConversationAnnotation, SpeakerSide, TrackVadResult
 
 
 @dataclass(frozen=True)
 class ConversationRegionEvidence:
     sample_id: UUID
+    represented_duration_seconds: float
     annotation: ConversationAnnotation
     speaker1_vad: TrackVadResult
     speaker2_vad: TrackVadResult
@@ -101,6 +102,15 @@ class ConversationRegionRepository:
                 f"""
                 SELECT
                   samples.id AS sample_id,
+                  LEAST(
+                    COALESCE(
+                      samples.duration_seconds,
+                      (latest_quality.payload -> 'conversation_annotation'
+                        ->> 'analyzed_duration_seconds')::double precision
+                    ),
+                    (latest_quality.payload -> 'conversation_annotation'
+                      ->> 'analyzed_duration_seconds')::double precision
+                  ) AS represented_duration_seconds,
                   latest_quality.payload AS quality_payload,
                   speaker1_vad.payload AS speaker1_vad_payload,
                   speaker2_vad.payload AS speaker2_vad_payload
@@ -263,12 +273,40 @@ def conversation_region_evidence(
     annotation_payload = quality_payload.get("conversation_annotation")
     if not isinstance(annotation_payload, dict):
         raise ValueError("Quality payload has no conversation annotation.")
+    represented_duration_seconds = float_from_row(row["represented_duration_seconds"])
+    annotation = ConversationAnnotation.model_validate(annotation_payload)
+    speaker1_vad = TrackVadResult.model_validate(json_object(row["speaker1_vad_payload"]))
+    speaker2_vad = TrackVadResult.model_validate(json_object(row["speaker2_vad_payload"]))
+    validate_vad_evidence(
+        vad=speaker1_vad,
+        expected_side=SpeakerSide.SPEAKER1,
+        represented_duration_seconds=represented_duration_seconds,
+    )
+    validate_vad_evidence(
+        vad=speaker2_vad,
+        expected_side=SpeakerSide.SPEAKER2,
+        represented_duration_seconds=represented_duration_seconds,
+    )
     return ConversationRegionEvidence(
         sample_id=uuid_from_row(row["sample_id"]),
-        annotation=ConversationAnnotation.model_validate(annotation_payload),
-        speaker1_vad=TrackVadResult.model_validate(json_object(row["speaker1_vad_payload"])),
-        speaker2_vad=TrackVadResult.model_validate(json_object(row["speaker2_vad_payload"])),
+        represented_duration_seconds=represented_duration_seconds,
+        annotation=annotation,
+        speaker1_vad=speaker1_vad,
+        speaker2_vad=speaker2_vad,
     )
+
+
+def validate_vad_evidence(
+    vad: TrackVadResult,
+    expected_side: SpeakerSide,
+    represented_duration_seconds: float,
+) -> None:
+    if vad.side is not expected_side:
+        raise ValueError(f"VAD side does not match {expected_side.value}.")
+    if vad.speech_segments and (
+        vad.speech_segments[-1].end_seconds > represented_duration_seconds + 0.08
+    ):
+        raise ValueError(f"{expected_side.value} VAD exceeds the represented recording duration.")
 
 
 def json_object(value: object) -> dict[str, object]:
@@ -285,6 +323,11 @@ def uuid_from_row(value: object) -> UUID:
 def string_from_row(value: object) -> str:
     assert isinstance(value, str)
     return value
+
+
+def float_from_row(value: object) -> float:
+    assert isinstance(value, int | float) and not isinstance(value, bool)
+    return float(value)
 
 
 def datetime_from_row(value: object) -> datetime:

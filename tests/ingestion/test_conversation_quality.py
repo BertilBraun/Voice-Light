@@ -16,9 +16,34 @@ from app.local.ingestion.service import (
 from app.shared.quality import (
     AnnotationPoint,
     AnnotationSpan,
+    ConversationAnnotation,
     SpeakerConversationAnnotation,
     SpeakerSide,
 )
+
+
+def test_annotation_span_rejects_reversed_interval() -> None:
+    with pytest.raises(ValueError, match="must not precede"):
+        AnnotationSpan(start_seconds=2.0, end_seconds=1.0, text=None)
+
+
+def test_conversation_annotation_rejects_out_of_bounds_evidence() -> None:
+    annotation = valid_conversation_annotation()
+    payload = annotation.model_dump()
+    payload["speaker1"]["turns"] = ({"time_seconds": 61.0, "confidence": 0.9, "text": None},)
+    payload["turn_count"] = 1
+
+    with pytest.raises(ValueError, match="exceeds its analyzed duration"):
+        ConversationAnnotation.model_validate(payload)
+
+
+def test_conversation_annotation_rejects_inconsistent_event_count() -> None:
+    annotation = valid_conversation_annotation()
+    payload = annotation.model_dump()
+    payload["pause_count"] = 1
+
+    with pytest.raises(ValueError, match="event counts do not match"):
+        ConversationAnnotation.model_validate(payload)
 
 
 def test_dashboard_summary_filter_reuses_sample_filters() -> None:
@@ -161,4 +186,27 @@ def transcript_turn(speaker: str, start_seconds: float, end_seconds: float) -> T
         start_seconds=start_seconds,
         end_seconds=end_seconds,
         words=[],
+    )
+
+
+def valid_conversation_annotation() -> ConversationAnnotation:
+    return conversation_annotation(
+        turns=[],
+        duration_seconds=60.0,
+        speaker1=speaker_annotation(
+            side=SpeakerSide.SPEAKER1,
+            speech_duration_seconds=0.0,
+            turn_count=0,
+            pause_count=0,
+            backchannel_count=0,
+            interruption_count=0,
+        ),
+        speaker2=speaker_annotation(
+            side=SpeakerSide.SPEAKER2,
+            speech_duration_seconds=0.0,
+            turn_count=0,
+            pause_count=0,
+            backchannel_count=0,
+            interruption_count=0,
+        ),
     )

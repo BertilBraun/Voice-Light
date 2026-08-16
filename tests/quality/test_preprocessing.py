@@ -5,6 +5,8 @@ import pytest
 
 from app.shared.audio import AudioTrack
 from app.shared.quality import (
+    AnnotationPoint,
+    AnnotationSpan,
     AudioMetadata,
     ConversationAnnotation,
     ProcessingStatus,
@@ -74,8 +76,22 @@ def test_conversation_counts_scale_to_full_sample_duration() -> None:
     annotation = ConversationAnnotation(
         annotation_version="test",
         analyzed_duration_seconds=180.0,
-        speaker1=empty_speaker_annotation(SpeakerSide.SPEAKER1),
-        speaker2=empty_speaker_annotation(SpeakerSide.SPEAKER2),
+        speaker1=speaker_annotation_with_counts(
+            side=SpeakerSide.SPEAKER1,
+            speech_count=15,
+            turn_count=6,
+            pause_count=2,
+            backchannel_count=2,
+            interruption_count=1,
+        ),
+        speaker2=speaker_annotation_with_counts(
+            side=SpeakerSide.SPEAKER2,
+            speech_count=15,
+            turn_count=6,
+            pause_count=2,
+            backchannel_count=1,
+            interruption_count=1,
+        ),
         speech_segment_count=30,
         turn_count=12,
         turn_taking_count=10,
@@ -113,6 +129,51 @@ def empty_speaker_annotation(side: SpeakerSide) -> SpeakerConversationAnnotation
         speech_duration_seconds=1.0,
         pause_duration_seconds=0.0,
         backchannel_duration_seconds=0.0,
+    )
+
+
+def speaker_annotation_with_counts(
+    side: SpeakerSide,
+    speech_count: int,
+    turn_count: int,
+    pause_count: int,
+    backchannel_count: int,
+    interruption_count: int,
+) -> SpeakerConversationAnnotation:
+    speech_segments = tuple(
+        AnnotationSpan(start_seconds=float(index), end_seconds=index + 0.5, text="speech")
+        for index in range(speech_count)
+    )
+    pauses = tuple(
+        AnnotationSpan(start_seconds=float(index), end_seconds=index + 0.25, text=None)
+        for index in range(pause_count)
+    )
+    backchannels = tuple(
+        AnnotationSpan(start_seconds=float(index), end_seconds=index + 0.2, text="yes")
+        for index in range(backchannel_count)
+    )
+    return SpeakerConversationAnnotation(
+        side=side,
+        speech_segments=speech_segments,
+        pauses=pauses,
+        backchannels=backchannels,
+        turns=tuple(
+            AnnotationPoint(time_seconds=float(index), confidence=0.9, text=None)
+            for index in range(turn_count)
+        ),
+        interruptions=tuple(
+            AnnotationPoint(time_seconds=float(index), confidence=0.9, text=None)
+            for index in range(interruption_count)
+        ),
+        segment_targets=(),
+        connection_targets=(),
+        speech_duration_seconds=sum(
+            segment.end_seconds - segment.start_seconds for segment in speech_segments
+        ),
+        pause_duration_seconds=sum(span.end_seconds - span.start_seconds for span in pauses),
+        backchannel_duration_seconds=sum(
+            span.end_seconds - span.start_seconds for span in backchannels
+        ),
     )
 
 

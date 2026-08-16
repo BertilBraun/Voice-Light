@@ -7,7 +7,9 @@ from app.local.conversation_regions.models import (
     ConversationRegionAnalysis,
     ConversationRegionConfig,
     ConversationRegionReason,
+    UnusableConversationRegion,
 )
+from app.local.conversation_regions.repository import validate_vad_evidence
 from app.local.conversation_regions.service import analyze_conversation_regions
 from app.shared.quality import (
     AnnotationSpan,
@@ -17,6 +19,37 @@ from app.shared.quality import (
     SpeechSegment,
     TrackVadResult,
 )
+
+
+def test_conversation_region_analysis_rejects_inconsistent_duration_accounting() -> None:
+    with pytest.raises(ValueError, match="does not match its regions"):
+        ConversationRegionAnalysis(
+            analysis_version=CONVERSATION_REGION_ANALYSIS_VERSION,
+            annotation_version="annotation-v1",
+            config=ConversationRegionConfig(),
+            duration_seconds=20.0,
+            usable_duration_seconds=10.0,
+            unusable_duration_seconds=10.0,
+            usable_ratio=0.5,
+            unusable_regions=(
+                UnusableConversationRegion(
+                    start_seconds=0.0,
+                    end_seconds=5.0,
+                    reasons=(ConversationRegionReason.DUAL_SILENCE,),
+                ),
+            ),
+        )
+
+
+def test_vad_evidence_must_stay_within_represented_duration() -> None:
+    vad = _vad(SpeakerSide.SPEAKER1, ((0.0, 10.0), (20.0, 30.0)))
+
+    with pytest.raises(ValueError, match="exceeds the represented recording duration"):
+        validate_vad_evidence(
+            vad=vad,
+            expected_side=SpeakerSide.SPEAKER1,
+            represented_duration_seconds=25.0,
+        )
 
 
 def test_conversation_regions_use_permissive_versioned_defaults() -> None:
