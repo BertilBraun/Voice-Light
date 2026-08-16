@@ -51,23 +51,26 @@ voice-light-audio/
   corpus.json
   dataset_1/
     dataset.json
-    <recording-id>/
-      speaker1.flac
-      speaker2.flac
-      metadata.json
+    samples/
+      <recording-id>/
+        speaker_1.flac
+        speaker_2.flac
+        metadata.json
   dataset_2/
     dataset.json
-    <recording-id>/
-      speaker1.flac
-      speaker2.flac
-      metadata.json
+    samples/
+      <recording-id>/
+        speaker_1.flac
+        speaker_2.flac
+        metadata.json
   dataset_3/
     dataset.json
-    <recording-id>/
-      speaker1.flac
-      speaker2.flac
-      metadata.json
-      source_annotations.json
+    samples/
+      <recording-id>/
+        speaker_1.flac
+        speaker_2.flac
+        metadata.json
+        source_annotations.json
   dataset_4/
     dataset.json
     <source-relative-recording-path>/
@@ -80,8 +83,10 @@ voice-light-audio/
 ```
 
 The local staging tree must use the same relative paths as Hugging Face. Reuse existing files by
-reference or hard link when possible. A build manifest may map a staged Hub path to a source path or
-content-addressed cache path; copying the same audio into several local trees is unnecessary.
+reference or hard link when possible. A private build manifest maps each database-addressed source
+path and source-file hash to its staged Hub path and FLAC-file hash. A WAV and its lossless FLAC have
+different encoded hashes even when their decoded PCM is identical; those identities must never be
+substituted for one another. Copying the same audio into several local trees is unnecessary.
 
 ## Dataset metadata
 
@@ -145,8 +150,10 @@ and persistent file caching before a real training run.
 3. Create the local staging layout using the same relative paths.
 4. Reuse the existing `dataset_1` and `dataset_4` Hub FLAC files. Do not re-encode or re-upload them
    when their decoded audio and hashes are already valid.
-5. Convert the 16 MagicHub mono WAV tracks to lossless FLAC, retain source hashes in restricted local
-   provenance, and verify decoded sample equality.
+5. Convert the 16 MagicHub mono WAV tracks to lossless FLAC and retain both the source WAV hashes
+   and derived FLAC hashes in restricted local provenance. Validate filenames and audio metadata for
+   the complete conversion, but perform the expensive exact decoded-PCM comparison on only one or
+   two deterministic representative tracks.
 6. Reuse TurnBench's 76 source FLAC tracks and preserve all three human annotation tracks.
 7. Run the standard language, real Parakeet, real Canary, VAD, conversation-annotation, region, and
    quality pipeline for all MagicHub and TurnBench recordings.
@@ -173,7 +180,8 @@ and persistent file caching before a real training run.
 - Every file is valid lossless FLAC, mono, and decodable at the declared sample rate.
 - Paired tracks share the intended timeline after any declared padding or synchronization repair.
 - Declared durations and SHA-256 hashes match the staged files.
-- WAV-to-FLAC conversion preserves the decoded PCM samples.
+- One or two deterministic WAV-to-FLAC samples have matching decoded PCM; the complete conversion
+  has valid filenames, FLAC headers, hashes, durations, sample rates, and channel counts.
 
 ### Annotation and target validation
 
