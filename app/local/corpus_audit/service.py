@@ -21,6 +21,7 @@ from app.local.corpus_audit.models import (
     CorpusAuditRequest,
 )
 from app.local.corpus_audit.repository import CorpusAuditEvidence
+from app.local.corpus_review.exclusions import CorpusIntervalExclusion
 from app.local.db.models import TrackSide
 from app.local.training_samples.models import TrainingSamplePropositionKind
 from app.local.training_samples.service import (
@@ -196,11 +197,7 @@ def _audit_conversation(
     summary = MutableAuditSummary(
         conversation_count=1,
         source_duration_seconds=duration_seconds,
-        usable_source_duration_seconds=(
-            conversation.conversation_regions.usable_duration_seconds
-            if conversation.conversation_regions is not None
-            else 0.0
-        ),
+        usable_source_duration_seconds=_usable_source_duration(conversation),
         turn_shift_count=conversation.annotation.turn_taking_count,
         pause_count=conversation.annotation.pause_count,
         backchannel_count=conversation.annotation.backchannel_count,
@@ -226,6 +223,7 @@ def _audit_conversation(
                 floor_validity=floor_validity,
                 events=events,
                 conversation_regions=conversation.conversation_regions,
+                interval_exclusions=conversation.interval_exclusions,
                 request=request,
             )
             if not window.accepted:
@@ -250,11 +248,7 @@ def _audit_conversation(
         external_id=conversation.external_id,
         quality_score=conversation.quality_score,
         source_duration_seconds=duration_seconds,
-        usable_source_duration_seconds=(
-            conversation.conversation_regions.usable_duration_seconds
-            if conversation.conversation_regions is not None
-            else 0.0
-        ),
+        usable_source_duration_seconds=_usable_source_duration(conversation),
         candidate_window_count=summary.candidate_window_count,
         accepted_window_count=summary.accepted_window_count,
         effective_supervised_duration_seconds=summary.effective_supervised_duration_seconds,
@@ -298,6 +292,7 @@ def _audit_window(
     floor_validity: FloorValidityIndex,
     events: tuple[AuditEvent, ...],
     conversation_regions: ConversationRegionAnalysis | None,
+    interval_exclusions: tuple[CorpusIntervalExclusion, ...],
     request: CorpusAuditRequest,
 ) -> WindowAudit:
     end_seconds = min(duration_seconds, start_seconds + request.input_duration_seconds)
@@ -339,6 +334,11 @@ def _audit_window(
         rejection_reasons.append(CorpusAuditRejectionReason.INSUFFICIENT_FUTURE_SUPERVISION)
     if masked_ratio > request.maximum_masked_ratio:
         rejection_reasons.append(CorpusAuditRejectionReason.EXCESSIVE_MASKING)
+    if any(
+        start_seconds < exclusion.end_seconds and end_seconds > exclusion.start_seconds
+        for exclusion in interval_exclusions
+    ):
+        rejection_reasons.append(CorpusAuditRejectionReason.HUMAN_REVIEW_EXCLUSION)
     return WindowAudit(
         accepted=not rejection_reasons,
         input_duration_seconds=end_seconds - start_seconds,
@@ -352,6 +352,37 @@ def _audit_window(
         covered_events=covered_events if not rejection_reasons else (),
         rejection_reasons=tuple(rejection_reasons),
     )
+
+
+def _usable_source_duration(conversation: CorpusAuditEvidence) -> float:
+    regions = conversation.conversation_regions
+    if regions is None:
+        return 0.0
+    review_excluded_seconds = sum(
+        _interval_duration_outside_regions(
+            start_seconds=exclusion.start_seconds,
+            end_seconds=exclusion.end_seconds,
+            regions=regions,
+        )
+        for exclusion in conversation.interval_exclusions
+    )
+    return max(0.0, regions.usable_duration_seconds - review_excluded_seconds)
+
+
+def _interval_duration_outside_regions(
+    start_seconds: float,
+    end_seconds: float,
+    regions: ConversationRegionAnalysis,
+) -> float:
+    interval_seconds = end_seconds - start_seconds
+    automatically_excluded_seconds = sum(
+        max(
+            0.0,
+            min(end_seconds, region.end_seconds) - max(start_seconds, region.start_seconds),
+        )
+        for region in regions.unusable_regions
+    )
+    return max(0.0, interval_seconds - automatically_excluded_seconds)
 
 
 def _supervision_coverage(

@@ -26,6 +26,7 @@ from app.local.corpus_audit.service import (
     _oriented_speakers,
     _window_starts,
 )
+from app.local.corpus_review.exclusions import CorpusIntervalExclusion
 from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
 from app.local.db.repository import Repository
 from app.local.ingestion.conversation import ANNOTATION_VERSION
@@ -75,6 +76,7 @@ class RecordingMetadata(FrozenBaseModel):
     speaker1_vad: TrackVadResult
     speaker2_vad: TrackVadResult
     conversation_regions: ConversationRegionAnalysis
+    review_interval_exclusions: tuple[CorpusIntervalExclusion, ...]
     audio: tuple[AudioReference, AudioReference]
 
 
@@ -283,6 +285,7 @@ def _write_recording_metadata(
         speaker1_vad=speaker1_vad,
         speaker2_vad=speaker2_vad,
         conversation_regions=conversation.conversation_regions,
+        review_interval_exclusions=conversation.interval_exclusions,
         audio=(
             _audio_reference(
                 conversation.dataset_name, conversation.external_id, speaker1, audio_assets
@@ -326,6 +329,7 @@ def _training_samples_for_conversation(
                 floor_validity=floor_validity,
                 events=events,
                 conversation_regions=conversation.conversation_regions,
+                interval_exclusions=conversation.interval_exclusions,
                 request=request,
             )
             if not audit.accepted:

@@ -7,6 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.local.conversation_regions.models import ConversationRegionAnalysis
+from app.local.corpus_review.exclusions import CorpusIntervalExclusion
 from app.shared.quality import ConversationAnnotation, QualityResult
 
 
@@ -20,6 +21,7 @@ class CorpusAuditEvidence:
     quality_score: float
     annotation: ConversationAnnotation
     conversation_regions: ConversationRegionAnalysis | None
+    interval_exclusions: tuple[CorpusIntervalExclusion, ...] = ()
 
 
 class CorpusAuditRepository:
@@ -55,7 +57,9 @@ class CorpusAuditRepository:
                   ) AS represented_duration_seconds,
                   latest_quality.total_quality_score,
                   latest_quality.payload AS quality_payload,
-                  region_results.payload AS region_payload
+                  region_results.payload AS region_payload,
+                  COALESCE(interval_exclusions.payload, '[]'::jsonb)
+                    AS interval_exclusions
                 FROM samples
                 JOIN datasets ON datasets.id = samples.dataset_id
                 JOIN LATERAL (
@@ -73,8 +77,30 @@ class CorpusAuditRepository:
                   ON region_results.sample_id = samples.id
                  AND region_results.analysis_version = %s
                  AND region_results.annotation_version = %s
+                LEFT JOIN LATERAL (
+                  SELECT jsonb_agg(
+                    jsonb_build_object(
+                      'id', exclusions.id,
+                      'review_item_id', exclusions.review_item_id,
+                      'sample_id', exclusions.sample_id,
+                      'start_seconds', exclusions.start_seconds,
+                      'end_seconds', exclusions.end_seconds,
+                      'reason', exclusions.reason,
+                      'created_at', exclusions.created_at
+                    ) ORDER BY exclusions.start_seconds, exclusions.id
+                  ) AS payload
+                  FROM corpus_review_exclusions AS exclusions
+                  WHERE exclusions.sample_id = samples.id
+                    AND exclusions.scope = 'interval'
+                ) AS interval_exclusions ON TRUE
                 WHERE samples.dataset_id = ANY(%s::uuid[])
                   AND samples.is_unusable = FALSE
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM corpus_review_exclusions AS exclusions
+                    WHERE exclusions.sample_id = samples.id
+                      AND exclusions.scope = 'recording'
+                  )
                   AND latest_quality.total_quality_score > %s
                 ORDER BY datasets.name, samples.external_id
                 """,
@@ -107,5 +133,9 @@ def _evidence_from_row(row: dict[str, object]) -> CorpusAuditEvidence:
             ConversationRegionAnalysis.model_validate(region_payload)
             if region_payload is not None
             else None
+        ),
+        interval_exclusions=tuple(
+            CorpusIntervalExclusion.model_validate(exclusion)
+            for exclusion in row["interval_exclusions"]
         ),
     )

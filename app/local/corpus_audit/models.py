@@ -16,6 +16,7 @@ class CorpusAuditRejectionReason(StrEnum):
     INSUFFICIENT_PRIMARY_SUPERVISION = "insufficient_primary_supervision"
     INSUFFICIENT_FUTURE_SUPERVISION = "insufficient_future_supervision"
     EXCESSIVE_MASKING = "excessive_masking"
+    HUMAN_REVIEW_EXCLUSION = "human_review_exclusion"
 
 
 class CorpusAuditRequest(FrozenBaseModel):

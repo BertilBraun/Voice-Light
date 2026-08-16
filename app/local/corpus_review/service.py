@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 from collections import defaultdict
 from uuid import UUID
@@ -65,14 +66,7 @@ def plan_corpus_review(
         generator = random.Random(stable_dataset_seed(request.seed, dataset_identifier))
         selected = generator.sample(candidates, request.items_per_dataset)
         for item in selected:
-            maximum_start_seconds = max(
-                0.0,
-                item.represented_duration_seconds - INPUT_DURATION_SECONDS,
-            )
-            start_seconds = quantized_start_seconds(
-                generator.uniform(0.0, maximum_start_seconds),
-                maximum_start_seconds,
-            )
+            start_seconds = random_review_start(item=item, generator=generator)
             sides = (TrackSide.SPEAKER1, TrackSide.SPEAKER2)
             planned.append(
                 PlannedCorpusReviewItem(
@@ -86,6 +80,70 @@ def plan_corpus_review(
                 )
             )
     return tuple(planned)
+
+
+def plan_failed_review_replacements(
+    plan: CorpusReviewPlan,
+    evidence: tuple[CorpusAuditEvidence, ...],
+) -> tuple[tuple[UUID, PlannedCorpusReviewItem], ...]:
+    used_recordings = {(item.dataset_id, item.sample_id) for item in plan.items}
+    replacements: list[tuple[UUID, PlannedCorpusReviewItem]] = []
+    for failed in (item for item in plan.items if item.overall_status is CorpusReviewStatus.FAIL):
+        candidates = sorted(
+            (
+                item
+                for item in evidence
+                if item.dataset_id == failed.dataset_id
+                and (item.dataset_id, item.sample_id) not in used_recordings
+                and item.conversation_regions is not None
+                and item.represented_duration_seconds >= INPUT_DURATION_SECONDS
+            ),
+            key=lambda item: (item.external_id, str(item.sample_id)),
+        )
+        if not candidates:
+            raise ValueError(
+                f"No unused replacement recording remains for dataset {failed.dataset_name}."
+            )
+        generator = random.Random(
+            stable_dataset_seed(plan.review_set.seed, f"replacement:{failed.id.hex}")
+        )
+        selected = candidates[generator.randrange(len(candidates))]
+        sides = (TrackSide.SPEAKER1, TrackSide.SPEAKER2)
+        replacement = PlannedCorpusReviewItem(
+            dataset_id=selected.dataset_id,
+            dataset_name=selected.dataset_name,
+            sample_id=selected.sample_id,
+            external_id=selected.external_id,
+            quality_score=selected.quality_score,
+            user_side=sides[generator.randrange(len(sides))],
+            start_seconds=random_review_start(item=selected, generator=generator),
+        )
+        replacements.append((failed.id, replacement))
+        used_recordings.add((selected.dataset_id, selected.sample_id))
+    return tuple(replacements)
+
+
+def random_review_start(
+    item: CorpusAuditEvidence,
+    generator: random.Random,
+) -> float:
+    maximum_start_seconds = max(
+        0.0,
+        item.represented_duration_seconds - INPUT_DURATION_SECONDS,
+    )
+    frame_count = math.floor(maximum_start_seconds / FRAME_SECONDS)
+    candidates = tuple(
+        frame_index * FRAME_SECONDS
+        for frame_index in range(frame_count + 1)
+        if not any(
+            frame_index * FRAME_SECONDS < exclusion.end_seconds
+            and frame_index * FRAME_SECONDS + INPUT_DURATION_SECONDS > exclusion.start_seconds
+            for exclusion in item.interval_exclusions
+        )
+    )
+    if not candidates:
+        raise ValueError(f"Recording {item.external_id} has no reviewable 20-second window.")
+    return candidates[generator.randrange(len(candidates))]
 
 
 def stable_dataset_seed(seed: str, dataset_identifier: str) -> int:

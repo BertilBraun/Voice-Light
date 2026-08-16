@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -11,6 +12,7 @@ from app.local.conversation_regions.models import (
     ConversationRegionConfig,
 )
 from app.local.corpus_audit.repository import CorpusAuditEvidence
+from app.local.corpus_review.exclusions import CorpusIntervalExclusion
 from app.local.corpus_review.models import (
     CorpusReviewDatasetSelection,
     CorpusReviewDecision,
@@ -21,7 +23,11 @@ from app.local.corpus_review.models import (
     CorpusReviewSetRequest,
     CorpusReviewStatus,
 )
-from app.local.corpus_review.service import corpus_review_readiness, plan_corpus_review
+from app.local.corpus_review.service import (
+    corpus_review_readiness,
+    plan_corpus_review,
+    plan_failed_review_replacements,
+)
 from app.local.db.models import TrackSide
 from app.local.ingestion.conversation import ANNOTATION_VERSION
 from app.shared.quality import (
@@ -112,6 +118,44 @@ def test_review_plan_is_stable_across_database_dataset_ids() -> None:
     )
 
 
+def test_review_plan_never_selects_an_excluded_interval() -> None:
+    request = CorpusReviewSetRequest(
+        name="review-exclusions",
+        seed="seed",
+        items_per_dataset=1,
+        datasets=(CorpusReviewDatasetSelection(dataset_id=DATASET_1, minimum_quality=0.0),),
+    )
+    evidence = replace(
+        evidence_item(DATASET_1, 1, duration_seconds=40.0),
+        interval_exclusions=(
+            interval_exclusion(
+                sample_id=UUID(int=DATASET_1.int + 1),
+                start_seconds=0.0,
+                end_seconds=20.0,
+            ),
+        ),
+    )
+
+    planned = plan_corpus_review(evidence=(evidence,), request=request)
+
+    assert planned[0].start_seconds >= 20.0
+
+
+def test_failed_review_replacement_uses_an_unused_recording() -> None:
+    plan = review_plan(CorpusReviewStatus.FAIL)
+    evidence = tuple(
+        evidence_item(dataset_id, sample_number)
+        for dataset_id in (DATASET_1, DATASET_2)
+        for sample_number in range(1, 4)
+    )
+
+    replacements = plan_failed_review_replacements(plan=plan, evidence=evidence)
+
+    assert len(replacements) == 2
+    original_sample_ids = {item.sample_id for item in plan.items}
+    assert all(item.sample_id not in original_sample_ids for _, item in replacements)
+
+
 @pytest.mark.parametrize(
     ("audio", "annotation", "labels", "overall"),
     (
@@ -191,11 +235,11 @@ def review_item(
     overall_status: CorpusReviewStatus,
     timestamp: datetime,
 ) -> CorpusReviewItemRecord:
-    component_status = (
-        CorpusReviewStatus.PASS
-        if overall_status is CorpusReviewStatus.PASS
-        else CorpusReviewStatus.PENDING
-    )
+    component_status = {
+        CorpusReviewStatus.PASS: CorpusReviewStatus.PASS,
+        CorpusReviewStatus.PENDING: CorpusReviewStatus.PENDING,
+        CorpusReviewStatus.FAIL: CorpusReviewStatus.FAIL,
+    }[overall_status]
     return CorpusReviewItemRecord(
         id=uuid4(),
         review_set_id=review_set_id,
@@ -273,6 +317,22 @@ def conversation_annotation(duration_seconds: float) -> ConversationAnnotation:
         events_per_hour=0.0,
         speaker_balance_score=0.0,
         quality_score=0.0,
+    )
+
+
+def interval_exclusion(
+    sample_id: UUID,
+    start_seconds: float,
+    end_seconds: float,
+) -> CorpusIntervalExclusion:
+    return CorpusIntervalExclusion(
+        id=uuid4(),
+        review_item_id=uuid4(),
+        sample_id=sample_id,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        reason="Human review found invalid annotations.",
+        created_at=datetime.now(UTC),
     )
 
 
