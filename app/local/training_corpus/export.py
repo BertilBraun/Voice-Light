@@ -29,6 +29,10 @@ from app.local.corpus_audit.service import (
 from app.local.db.models import DashboardSample, SampleTrackRecord, TrackSide
 from app.local.db.repository import Repository
 from app.local.ingestion.conversation import ANNOTATION_VERSION
+from app.local.training_corpus.audio_assets import (
+    CorpusAudioAssetCatalog,
+    load_audio_asset_catalog,
+)
 from app.local.training_samples.models import TrainingFramePreview
 from app.local.training_samples.service import (
     FRAME_SECONDS,
@@ -36,12 +40,17 @@ from app.local.training_samples.service import (
     build_frame_previews,
 )
 from app.shared.base_model import FrozenBaseModel
-from app.shared.quality import METRIC_VERSION, ConversationAnnotation, TrackVadResult
+from app.shared.quality import (
+    METRIC_VERSION,
+    AudioMetadata,
+    ConversationAnnotation,
+    SpeakerSide,
+    TrackVadResult,
+)
 
 SCHEMA_VERSION = "voice-light-turn-taking-v1"
 FRAMES_PER_SAMPLE = int(round(INPUT_DURATION_SECONDS / FRAME_SECONDS))
 PARQUET_ROWS_PER_SHARD = 1000
-HUGGING_FACE_S3_BUCKET = "liveroom-assets"
 
 
 class AudioReference(FrozenBaseModel):
@@ -109,6 +118,7 @@ class ExportManifest(FrozenBaseModel):
 
 class TrainingCorpusExportRequest(FrozenBaseModel):
     dataset_ids: tuple[UUID, ...] = Field(min_length=1)
+    audio_build_manifest_paths: tuple[Path, ...] = Field(min_length=1)
     output_directory: Path
     minimum_quality: float = Field(default=0.95, ge=0.0, le=1.0)
 
@@ -118,6 +128,7 @@ def export_training_corpus(request: TrainingCorpusExportRequest) -> ExportManife
         raise ValueError("VOICE_LIGHT_DATABASE_URL is required for corpus export.")
     if request.output_directory.exists():
         raise ValueError(f"Export output already exists: {request.output_directory}")
+    audio_assets = load_audio_asset_catalog(request.audio_build_manifest_paths)
     evidence = CorpusAuditRepository(DATABASE_URL).load_evidence(
         dataset_ids=request.dataset_ids,
         minimum_quality=request.minimum_quality,
@@ -138,12 +149,14 @@ def export_training_corpus(request: TrainingCorpusExportRequest) -> ExportManife
             dashboard_sample=dashboard_sample,
             speaker1_vad=speaker1_vad,
             speaker2_vad=speaker2_vad,
+            audio_assets=audio_assets,
         )
         training_samples.extend(
             _training_samples_for_conversation(
                 conversation=conversation,
                 dashboard_sample=dashboard_sample,
                 minimum_quality=request.minimum_quality,
+                audio_assets=audio_assets,
             )
         )
     shard_count = _write_training_shards(
@@ -191,6 +204,7 @@ def _write_recording_metadata(
     dashboard_sample: DashboardSample,
     speaker1_vad: TrackVadResult,
     speaker2_vad: TrackVadResult,
+    audio_assets: CorpusAudioAssetCatalog,
 ) -> None:
     if conversation.conversation_regions is None:
         raise ValueError(f"Missing conversation regions for {conversation.external_id}")
@@ -209,18 +223,15 @@ def _write_recording_metadata(
         speaker2_vad=speaker2_vad,
         conversation_regions=conversation.conversation_regions,
         audio=(
-            _audio_reference(conversation.dataset_name, conversation.external_id, speaker1),
-            _audio_reference(conversation.dataset_name, conversation.external_id, speaker2),
+            _audio_reference(
+                conversation.dataset_name, conversation.external_id, speaker1, audio_assets
+            ),
+            _audio_reference(
+                conversation.dataset_name, conversation.external_id, speaker2, audio_assets
+            ),
         ),
     )
-    metadata_path = (
-        output_directory
-        / _recording_directory(
-            dataset_name=conversation.dataset_name,
-            external_id=conversation.external_id,
-        )
-        / "metadata.json"
-    )
+    metadata_path = output_directory / _recording_directory(metadata.audio) / "metadata.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
 
@@ -229,6 +240,7 @@ def _training_samples_for_conversation(
     conversation: CorpusAuditEvidence,
     dashboard_sample: DashboardSample,
     minimum_quality: float,
+    audio_assets: CorpusAudioAssetCatalog,
 ) -> Iterator[MaterializedTrainingSample]:
     if conversation.conversation_regions is None:
         return
@@ -272,6 +284,7 @@ def _training_samples_for_conversation(
                 end_seconds=end_seconds,
                 category=audit.category.value,
                 frames=frames,
+                audio_assets=audio_assets,
             )
 
 
@@ -283,6 +296,7 @@ def _materialized_training_sample(
     end_seconds: float,
     category: str,
     frames: tuple[TrainingFramePreview, ...],
+    audio_assets: CorpusAudioAssetCatalog,
 ) -> MaterializedTrainingSample:
     if len(frames) != FRAMES_PER_SAMPLE:
         raise ValueError(f"Expected {FRAMES_PER_SAMPLE} frames, got {len(frames)}")
@@ -300,10 +314,10 @@ def _materialized_training_sample(
         user_side=user_side,
         assistant_side=assistant_side,
         user_audio_path=_audio_reference(
-            conversation.dataset_name, conversation.external_id, user_track
+            conversation.dataset_name, conversation.external_id, user_track, audio_assets
         ).path,
         assistant_audio_path=_audio_reference(
-            conversation.dataset_name, conversation.external_id, assistant_track
+            conversation.dataset_name, conversation.external_id, assistant_track, audio_assets
         ).path,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
@@ -403,46 +417,73 @@ def _audio_reference(
     dataset_name: str,
     external_id: str,
     track: SampleTrackRecord,
+    audio_assets: CorpusAudioAssetCatalog,
 ) -> AudioReference:
-    if track.duration_seconds is None or track.sample_rate is None or track.channels is None:
-        raise ValueError(f"Incomplete audio metadata for {track.id}")
-    if track.audio_sha256 is None:
-        raise ValueError(f"Missing materialized audio hash for {track.id}")
+    asset = audio_assets.resolve(
+        dataset_name=dataset_name,
+        external_id=external_id,
+        side=SpeakerSide(track.side.value),
+        source_path=_local_source_path(track),
+        source_sha256=_source_audio_sha256(track),
+        source_audio=_source_audio_metadata(track),
+    )
     return AudioReference(
         side=track.side,
-        path=_audio_path(dataset_name=dataset_name, external_id=external_id, track=track),
-        duration_seconds=track.duration_seconds,
-        sample_rate=track.sample_rate,
-        channels=track.channels,
-        audio_sha256=track.audio_sha256,
+        path=asset.corpus_relative_path.as_posix(),
+        duration_seconds=asset.corpus_audio.duration_seconds,
+        sample_rate=asset.corpus_audio.sample_rate,
+        channels=asset.corpus_audio.channels,
+        audio_sha256=asset.corpus_sha256,
     )
 
 
-def _audio_path(dataset_name: str, external_id: str, track: SampleTrackRecord) -> str:
-    if dataset_name == "dataset_1-local":
-        return f"dataset_1/{external_id}/{external_id}_{track.side.value}.flac"
-    prefix = f"s3://{HUGGING_FACE_S3_BUCKET}/"
-    if dataset_name == "meetings-s3" and track.storage_uri.startswith(prefix):
-        return track.storage_uri.removeprefix(prefix)
-    raise ValueError(f"No Hugging Face path mapping for {dataset_name}: {track.storage_uri}")
+def _local_source_path(track: SampleTrackRecord) -> Path:
+    if "://" in track.access_uri:
+        raise ValueError(f"Track source is not a local path: {track.access_uri}")
+    return Path(track.access_uri)
 
 
-def _recording_directory(dataset_name: str, external_id: str) -> PurePosixPath:
-    if dataset_name == "dataset_1-local":
-        return PurePosixPath("dataset_1") / external_id
-    if dataset_name == "meetings-s3":
-        return PurePosixPath(external_id)
-    raise ValueError(f"No metadata path mapping for dataset: {dataset_name}")
+def _source_audio_sha256(track: SampleTrackRecord) -> str:
+    if track.audio_sha256 is None:
+        raise ValueError(f"Missing source audio hash for {track.id}")
+    return track.audio_sha256
+
+
+def _source_audio_metadata(track: SampleTrackRecord) -> AudioMetadata:
+    if (
+        track.duration_seconds is None
+        or track.sample_rate is None
+        or track.channels is None
+        or track.sample_count is None
+    ):
+        raise ValueError(f"Incomplete source audio metadata for {track.id}")
+    return AudioMetadata(
+        duration_seconds=track.duration_seconds,
+        sample_rate=track.sample_rate,
+        channels=track.channels,
+        sample_count=track.sample_count,
+    )
+
+
+def _recording_directory(
+    audio: tuple[AudioReference, AudioReference],
+) -> PurePosixPath:
+    directories = tuple(PurePosixPath(reference.path).parent for reference in audio)
+    if directories[0] != directories[1]:
+        raise ValueError("Recording speaker tracks must share one corpus directory.")
+    return directories[0]
 
 
 def parse_arguments() -> TrainingCorpusExportRequest:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-id", action="append", required=True, type=UUID)
+    parser.add_argument("--audio-build-manifest", action="append", required=True, type=Path)
     parser.add_argument("--output-directory", required=True, type=Path)
     parser.add_argument("--minimum-quality", default=0.95, type=float)
     arguments = parser.parse_args()
     return TrainingCorpusExportRequest(
         dataset_ids=tuple(arguments.dataset_id),
+        audio_build_manifest_paths=tuple(arguments.audio_build_manifest),
         output_directory=arguments.output_directory,
         minimum_quality=arguments.minimum_quality,
     )
