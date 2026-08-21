@@ -36,6 +36,7 @@ def main() -> None:
         default=TrainingCorpusSplit.TRAIN.value,
     )
     parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--max-steps", type=_positive_int)
     parser.add_argument("--batch-size", type=_positive_int)
     parser.add_argument("--gradient-accumulation-steps", type=_positive_int)
@@ -45,9 +46,21 @@ def main() -> None:
         choices=tuple(precision.value for precision in TrainingPrecision),
     )
     arguments = parser.parse_args()
-    config = TrainingConfig()
-    if arguments.max_steps is not None:
-        config = config.model_copy(update={"max_steps": arguments.max_steps})
+    if arguments.resume_checkpoint is None:
+        config = TrainingConfig()
+        if arguments.max_steps is not None:
+            config = config.model_copy(
+                update={
+                    "max_steps": arguments.max_steps,
+                    "target_optimizer_step": arguments.max_steps,
+                }
+            )
+    else:
+        checkpoint = torch.load(arguments.resume_checkpoint, map_location="cpu", weights_only=False)
+        config = TrainingConfig.model_validate(checkpoint["training_config"])
+        if arguments.max_steps is None:
+            parser.error("--max-steps is required when resuming a checkpoint.")
+        config = config.model_copy(update={"target_optimizer_step": arguments.max_steps})
     if arguments.batch_size is not None:
         config = config.model_copy(update={"batch_size": arguments.batch_size})
     if arguments.gradient_accumulation_steps is not None:
@@ -109,9 +122,11 @@ def main() -> None:
         config=config,
         checkpoint_path=arguments.checkpoint,
         device=device,
+        resume_checkpoint_path=arguments.resume_checkpoint,
     )
     print(
-        f"Completed {result.optimizer_steps} optimizer steps; "
+        f"Completed optimizer steps {result.starting_optimizer_step} "
+        f"through {result.optimizer_steps}; "
         f"loss={result.final_loss:.4f}; "
         f"steps_per_second={result.optimizer_steps_per_second:.3f}; "
         f"peak_allocated_gib={_gibibytes(result.peak_device_memory_bytes)}; "

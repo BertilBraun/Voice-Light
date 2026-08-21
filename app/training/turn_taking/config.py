@@ -44,6 +44,8 @@ class TrainingConfig(FrozenBaseModel):
     weight_decay: float = 0.01
     warmup_steps: int = 350
     max_steps: int = 3_500
+    target_optimizer_step: int | None = Field(default=None, gt=0)
+    checkpoint_interval_steps: int = Field(default=250, gt=0)
     validation_interval_steps: int = 250
     gradient_clip_norm: float = 1.0
     random_seed: int = 17

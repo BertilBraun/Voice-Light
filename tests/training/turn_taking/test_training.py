@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 
 import torch
@@ -32,6 +33,24 @@ class FakeBackbone:
         return BackboneFeatures(
             taps=taps,
             frame_mask=torch.ones(batch_size, self.frame_count, dtype=torch.bool),
+        )
+
+
+class DeterministicFakeBackbone:
+    def __init__(self, tap_count: int, feature_dimension: int, frame_count: int) -> None:
+        self.taps = tuple(
+            torch.linspace(0.0, 1.0, frame_count * feature_dimension).reshape(
+                frame_count, feature_dimension
+            )
+            for _ in range(tap_count)
+        )
+
+    def extract(self, waveforms: Tensor, waveform_lengths: Tensor) -> BackboneFeatures:
+        del waveform_lengths
+        batch_size = waveforms.shape[0]
+        return BackboneFeatures(
+            taps=tuple(tap.unsqueeze(0).expand(batch_size, -1, -1) for tap in self.taps),
+            frame_mask=torch.ones(batch_size, self.taps[0].shape[0], dtype=torch.bool),
         )
 
 
@@ -97,6 +116,7 @@ def test_training_loop_saves_checkpoint(tmp_path: Path) -> None:
     )
 
     assert result.optimizer_steps == 2
+    assert result.starting_optimizer_step == 0
     assert result.elapsed_seconds > 0.0
     assert result.optimizer_steps_per_second > 0.0
     assert result.peak_device_memory_bytes is None
@@ -106,6 +126,68 @@ def test_training_loop_saves_checkpoint(tmp_path: Path) -> None:
 
 def test_training_defaults_to_bfloat16() -> None:
     assert TrainingConfig().precision is TrainingPrecision.BFLOAT16
+
+
+def test_training_resume_matches_uninterrupted_training(tmp_path: Path) -> None:
+    adapter_config = _adapter_config().model_copy(update={"dropout": 0.0})
+    initial_adapter = TurnTakingAdapter(adapter_config)
+    uninterrupted_adapter = deepcopy(initial_adapter)
+    staged_adapter = deepcopy(initial_adapter)
+    batch = TrainingBatch(
+        sample_ids=("one", "two"),
+        waveforms=torch.ones(2, 320),
+        waveform_lengths=torch.tensor([320, 320]),
+        assistant_speaking=torch.zeros((2, 8), dtype=torch.bool),
+        targets=_targets(batch_size=2, frame_count=8),
+    )
+    backbone = DeterministicFakeBackbone(3, 16, 8)
+    uninterrupted_config = TrainingConfig(
+        max_steps=4,
+        target_optimizer_step=4,
+        checkpoint_interval_steps=1,
+        warmup_steps=1,
+        gradient_accumulation_steps=1,
+        adapter=adapter_config,
+    )
+    staged_config = uninterrupted_config.model_copy(update={"target_optimizer_step": 2})
+    uninterrupted_path = tmp_path / "uninterrupted.pt"
+    staged_path = tmp_path / "staged.pt"
+
+    train(
+        backbone,
+        uninterrupted_adapter,
+        [batch],
+        uninterrupted_config,
+        uninterrupted_path,
+        torch.device("cpu"),
+    )
+    train(
+        backbone,
+        staged_adapter,
+        [batch],
+        staged_config,
+        staged_path,
+        torch.device("cpu"),
+    )
+    resumed_result = train(
+        backbone,
+        TurnTakingAdapter(adapter_config),
+        [batch],
+        uninterrupted_config,
+        staged_path,
+        torch.device("cpu"),
+        resume_checkpoint_path=staged_path,
+    )
+
+    uninterrupted_checkpoint = torch.load(
+        uninterrupted_path, map_location="cpu", weights_only=False
+    )
+    resumed_checkpoint = torch.load(staged_path, map_location="cpu", weights_only=False)
+    assert resumed_result.starting_optimizer_step == 2
+    assert resumed_result.optimizer_steps == 4
+    assert resumed_checkpoint["scheduler_state"]["last_epoch"] == 4
+    for name, expected in uninterrupted_checkpoint["adapter_state"].items():
+        assert torch.equal(resumed_checkpoint["adapter_state"][name], expected)
 
 
 def _adapter_config() -> AdapterConfig:

@@ -20,6 +20,7 @@ from app.training.turn_taking.model import AdapterOutput, TurnTakingAdapter
 
 @dataclass(frozen=True)
 class TrainingResult:
+    starting_optimizer_step: int
     optimizer_steps: int
     final_loss: float
     elapsed_seconds: float
@@ -36,6 +37,7 @@ def train(
     config: TrainingConfig,
     checkpoint_path: Path,
     device: torch.device,
+    resume_checkpoint_path: Path | None = None,
 ) -> TrainingResult:
     _validate_precision(config.precision, device)
     adapter.to(device)
@@ -46,16 +48,42 @@ def train(
         weight_decay=config.weight_decay,
         betas=(0.9, 0.98),
     )
-    scheduler = LambdaLR(optimizer, _learning_rate_multiplier(config))
-    optimizer.zero_grad(set_to_none=True)
     optimizer_step = 0
+    schedule_config = config
+    if resume_checkpoint_path is not None:
+        checkpoint = torch.load(resume_checkpoint_path, map_location=device, weights_only=False)
+        checkpoint_config = TrainingConfig.model_validate(checkpoint["training_config"])
+        _validate_resume_config(config, checkpoint_config)
+        adapter.load_state_dict(checkpoint["adapter_state"], strict=True)
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        optimizer_step = checkpoint["optimizer_step"]
+        schedule_config = TrainingConfig.model_validate(
+            checkpoint.get("schedule_config", checkpoint["training_config"])
+        )
+    target_optimizer_step = config.target_optimizer_step or config.max_steps
+    if target_optimizer_step <= optimizer_step:
+        raise ValueError(
+            f"Target optimizer step {target_optimizer_step} must exceed saved step "
+            f"{optimizer_step}."
+        )
+    scheduler = _build_scheduler(
+        optimizer=optimizer,
+        schedule_config=schedule_config,
+        optimizer_step=optimizer_step,
+    )
+    if resume_checkpoint_path is not None and "scheduler_state" in checkpoint:
+        saved_scheduler_step = checkpoint["scheduler_state"]["last_epoch"]
+        if saved_scheduler_step != optimizer_step:
+            raise ValueError("Checkpoint scheduler step does not match its optimizer step.")
+    optimizer.zero_grad(set_to_none=True)
+    starting_optimizer_step = optimizer_step
     micro_step = 0
     final_loss = math.nan
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
         torch.cuda.synchronize(device)
     started_at = time.perf_counter()
-    while optimizer_step < config.max_steps:
+    while optimizer_step < target_optimizer_step:
         observed_batch = False
         for batch in batches:
             observed_batch = True
@@ -70,7 +98,22 @@ def train(
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             optimizer_step += 1
-            if optimizer_step >= config.max_steps:
+            if optimizer_step % config.checkpoint_interval_steps == 0:
+                save_checkpoint(
+                    checkpoint_path,
+                    adapter,
+                    optimizer,
+                    scheduler,
+                    optimizer_step,
+                    config,
+                    schedule_config,
+                )
+                print(
+                    f"step={optimizer_step}; loss={final_loss:.6f}; "
+                    f"learning_rate={scheduler.get_last_lr()[0]:.8f}",
+                    flush=True,
+                )
+            if optimizer_step >= target_optimizer_step:
                 break
         if not observed_batch:
             raise ValueError("Training data loader produced no batches.")
@@ -83,12 +126,22 @@ def train(
     peak_reserved_device_memory_bytes = (
         torch.cuda.max_memory_reserved(device) if device.type == "cuda" else None
     )
-    save_checkpoint(checkpoint_path, adapter, optimizer, optimizer_step, config)
+    save_checkpoint(
+        checkpoint_path,
+        adapter,
+        optimizer,
+        scheduler,
+        optimizer_step,
+        config,
+        schedule_config,
+    )
+    performed_optimizer_steps = optimizer_step - starting_optimizer_step
     return TrainingResult(
+        starting_optimizer_step=starting_optimizer_step,
         optimizer_steps=optimizer_step,
         final_loss=final_loss,
         elapsed_seconds=elapsed_seconds,
-        optimizer_steps_per_second=optimizer_step / elapsed_seconds,
+        optimizer_steps_per_second=performed_optimizer_steps / elapsed_seconds,
         peak_device_memory_bytes=peak_device_memory_bytes,
         peak_reserved_device_memory_bytes=peak_reserved_device_memory_bytes,
         checkpoint_path=checkpoint_path,
@@ -127,19 +180,26 @@ def save_checkpoint(
     path: Path,
     adapter: TurnTakingAdapter,
     optimizer: Optimizer,
+    scheduler: LambdaLR,
     optimizer_step: int,
     config: TrainingConfig,
+    schedule_config: TrainingConfig,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
     torch.save(
         {
+            "checkpoint_version": 2,
             "adapter_state": adapter.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
             "optimizer_step": optimizer_step,
             "training_config": config.model_dump(mode="json"),
+            "schedule_config": schedule_config.model_dump(mode="json"),
         },
-        path,
+        temporary_path,
     )
+    temporary_path.replace(path)
 
 
 def _targets_to_device(targets: FrameTargets, device: torch.device) -> FrameTargets:
@@ -189,3 +249,36 @@ def _learning_rate_multiplier(config: TrainingConfig) -> Callable[[int], float]:
         return minimum_ratio + (1.0 - minimum_ratio) * cosine
 
     return multiplier
+
+
+def _build_scheduler(
+    optimizer: Optimizer,
+    schedule_config: TrainingConfig,
+    optimizer_step: int,
+) -> LambdaLR:
+    if optimizer_step == 0:
+        return LambdaLR(optimizer, _learning_rate_multiplier(schedule_config))
+    for parameter_group in optimizer.param_groups:
+        parameter_group.setdefault("initial_lr", schedule_config.learning_rate)
+    return LambdaLR(
+        optimizer,
+        _learning_rate_multiplier(schedule_config),
+        last_epoch=optimizer_step - 1,
+    )
+
+
+def _validate_resume_config(config: TrainingConfig, checkpoint: TrainingConfig) -> None:
+    if (
+        config.model_copy(
+            update={
+                "target_optimizer_step": checkpoint.target_optimizer_step,
+                "checkpoint_interval_steps": checkpoint.checkpoint_interval_steps,
+                "data_loader_workers": checkpoint.data_loader_workers,
+                "data_loader_prefetch_factor": checkpoint.data_loader_prefetch_factor,
+            }
+        )
+        != checkpoint
+    ):
+        raise ValueError(
+            "Resume configuration changes the saved model, optimizer, loss, batch, or schedule."
+        )
