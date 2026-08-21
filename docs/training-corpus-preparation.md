@@ -16,9 +16,9 @@ source FLAC and a time interval and contain the aligned frame-level inputs, targ
 | Dataset | Local source | Current analysis status | Required work |
 | --- | --- | --- | --- |
 | `dataset_1` (LUEL) | 165 paired WAV recordings | Canonical quality analysis exists; 33 recordings passed the previous 0.95 export | Reuse the existing Hub FLAC, regenerate rich metadata, and revalidate the selected recordings |
-| `dataset_2` (MagicHub) | 8 paired WAV recordings, about 2.77 hours | Minimal path metadata only; no canonical source annotation or quality-v6 result | Losslessly convert to FLAC, run the normal ASR/quality pipeline, and manually inspect |
-| `dataset_3` (Mundo TurnBench dev) | 38 paired FLAC recordings, about 7.31 hours | Rich human transcripts, timestamps, and event labels from three annotators; no comparable quality-v6 result | Preserve the human evidence, run the normal ASR/quality pipeline, and manually inspect |
-| `dataset_4` (meetings) | S3 source; 191 paired recordings already archived on Hub | Canonical quality analysis exists; 30 recordings passed the previous 0.95 export | Reference only the accepted recordings for the pilot; do not process or upload more meetings |
+| `dataset_2` (MagicHub) | 8 paired WAV recordings, about 2.77 hours | Canonical analysis and review are complete; all 8 recordings are accepted | Publish the staged lossless FLAC and rich metadata |
+| `dataset_3` (Mundo TurnBench dev) | 38 paired FLAC recordings, about 7.31 hours | Canonical analysis and review are complete; 37 recordings are accepted and silent `sample_020` is excluded | Preserve the human evidence and publish only the accepted recording metadata/windows |
+| `dataset_4` (meetings) | S3 source; 191 paired recordings already archived on Hub | Canonical quality analysis exists; 29 reviewed recordings remain after excluding `meeting-112` | Reference only the accepted recordings for the pilot; do not process or upload more meetings |
 
 MagicHub and TurnBench were not rejected by the 0.95 filter. They were never candidates for the
 previous export because they did not have the same completed quality analysis.
@@ -205,6 +205,13 @@ and persistent file caching before a real training run.
 - Inspect examples from every sampling category and every major rejection reason.
 - Compare TurnBench-derived targets with its independent human annotations.
 - Freeze a review report listing accepted problems, required fixes, and final approval.
+
+For the first plumbing pilot, the accepted manual gate is narrower than the full target above: 12
+dataset-stratified recordings were reviewed and all final review items passed after excluding
+TurnBench `sample_020`, meetings `meeting-112`, and the unusable interval in Dataset 1
+`sample_246`. The pilot did not independently sample every split, training category, or rejection
+reason. Preserve that limitation in the publication metadata and do not describe this run as the
+full manual-validation protocol.
 
 ### Upload validation
 

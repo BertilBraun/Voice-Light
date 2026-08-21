@@ -139,6 +139,8 @@ def discover_publication_files(
         raise ValueError(f"Audio staging root does not exist: {audio_staging_root}")
     if not export_root.is_dir():
         raise ValueError(f"Corpus export root does not exist: {export_root}")
+    if audio_staging_root.resolve() == export_root.resolve():
+        return _discover_common_publication_tree(audio_staging_root)
     publishable: list[LocalPublicationFile] = []
     excluded: list[ExcludedLocalFile] = []
     for local_path in _ordered_files(audio_staging_root):
@@ -176,6 +178,32 @@ def discover_publication_files(
             )
         publishable.append(_local_publication_file(export_root, local_path))
     _validate_unique_target_paths(publishable, excluded)
+    return DiscoveredPublicationFiles(
+        publishable=tuple(sorted(publishable, key=lambda item: item.path.as_posix())),
+        excluded=tuple(sorted(excluded, key=lambda item: item.path.as_posix())),
+    )
+
+
+def _discover_common_publication_tree(root: Path) -> DiscoveredPublicationFiles:
+    publishable: list[LocalPublicationFile] = []
+    excluded: list[ExcludedLocalFile] = []
+    for local_path in _ordered_files(root):
+        relative_path = PurePosixPath(local_path.relative_to(root).as_posix())
+        if relative_path.parts and relative_path.parts[0] == ".build":
+            excluded.append(
+                ExcludedLocalFile(
+                    path=relative_path,
+                    local_path=local_path.resolve(),
+                    size_bytes=local_path.stat().st_size,
+                    reason=UploadPlanReason.RESTRICTED_BUILD_PROVENANCE,
+                )
+            )
+        elif _is_allowed_staged_audio(relative_path) or _is_allowed_public_export(relative_path):
+            publishable.append(_local_publication_file(root, local_path))
+        else:
+            raise ValueError(
+                f"Corpus staging tree contains unsupported publication file {relative_path}."
+            )
     return DiscoveredPublicationFiles(
         publishable=tuple(sorted(publishable, key=lambda item: item.path.as_posix())),
         excluded=tuple(sorted(excluded, key=lambda item: item.path.as_posix())),

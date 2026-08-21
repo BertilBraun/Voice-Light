@@ -49,6 +49,27 @@ def test_discovery_allows_only_staged_d2_d3_audio_and_public_export(tmp_path: Pa
     assert discovered.excluded[0].reason is UploadPlanReason.RESTRICTED_BUILD_PROVENANCE
 
 
+def test_discovery_supports_canonical_common_staging_tree(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    write(root / "dataset_2/samples/sample_001/speaker_1.flac", b"magic")
+    write(root / "dataset_3/samples/sample_038/metadata.json", b"recording")
+    write(root / "training/train/shard-00000.parquet", b"shard")
+    write(root / "corpus.json", b"manifest")
+    write(root / ".build/dataset_2-audio-assets.json", b"restricted")
+
+    discovered = discover_publication_files(root, root)
+
+    assert tuple(item.path.as_posix() for item in discovered.publishable) == (
+        "corpus.json",
+        "dataset_2/samples/sample_001/speaker_1.flac",
+        "dataset_3/samples/sample_038/metadata.json",
+        "training/train/shard-00000.parquet",
+    )
+    assert tuple(item.path.as_posix() for item in discovered.excluded) == (
+        ".build/dataset_2-audio-assets.json",
+    )
+
+
 @pytest.mark.parametrize(
     "relative_path",
     (
