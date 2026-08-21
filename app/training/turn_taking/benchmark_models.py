@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from enum import StrEnum
 from pathlib import Path
+from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -85,19 +86,86 @@ class DetectorKind(StrEnum):
     LIVEKIT_V1_MINI = "livekit_v1_mini"
 
 
-class DetectorProvenance(BenchmarkModel):
-    detector_kind: DetectorKind
+class VoiceLightDetectorConfiguration(BenchmarkModel):
+    model_identifier: str
+    lookahead_tokens: int = Field(ge=0)
+    encoder_frame_seconds: float = Field(gt=0.0)
+    optimizer_step: int = Field(gt=0)
+
+
+class VoiceLightDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[DetectorKind.VOICE_LIGHT] = DetectorKind.VOICE_LIGHT
     display_name: str
     implementation_version: str
-    package_name: str | None
-    package_version: str | None
-    model_repository: str | None
-    model_revision: str | None
-    model_filename: str | None
+    model_repository: str
+    model_revision: str
+    checkpoint_path: str
+    checkpoint_sha256: str = Field(pattern=SHA256_PATTERN)
+    configuration: VoiceLightDetectorConfiguration
+
+
+class SileroDetectorConfiguration(BenchmarkModel):
+    speech_threshold: float = Field(ge=0.0, le=1.0)
+    minimum_speech_seconds: float = Field(gt=0.0)
+    minimum_silence_seconds: float = Field(gt=0.0)
+    use_onnx: bool
+
+
+class SileroDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[DetectorKind.SILERO_TIMEOUT] = DetectorKind.SILERO_TIMEOUT
+    display_name: str
+    implementation_version: str
+    package_name: str
+    package_version: str
+    configuration: SileroDetectorConfiguration
+
+
+class SmartTurnDetectorConfiguration(BenchmarkModel):
+    sample_rate_hz: int = Field(gt=0)
+    maximum_window_seconds: float = Field(gt=0.0)
+    candidate_silence_seconds: float = Field(gt=0.0)
+    quantization: Literal["int8"] = "int8"
+
+
+class SmartTurnDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[DetectorKind.PIPECAT_SMART_TURN_V3_2] = (
+        DetectorKind.PIPECAT_SMART_TURN_V3_2
+    )
+    display_name: str
+    implementation_version: str
+    runtime_package_name: str
+    runtime_package_version: str
+    model_repository: str
+    model_revision: str
+    model_filename: str
+    model_sha256: str = Field(pattern=SHA256_PATTERN)
+    configuration: SmartTurnDetectorConfiguration
+
+
+class LiveKitDetectorConfiguration(BenchmarkModel):
+    sample_rate_hz: int = Field(gt=0)
+    vad_speech_threshold: float = Field(ge=0.0, le=1.0)
+    candidate_silence_seconds: float = Field(gt=0.0)
+    model_version: Literal["v1-mini"] = "v1-mini"
+
+
+class LiveKitDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[DetectorKind.LIVEKIT_V1_MINI] = DetectorKind.LIVEKIT_V1_MINI
+    display_name: str
+    implementation_version: str
+    package_name: str
+    package_version: str
     model_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
-    checkpoint_path: str | None
-    checkpoint_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
-    configuration_json: str
+    configuration: LiveKitDetectorConfiguration
+
+
+DetectorProvenance = Annotated[
+    VoiceLightDetectorProvenance
+    | SileroDetectorProvenance
+    | SmartTurnDetectorProvenance
+    | LiveKitDetectorProvenance,
+    Field(discriminator="detector_kind"),
+]
 
 
 class CandidatePrediction(BenchmarkModel):
@@ -151,6 +219,38 @@ def candidate_rows_sha256(candidates: tuple[SilenceCandidate, ...]) -> str:
     return digest.hexdigest()
 
 
+def prediction_rows_sha256(predictions: tuple[CandidatePrediction, ...]) -> str:
+    digest = hashlib.sha256()
+    for prediction in predictions:
+        digest.update(prediction.model_dump_json().encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+class PredictionArtifact(BenchmarkModel):
+    manifest: PredictionManifest
+    predictions: tuple[CandidatePrediction, ...]
+
+    @model_validator(mode="after")
+    def validate_predictions(self) -> PredictionArtifact:
+        if len(self.predictions) != self.manifest.prediction_count:
+            raise ValueError("Prediction count does not match the prediction manifest.")
+        if prediction_rows_sha256(self.predictions) != self.manifest.predictions_sha256:
+            raise ValueError("Prediction rows do not match the prediction manifest hash.")
+        ordered = tuple(
+            sorted(
+                self.predictions,
+                key=lambda prediction: (
+                    prediction.candidate_id,
+                    prediction.absolute_time_seconds,
+                ),
+            )
+        )
+        if ordered != self.predictions:
+            raise ValueError("Predictions must be ordered by candidate and timestamp.")
+        return self
+
+
 def write_inventory(path: Path, inventory: CandidateInventory) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(inventory.model_dump_json(indent=2), encoding="utf-8")
@@ -158,3 +258,12 @@ def write_inventory(path: Path, inventory: CandidateInventory) -> None:
 
 def read_inventory(path: Path) -> CandidateInventory:
     return CandidateInventory.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def write_predictions(path: Path, artifact: PredictionArtifact) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+
+
+def read_predictions(path: Path) -> PredictionArtifact:
+    return PredictionArtifact.model_validate_json(path.read_text(encoding="utf-8"))
