@@ -92,6 +92,20 @@ def evaluate_policy(
 ) -> PolicyMetrics:
     candidate_rows = tuple(candidates)
     predictions_by_candidate = _predictions_by_candidate(predictions)
+    return _evaluate_policy_with_grouped_predictions(
+        candidate_rows=candidate_rows,
+        predictions_by_candidate=predictions_by_candidate,
+        policy=policy,
+        evaluation=evaluation,
+    )
+
+
+def _evaluate_policy_with_grouped_predictions(
+    candidate_rows: tuple[SilenceCandidate, ...],
+    predictions_by_candidate: dict[str, tuple[CandidatePrediction, ...]],
+    policy: PolicyConfiguration,
+    evaluation: EvaluationConfiguration,
+) -> PolicyMetrics:
     hold_support = 0
     eot_support = 0
     false_cutoff_count = 0
@@ -155,6 +169,7 @@ def sweep_policies(
 ) -> tuple[PolicySweepPoint, ...]:
     candidate_rows = tuple(candidates)
     prediction_rows = tuple(predictions)
+    predictions_by_candidate = _predictions_by_candidate(prediction_rows)
     policies = tuple(
         PolicyConfiguration(
             threshold=threshold,
@@ -173,9 +188,9 @@ def sweep_policies(
     return tuple(
         PolicySweepPoint(
             policy=policy,
-            metrics=evaluate_policy(
-                candidates=candidate_rows,
-                predictions=prediction_rows,
+            metrics=_evaluate_policy_with_grouped_predictions(
+                candidate_rows=candidate_rows,
+                predictions_by_candidate=predictions_by_candidate,
                 policy=policy,
                 evaluation=evaluation,
             ),

@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import torch
 from huggingface_hub import hf_hub_download
+from torch.utils.data import DataLoader
 
 from app.local.analyses.end_of_turn.detectors.livekit_v1_mini import (
     EOT_MAX_SAMPLES,
@@ -23,6 +25,7 @@ from app.local.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
 )
 from app.local.training_corpus.export import MaterializedTrainingSample
 from app.local.training_corpus.splits import TrainingCorpusSplit
+from app.training.turn_taking.backbone import NemotronStreamingBackbone
 from app.training.turn_taking.benchmark_adapters import (
     CandidateAudioProvider,
     HubAudioPathResolver,
@@ -68,12 +71,18 @@ from app.training.turn_taking.benchmark_report import (
     BenchmarkAnalysisReport,
     OperatingPoints,
 )
+from app.training.turn_taking.benchmark_voice_light import (
+    load_voice_light_checkpoint,
+    predict_voice_light_checkpoints,
+)
+from app.training.turn_taking.data import collate_training_items
 from app.training.turn_taking.hub import (
     DEFAULT_HUB_REPOSITORY,
     HuggingFaceTurnTakingDataset,
 )
 
 PINNED_CORPUS_REVISION = "56e68eb8fb1d42159483612f508b9ce27672f724"
+PINNED_NEMOTRON_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
 IMPLEMENTATION_VERSION = "voice-light-causal-adapters-v1"
 DEFAULT_THRESHOLDS = tuple(index / 20 for index in range(1, 20))
 DEFAULT_ACTION_DELAYS_SECONDS = (0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56, 0.64)
@@ -86,6 +95,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_inventory_parser(subparsers)
     _add_predict_parser(subparsers)
+    _add_voice_light_parser(subparsers)
     _add_analyze_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
@@ -93,6 +103,8 @@ def main() -> None:
             _create_inventory(arguments)
         case "predict-baseline":
             _predict_baseline(arguments)
+        case "predict-voice-light":
+            _predict_voice_light(arguments)
         case "analyze":
             _analyze(arguments)
         case _:
@@ -139,6 +151,24 @@ def _add_analyze_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         default=DEFAULT_ACTION_DELAYS_SECONDS,
     )
     parser.add_argument("--timeouts-seconds", type=_float_tuple, default=DEFAULT_TIMEOUTS_SECONDS)
+
+
+def _add_voice_light_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "predict-voice-light",
+        help="Cache both Voice Light checkpoints in one shared Nemotron pass.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("output_directory", type=Path)
+    parser.add_argument("checkpoints", type=Path, nargs="+")
+    parser.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
+    parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
+    parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--model-revision", default=PINNED_NEMOTRON_REVISION)
+    parser.add_argument("--batch-size", type=_positive_int, default=4)
+    parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=0)
 
 
 def _create_inventory(arguments: argparse.Namespace) -> None:
@@ -271,6 +301,57 @@ def _predict_baseline(arguments: argparse.Namespace) -> None:
     print(artifact.manifest.model_dump_json(indent=2), flush=True)
 
 
+def _predict_voice_light(arguments: argparse.Namespace) -> None:
+    inventory = read_inventory(arguments.inventory)
+    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
+        raise ValueError("Voice Light tuning predictions are restricted to validation.")
+    checkpoints = tuple(load_voice_light_checkpoint(path) for path in arguments.checkpoints)
+    reference_config = checkpoints[0].config
+    dataset = HuggingFaceTurnTakingDataset(
+        split=TrainingCorpusSplit.VALIDATION,
+        revision=arguments.hub_revision,
+        repository_id=arguments.hub_repository,
+        cache_directory=arguments.hub_cache_directory,
+        sample_rate_hz=reference_config.sample_rate_hz,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    loader = DataLoader(
+        dataset,
+        batch_size=arguments.batch_size,
+        shuffle=False,
+        collate_fn=collate_training_items,
+        num_workers=arguments.data_loader_workers,
+        prefetch_factor=2 if arguments.data_loader_workers > 0 else None,
+        persistent_workers=arguments.data_loader_workers > 0,
+        pin_memory=device.type == "cuda",
+    )
+    backbone = NemotronStreamingBackbone(
+        model_identifier=reference_config.model_identifier,
+        tap_layer_indices=reference_config.adapter.tap_layer_indices,
+        lookahead_tokens=reference_config.lookahead_tokens,
+        model_revision=arguments.model_revision,
+        cache_directory=arguments.hub_cache_directory,
+    ).to(device)
+    backbone.eval()
+    artifacts = predict_voice_light_checkpoints(
+        backbone=backbone,
+        checkpoints=checkpoints,
+        batches=loader,
+        samples=dataset.samples,
+        inventory=inventory,
+        model_repository=reference_config.model_identifier,
+        model_revision=arguments.model_revision,
+        device=device,
+    )
+    for checkpoint, artifact in zip(checkpoints, artifacts, strict=True):
+        output_path = (
+            arguments.output_directory
+            / f"validation-voice-light-step-{checkpoint.optimizer_step:06d}-predictions.json"
+        )
+        write_predictions(path=output_path, artifact=artifact)
+        print(artifact.manifest.model_dump_json(indent=2), flush=True)
+
+
 def _analyze(arguments: argparse.Namespace) -> None:
     inventory = read_inventory(arguments.inventory)
     artifact = read_predictions(arguments.predictions)
@@ -395,6 +476,20 @@ def _positive_float(value: str) -> float:
     parsed = float(value)
     if parsed <= 0.0:
         raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be nonnegative")
     return parsed
 
 

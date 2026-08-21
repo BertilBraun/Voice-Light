@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import torch
@@ -26,10 +27,20 @@ class NemotronStreamingBackbone(nn.Module):
         model_identifier: str,
         tap_layer_indices: tuple[int, ...],
         lookahead_tokens: int,
+        model_revision: str | None = None,
+        cache_directory: Path | None = None,
     ) -> None:
         super().__init__()
-        self.processor = NemotronAsrStreamingProcessor.from_pretrained(model_identifier)
-        self.encoder = NemotronAsrStreamingEncoder.from_pretrained(model_identifier)
+        self.processor = NemotronAsrStreamingProcessor.from_pretrained(
+            model_identifier,
+            revision=model_revision,
+            cache_dir=cache_directory,
+        )
+        self.encoder = NemotronAsrStreamingEncoder.from_pretrained(
+            model_identifier,
+            revision=model_revision,
+            cache_dir=cache_directory,
+        )
         freeze_module(self.encoder)
         self.tap_layer_indices = tap_layer_indices
         self.lookahead_tokens = lookahead_tokens
