@@ -38,6 +38,15 @@ from app.training.turn_taking.benchmark_adapters import (
     silero_candidate_predictions,
     smart_turn_candidate_predictions,
 )
+from app.training.turn_taking.benchmark_gate import (
+    ValidationLockManifest,
+    create_validation_lock,
+    evaluate_locked_test_artifact,
+    file_sha256,
+    read_analysis_report,
+    read_validation_lock,
+    write_validation_lock,
+)
 from app.training.turn_taking.benchmark_inventory import build_candidate_inventory
 from app.training.turn_taking.benchmark_metrics import (
     EvaluationConfiguration,
@@ -56,6 +65,7 @@ from app.training.turn_taking.benchmark_models import (
     DetectorProvenance,
     LiveKitDetectorConfiguration,
     LiveKitDetectorProvenance,
+    OverlapAuditReport,
     PredictionArtifact,
     PredictionManifest,
     SileroDetectorConfiguration,
@@ -102,6 +112,8 @@ def main() -> None:
     _add_voice_light_parser(subparsers)
     _add_analyze_parser(subparsers)
     _add_overlap_parser(subparsers)
+    _add_lock_parser(subparsers)
+    _add_final_test_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
         case "inventory":
@@ -114,17 +126,28 @@ def main() -> None:
             _analyze(arguments)
         case "overlap-audit":
             _overlap_audit(arguments)
+        case "lock-validation":
+            _lock_validation(arguments)
+        case "final-test":
+            _final_test(arguments)
         case _:
             raise AssertionError(f"Unhandled command {arguments.command!r}.")
 
 
 def _add_inventory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("inventory", help="Build validation candidate inventory.")
+    parser = subparsers.add_parser("inventory", help="Build a causal candidate inventory.")
     parser.add_argument("output", type=Path)
     parser.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
     parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
     parser.add_argument("--hub-cache-directory", type=Path)
     parser.add_argument("--local-export-root", type=Path)
+    parser.add_argument(
+        "--split",
+        type=TrainingCorpusSplit,
+        choices=tuple(TrainingCorpusSplit),
+        default="validation",
+    )
+    parser.add_argument("--validation-lock", type=Path)
 
 
 def _add_predict_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -142,6 +165,7 @@ def _add_predict_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
     parser.add_argument("--hub-cache-directory", type=Path)
     parser.add_argument("--audio-root", type=Path)
+    parser.add_argument("--validation-lock", type=Path)
 
 
 def _add_analyze_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -176,6 +200,7 @@ def _add_voice_light_parser(
     parser.add_argument("--model-revision", default=PINNED_NEMOTRON_REVISION)
     parser.add_argument("--batch-size", type=_positive_int, default=4)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=0)
+    parser.add_argument("--validation-lock", type=Path)
 
 
 def _add_overlap_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -191,8 +216,39 @@ def _add_overlap_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     )
 
 
+def _add_lock_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser(
+        "lock-validation",
+        help="Freeze validation-selected policies before opening the test split.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("overlap_audit", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("reports", type=Path, nargs="+")
+    parser.add_argument("--primary-checkpoint-sha256", required=True)
+
+
+def _add_final_test_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "final-test",
+        help="Evaluate one locked policy on one matching test prediction artifact.",
+    )
+    parser.add_argument("validation_lock", type=Path)
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("predictions", type=Path)
+    parser.add_argument("output", type=Path)
+
+
 def _create_inventory(arguments: argparse.Namespace) -> None:
-    split = TrainingCorpusSplit.VALIDATION
+    split: TrainingCorpusSplit = arguments.split
+    _validate_split_access(
+        split=split,
+        validation_lock_path=arguments.validation_lock,
+        corpus_repository=arguments.hub_repository,
+        corpus_revision=arguments.hub_revision,
+    )
     if arguments.local_export_root is None:
         dataset = HuggingFaceTurnTakingDataset(
             split=split,
@@ -215,8 +271,7 @@ def _create_inventory(arguments: argparse.Namespace) -> None:
 
 def _predict_baseline(arguments: argparse.Namespace) -> None:
     inventory = read_inventory(arguments.inventory)
-    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
-        raise ValueError("Baseline tuning predictions are restricted to validation.")
+    lock = _validation_lock_for_predictions(inventory.manifest.split, arguments.validation_lock)
     audio_provider = _audio_provider(arguments)
     match arguments.detector:
         case "silero":
@@ -298,6 +353,8 @@ def _predict_baseline(arguments: argparse.Namespace) -> None:
             )
         case _:
             raise AssertionError(f"Unhandled detector {arguments.detector!r}.")
+    if lock is not None and not any(policy.detector == provenance for policy in lock.policies):
+        raise ValueError("Baseline detector provenance is absent from the validation lock.")
     ordered_predictions = tuple(
         sorted(
             predictions,
@@ -323,12 +380,11 @@ def _predict_baseline(arguments: argparse.Namespace) -> None:
 
 def _predict_voice_light(arguments: argparse.Namespace) -> None:
     inventory = read_inventory(arguments.inventory)
-    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
-        raise ValueError("Voice Light tuning predictions are restricted to validation.")
+    lock = _validation_lock_for_predictions(inventory.manifest.split, arguments.validation_lock)
     checkpoints = tuple(load_voice_light_checkpoint(path) for path in arguments.checkpoints)
     reference_config = checkpoints[0].config
     dataset = HuggingFaceTurnTakingDataset(
-        split=TrainingCorpusSplit.VALIDATION,
+        split=inventory.manifest.split,
         revision=arguments.hub_revision,
         repository_id=arguments.hub_repository,
         cache_directory=arguments.hub_cache_directory,
@@ -364,9 +420,13 @@ def _predict_voice_light(arguments: argparse.Namespace) -> None:
         device=device,
     )
     for checkpoint, artifact in zip(checkpoints, artifacts, strict=True):
-        output_path = (
-            arguments.output_directory
-            / f"validation-voice-light-step-{checkpoint.optimizer_step:06d}-predictions.json"
+        if lock is not None and not any(
+            policy.detector == artifact.manifest.detector for policy in lock.policies
+        ):
+            raise ValueError("Voice Light detector provenance is absent from the validation lock.")
+        output_path = arguments.output_directory / (
+            f"{inventory.manifest.split.value}-voice-light-step-"
+            f"{checkpoint.optimizer_step:06d}-predictions.json"
         )
         write_predictions(path=output_path, artifact=artifact)
         print(artifact.manifest.model_dump_json(indent=2), flush=True)
@@ -462,6 +522,36 @@ def _overlap_audit(arguments: argparse.Namespace) -> None:
     print(report.model_dump_json(indent=2), flush=True)
 
 
+def _lock_validation(arguments: argparse.Namespace) -> None:
+    inventory = read_inventory(arguments.inventory)
+    reports = tuple(read_analysis_report(path) for path in arguments.reports)
+    overlap_report = OverlapAuditReport.model_validate_json(
+        arguments.overlap_audit.read_text(encoding="utf-8")
+    )
+    lock = create_validation_lock(
+        inventory=inventory,
+        reports=reports,
+        primary_checkpoint_sha256=arguments.primary_checkpoint_sha256,
+        overlap_report=overlap_report,
+        overlap_report_sha256=file_sha256(arguments.overlap_audit),
+    )
+    write_validation_lock(arguments.output, lock)
+    print(lock.model_dump_json(indent=2), flush=True)
+
+
+def _final_test(arguments: argparse.Namespace) -> None:
+    lock = read_validation_lock(arguments.validation_lock)
+    report = evaluate_locked_test_artifact(
+        lock=lock,
+        inventory=read_inventory(arguments.inventory),
+        artifact=read_predictions(arguments.predictions),
+        lock_sha256=file_sha256(arguments.validation_lock),
+    )
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    arguments.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2), flush=True)
+
+
 def _read_local_samples(
     export_root: Path, split: TrainingCorpusSplit
 ) -> tuple[MaterializedTrainingSample, ...]:
@@ -470,6 +560,33 @@ def _read_local_samples(
         raise ValueError(f"No local {split.value} Parquet shards found under {export_root}.")
     table = pa.concat_tables(tuple(pq.read_table(path) for path in shard_paths))
     return tuple(MaterializedTrainingSample.model_validate(row) for row in table.to_pylist())
+
+
+def _validate_split_access(
+    split: TrainingCorpusSplit,
+    validation_lock_path: Path | None,
+    corpus_repository: str,
+    corpus_revision: str,
+) -> None:
+    if split is not TrainingCorpusSplit.TEST:
+        return
+    if validation_lock_path is None:
+        raise ValueError("Test inventory access requires --validation-lock.")
+    lock = read_validation_lock(validation_lock_path)
+    if lock.corpus_repository != corpus_repository or lock.corpus_revision != corpus_revision:
+        raise ValueError("Validation lock does not match the requested corpus revision.")
+
+
+def _validation_lock_for_predictions(
+    split: TrainingCorpusSplit, validation_lock_path: Path | None
+) -> ValidationLockManifest | None:
+    if split is TrainingCorpusSplit.VALIDATION:
+        return None
+    if split is not TrainingCorpusSplit.TEST:
+        raise ValueError("Benchmark predictions support only validation or locked test data.")
+    if validation_lock_path is None:
+        raise ValueError("Test prediction generation requires --validation-lock.")
+    return read_validation_lock(validation_lock_path)
 
 
 def _audio_provider(arguments: argparse.Namespace) -> CandidateAudioProvider:
