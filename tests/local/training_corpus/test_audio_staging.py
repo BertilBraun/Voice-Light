@@ -11,6 +11,7 @@ from app.local.training_corpus.audio_staging import (
     CorpusAudioPreparation,
     CorpusAudioVerification,
     ExistingFlacStagingRequest,
+    LocalSourceAudio,
     WaveToFlacStagingRequest,
     corpus_track_relative_path,
     decoded_pcm_sha256,
@@ -75,7 +76,8 @@ def test_existing_flac_staging_uses_hard_links(tmp_path: Path) -> None:
     assert len(manifest.assets) == 2
     for asset in manifest.assets:
         staged_path = corpus_root.joinpath(*asset.corpus_relative_path.parts)
-        assert os.path.samefile(asset.source_path, staged_path)
+        assert isinstance(asset.source, LocalSourceAudio)
+        assert os.path.samefile(asset.source.path, staged_path)
         assert asset.source_sha256 == asset.corpus_sha256
         assert asset.verification is CorpusAudioVerification.HARD_LINK_IDENTITY
 

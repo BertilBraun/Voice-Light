@@ -15,6 +15,8 @@ from app.local.training_corpus.audio_staging import (
     CorpusAudioPreparation,
     CorpusAudioStagingManifest,
     CorpusAudioVerification,
+    LocalSourceAudio,
+    RemoteSourceAudio,
 )
 from app.shared.quality import AudioMetadata, SpeakerSide
 
@@ -122,7 +124,7 @@ def resolve(
         dataset_name="dataset_2",
         external_id=external_id,
         side=SpeakerSide.SPEAKER1,
-        source_path=source_path,
+        source_uri=str(source_path),
         source_sha256=source_sha256,
         source_audio=source_audio,
     )
@@ -132,7 +134,7 @@ def audio_asset(source_path: Path) -> CorpusAudioAsset:
     return CorpusAudioAsset(
         sample_id="sample_001",
         side=SpeakerSide.SPEAKER1,
-        source_path=source_path.resolve(),
+        source=LocalSourceAudio(path=source_path.resolve()),
         source_sha256=SOURCE_HASH,
         corpus_relative_path=PurePosixPath("dataset_2/samples/sample_001/speaker_1.flac"),
         corpus_sha256=CORPUS_HASH,
@@ -151,7 +153,24 @@ def staging_manifest(
         schema_version=AUDIO_STAGING_SCHEMA_VERSION,
         generated_at=GENERATED_AT,
         dataset_name="dataset_2",
-        source_samples_root=root / "data" / "dataset_2" / "samples",
-        corpus_dataset_root=root / "corpus" / "dataset_2",
         assets=(asset,),
     )
+
+
+def test_catalog_resolves_remote_source_uri(tmp_path: Path) -> None:
+    source_uri = "s3://audio/meeting/speaker_1.flac"
+    asset = audio_asset(tmp_path / "unused.wav").model_copy(
+        update={"source": RemoteSourceAudio(uri=source_uri)}
+    )
+    catalog = CorpusAudioAssetCatalog(manifests=(staging_manifest(tmp_path, asset),))
+
+    resolved = catalog.resolve(
+        dataset_name="dataset_2",
+        external_id="sample_001",
+        side=SpeakerSide.SPEAKER1,
+        source_uri=source_uri,
+        source_sha256=SOURCE_HASH,
+        source_audio=AUDIO_METADATA,
+    )
+
+    assert resolved == asset

@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
+from typing import Annotated, Literal
 from uuid import uuid4
 
 import av
@@ -28,12 +29,27 @@ TRACK_FILENAME_BY_SIDE = {
 class CorpusAudioPreparation(StrEnum):
     LOSSLESS_FLAC_TRANSCODE = "lossless_flac_transcode"
     HARD_LINKED_FLAC = "hard_linked_flac"
+    EXISTING_HUB_FLAC = "existing_hub_flac"
 
 
 class CorpusAudioVerification(StrEnum):
     METADATA = "metadata"
     DECODED_PCM = "decoded_pcm"
     HARD_LINK_IDENTITY = "hard_link_identity"
+    HUB_LFS_SHA256 = "hub_lfs_sha256"
+
+
+class LocalSourceAudio(FrozenBaseModel):
+    kind: Literal["local"] = "local"
+    path: Path
+
+
+class RemoteSourceAudio(FrozenBaseModel):
+    kind: Literal["remote"] = "remote"
+    uri: str = Field(pattern=r"^[a-z][a-z0-9+.-]*://.+")
+
+
+SourceAudio = Annotated[LocalSourceAudio | RemoteSourceAudio, Field(discriminator="kind")]
 
 
 class WaveToFlacStagingRequest(FrozenBaseModel):
@@ -55,7 +71,7 @@ DatasetAudioStagingRequest = WaveToFlacStagingRequest | ExistingFlacStagingReque
 class CorpusAudioAsset(FrozenBaseModel):
     sample_id: str
     side: SpeakerSide
-    source_path: Path
+    source: SourceAudio
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     corpus_relative_path: PurePosixPath
     corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -69,8 +85,6 @@ class CorpusAudioStagingManifest(FrozenBaseModel):
     schema_version: str
     generated_at: datetime
     dataset_name: str
-    source_samples_root: Path
-    corpus_dataset_root: Path
     assets: tuple[CorpusAudioAsset, ...]
 
 
@@ -145,7 +159,7 @@ def stage_dataset_audio(request: DatasetAudioStagingRequest) -> CorpusAudioStagi
                 CorpusAudioAsset(
                     sample_id=source.sample_id,
                     side=source.side,
-                    source_path=source.path.resolve(),
+                    source=LocalSourceAudio(path=source.path.resolve()),
                     source_sha256=source_sha256,
                     corpus_relative_path=relative_path,
                     corpus_sha256=corpus_sha256,
@@ -163,8 +177,6 @@ def stage_dataset_audio(request: DatasetAudioStagingRequest) -> CorpusAudioStagi
         schema_version=AUDIO_STAGING_SCHEMA_VERSION,
         generated_at=datetime.now(UTC),
         dataset_name=request.dataset_name,
-        source_samples_root=request.source_samples_root.resolve(),
-        corpus_dataset_root=corpus_dataset_root.resolve(),
         assets=tuple(assets),
     )
     write_build_manifest(request.corpus_root, manifest)
@@ -400,12 +412,13 @@ def parse_arguments(arguments: Sequence[str] | None = None) -> DatasetAudioStagi
 
 
 def main() -> None:
-    manifest = stage_dataset_audio(parse_arguments())
+    request = parse_arguments()
+    manifest = stage_dataset_audio(request)
     summary = CorpusAudioStagingSummary(
         dataset_name=manifest.dataset_name,
         asset_count=len(manifest.assets),
         manifest_path=build_manifest_path(
-            corpus_root=manifest.corpus_dataset_root.parent,
+            corpus_root=request.corpus_root,
             dataset_name=manifest.dataset_name,
         ),
     )
