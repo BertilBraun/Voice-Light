@@ -4,6 +4,7 @@ import itertools
 import math
 from collections import defaultdict
 from collections.abc import Iterable
+from enum import StrEnum
 
 from pydantic import Field, model_validator
 
@@ -30,9 +31,15 @@ class PolicyConfiguration(BenchmarkModel):
         return self
 
 
+class ScorePersistence(StrEnum):
+    CURRENT = "current"
+    LATCHED = "latched"
+
+
 class EvaluationConfiguration(BenchmarkModel):
     target_score_point_seconds: float = Field(gt=0.0)
     target_yield_threshold: float = Field(ge=0.0, le=1.0)
+    score_persistence: ScorePersistence
 
 
 class PolicyMetrics(BenchmarkModel):
@@ -102,14 +109,19 @@ def evaluate_policy(
         crossing = _first_threshold_crossing(
             predictions=predictions_by_candidate.get(candidate.candidate_id, ()),
             policy=policy,
+            score_persistence=evaluation.score_persistence,
         )
         action_seconds = policy.timeout_seconds
         if crossing is not None:
-            action_seconds = min(action_seconds, crossing.silence_duration_seconds)
+            score_action_seconds = max(
+                policy.action_delay_seconds,
+                crossing.silence_duration_seconds,
+            )
+            action_seconds = min(action_seconds, score_action_seconds)
         is_eot = target.yield_probability >= evaluation.target_yield_threshold
         if is_eot:
             eot_support += 1
-            if crossing is not None and crossing.silence_duration_seconds <= policy.timeout_seconds:
+            if crossing is not None and score_action_seconds <= policy.timeout_seconds:
                 detector_eot_count += 1
             latencies.append(action_seconds)
         else:
@@ -360,14 +372,18 @@ def _target_at_timestamp(
 def _first_threshold_crossing(
     predictions: tuple[CandidatePrediction, ...],
     policy: PolicyConfiguration,
+    score_persistence: ScorePersistence,
 ) -> CandidatePrediction | None:
     return next(
         (
             prediction
             for prediction in predictions
-            if prediction.silence_duration_seconds + TIMESTAMP_TOLERANCE_SECONDS
-            >= policy.action_delay_seconds
-            and prediction.yield_probability >= policy.threshold
+            if prediction.yield_probability >= policy.threshold
+            and (
+                score_persistence is ScorePersistence.LATCHED
+                or prediction.silence_duration_seconds + TIMESTAMP_TOLERANCE_SECONDS
+                >= policy.action_delay_seconds
+            )
         ),
         None,
     )

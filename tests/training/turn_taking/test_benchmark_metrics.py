@@ -5,6 +5,7 @@ import pytest
 from app.training.turn_taking.benchmark_metrics import (
     EvaluationConfiguration,
     PolicyConfiguration,
+    ScorePersistence,
     best_at_cutoff_budget,
     best_at_latency_budget,
     calibration_metrics,
@@ -22,6 +23,7 @@ from app.training.turn_taking.benchmark_models import (
 EVALUATION = EvaluationConfiguration(
     target_score_point_seconds=0.2,
     target_yield_threshold=0.5,
+    score_persistence=ScorePersistence.CURRENT,
 )
 
 
@@ -128,6 +130,7 @@ def _candidate(candidate_id: str, target: float, category: str) -> SilenceCandid
         external_id=f"external-{candidate_id[0]}",
         user_side="speaker1",
         user_audio_path=f"audio-{candidate_id[0]}.flac",
+        preceding_speech_start_seconds=0.5,
         start_seconds=1.0,
         end_seconds=1.6,
         target_points=(

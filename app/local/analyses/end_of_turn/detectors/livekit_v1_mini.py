@@ -100,7 +100,7 @@ def run_livekit_v1_mini(
     candidate_silence_seconds: float = CANDIDATE_SILENCE_SECONDS,
 ) -> BaselineResult:
     audio = _read_16khz_int16_audio(wave_path=wave_path)
-    inference = _load_livekit_v1_mini_inference()
+    inference = load_livekit_v1_mini_inference()
     speech_segments = _speech_segments_from_vad(
         samples=audio.samples,
         sample_rate=audio.sample_rate,
@@ -135,7 +135,7 @@ def run_livekit_v1_mini(
 
 
 @lru_cache(maxsize=1)
-def _load_livekit_v1_mini_inference() -> LiveKitV1MiniInference:
+def load_livekit_v1_mini_inference() -> LiveKitV1MiniInference:
     return LiveKitV1MiniInference(
         vad_model=VAD(),
         end_of_turn_model=EOT(),

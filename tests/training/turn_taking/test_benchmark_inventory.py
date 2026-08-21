@@ -34,6 +34,7 @@ def test_inventory_deduplicates_windows_and_requires_bounded_silence(tmp_path: P
     assert inventory.manifest.candidate_count == 1
     candidate = inventory.candidates[0]
     assert candidate.start_seconds == pytest.approx(0.16)
+    assert candidate.preceding_speech_start_seconds == pytest.approx(0.0)
     assert candidate.end_seconds == pytest.approx(0.4)
     assert candidate.categories == ("hold_pause", "turn_shift")
     assert candidate.source_window_ids == ("a" * 64, "b" * 64)

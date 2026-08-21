@@ -164,18 +164,22 @@ def _stream_candidates(
     candidates: list[SilenceCandidate] = []
     silence_frames: list[int] = []
     has_leading_speech = False
+    speech_start_frame: int | None = None
     previous_frame_index: int | None = None
     for frame_index in sorted(stream.observations):
         if previous_frame_index is not None and frame_index != previous_frame_index + 1:
             silence_frames.clear()
             has_leading_speech = False
+            speech_start_frame = None
         observation = stream.observations[frame_index]
         if observation.user_has_floor >= silence_floor_threshold:
             if silence_frames and has_leading_speech:
+                assert speech_start_frame is not None
                 candidate = _candidate_from_frames(
                     stream_key=stream_key,
                     stream=stream,
                     silence_frames=tuple(silence_frames),
+                    preceding_speech_start_frame=speech_start_frame,
                     trailing_speech_frame=frame_index,
                     frame_seconds=frame_seconds,
                     minimum_silence_seconds=minimum_silence_seconds,
@@ -183,6 +187,12 @@ def _stream_candidates(
                 if candidate is not None:
                     candidates.append(candidate)
             silence_frames.clear()
+            if not has_leading_speech or previous_frame_index is None:
+                speech_start_frame = frame_index
+            elif previous_frame_index is not None:
+                previous_observation = stream.observations[previous_frame_index]
+                if previous_observation.user_has_floor < silence_floor_threshold:
+                    speech_start_frame = frame_index
             has_leading_speech = True
         elif has_leading_speech:
             silence_frames.append(frame_index)
@@ -194,6 +204,7 @@ def _candidate_from_frames(
     stream_key: _StreamKey,
     stream: _Stream,
     silence_frames: tuple[int, ...],
+    preceding_speech_start_frame: int,
     trailing_speech_frame: int,
     frame_seconds: float,
     minimum_silence_seconds: float,
@@ -231,6 +242,7 @@ def _candidate_from_frames(
         external_id=stream.external_id,
         user_side=stream_key.user_side,
         user_audio_path=stream_key.user_audio_path,
+        preceding_speech_start_seconds=preceding_speech_start_frame * frame_seconds,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
         target_points=target_points,

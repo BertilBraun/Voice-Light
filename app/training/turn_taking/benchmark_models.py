@@ -31,6 +31,7 @@ class SilenceCandidate(BenchmarkModel):
     external_id: str
     user_side: str
     user_audio_path: str
+    preceding_speech_start_seconds: float = Field(ge=0.0)
     start_seconds: float = Field(ge=0.0)
     end_seconds: float = Field(gt=0.0)
     target_points: tuple[CandidateTargetPoint, ...] = Field(min_length=1)
@@ -41,6 +42,8 @@ class SilenceCandidate(BenchmarkModel):
     def validate_candidate(self) -> SilenceCandidate:
         if self.end_seconds <= self.start_seconds:
             raise ValueError("Candidate end_seconds must follow start_seconds.")
+        if self.preceding_speech_start_seconds >= self.start_seconds:
+            raise ValueError("Candidate preceding speech must start before its silence.")
         times = tuple(point.absolute_time_seconds for point in self.target_points)
         if times != tuple(sorted(set(times))):
             raise ValueError("Candidate target points must have unique increasing timestamps.")

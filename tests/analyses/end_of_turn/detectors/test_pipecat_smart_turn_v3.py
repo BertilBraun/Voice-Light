@@ -11,9 +11,9 @@ from app.local.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
     CandidatePause,
     SmartTurnV3Inference,
     _candidate_pauses,
-    _completion_probability,
     _smart_turn_events,
     _speech_segments_from_flags_with_pause,
+    smart_turn_completion_probability,
 )
 from app.local.analyses.end_of_turn.service import SpeechSegment
 
@@ -136,7 +136,7 @@ def test_completion_probability_uses_session_probability() -> None:
         session=RecordingSession(probabilities=[0.73]),
     )
 
-    probability = _completion_probability(
+    probability = smart_turn_completion_probability(
         inference=inference,
         audio=np.zeros(16000, dtype=np.float32),
     )

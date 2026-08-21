@@ -17,6 +17,7 @@ from app.local.analyses.end_of_turn.service import BaselineResult, EndOfTurnEven
 from app.shared.audio.wav import read_mono_wave_audio
 
 MODEL_REPOSITORY = "pipecat-ai/smart-turn-v3"
+MODEL_REVISION = "f766f81d3cfdf7737ac64aad813d91bbfd56bf93"
 MODEL_FILENAME = "smart-turn-v3.2-cpu.onnx"
 MODEL_SAMPLE_RATE = 16000
 MAX_MODEL_WINDOW_SECONDS = 8.0
@@ -123,9 +124,11 @@ def run_pipecat_smart_turn_v3(
         min_speech_seconds=min_speech_seconds,
         candidate_silence_seconds=candidate_silence_seconds,
     )
-    inference = _load_smart_turn_v3_inference(
+    inference = load_smart_turn_v3_inference(
         model_repository=MODEL_REPOSITORY,
+        model_revision=MODEL_REVISION,
         model_filename=MODEL_FILENAME,
+        cache_directory=None,
     )
     candidate_pauses = _candidate_pauses(
         speech_segments=speech_segments,
@@ -350,7 +353,7 @@ def _smart_turn_events(
             seconds=candidate_pause.evaluate_seconds,
             sample_rate=sample_rate,
         )
-        completion_probability = _completion_probability(
+        completion_probability = smart_turn_completion_probability(
             inference=inference,
             audio=samples[start_sample:end_sample],
         )
@@ -376,13 +379,17 @@ def _rounded_seconds(seconds: float) -> float:
 
 
 @lru_cache(maxsize=1)
-def _load_smart_turn_v3_inference(
+def load_smart_turn_v3_inference(
     model_repository: str,
+    model_revision: str,
     model_filename: str,
+    cache_directory: Path | None,
 ) -> SmartTurnV3Inference:
     model_path = hf_hub_download(
         repo_id=model_repository,
+        revision=model_revision,
         filename=model_filename,
+        cache_dir=cache_directory,
     )
     session_options = ort.SessionOptions()
     session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
@@ -393,7 +400,7 @@ def _load_smart_turn_v3_inference(
     return SmartTurnV3Inference(feature_extractor=feature_extractor, session=session)
 
 
-def _completion_probability(
+def smart_turn_completion_probability(
     inference: SmartTurnV3Inference,
     audio: NDArray[np.float32],
 ) -> float:
