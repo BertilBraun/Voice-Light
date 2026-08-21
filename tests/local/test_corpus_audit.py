@@ -212,7 +212,7 @@ def _annotation() -> ConversationAnnotation:
         speaker1=speaker1,
         speaker2=speaker2,
         speech_segment_count=4,
-        turn_count=4,
+        turn_count=0,
         turn_taking_count=3,
         interaction_count=3,
         pause_count=0,
