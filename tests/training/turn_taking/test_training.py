@@ -4,7 +4,12 @@ import torch
 from torch import Tensor
 
 from app.training.turn_taking.backbone import BackboneFeatures
-from app.training.turn_taking.config import AdapterConfig, LossConfig, TrainingConfig
+from app.training.turn_taking.config import (
+    AdapterConfig,
+    LossConfig,
+    TrainingConfig,
+    TrainingPrecision,
+)
 from app.training.turn_taking.data import FrameTargets, TrainingBatch
 from app.training.turn_taking.loss import compute_loss
 from app.training.turn_taking.model import TurnTakingAdapter
@@ -92,7 +97,15 @@ def test_training_loop_saves_checkpoint(tmp_path: Path) -> None:
     )
 
     assert result.optimizer_steps == 2
+    assert result.elapsed_seconds > 0.0
+    assert result.optimizer_steps_per_second > 0.0
+    assert result.peak_device_memory_bytes is None
+    assert result.peak_reserved_device_memory_bytes is None
     assert path.exists()
+
+
+def test_training_defaults_to_bfloat16() -> None:
+    assert TrainingConfig().precision is TrainingPrecision.BFLOAT16
 
 
 def _adapter_config() -> AdapterConfig:

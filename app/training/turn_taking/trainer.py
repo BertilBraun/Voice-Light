@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,16 +12,20 @@ from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 
 from app.training.turn_taking.backbone import FeatureBackbone
-from app.training.turn_taking.config import TrainingConfig
+from app.training.turn_taking.config import TrainingConfig, TrainingPrecision
 from app.training.turn_taking.data import FrameTargets, TrainingBatch
 from app.training.turn_taking.loss import LossBreakdown, compute_loss
-from app.training.turn_taking.model import TurnTakingAdapter
+from app.training.turn_taking.model import AdapterOutput, TurnTakingAdapter
 
 
 @dataclass(frozen=True)
 class TrainingResult:
     optimizer_steps: int
     final_loss: float
+    elapsed_seconds: float
+    optimizer_steps_per_second: float
+    peak_device_memory_bytes: int | None
+    peak_reserved_device_memory_bytes: int | None
     checkpoint_path: Path
 
 
@@ -32,6 +37,7 @@ def train(
     checkpoint_path: Path,
     device: torch.device,
 ) -> TrainingResult:
+    _validate_precision(config.precision, device)
     adapter.to(device)
     adapter.train()
     optimizer = AdamW(
@@ -45,6 +51,10 @@ def train(
     optimizer_step = 0
     micro_step = 0
     final_loss = math.nan
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
+    started_at = time.perf_counter()
     while optimizer_step < config.max_steps:
         observed_batch = False
         for batch in batches:
@@ -64,10 +74,23 @@ def train(
                 break
         if not observed_batch:
             raise ValueError("Training data loader produced no batches.")
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed_seconds = time.perf_counter() - started_at
+    peak_device_memory_bytes = (
+        torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
+    )
+    peak_reserved_device_memory_bytes = (
+        torch.cuda.max_memory_reserved(device) if device.type == "cuda" else None
+    )
     save_checkpoint(checkpoint_path, adapter, optimizer, optimizer_step, config)
     return TrainingResult(
         optimizer_steps=optimizer_step,
         final_loss=final_loss,
+        elapsed_seconds=elapsed_seconds,
+        optimizer_steps_per_second=optimizer_step / elapsed_seconds,
+        peak_device_memory_bytes=peak_device_memory_bytes,
+        peak_reserved_device_memory_bytes=peak_reserved_device_memory_bytes,
         checkpoint_path=checkpoint_path,
     )
 
@@ -79,15 +102,25 @@ def train_micro_batch(
     config: TrainingConfig,
     device: torch.device,
 ) -> LossBreakdown:
-    features = backbone.extract(batch.waveforms, batch.waveform_lengths)
-    taps = tuple(tap.to(device) for tap in features.taps)
-    assistant_speaking = _align_frame_input(
-        values=batch.assistant_speaking.to(device),
-        frame_count=taps[0].shape[1],
-    )
-    output = adapter(taps, assistant_speaking)
+    with torch.autocast(
+        device_type=device.type,
+        dtype=torch.bfloat16,
+        enabled=device.type == "cuda" and config.precision is TrainingPrecision.BFLOAT16,
+    ):
+        features = backbone.extract(batch.waveforms, batch.waveform_lengths)
+        taps = tuple(tap.to(device) for tap in features.taps)
+        assistant_speaking = _align_frame_input(
+            values=batch.assistant_speaking.to(device),
+            frame_count=taps[0].shape[1],
+        )
+        output = adapter(taps, assistant_speaking)
     targets = _targets_to_device(batch.targets, device)
-    return compute_loss(output, targets, features.frame_mask.to(device), config.loss)
+    return compute_loss(
+        _output_to_float32(output),
+        targets,
+        features.frame_mask.to(device),
+        config.loss,
+    )
 
 
 def save_checkpoint(
@@ -119,6 +152,24 @@ def _targets_to_device(targets: FrameTargets, device: torch.device) -> FrameTarg
         future_activity=targets.future_activity.to(device),
         future_activity_mask=targets.future_activity_mask.to(device),
     )
+
+
+def _output_to_float32(output: AdapterOutput) -> AdapterOutput:
+    return AdapterOutput(
+        yield_logits=output.yield_logits.float(),
+        future_activity_logits=output.future_activity_logits.float(),
+        event_logits=output.event_logits.float(),
+        recurrent_state=output.recurrent_state.float(),
+    )
+
+
+def _validate_precision(precision: TrainingPrecision, device: torch.device) -> None:
+    if (
+        device.type == "cuda"
+        and precision is TrainingPrecision.BFLOAT16
+        and not torch.cuda.is_bf16_supported()
+    ):
+        raise ValueError("The selected CUDA device does not support bfloat16 training.")
 
 
 def _align_frame_input(values: torch.Tensor, frame_count: int) -> torch.Tensor:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import Field
 
 from app.shared.base_model import FrozenBaseModel
@@ -20,6 +22,11 @@ class LossConfig(FrozenBaseModel):
     future_activity_weight: float = Field(default=0.25, ge=0.0)
 
 
+class TrainingPrecision(StrEnum):
+    FLOAT32 = "float32"
+    BFLOAT16 = "bfloat16"
+
+
 class TrainingConfig(FrozenBaseModel):
     model_identifier: str = "nvidia/nemotron-speech-streaming-en-0.6b"
     sample_rate_hz: int = 16_000
@@ -31,6 +38,7 @@ class TrainingConfig(FrozenBaseModel):
     gradient_accumulation_steps: int = 8
     data_loader_workers: int = Field(default=4, ge=0)
     data_loader_prefetch_factor: int = Field(default=2, gt=0)
+    precision: TrainingPrecision = TrainingPrecision.BFLOAT16
     learning_rate: float = 3e-4
     minimum_learning_rate: float = 3e-5
     weight_decay: float = 0.01

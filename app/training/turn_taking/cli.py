@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 from app.local.training_corpus.splits import TrainingCorpusSplit
 from app.training.turn_taking.backbone import NemotronStreamingBackbone
-from app.training.turn_taking.config import TrainingConfig
+from app.training.turn_taking.config import TrainingConfig, TrainingPrecision
 from app.training.turn_taking.data import (
     TurnTakingDataset,
     WaveformAugmenter,
@@ -36,14 +36,28 @@ def main() -> None:
         default=TrainingCorpusSplit.TRAIN.value,
     )
     parser.add_argument("--hub-cache-directory", type=Path)
-    parser.add_argument("--max-steps", type=int)
-    arguments = parser.parse_args()
-    base_config = TrainingConfig()
-    config = (
-        base_config.model_copy(update={"max_steps": arguments.max_steps})
-        if arguments.max_steps is not None
-        else base_config
+    parser.add_argument("--max-steps", type=_positive_int)
+    parser.add_argument("--batch-size", type=_positive_int)
+    parser.add_argument("--gradient-accumulation-steps", type=_positive_int)
+    parser.add_argument("--data-loader-workers", type=_nonnegative_int)
+    parser.add_argument(
+        "--precision",
+        choices=tuple(precision.value for precision in TrainingPrecision),
     )
+    arguments = parser.parse_args()
+    config = TrainingConfig()
+    if arguments.max_steps is not None:
+        config = config.model_copy(update={"max_steps": arguments.max_steps})
+    if arguments.batch_size is not None:
+        config = config.model_copy(update={"batch_size": arguments.batch_size})
+    if arguments.gradient_accumulation_steps is not None:
+        config = config.model_copy(
+            update={"gradient_accumulation_steps": arguments.gradient_accumulation_steps}
+        )
+    if arguments.data_loader_workers is not None:
+        config = config.model_copy(update={"data_loader_workers": arguments.data_loader_workers})
+    if arguments.precision is not None:
+        config = config.model_copy(update={"precision": TrainingPrecision(arguments.precision)})
     torch.manual_seed(config.random_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if arguments.manifest is not None:
@@ -98,8 +112,30 @@ def main() -> None:
     )
     print(
         f"Completed {result.optimizer_steps} optimizer steps; "
-        f"loss={result.final_loss:.4f}; checkpoint={result.checkpoint_path}"
+        f"loss={result.final_loss:.4f}; "
+        f"steps_per_second={result.optimizer_steps_per_second:.3f}; "
+        f"peak_allocated_gib={_gibibytes(result.peak_device_memory_bytes)}; "
+        f"peak_reserved_gib={_gibibytes(result.peak_reserved_device_memory_bytes)}; "
+        f"checkpoint={result.checkpoint_path}"
     )
+
+
+def _gibibytes(byte_count: int | None) -> str:
+    return "n/a" if byte_count is None else f"{byte_count / 1024**3:.2f}"
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be nonnegative")
+    return parsed
 
 
 if __name__ == "__main__":
