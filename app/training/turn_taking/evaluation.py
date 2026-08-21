@@ -68,6 +68,15 @@ class EvaluationReport(FrozenBaseModel):
     models: tuple[ModelEvaluation, ...]
 
 
+class EvaluationComparison(FrozenBaseModel):
+    reference_optimizer_step: int = Field(ge=0)
+    candidate_optimizer_step: int = Field(gt=0)
+    reference_total_loss: float = Field(ge=0.0)
+    candidate_total_loss: float = Field(ge=0.0)
+    absolute_improvement: float
+    improved: bool
+
+
 @dataclass(frozen=True)
 class PredictionProbabilities:
     user_yield: Tensor
@@ -288,6 +297,31 @@ def evaluate_models(
     )
 
 
+def compare_evaluations(
+    reference: EvaluationReport,
+    candidate: EvaluationReport,
+) -> EvaluationComparison:
+    if reference.hub_revision != candidate.hub_revision:
+        raise ValueError("Evaluation reports use different Hub revisions.")
+    if reference.validation_sample_count != candidate.validation_sample_count:
+        raise ValueError("Evaluation reports use different validation inventories.")
+    if reference.class_priors != candidate.class_priors:
+        raise ValueError("Evaluation reports use different class-prior baselines.")
+    if candidate.optimizer_step <= reference.optimizer_step:
+        raise ValueError("Candidate evaluation must have a later optimizer step.")
+    reference_loss = _trained_evaluation(reference).total_loss
+    candidate_loss = _trained_evaluation(candidate).total_loss
+    improvement = reference_loss - candidate_loss
+    return EvaluationComparison(
+        reference_optimizer_step=reference.optimizer_step,
+        candidate_optimizer_step=candidate.optimizer_step,
+        reference_total_loss=reference_loss,
+        candidate_total_loss=candidate_loss,
+        absolute_improvement=improvement,
+        improved=improvement > 0.0,
+    )
+
+
 def _weighted_head_mean(heads: tuple[HeadMetrics, ...]) -> float:
     total_weight = sum(head.effective_support for head in heads)
     return sum(head.binary_cross_entropy * head.effective_support for head in heads) / total_weight
@@ -314,3 +348,12 @@ def _align_assistant_speaking(values: Tensor, frame_count: int) -> Tensor:
         torch.linspace(0, values.shape[1] - 1, frame_count, device=values.device).round().long()
     )
     return values[:, indices]
+
+
+def _trained_evaluation(report: EvaluationReport) -> ModelEvaluation:
+    trained = tuple(
+        model for model in report.models if model.model is EvaluationModel.TRAINED_ADAPTER
+    )
+    if len(trained) != 1:
+        raise ValueError("Evaluation report must contain exactly one trained adapter result.")
+    return trained[0]
