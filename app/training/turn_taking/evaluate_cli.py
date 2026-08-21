@@ -15,6 +15,7 @@ from app.training.turn_taking.data import collate_training_items
 from app.training.turn_taking.evaluation import (
     EvaluationReport,
     evaluate_models,
+    evaluate_oracle_vad,
     fit_class_priors,
 )
 from app.training.turn_taking.hub import (
@@ -89,6 +90,7 @@ def main() -> None:
         loss_config=config.loss,
         device=device,
     )
+    models = models + (evaluate_oracle_vad(validation_dataset.samples, priors, config.loss),)
     report = EvaluationReport(
         generated_at=datetime.now(UTC),
         hub_revision=arguments.hub_revision,

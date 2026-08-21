@@ -10,10 +10,12 @@ import torch
 from pydantic import Field
 from torch import Tensor
 
+from app.local.training_corpus.export import MaterializedTrainingSample
 from app.shared.base_model import FrozenBaseModel
 from app.training.turn_taking.backbone import FeatureBackbone
 from app.training.turn_taking.config import LossConfig
 from app.training.turn_taking.data import FrameTargets, TrainingBatch
+from app.training.turn_taking.hub import frame_targets_from_sample
 from app.training.turn_taking.loss import align_targets
 from app.training.turn_taking.model import AdapterOutput, TurnTakingAdapter
 
@@ -36,6 +38,7 @@ class EvaluationModel(StrEnum):
     RANDOM_ADAPTER = "random_adapter"
     CLASS_PRIOR = "class_prior"
     ASSISTANT_FLOOR_HEURISTIC = "assistant_floor_heuristic"
+    ORACLE_VAD = "oracle_vad"
 
 
 class HeadMetrics(FrozenBaseModel):
@@ -222,6 +225,22 @@ def assistant_floor_probabilities(
     )
 
 
+def oracle_vad_probabilities(
+    user_has_floor: Tensor,
+    priors: tuple[float, ...],
+) -> PredictionProbabilities:
+    if user_has_floor.ndim != 2:
+        raise ValueError("Oracle VAD input must contain batch and frame dimensions.")
+    valid = user_has_floor >= 0.0
+    user_yield = torch.where(valid, 1.0 - user_has_floor.clamp(0.0, 1.0), 0.5)
+    probabilities = constant_probabilities(priors, user_has_floor.shape[0], user_has_floor.shape[1])
+    return PredictionProbabilities(
+        user_yield=user_yield,
+        events=probabilities.events,
+        future_activity=probabilities.future_activity,
+    )
+
+
 def fit_class_priors(target_batches: Iterable[FrameTargets]) -> tuple[float, ...]:
     accumulator = EvaluationAccumulator()
     for raw_targets in target_batches:
@@ -295,6 +314,24 @@ def evaluate_models(
         prior_accumulator.finalize(EvaluationModel.CLASS_PRIOR, loss_config),
         heuristic_accumulator.finalize(EvaluationModel.ASSISTANT_FLOOR_HEURISTIC, loss_config),
     )
+
+
+def evaluate_oracle_vad(
+    samples: Iterable[MaterializedTrainingSample],
+    priors: tuple[float, ...],
+    loss_config: LossConfig,
+) -> ModelEvaluation:
+    accumulator = EvaluationAccumulator()
+    for sample in samples:
+        targets = frame_targets_from_sample(sample)
+        user_has_floor = torch.tensor(sample.p_user_has_floor, dtype=torch.float32).unsqueeze(0)
+        frame_count = user_has_floor.shape[1]
+        accumulator.update(
+            oracle_vad_probabilities(user_has_floor, priors),
+            targets,
+            torch.ones((1, frame_count), dtype=torch.bool),
+        )
+    return accumulator.finalize(EvaluationModel.ORACLE_VAD, loss_config)
 
 
 def compare_evaluations(

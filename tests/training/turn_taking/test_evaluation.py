@@ -16,6 +16,7 @@ from app.training.turn_taking.evaluation import (
     assistant_floor_probabilities,
     compare_evaluations,
     fit_class_priors,
+    oracle_vad_probabilities,
 )
 
 
@@ -62,6 +63,15 @@ def test_assistant_floor_heuristic_aligns_to_output_frames() -> None:
     assert probabilities.user_yield[0].tolist() == pytest.approx([0.01, 0.01, 0.99, 0.99])
     assert probabilities.events.shape == (1, 4, 5)
     assert probabilities.future_activity.shape == (1, 4, 4)
+
+
+def test_oracle_vad_predicts_yield_from_annotated_floor_state() -> None:
+    probabilities = oracle_vad_probabilities(
+        torch.tensor([[1.0, 0.5, 0.0, -1.0]]),
+        priors=(0.5,) * 10,
+    )
+
+    assert probabilities.user_yield[0].tolist() == pytest.approx([0.0, 0.5, 1.0, 0.5])
 
 
 def test_evaluation_comparison_requires_lower_held_out_loss() -> None:
