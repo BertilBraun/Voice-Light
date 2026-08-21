@@ -10,11 +10,14 @@ from app.training.turn_taking.benchmark_models import (
 )
 
 MUNDO_SOURCE_TOKEN = "mundo"
+MUNDO_SOURCE_ALIASES = frozenset(("dataset3",))
 
 
 def audit_smart_turn_overlap(
     local_records: Iterable[AudioProvenanceRecord],
     smart_turn_records: Iterable[AudioProvenanceRecord],
+    external_repository: str,
+    external_revision: str,
 ) -> OverlapAuditReport:
     local = tuple(local_records)
     external = tuple(smart_turn_records)
@@ -33,11 +36,18 @@ def audit_smart_turn_overlap(
         record.audio_sha256 is None and record.pcm_sha256 is None for record in local
     )
     return OverlapAuditReport(
+        external_repository=external_repository,
+        external_revision=external_revision,
         local_record_count=len(local),
         external_record_count=len(external),
         exact_overlaps=exact_overlaps,
         provenance_risk_sources=provenance_risk_sources,
         unverified_local_record_count=unverified_count,
+        exact_hash_comparison_performed=bool(external)
+        and all(
+            record.audio_sha256 is not None or record.pcm_sha256 is not None
+            for record in (*local, *external)
+        ),
         clean_comparative_claim_permitted=(
             not exact_overlaps and not provenance_risk_sources and unverified_count == 0
         ),
@@ -99,4 +109,4 @@ def _normalized_source(source_name: str) -> str:
 
 
 def _is_mundo_source(normalized_source: str) -> bool:
-    return MUNDO_SOURCE_TOKEN in normalized_source
+    return MUNDO_SOURCE_TOKEN in normalized_source or normalized_source in MUNDO_SOURCE_ALIASES

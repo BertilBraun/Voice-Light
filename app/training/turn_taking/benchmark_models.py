@@ -206,11 +206,14 @@ class ExactOverlap(BenchmarkModel):
 
 class OverlapAuditReport(BenchmarkModel):
     schema_version: str = "voice-light-smart-turn-overlap-audit-v1"
+    external_repository: str
+    external_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     local_record_count: int = Field(ge=0)
     external_record_count: int = Field(ge=0)
     exact_overlaps: tuple[ExactOverlap, ...]
     provenance_risk_sources: tuple[str, ...]
     unverified_local_record_count: int = Field(ge=0)
+    exact_hash_comparison_performed: bool
     clean_comparative_claim_permitted: bool
 
 

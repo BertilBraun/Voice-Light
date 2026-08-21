@@ -51,6 +51,7 @@ from app.training.turn_taking.benchmark_metrics import (
     sweep_policies,
 )
 from app.training.turn_taking.benchmark_models import (
+    AudioProvenanceRecord,
     DetectorKind,
     DetectorProvenance,
     LiveKitDetectorConfiguration,
@@ -67,6 +68,7 @@ from app.training.turn_taking.benchmark_models import (
     write_inventory,
     write_predictions,
 )
+from app.training.turn_taking.benchmark_overlap import audit_smart_turn_overlap
 from app.training.turn_taking.benchmark_report import (
     BenchmarkAnalysisReport,
     OperatingPoints,
@@ -83,6 +85,8 @@ from app.training.turn_taking.hub import (
 
 PINNED_CORPUS_REVISION = "56e68eb8fb1d42159483612f508b9ce27672f724"
 PINNED_NEMOTRON_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
+SMART_TURN_TRAINING_REPOSITORY = "pipecat-ai/smart-turn-data-v3.2-train"
+PINNED_SMART_TURN_TRAINING_REVISION = "e564e2ac567f774d1880aa1db6ce97afb8c519b7"
 IMPLEMENTATION_VERSION = "voice-light-causal-adapters-v1"
 DEFAULT_THRESHOLDS = tuple(index / 20 for index in range(1, 20))
 DEFAULT_ACTION_DELAYS_SECONDS = (0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56, 0.64)
@@ -97,6 +101,7 @@ def main() -> None:
     _add_predict_parser(subparsers)
     _add_voice_light_parser(subparsers)
     _add_analyze_parser(subparsers)
+    _add_overlap_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
         case "inventory":
@@ -107,6 +112,8 @@ def main() -> None:
             _predict_voice_light(arguments)
         case "analyze":
             _analyze(arguments)
+        case "overlap-audit":
+            _overlap_audit(arguments)
         case _:
             raise AssertionError(f"Unhandled command {arguments.command!r}.")
 
@@ -169,6 +176,19 @@ def _add_voice_light_parser(
     parser.add_argument("--model-revision", default=PINNED_NEMOTRON_REVISION)
     parser.add_argument("--batch-size", type=_positive_int, default=4)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=0)
+
+
+def _add_overlap_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser(
+        "overlap-audit",
+        help="Report Smart Turn provenance and exact-hash overlap evidence.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--smart-turn-training-revision",
+        default=PINNED_SMART_TURN_TRAINING_REVISION,
+    )
 
 
 def _create_inventory(arguments: argparse.Namespace) -> None:
@@ -406,6 +426,40 @@ def _analyze(arguments: argparse.Namespace) -> None:
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(selected.model_dump_json(indent=2), flush=True)
+
+
+def _overlap_audit(arguments: argparse.Namespace) -> None:
+    inventory = read_inventory(arguments.inventory)
+    unique_local_records = {
+        (candidate.dataset_name, candidate.external_id) for candidate in inventory.candidates
+    }
+    local_records = tuple(
+        AudioProvenanceRecord(
+            source_name=dataset_name,
+            external_id=external_id,
+            audio_sha256=None,
+            pcm_sha256=None,
+        )
+        for dataset_name, external_id in sorted(unique_local_records)
+    )
+    smart_turn_records = tuple(
+        AudioProvenanceRecord(
+            source_name=source_name,
+            external_id=None,
+            audio_sha256=None,
+            pcm_sha256=None,
+        )
+        for source_name in ("Liva AI", "Midcentury", "MundoAI", "Pipecat")
+    )
+    report = audit_smart_turn_overlap(
+        local_records=local_records,
+        smart_turn_records=smart_turn_records,
+        external_repository=SMART_TURN_TRAINING_REPOSITORY,
+        external_revision=arguments.smart_turn_training_revision,
+    )
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    arguments.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2), flush=True)
 
 
 def _read_local_samples(
