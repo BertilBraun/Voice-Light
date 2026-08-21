@@ -11,8 +11,10 @@ from torch.utils.data import Dataset
 
 from app.local.training_corpus.export import (
     ExportManifest,
+    ExportSplitSummary,
     MaterializedTrainingSample,
 )
+from app.local.training_corpus.splits import TrainingCorpusSplit
 from app.training.turn_taking.data import FrameTargets, TrainingItem, load_audio_window
 
 DEFAULT_HUB_REPOSITORY = "BertilBraun/voice-light-audio"
@@ -35,6 +37,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
 
     def __init__(
         self,
+        split: TrainingCorpusSplit,
         repository_id: str = DEFAULT_HUB_REPOSITORY,
         cache_directory: Path | None = None,
         sample_rate_hz: int = 16_000,
@@ -42,6 +45,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
     ) -> None:
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive.")
+        self.split = split
         self.repository_id = repository_id
         self.cache_directory = cache_directory
         self.sample_rate_hz = sample_rate_hz
@@ -69,22 +73,33 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         )
 
     def _load_manifest(self) -> ExportManifest:
-        path = self._download("metadata/manifest.json")
+        path = self._download("corpus.json")
         return ExportManifest.model_validate_json(path.read_text(encoding="utf-8"))
 
     def _load_samples(self) -> tuple[MaterializedTrainingSample, ...]:
         samples: list[MaterializedTrainingSample] = []
-        for shard_index in range(self.manifest.shard_count):
-            path = self._download(f"training/shards/shard-{shard_index:05d}.parquet")
+        shards = tuple(shard for shard in self.manifest.shards if shard.split is self.split)
+        for shard in shards:
+            path = self._download(shard.path)
             rows = pq.read_table(path).to_pylist()
+            if len(rows) != shard.row_count:
+                raise ValueError(
+                    f"Shard {shard.path!r} declares {shard.row_count} rows, found {len(rows)}."
+                )
             for row in rows:
                 sample = MaterializedTrainingSample.model_validate(row)
-                validate_sample_contract(sample=sample, manifest=self.manifest)
+                validate_sample_contract(
+                    sample=sample,
+                    manifest=self.manifest,
+                    split=self.split,
+                )
                 samples.append(sample)
-        if len(samples) != self.manifest.training_sample_count:
+        split_summary = _split_summary(manifest=self.manifest, split=self.split)
+        if len(samples) != split_summary.training_sample_count:
             raise ValueError(
                 "Expected "
-                f"{self.manifest.training_sample_count} training samples, found {len(samples)}."
+                f"{split_summary.training_sample_count} {self.split.value} samples, "
+                f"found {len(samples)}."
             )
         return tuple(samples)
 
@@ -132,6 +147,7 @@ def _frame_targets(sample: MaterializedTrainingSample) -> FrameTargets:
 def validate_sample_contract(
     sample: MaterializedTrainingSample,
     manifest: ExportManifest,
+    split: TrainingCorpusSplit,
 ) -> None:
     if sample.schema_version != manifest.schema_version:
         raise ValueError(
@@ -142,6 +158,11 @@ def validate_sample_contract(
         raise ValueError(
             f"Training sample label version {sample.training_label_version!r} does not match "
             f"manifest label version {manifest.training_label_version!r}."
+        )
+    if sample.split is not split:
+        raise ValueError(
+            f"Training sample split {sample.split.value!r} does not match "
+            f"requested split {split.value!r}."
         )
     expected_frame_count = round(manifest.input_duration_seconds / manifest.frame_seconds)
     if expected_frame_count != len(sample.p_user_yield):
@@ -155,6 +176,16 @@ def validate_sample_contract(
             f"Training sample duration {sample_duration_seconds} does not match "
             f"manifest duration {manifest.input_duration_seconds}."
         )
+
+
+def _split_summary(
+    manifest: ExportManifest,
+    split: TrainingCorpusSplit,
+) -> ExportSplitSummary:
+    summaries = tuple(summary for summary in manifest.splits if summary.split is split)
+    if len(summaries) != 1:
+        raise ValueError(f"Corpus manifest must contain exactly one {split.value!r} split summary.")
+    return summaries[0]
 
 
 def _targets_and_mask(values: tuple[float, ...]) -> tuple[Tensor, Tensor]:
@@ -171,4 +202,4 @@ def _stack_targets_and_masks(values: tuple[tuple[float, ...], ...]) -> tuple[Ten
 
 
 def _training_item_id(sample: MaterializedTrainingSample) -> str:
-    return f"{sample.sample_id}:{sample.user_side.value}:{sample.start_seconds:.2f}"
+    return sample.window_id

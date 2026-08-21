@@ -10,7 +10,17 @@ import pytest
 import torch
 
 from app.local.db.models import TrackSide
-from app.local.training_corpus.export import ExportManifest, MaterializedTrainingSample
+from app.local.training_corpus.export import (
+    ExportManifest,
+    ExportShard,
+    ExportSplitSummary,
+    MaterializedTrainingSample,
+)
+from app.local.training_corpus.splits import (
+    ConversationSplitAssignment,
+    ConversationSplitPlan,
+    TrainingCorpusSplit,
+)
 from app.training.turn_taking.hub import HuggingFaceTurnTakingDataset, validate_sample_contract
 
 
@@ -18,26 +28,29 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = tmp_path / "repository"
-    manifest = ExportManifest(
-        schema_version="voice-light-turn-taking-v1",
-        generated_at=datetime.now(UTC),
-        metric_version="quality-v1",
-        annotation_version="annotation-v1",
-        region_analysis_version="regions-v1",
-        training_label_version="labels-v1",
-        input_duration_seconds=20.0,
-        frame_seconds=0.08,
-        dataset_ids=(uuid4(),),
-        minimum_quality=0.95,
-        recording_count=1,
-        training_sample_count=1,
-        shard_count=1,
+    validation_sample = _sample(split=TrainingCorpusSplit.VALIDATION)
+    train_sample = _sample(split=TrainingCorpusSplit.TRAIN)
+    validation_shard = ExportShard(
+        split=TrainingCorpusSplit.VALIDATION,
+        path="training/validation/shard-00000.parquet",
+        row_count=1,
+        size_bytes=1,
+        sha256="1" * 64,
     )
-    _write(root / "metadata" / "manifest.json", manifest.model_dump_json())
-    sample = _sample()
-    shard_path = root / "training" / "shards" / "shard-00000.parquet"
-    shard_path.parent.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pylist([sample.model_dump(mode="json")]), shard_path)
+    train_shard = ExportShard(
+        split=TrainingCorpusSplit.TRAIN,
+        path="training/train/shard-00000.parquet",
+        row_count=1,
+        size_bytes=1,
+        sha256="2" * 64,
+    )
+    manifest = _manifest(
+        samples=(train_sample, validation_sample),
+        shards=(train_shard, validation_shard),
+    )
+    _write(root / "corpus.json", manifest.model_dump_json())
+    _write_shard(root / validation_shard.path, validation_sample)
+    _write_shard(root / train_shard.path, train_sample)
     download_calls: list[str] = []
 
     def download(
@@ -54,35 +67,40 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
         lambda **_: torch.ones(320, dtype=torch.float32),
     )
     dataset = HuggingFaceTurnTakingDataset(
+        split=TrainingCorpusSplit.VALIDATION,
         repository_id="test/corpus",
         cache_directory=tmp_path / "cache",
         downloader=download,
     )
 
     assert len(dataset) == 1
-    assert download_calls == ["metadata/manifest.json", "training/shards/shard-00000.parquet"]
+    assert download_calls == ["corpus.json", validation_shard.path]
     item = dataset[0]
 
+    assert item.sample_id == validation_sample.window_id
     assert item.waveform.shape == (320,)
     assert item.assistant_speaking.shape == (250,)
     assert item.targets.primary_mask[1]
     assert not item.targets.primary_mask[0]
     assert item.targets.event_mask.shape == (250, 5)
     assert item.targets.future_activity_mask.shape == (250, 4)
-    assert download_calls[-1] == sample.user_audio_path
+    assert download_calls[-1] == validation_sample.user_audio_path
 
 
-def _sample() -> MaterializedTrainingSample:
+def _sample(split: TrainingCorpusSplit = TrainingCorpusSplit.TRAIN) -> MaterializedTrainingSample:
     labels = tuple(-1.0 if index == 0 else 0.5 for index in range(250))
     assistant_floor = (0.5,) * 250
     return MaterializedTrainingSample(
         schema_version="voice-light-turn-taking-v1",
         training_label_version="labels-v1",
+        window_id="a" * 64,
+        dataset_id=uuid4(),
         dataset_name="test",
         sample_id=uuid4(),
         external_id="recording",
         user_side=TrackSide.SPEAKER1,
         assistant_side=TrackSide.SPEAKER2,
+        split=split,
         user_audio_path="dataset_1/recording/recording_speaker1.flac",
         assistant_audio_path="dataset_1/recording/recording_speaker2.flac",
         start_seconds=12.0,
@@ -106,24 +124,33 @@ def _sample() -> MaterializedTrainingSample:
 
 def test_training_sample_contract_rejects_mismatched_label_version() -> None:
     sample = _sample()
-    manifest = ExportManifest(
-        schema_version=sample.schema_version,
-        generated_at=datetime.now(UTC),
-        metric_version="quality-v1",
-        annotation_version="annotation-v1",
-        region_analysis_version="regions-v1",
+    manifest = _manifest(
+        samples=(sample,),
+        shards=(_shard(TrainingCorpusSplit.TRAIN),),
         training_label_version="labels-v2",
-        input_duration_seconds=20.0,
-        frame_seconds=0.08,
-        dataset_ids=(uuid4(),),
-        minimum_quality=0.95,
-        recording_count=1,
-        training_sample_count=1,
-        shard_count=1,
     )
 
     with pytest.raises(ValueError, match="does not match manifest label version"):
-        validate_sample_contract(sample=sample, manifest=manifest)
+        validate_sample_contract(
+            sample=sample,
+            manifest=manifest,
+            split=TrainingCorpusSplit.TRAIN,
+        )
+
+
+def test_training_sample_contract_rejects_mismatched_split() -> None:
+    sample = _sample(split=TrainingCorpusSplit.VALIDATION)
+    manifest = _manifest(
+        samples=(sample,),
+        shards=(_shard(TrainingCorpusSplit.VALIDATION),),
+    )
+
+    with pytest.raises(ValueError, match="does not match requested split"):
+        validate_sample_contract(
+            sample=sample,
+            manifest=manifest,
+            split=TrainingCorpusSplit.TRAIN,
+        )
 
 
 def test_materialized_sample_rejects_non_probability_training_target() -> None:
@@ -137,3 +164,59 @@ def test_materialized_sample_rejects_non_probability_training_target() -> None:
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _write_shard(path: Path, sample: MaterializedTrainingSample) -> None:
+    path.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([sample.model_dump(mode="json")]), path)
+
+
+def _shard(split: TrainingCorpusSplit) -> ExportShard:
+    return ExportShard(
+        split=split,
+        path=f"training/{split.value}/shard-00000.parquet",
+        row_count=1,
+        size_bytes=1,
+        sha256="1" * 64,
+    )
+
+
+def _manifest(
+    samples: tuple[MaterializedTrainingSample, ...],
+    shards: tuple[ExportShard, ...],
+    training_label_version: str = "labels-v1",
+) -> ExportManifest:
+    return ExportManifest(
+        schema_version="voice-light-turn-taking-v1",
+        generated_at=datetime.now(UTC),
+        metric_version="quality-v1",
+        annotation_version="annotation-v1",
+        region_analysis_version="regions-v1",
+        training_label_version=training_label_version,
+        input_duration_seconds=20.0,
+        frame_seconds=0.08,
+        review_set_name="test-review",
+        split_plan=ConversationSplitPlan(
+            seed="test-seed",
+            assignments=tuple(
+                ConversationSplitAssignment(
+                    dataset_id=sample.dataset_id,
+                    sample_id=sample.sample_id,
+                    split=sample.split,
+                )
+                for sample in samples
+            ),
+        ),
+        recording_count=len(samples),
+        training_sample_count=len(samples),
+        splits=tuple(
+            ExportSplitSummary(
+                split=split,
+                recording_count=sum(sample.split is split for sample in samples),
+                training_sample_count=sum(sample.split is split for sample in samples),
+                source_duration_seconds=20.0 * sum(sample.split is split for sample in samples),
+            )
+            for split in TrainingCorpusSplit
+        ),
+        shards=shards,
+    )
