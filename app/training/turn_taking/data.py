@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 import av
@@ -16,6 +17,7 @@ from app.training.turn_taking.schema import TurnTakingSample
 
 EVENT_CLASS_COUNT = 5
 FUTURE_ACTIVITY_BIN_COUNT = 4
+SEEK_PREROLL_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -124,23 +126,87 @@ class TurnTakingDataset(Dataset[TrainingItem]):
 def load_audio_window(
     path: Path, sample_rate_hz: int, start_seconds: float, end_seconds: float
 ) -> Tensor:
+    if sample_rate_hz <= 0:
+        raise ValueError("sample_rate_hz must be positive.")
+    if start_seconds < 0.0 or end_seconds <= start_seconds:
+        raise ValueError("Audio window must satisfy 0 <= start < end.")
+    start_sample = round(start_seconds * sample_rate_hz)
+    end_sample = round(end_seconds * sample_rate_hz)
+    output = np.empty(end_sample - start_sample, dtype=np.float32)
+    covered = np.zeros(output.size, dtype=np.bool_)
     with av.open(str(path)) as container:
         if not container.streams.audio:
             raise ValueError(f"Audio stream not found: {path}")
         stream = container.streams.audio[0]
+        if stream.time_base is None:
+            raise ValueError(f"Audio stream has no time base: {path}")
+        stream_start_pts = stream.start_time or 0
+        seek_seconds = max(0.0, start_seconds - SEEK_PREROLL_SECONDS)
+        seek_pts = stream_start_pts + int(seek_seconds / float(stream.time_base))
+        container.seek(seek_pts, stream=stream, backward=True, any_frame=False)
         resampler = av.AudioResampler(format="flt", layout="mono", rate=sample_rate_hz)
-        parts = [
-            frame.to_ndarray().reshape(-1)
-            for decoded in container.decode(stream)
-            for frame in resampler.resample(decoded)
-        ]
-        parts.extend(frame.to_ndarray().reshape(-1) for frame in resampler.resample(None))
-    audio = (
-        np.concatenate(parts).astype(np.float32, copy=False) if parts else np.empty(0, np.float32)
-    )
-    start_sample = round(start_seconds * sample_rate_hz)
-    end_sample = round(end_seconds * sample_rate_hz)
-    return torch.from_numpy(audio[start_sample:end_sample].copy())
+        reached_window_end = False
+        for decoded in container.decode(stream):
+            for frame in resampler.resample(decoded):
+                reached_window_end = _copy_resampled_frame(
+                    frame=frame,
+                    stream_start_pts=stream_start_pts,
+                    stream_time_base=stream.time_base,
+                    sample_rate_hz=sample_rate_hz,
+                    window_start_sample=start_sample,
+                    window_end_sample=end_sample,
+                    output=output,
+                    covered=covered,
+                )
+                if reached_window_end:
+                    break
+            if reached_window_end:
+                break
+        if not reached_window_end:
+            for frame in resampler.resample(None):
+                _copy_resampled_frame(
+                    frame=frame,
+                    stream_start_pts=stream_start_pts,
+                    stream_time_base=stream.time_base,
+                    sample_rate_hz=sample_rate_hz,
+                    window_start_sample=start_sample,
+                    window_end_sample=end_sample,
+                    output=output,
+                    covered=covered,
+                )
+    if not covered.all():
+        missing_count = int((~covered).sum())
+        raise ValueError(f"Audio window {path} is missing {missing_count} decoded samples.")
+    return torch.from_numpy(output)
+
+
+def _copy_resampled_frame(
+    frame: av.AudioFrame,
+    stream_start_pts: int,
+    stream_time_base: Fraction,
+    sample_rate_hz: int,
+    window_start_sample: int,
+    window_end_sample: int,
+    output: np.ndarray,
+    covered: np.ndarray,
+) -> bool:
+    if frame.pts is None or frame.time_base is None:
+        raise ValueError("Resampled audio frame has no timestamp.")
+    stream_start_seconds = float(stream_start_pts * stream_time_base)
+    frame_start_seconds = float(frame.pts * frame.time_base) - stream_start_seconds
+    frame_start_sample = round(frame_start_seconds * sample_rate_hz)
+    samples = frame.to_ndarray().reshape(-1).astype(np.float32, copy=False)
+    frame_end_sample = frame_start_sample + samples.size
+    copy_start_sample = max(frame_start_sample, window_start_sample)
+    copy_end_sample = min(frame_end_sample, window_end_sample)
+    if copy_start_sample < copy_end_sample:
+        source_start = copy_start_sample - frame_start_sample
+        source_end = copy_end_sample - frame_start_sample
+        output_start = copy_start_sample - window_start_sample
+        output_end = copy_end_sample - window_start_sample
+        output[output_start:output_end] = samples[source_start:source_end]
+        covered[output_start:output_end] = True
+    return frame_start_sample >= window_end_sample
 
 
 def build_frame_targets(

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import random
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -21,6 +24,7 @@ from app.training.turn_taking.data import FrameTargets, TrainingItem, load_audio
 DEFAULT_HUB_REPOSITORY = "BertilBraun/voice-light-audio"
 HUB_REPOSITORY_TYPE: Literal["dataset"] = "dataset"
 PINNED_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+HASH_CHUNK_BYTES = 1024 * 1024
 
 
 class HubFileDownloader(Protocol):
@@ -45,6 +49,8 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         repository_id: str = DEFAULT_HUB_REPOSITORY,
         cache_directory: Path | None = None,
         sample_rate_hz: int = 16_000,
+        augmenter: Callable[[Tensor, random.Random], Tensor] | None = None,
+        random_seed: int = 17,
         downloader: HubFileDownloader = hf_hub_download,
     ) -> None:
         if sample_rate_hz <= 0:
@@ -56,6 +62,10 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         self.repository_id = repository_id
         self.cache_directory = cache_directory
         self.sample_rate_hz = sample_rate_hz
+        self.augmenter = augmenter
+        self.random_seed = random_seed
+        self.augmentation_worker_seed: int | None = None
+        self.augmentation_generator = random.Random()
         self.downloader = downloader
         self.manifest = self._load_manifest()
         self.samples = self._load_samples()
@@ -72,6 +82,8 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
             start_seconds=sample.start_seconds,
             end_seconds=sample.end_seconds,
         )
+        if self.augmenter is not None:
+            waveform = self.augmenter(waveform, self._worker_augmentation_generator())
         return TrainingItem(
             sample_id=_training_item_id(sample),
             waveform=waveform,
@@ -88,6 +100,10 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         shards = tuple(shard for shard in self.manifest.shards if shard.split is self.split)
         for shard in shards:
             path = self._download(shard.path)
+            if path.stat().st_size != shard.size_bytes:
+                raise ValueError(f"Shard {shard.path!r} size does not match the manifest.")
+            if _file_sha256(path) != shard.sha256:
+                raise ValueError(f"Shard {shard.path!r} hash does not match the manifest.")
             rows = pq.read_table(path).to_pylist()
             if len(rows) != shard.row_count:
                 raise ValueError(
@@ -109,6 +125,14 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
                 f"found {len(samples)}."
             )
         return tuple(samples)
+
+    def _worker_augmentation_generator(self) -> random.Random:
+        worker_seed = torch.initial_seed()
+        combined_seed = worker_seed ^ self.random_seed
+        if self.augmentation_worker_seed != combined_seed:
+            self.augmentation_generator.seed(combined_seed)
+            self.augmentation_worker_seed = combined_seed
+        return self.augmentation_generator
 
     def _download(self, filename: str) -> Path:
         return Path(
@@ -211,3 +235,11 @@ def _stack_targets_and_masks(values: tuple[tuple[float, ...], ...]) -> tuple[Ten
 
 def _training_item_id(sample: MaterializedTrainingSample) -> str:
     return sample.window_id
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(HASH_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()

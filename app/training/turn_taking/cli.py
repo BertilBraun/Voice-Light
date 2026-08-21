@@ -45,6 +45,7 @@ def main() -> None:
         else base_config
     )
     torch.manual_seed(config.random_seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if arguments.manifest is not None:
         samples = read_manifest(arguments.manifest)
         dataset = TurnTakingDataset(
@@ -58,20 +59,30 @@ def main() -> None:
     else:
         if arguments.hub_revision is None:
             parser.error("--hub-revision is required when loading the Hub corpus.")
+        hub_split = TrainingCorpusSplit(arguments.hub_split)
         dataset = HuggingFaceTurnTakingDataset(
-            split=TrainingCorpusSplit(arguments.hub_split),
+            split=hub_split,
             revision=arguments.hub_revision,
             repository_id=arguments.hub_repository,
             cache_directory=arguments.hub_cache_directory,
             sample_rate_hz=config.sample_rate_hz,
+            augmenter=WaveformAugmenter() if hub_split is TrainingCorpusSplit.TRAIN else None,
+            random_seed=config.random_seed,
         )
+    data_loader_generator = torch.Generator().manual_seed(config.random_seed)
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,
         shuffle=True,
         collate_fn=collate_training_items,
+        num_workers=config.data_loader_workers,
+        prefetch_factor=(
+            config.data_loader_prefetch_factor if config.data_loader_workers > 0 else None
+        ),
+        persistent_workers=config.data_loader_workers > 0,
+        pin_memory=device.type == "cuda",
+        generator=data_loader_generator,
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     backbone = NemotronStreamingBackbone(
         model_identifier=config.model_identifier,
         tap_layer_indices=config.adapter.tap_layer_indices,

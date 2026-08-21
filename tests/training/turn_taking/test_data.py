@@ -1,9 +1,17 @@
+import wave
 from pathlib import Path
 
+import av
+import numpy as np
 import pytest
 import torch
 
-from app.training.turn_taking.data import build_assistant_speaking_input, build_frame_targets
+from app.local.training_corpus.audio_staging import transcode_lossless_flac
+from app.training.turn_taking.data import (
+    build_assistant_speaking_input,
+    build_frame_targets,
+    load_audio_window,
+)
 from app.training.turn_taking.schema import (
     ActivitySpan,
     DecisionTarget,
@@ -89,6 +97,46 @@ def test_frame_targets_reject_missing_dense_primary_labels() -> None:
         )
 
 
+@pytest.mark.parametrize("source_sample_rate", (16_000, 48_000))
+@pytest.mark.parametrize(("start_seconds", "end_seconds"), ((0.0, 1.25), (2.25, 5.75)))
+def test_audio_window_seek_matches_complete_flac_decode(
+    tmp_path: Path,
+    source_sample_rate: int,
+    start_seconds: float,
+    end_seconds: float,
+) -> None:
+    wave_path = tmp_path / "source.wav"
+    flac_path = tmp_path / "source.flac"
+    write_wave(wave_path, sample_rate=source_sample_rate, duration_seconds=8.0)
+    transcode_lossless_flac(wave_path, flac_path)
+    complete = decode_complete_audio(flac_path, sample_rate=16_000)
+
+    window = load_audio_window(
+        path=flac_path,
+        sample_rate_hz=16_000,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+    )
+
+    start_sample = round(start_seconds * 16_000)
+    end_sample = round(end_seconds * 16_000)
+    assert torch.equal(window, complete[start_sample:end_sample])
+
+
+@pytest.mark.parametrize(
+    ("sample_rate", "start_seconds", "end_seconds"),
+    ((0, 0.0, 1.0), (16_000, -1.0, 1.0), (16_000, 1.0, 1.0)),
+)
+def test_audio_window_rejects_invalid_request(
+    tmp_path: Path,
+    sample_rate: int,
+    start_seconds: float,
+    end_seconds: float,
+) -> None:
+    with pytest.raises(ValueError, match="sample_rate|Audio window"):
+        load_audio_window(tmp_path / "unused.flac", sample_rate, start_seconds, end_seconds)
+
+
 def _decision(
     time_seconds: float, yield_probability: float, reliability: float | None
 ) -> DecisionTarget:
@@ -106,3 +154,29 @@ def _decision(
         event_reliability=reliability,
         future_user_activity=(False, True, None, True),
     )
+
+
+def write_wave(path: Path, sample_rate: int, duration_seconds: float) -> None:
+    sample_count = round(sample_rate * duration_seconds)
+    times = np.arange(sample_count, dtype=np.float64) / sample_rate
+    waveform = 0.45 * np.sin(2.0 * np.pi * 317.0 * times)
+    waveform += 0.2 * np.sin(2.0 * np.pi * 911.0 * times)
+    pcm = np.round(waveform * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(pcm.tobytes())
+
+
+def decode_complete_audio(path: Path, sample_rate: int) -> torch.Tensor:
+    with av.open(str(path)) as container:
+        stream = container.streams.audio[0]
+        resampler = av.AudioResampler(format="flt", layout="mono", rate=sample_rate)
+        parts = [
+            frame.to_ndarray().reshape(-1)
+            for decoded in container.decode(stream)
+            for frame in resampler.resample(decoded)
+        ]
+        parts.extend(frame.to_ndarray().reshape(-1) for frame in resampler.resample(None))
+    return torch.from_numpy(np.concatenate(parts).astype(np.float32, copy=False))

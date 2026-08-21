@@ -27,14 +27,16 @@ class TrainingConfig(FrozenBaseModel):
     burn_in_seconds: float = 4.0
     encoder_frame_seconds: float = 0.08
     lookahead_tokens: int = 1
-    batch_size: int = 4
-    gradient_accumulation_steps: int = 4
+    batch_size: int = 2
+    gradient_accumulation_steps: int = 8
+    data_loader_workers: int = Field(default=4, ge=0)
+    data_loader_prefetch_factor: int = Field(default=2, gt=0)
     learning_rate: float = 3e-4
     minimum_learning_rate: float = 3e-5
     weight_decay: float = 0.01
-    warmup_steps: int = 2_000
-    max_steps: int = 50_000
-    validation_interval_steps: int = 1_000
+    warmup_steps: int = 350
+    max_steps: int = 3_500
+    validation_interval_steps: int = 250
     gradient_clip_norm: float = 1.0
     random_seed: int = 17
     unmeasured_reliability_weight: float = Field(default=1.0, ge=0.0, le=1.0)

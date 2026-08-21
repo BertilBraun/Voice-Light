@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import random
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -30,27 +32,23 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
     root = tmp_path / "repository"
     validation_sample = _sample(split=TrainingCorpusSplit.VALIDATION)
     train_sample = _sample(split=TrainingCorpusSplit.TRAIN)
-    validation_shard = ExportShard(
+    validation_shard = _write_shard(
+        root=root,
         split=TrainingCorpusSplit.VALIDATION,
         path="training/validation/shard-00000.parquet",
-        row_count=1,
-        size_bytes=1,
-        sha256="1" * 64,
+        sample=validation_sample,
     )
-    train_shard = ExportShard(
+    train_shard = _write_shard(
+        root=root,
         split=TrainingCorpusSplit.TRAIN,
         path="training/train/shard-00000.parquet",
-        row_count=1,
-        size_bytes=1,
-        sha256="2" * 64,
+        sample=train_sample,
     )
     manifest = _manifest(
         samples=(train_sample, validation_sample),
         shards=(train_shard, validation_shard),
     )
     _write(root / "corpus.json", manifest.model_dump_json())
-    _write_shard(root / validation_shard.path, validation_sample)
-    _write_shard(root / train_shard.path, train_sample)
     download_calls: list[str] = []
 
     def download(
@@ -92,6 +90,86 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
     assert item.targets.event_mask.shape == (250, 5)
     assert item.targets.future_activity_mask.shape == (250, 4)
     assert download_calls[-1] == validation_sample.user_audio_path
+
+
+def test_hub_dataset_applies_worker_seeded_augmentation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    sample = _sample()
+    shard = _write_shard(
+        root=root,
+        split=TrainingCorpusSplit.TRAIN,
+        path="training/train/shard-00000.parquet",
+        sample=sample,
+    )
+    _write(root / "corpus.json", _manifest((sample,), (shard,)).model_dump_json())
+    observed_random_values: list[float] = []
+
+    def augment(waveform: torch.Tensor, generator: random.Random) -> torch.Tensor:
+        observed_random_values.append(generator.random())
+        return waveform + 1.0
+
+    monkeypatch.setattr(
+        "app.training.turn_taking.hub.load_audio_window",
+        lambda **_: torch.zeros(320, dtype=torch.float32),
+    )
+
+    def download(
+        *,
+        repo_id: str,
+        repo_type: str,
+        filename: str,
+        revision: str,
+        cache_dir: str | Path | None,
+    ) -> str:
+        return str(root / filename)
+
+    dataset = HuggingFaceTurnTakingDataset(
+        split=TrainingCorpusSplit.TRAIN,
+        revision="1" * 40,
+        repository_id="test/corpus",
+        augmenter=augment,
+        random_seed=23,
+        downloader=download,
+    )
+
+    assert torch.equal(dataset[0].waveform, torch.ones(320))
+    assert torch.equal(dataset[0].waveform, torch.ones(320))
+    assert len(set(observed_random_values)) == 2
+
+
+def test_hub_dataset_rejects_tampered_parquet_shard(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    sample = _sample()
+    shard = _write_shard(
+        root=root,
+        split=TrainingCorpusSplit.TRAIN,
+        path="training/train/shard-00000.parquet",
+        sample=sample,
+    )
+    _write(root / "corpus.json", _manifest((sample,), (shard,)).model_dump_json())
+    shard_path = root / shard.path
+    shard_path.write_bytes(b"x" * shard.size_bytes)
+
+    def download(
+        *,
+        repo_id: str,
+        repo_type: str,
+        filename: str,
+        revision: str,
+        cache_dir: str | Path | None,
+    ) -> str:
+        return str(root / filename)
+
+    with pytest.raises(ValueError, match="hash does not match"):
+        HuggingFaceTurnTakingDataset(
+            split=TrainingCorpusSplit.TRAIN,
+            revision="1" * 40,
+            repository_id="test/corpus",
+            downloader=download,
+        )
 
 
 def _sample(split: TrainingCorpusSplit = TrainingCorpusSplit.TRAIN) -> MaterializedTrainingSample:
@@ -173,9 +251,23 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _write_shard(path: Path, sample: MaterializedTrainingSample) -> None:
-    path.parent.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pylist([sample.model_dump(mode="json")]), path)
+def _write_shard(
+    root: Path,
+    split: TrainingCorpusSplit,
+    path: str,
+    sample: MaterializedTrainingSample,
+) -> ExportShard:
+    output_path = root / path
+    output_path.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([sample.model_dump(mode="json")]), output_path)
+    content = output_path.read_bytes()
+    return ExportShard(
+        split=split,
+        path=path,
+        row_count=1,
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
 
 
 def _shard(split: TrainingCorpusSplit) -> ExportShard:
