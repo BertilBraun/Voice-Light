@@ -88,7 +88,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
             sample_id=_training_item_id(sample),
             waveform=waveform,
             assistant_speaking=torch.tensor(sample.assistant_has_floor, dtype=torch.float32),
-            targets=_frame_targets(sample),
+            targets=frame_targets_from_sample(sample),
         )
 
     def _load_manifest(self) -> ExportManifest:
@@ -146,7 +146,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         )
 
 
-def _frame_targets(sample: MaterializedTrainingSample) -> FrameTargets:
+def frame_targets_from_sample(sample: MaterializedTrainingSample) -> FrameTargets:
     yield_probability, primary_mask = _targets_and_mask(sample.p_user_yield)
     event_targets, event_mask = _stack_targets_and_masks(
         (
