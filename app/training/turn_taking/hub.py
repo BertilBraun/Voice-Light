@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -19,6 +20,7 @@ from app.training.turn_taking.data import FrameTargets, TrainingItem, load_audio
 
 DEFAULT_HUB_REPOSITORY = "BertilBraun/voice-light-audio"
 HUB_REPOSITORY_TYPE: Literal["dataset"] = "dataset"
+PINNED_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 class HubFileDownloader(Protocol):
@@ -28,6 +30,7 @@ class HubFileDownloader(Protocol):
         repo_id: str,
         repo_type: Literal["dataset"],
         filename: str,
+        revision: str,
         cache_dir: str | Path | None,
     ) -> str: ...
 
@@ -38,6 +41,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
     def __init__(
         self,
         split: TrainingCorpusSplit,
+        revision: str,
         repository_id: str = DEFAULT_HUB_REPOSITORY,
         cache_directory: Path | None = None,
         sample_rate_hz: int = 16_000,
@@ -45,7 +49,10 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
     ) -> None:
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive.")
+        if PINNED_REVISION_PATTERN.fullmatch(revision) is None:
+            raise ValueError("revision must be an immutable 40-character commit SHA.")
         self.split = split
+        self.revision = revision
         self.repository_id = repository_id
         self.cache_directory = cache_directory
         self.sample_rate_hz = sample_rate_hz
@@ -109,6 +116,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
                 repo_id=self.repository_id,
                 repo_type=HUB_REPOSITORY_TYPE,
                 filename=filename,
+                revision=self.revision,
                 cache_dir=self.cache_directory,
             )
         )

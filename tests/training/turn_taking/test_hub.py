@@ -54,10 +54,16 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
     download_calls: list[str] = []
 
     def download(
-        *, repo_id: str, repo_type: str, filename: str, cache_dir: str | Path | None
+        *,
+        repo_id: str,
+        repo_type: str,
+        filename: str,
+        revision: str,
+        cache_dir: str | Path | None,
     ) -> str:
         assert repo_id == "test/corpus"
         assert repo_type == "dataset"
+        assert revision == "1" * 40
         assert cache_dir == tmp_path / "cache"
         download_calls.append(filename)
         return str(root / filename)
@@ -68,6 +74,7 @@ def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
     )
     dataset = HuggingFaceTurnTakingDataset(
         split=TrainingCorpusSplit.VALIDATION,
+        revision="1" * 40,
         repository_id="test/corpus",
         cache_directory=tmp_path / "cache",
         downloader=download,

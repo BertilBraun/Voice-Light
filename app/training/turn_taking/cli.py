@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from app.local.training_corpus.splits import TrainingCorpusSplit
 from app.training.turn_taking.backbone import NemotronStreamingBackbone
 from app.training.turn_taking.config import TrainingConfig
 from app.training.turn_taking.data import (
@@ -28,6 +29,12 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--manifest", type=Path)
     source.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
+    parser.add_argument("--hub-revision")
+    parser.add_argument(
+        "--hub-split",
+        choices=tuple(split.value for split in TrainingCorpusSplit),
+        default=TrainingCorpusSplit.TRAIN.value,
+    )
     parser.add_argument("--hub-cache-directory", type=Path)
     parser.add_argument("--max-steps", type=int)
     arguments = parser.parse_args()
@@ -49,7 +56,11 @@ def main() -> None:
             random_seed=config.random_seed,
         )
     else:
+        if arguments.hub_revision is None:
+            parser.error("--hub-revision is required when loading the Hub corpus.")
         dataset = HuggingFaceTurnTakingDataset(
+            split=TrainingCorpusSplit(arguments.hub_split),
+            revision=arguments.hub_revision,
             repository_id=arguments.hub_repository,
             cache_directory=arguments.hub_cache_directory,
             sample_rate_hz=config.sample_rate_hz,
