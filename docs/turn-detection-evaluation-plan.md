@@ -66,7 +66,7 @@ records:
 - one row per native candidate score containing the candidate ID, timestamp, silence duration,
   `p_user_yield`/completion probability, target, inference duration, and provenance.
 
-Store compact JSON Lines prediction caches so policy and threshold sweeps never rerun Nemotron,
+Store compact JSON prediction caches so policy and threshold sweeps never rerun Nemotron,
 Smart Turn, or LiveKit inference.
 
 ## Baselines And Adapters
@@ -97,9 +97,8 @@ For every policy report false-cutoff rate on HOLD candidates, EOT recall, mean a
 endpointing latency on YIELD candidates, and counts/support. Produce Pareto points plus best cutoff
 rate at 300/600 ms mean-latency budgets and best mean latency at 5%/10% cutoff budgets when those
 points exist. Report BCE, Brier score, and calibration bins only for native probabilities with the
-same HOLD/YIELD interpretation. Report dataset/category breakdowns and bootstrap confidence
-intervals by conversation when support permits; never bootstrap overlapping windows as independent
-examples.
+same HOLD/YIELD interpretation. Report dataset/category breakdowns. Conversation-level confidence
+intervals are future work; never bootstrap overlapping windows as independent examples.
 
 Lock the candidate contract, target cutoff, selected policy, checkpoint choice, and all thresholds
 from validation. The test CLI requires that locked manifest and refuses ad-hoc policy options. Run
@@ -116,7 +115,8 @@ comparison. The benchmark will:
   Turn inventory is available;
 - report exact matches, compared support, unverified support, and provenance-risk sources;
 - mark Mundo-derived comparative slices contaminated unless exact evidence proves disjointness;
-- present aggregate results both with and without contaminated sources.
+- prevent a clean Smart Turn aggregate claim and retain dataset breakdowns that expose the
+  Mundo-derived source.
 
 Downloading the roughly 41 GB Smart Turn training corpus is not required to run the benchmark. A
 provenance-risk result is sufficient to prevent an unsupported clean comparison; exact hash audit is
