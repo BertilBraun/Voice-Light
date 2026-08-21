@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from app.local.training_corpus.audio_staging import (
     CorpusAudioAsset,
@@ -70,8 +70,10 @@ class CorpusAudioAssetCatalog:
         asset: CorpusAudioAsset,
     ) -> None:
         match asset.source:
-            case LocalSourceAudio(path=source_path):
-                if "://" in source_uri or Path(source_uri).resolve() != source_path.resolve():
+            case LocalSourceAudio(sample_relative_path=sample_relative_path):
+                if "://" in source_uri or not _source_path_matches(
+                    source_uri, sample_relative_path
+                ):
                     raise ValueError(f"Audio asset source path does not match {source_uri}.")
             case RemoteSourceAudio(uri=asset_source_uri):
                 if source_uri != asset_source_uri:
@@ -105,3 +107,12 @@ def load_audio_asset_catalog(
     if len(set(dataset_names)) != len(dataset_names):
         raise ValueError("Audio build manifests contain duplicate dataset names.")
     return CorpusAudioAssetCatalog(manifests=manifests)
+
+
+def _source_path_matches(source_uri: str, sample_relative_path: PurePosixPath) -> bool:
+    source_parts = PurePosixPath(source_uri.replace("\\", "/")).parts
+    relative_parts = sample_relative_path.parts
+    return (
+        len(source_parts) >= len(relative_parts)
+        and source_parts[-len(relative_parts) :] == relative_parts
+    )

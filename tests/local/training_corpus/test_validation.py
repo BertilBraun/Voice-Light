@@ -251,7 +251,9 @@ def _audio_manifest(local_audio: Path) -> CorpusAudioStagingManifest:
             CorpusAudioAsset(
                 sample_id="recording",
                 side=SpeakerSide.SPEAKER1,
-                source=LocalSourceAudio(path=local_audio),
+                source=LocalSourceAudio(
+                    sample_relative_path=PurePosixPath("recording/speaker_1.flac")
+                ),
                 source_sha256=LOCAL_HASH,
                 corpus_relative_path=PurePosixPath("dataset/recording/speaker_1.flac"),
                 corpus_sha256=LOCAL_HASH,

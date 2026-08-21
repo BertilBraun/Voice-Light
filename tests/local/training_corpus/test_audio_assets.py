@@ -74,7 +74,8 @@ def test_catalog_rejects_database_source_mismatch(
     source_audio: AudioMetadata,
     error: str,
 ) -> None:
-    source_path = tmp_path / "speaker_1.wav"
+    source_path = tmp_path / "sample_001" / "speaker_1.wav"
+    source_path.parent.mkdir()
     source_path.touch()
     catalog = CorpusAudioAssetCatalog(
         manifests=(staging_manifest(tmp_path, audio_asset(source_path)),)
@@ -83,14 +84,15 @@ def test_catalog_rejects_database_source_mismatch(
     with pytest.raises(ValueError, match=error):
         resolve(
             catalog,
-            tmp_path / source_path_name,
+            tmp_path / "sample_001" / source_path_name,
             source_sha256=source_hash,
             source_audio=source_audio,
         )
 
 
 def test_catalog_rejects_missing_recording_asset(tmp_path: Path) -> None:
-    source_path = tmp_path / "speaker_1.wav"
+    source_path = tmp_path / "sample_001" / "speaker_1.wav"
+    source_path.parent.mkdir()
     source_path.touch()
     catalog = CorpusAudioAssetCatalog(
         manifests=(staging_manifest(tmp_path, audio_asset(source_path)),)
@@ -101,7 +103,8 @@ def test_catalog_rejects_missing_recording_asset(tmp_path: Path) -> None:
 
 
 def test_load_catalog_rejects_duplicate_dataset_manifests(tmp_path: Path) -> None:
-    source_path = tmp_path / "speaker_1.wav"
+    source_path = tmp_path / "sample_001" / "speaker_1.wav"
+    source_path.parent.mkdir()
     source_path.touch()
     manifest = staging_manifest(tmp_path, audio_asset(source_path))
     first_path = tmp_path / "first.json"
@@ -134,7 +137,9 @@ def audio_asset(source_path: Path) -> CorpusAudioAsset:
     return CorpusAudioAsset(
         sample_id="sample_001",
         side=SpeakerSide.SPEAKER1,
-        source=LocalSourceAudio(path=source_path.resolve()),
+        source=LocalSourceAudio(
+            sample_relative_path=PurePosixPath("sample_001") / source_path.name
+        ),
         source_sha256=SOURCE_HASH,
         corpus_relative_path=PurePosixPath("dataset_2/samples/sample_001/speaker_1.flac"),
         corpus_sha256=CORPUS_HASH,

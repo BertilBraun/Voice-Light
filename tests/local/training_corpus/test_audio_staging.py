@@ -77,7 +77,8 @@ def test_existing_flac_staging_uses_hard_links(tmp_path: Path) -> None:
     for asset in manifest.assets:
         staged_path = corpus_root.joinpath(*asset.corpus_relative_path.parts)
         assert isinstance(asset.source, LocalSourceAudio)
-        assert os.path.samefile(asset.source.path, staged_path)
+        source_path = source_root.joinpath(*asset.source.sample_relative_path.parts)
+        assert os.path.samefile(source_path, staged_path)
         assert asset.source_sha256 == asset.corpus_sha256
         assert asset.verification is CorpusAudioVerification.HARD_LINK_IDENTITY
 

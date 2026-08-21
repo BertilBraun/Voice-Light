@@ -325,7 +325,7 @@ def _asset(
     return CorpusAudioAsset(
         sample_id=sample_id,
         side=SpeakerSide(track.side.value),
-        source=_source_audio(track),
+        source=_source_audio(sample_id=sample_id, track=track),
         source_sha256=_source_sha256(track),
         corpus_relative_path=corpus_path,
         corpus_sha256=corpus_sha256,
@@ -336,10 +336,12 @@ def _asset(
     )
 
 
-def _source_audio(track: SampleTrackRecord) -> SourceAudio:
+def _source_audio(sample_id: str, track: SampleTrackRecord) -> SourceAudio:
     if "://" in track.access_uri:
         return RemoteSourceAudio(uri=track.access_uri)
-    return LocalSourceAudio(path=Path(track.access_uri).resolve())
+    return LocalSourceAudio(
+        sample_relative_path=PurePosixPath(sample_id) / Path(track.access_uri).name
+    )
 
 
 def _source_sha256(track: SampleTrackRecord) -> str:

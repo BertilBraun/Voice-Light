@@ -41,7 +41,7 @@ class CorpusAudioVerification(StrEnum):
 
 class LocalSourceAudio(FrozenBaseModel):
     kind: Literal["local"] = "local"
-    path: Path
+    sample_relative_path: PurePosixPath
 
 
 class RemoteSourceAudio(FrozenBaseModel):
@@ -159,7 +159,11 @@ def stage_dataset_audio(request: DatasetAudioStagingRequest) -> CorpusAudioStagi
                 CorpusAudioAsset(
                     sample_id=source.sample_id,
                     side=source.side,
-                    source=LocalSourceAudio(path=source.path.resolve()),
+                    source=LocalSourceAudio(
+                        sample_relative_path=PurePosixPath(
+                            source.path.relative_to(request.source_samples_root).as_posix()
+                        )
+                    ),
                     source_sha256=source_sha256,
                     corpus_relative_path=relative_path,
                     corpus_sha256=corpus_sha256,
