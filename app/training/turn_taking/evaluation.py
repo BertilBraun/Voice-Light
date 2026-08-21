@@ -323,7 +323,7 @@ def evaluate_oracle_vad(
 ) -> ModelEvaluation:
     accumulator = EvaluationAccumulator()
     for sample in samples:
-        targets = frame_targets_from_sample(sample)
+        targets = _batched_targets(frame_targets_from_sample(sample))
         user_has_floor = torch.tensor(sample.p_user_has_floor, dtype=torch.float32).unsqueeze(0)
         frame_count = user_has_floor.shape[1]
         accumulator.update(
