@@ -171,6 +171,42 @@ class DetectorKind(StrEnum):
     LIVEKIT_V1_MINI = "livekit_v1_mini"
 
 
+class CompletionDetectorKind(StrEnum):
+    VOICE_LIGHT_COMPLETION = "voice_light_turn_completion"
+    SILERO_SILENCE = "silero_silence"
+    PIPECAT_SMART_TURN_V3_2 = "pipecat_smart_turn_v3_2_completion"
+    LIVEKIT_V1_MINI = "livekit_v1_mini_completion"
+
+
+class VoiceLightCompletionDetectorConfiguration(BenchmarkModel):
+    model_identifier: str
+    lookahead_tokens: int = Field(ge=0)
+    encoder_frame_seconds: float = Field(gt=0.0)
+    optimizer_step: int = Field(gt=0)
+    event_head_index: Literal[0] = 0
+    boundary_lookahead_seconds: Literal[0.08] = 0.08
+    score_semantic: Literal["turn_completion_probability"] = "turn_completion_probability"
+    assistant_history: Literal["causal_through_boundary"] = "causal_through_boundary"
+    score_schedule: Literal["boundary_only"] = "boundary_only"
+    score_persistence: Literal["latched"] = "latched"
+    causal_candidate_coverage_seconds: Literal[2.0] = 2.0
+    assistant_active_anchors_excluded: Literal[True] = True
+    insufficient_horizon_candidates_censored: Literal[True] = True
+
+
+class VoiceLightCompletionDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[CompletionDetectorKind.VOICE_LIGHT_COMPLETION] = (
+        CompletionDetectorKind.VOICE_LIGHT_COMPLETION
+    )
+    display_name: str
+    implementation_version: str
+    model_repository: str
+    model_revision: str
+    checkpoint_path: str
+    checkpoint_sha256: str = Field(pattern=SHA256_PATTERN)
+    configuration: VoiceLightCompletionDetectorConfiguration
+
+
 class VoiceLightDetectorConfiguration(BenchmarkModel):
     model_identifier: str
     lookahead_tokens: int = Field(ge=0)
@@ -244,11 +280,57 @@ class LiveKitDetectorProvenance(BenchmarkModel):
     configuration: LiveKitDetectorConfiguration
 
 
+class SileroCompletionDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[CompletionDetectorKind.SILERO_SILENCE] = (
+        CompletionDetectorKind.SILERO_SILENCE
+    )
+    display_name: str
+    implementation_version: str
+    package_name: str
+    package_version: str
+    configuration: SileroDetectorConfiguration
+
+
+class SmartTurnCompletionDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[CompletionDetectorKind.PIPECAT_SMART_TURN_V3_2] = (
+        CompletionDetectorKind.PIPECAT_SMART_TURN_V3_2
+    )
+    display_name: str
+    implementation_version: str
+    runtime_package_name: str
+    runtime_package_version: str
+    model_repository: str
+    model_revision: str
+    model_filename: str
+    model_sha256: str = Field(pattern=SHA256_PATTERN)
+    configuration: SmartTurnDetectorConfiguration
+
+
+class LiveKitCompletionDetectorProvenance(BenchmarkModel):
+    detector_kind: Literal[CompletionDetectorKind.LIVEKIT_V1_MINI] = (
+        CompletionDetectorKind.LIVEKIT_V1_MINI
+    )
+    display_name: str
+    implementation_version: str
+    package_name: str
+    package_version: str
+    model_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    configuration: LiveKitDetectorConfiguration
+
+
 DetectorProvenance = Annotated[
     VoiceLightDetectorProvenance
     | SileroDetectorProvenance
     | SmartTurnDetectorProvenance
     | LiveKitDetectorProvenance,
+    Field(discriminator="detector_kind"),
+]
+
+CompletionDetectorProvenance = Annotated[
+    VoiceLightCompletionDetectorProvenance
+    | SileroCompletionDetectorProvenance
+    | SmartTurnCompletionDetectorProvenance
+    | LiveKitCompletionDetectorProvenance,
     Field(discriminator="detector_kind"),
 ]
 
@@ -262,7 +344,9 @@ class CandidatePrediction(BenchmarkModel):
 
 
 class PredictionManifest(BenchmarkModel):
-    schema_version: str = "voice-light-causal-candidate-predictions-v1"
+    schema_version: Literal["voice-light-causal-candidate-predictions-v1"] = (
+        "voice-light-causal-candidate-predictions-v1"
+    )
     inventory_sha256: str = Field(pattern=SHA256_PATTERN)
     split: TrainingCorpusSplit
     detector: DetectorProvenance
@@ -325,6 +409,16 @@ def prediction_rows_sha256(predictions: tuple[CandidatePrediction, ...]) -> str:
     return digest.hexdigest()
 
 
+def completion_prediction_rows_sha256(
+    predictions: tuple[CompletionCandidatePrediction, ...],
+) -> str:
+    digest = hashlib.sha256()
+    for prediction in predictions:
+        digest.update(prediction.model_dump_json().encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 class PredictionArtifact(BenchmarkModel):
     manifest: PredictionManifest
     predictions: tuple[CandidatePrediction, ...]
@@ -334,6 +428,51 @@ class PredictionArtifact(BenchmarkModel):
         if len(self.predictions) != self.manifest.prediction_count:
             raise ValueError("Prediction count does not match the prediction manifest.")
         if prediction_rows_sha256(self.predictions) != self.manifest.predictions_sha256:
+            raise ValueError("Prediction rows do not match the prediction manifest hash.")
+        ordered = tuple(
+            sorted(
+                self.predictions,
+                key=lambda prediction: (
+                    prediction.candidate_id,
+                    prediction.absolute_time_seconds,
+                ),
+            )
+        )
+        if ordered != self.predictions:
+            raise ValueError("Predictions must be ordered by candidate and timestamp.")
+        return self
+
+
+class CompletionCandidatePrediction(BenchmarkModel):
+    candidate_id: str = Field(pattern=SHA256_PATTERN)
+    absolute_time_seconds: float = Field(ge=0.0)
+    elapsed_seconds: float = Field(gt=0.0)
+    completion_probability: float = Field(ge=0.0, le=1.0)
+    inference_duration_seconds: float = Field(ge=0.0)
+
+
+class CompletionPredictionManifest(BenchmarkModel):
+    schema_version: Literal["voice-light-turn-completion-predictions-v2"] = (
+        "voice-light-turn-completion-predictions-v2"
+    )
+    inventory_sha256: str = Field(pattern=SHA256_PATTERN)
+    split: TrainingCorpusSplit
+    detector: CompletionDetectorProvenance
+    prediction_count: int = Field(ge=0)
+    predictions_sha256: str = Field(pattern=SHA256_PATTERN)
+
+
+class CompletionPredictionArtifact(BenchmarkModel):
+    manifest: CompletionPredictionManifest
+    predictions: tuple[CompletionCandidatePrediction, ...]
+
+    @model_validator(mode="after")
+    def validate_predictions(self) -> CompletionPredictionArtifact:
+        if len(self.predictions) != self.manifest.prediction_count:
+            raise ValueError("Prediction count does not match the prediction manifest.")
+        if completion_prediction_rows_sha256(self.predictions) != (
+            self.manifest.predictions_sha256
+        ):
             raise ValueError("Prediction rows do not match the prediction manifest hash.")
         ordered = tuple(
             sorted(
@@ -377,3 +516,12 @@ def write_predictions(path: Path, artifact: PredictionArtifact) -> None:
 
 def read_predictions(path: Path) -> PredictionArtifact:
     return PredictionArtifact.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def write_completion_predictions(path: Path, artifact: CompletionPredictionArtifact) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+
+
+def read_completion_predictions(path: Path) -> CompletionPredictionArtifact:
+    return CompletionPredictionArtifact.model_validate_json(path.read_text(encoding="utf-8"))

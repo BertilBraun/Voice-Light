@@ -35,9 +35,26 @@ from app.training.turn_taking.benchmark_adapters import (
     RootAudioPathResolver,
     SmartTurnInferenceScorer,
     livekit_candidate_predictions,
+    livekit_completion_candidate_predictions,
     load_causal_silero_model,
     silero_candidate_predictions,
+    silero_completion_candidate_predictions,
     smart_turn_candidate_predictions,
+    smart_turn_completion_candidate_predictions,
+)
+from app.training.turn_taking.benchmark_completion_inventory import (
+    build_turn_completion_inventory,
+)
+from app.training.turn_taking.benchmark_completion_metrics import (
+    CompletionAnalysisReport,
+    CompletionEvaluationConfiguration,
+    completion_breakdowns,
+    completion_calibration_metrics,
+    completion_discrimination_metrics,
+    completion_pareto_frontier,
+    select_completion_validation_point,
+    sweep_completion_policies,
+    validate_completion_predictions,
 )
 from app.training.turn_taking.benchmark_gate import (
     ValidationLockManifest,
@@ -62,22 +79,34 @@ from app.training.turn_taking.benchmark_metrics import (
 )
 from app.training.turn_taking.benchmark_models import (
     AudioProvenanceRecord,
+    CompletionDetectorKind,
+    CompletionDetectorProvenance,
+    CompletionPredictionArtifact,
+    CompletionPredictionManifest,
     DetectorKind,
     DetectorProvenance,
+    LiveKitCompletionDetectorProvenance,
     LiveKitDetectorConfiguration,
     LiveKitDetectorProvenance,
     OverlapAuditReport,
     PredictionArtifact,
     PredictionManifest,
+    SileroCompletionDetectorProvenance,
     SileroDetectorConfiguration,
     SileroDetectorProvenance,
+    SmartTurnCompletionDetectorProvenance,
     SmartTurnDetectorConfiguration,
     SmartTurnDetectorProvenance,
+    completion_prediction_rows_sha256,
     prediction_rows_sha256,
+    read_completion_predictions,
     read_inventory,
     read_predictions,
+    read_turn_completion_inventory,
+    write_completion_predictions,
     write_inventory,
     write_predictions,
+    write_turn_completion_inventory,
 )
 from app.training.turn_taking.benchmark_overlap import audit_smart_turn_overlap
 from app.training.turn_taking.benchmark_report import (
@@ -87,6 +116,7 @@ from app.training.turn_taking.benchmark_report import (
 from app.training.turn_taking.benchmark_voice_light import (
     load_voice_light_checkpoint,
     predict_voice_light_checkpoints,
+    predict_voice_light_completion_checkpoints,
 )
 from app.training.turn_taking.data import collate_training_items
 from app.training.turn_taking.hub import (
@@ -101,7 +131,7 @@ PINNED_SMART_TURN_TRAINING_REVISION = "e564e2ac567f774d1880aa1db6ce97afb8c519b7"
 IMPLEMENTATION_VERSION = "voice-light-causal-adapters-v1"
 DEFAULT_THRESHOLDS = tuple(index / 20 for index in range(1, 20))
 DEFAULT_ACTION_DELAYS_SECONDS = (0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56, 0.64)
-DEFAULT_TIMEOUTS_SECONDS = (0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.2, 1.6)
+DEFAULT_TIMEOUTS_SECONDS = (0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.2, 1.6, 2.0)
 HASH_CHUNK_BYTES = 1024 * 1024
 
 
@@ -115,6 +145,10 @@ def main() -> None:
     _add_overlap_parser(subparsers)
     _add_lock_parser(subparsers)
     _add_final_test_parser(subparsers)
+    _add_completion_inventory_parser(subparsers)
+    _add_completion_baseline_parser(subparsers)
+    _add_completion_voice_light_parser(subparsers)
+    _add_completion_analyze_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
         case "inventory":
@@ -131,6 +165,14 @@ def main() -> None:
             _lock_validation(arguments)
         case "final-test":
             _final_test(arguments)
+        case "completion-inventory-v2":
+            _create_completion_inventory(arguments)
+        case "predict-completion-baseline-v2":
+            _predict_completion_baseline(arguments)
+        case "predict-voice-light-completion-v2":
+            _predict_voice_light_completion(arguments)
+        case "analyze-completion-v2":
+            _analyze_completion(arguments)
         case _:
             raise AssertionError(f"Unhandled command {arguments.command!r}.")
 
@@ -240,6 +282,73 @@ def _add_final_test_parser(
     parser.add_argument("inventory", type=Path)
     parser.add_argument("predictions", type=Path)
     parser.add_argument("output", type=Path)
+
+
+def _add_completion_inventory_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "completion-inventory-v2",
+        help="Build the validation-only turn-completion candidate inventory.",
+    )
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
+    parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
+    parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--local-export-root", type=Path)
+
+
+def _add_completion_baseline_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "predict-completion-baseline-v2",
+        help="Cache a baseline against v2 completion boundaries.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--detector", choices=("silero", "smart-turn", "livekit"), required=True)
+    parser.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
+    parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
+    parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--audio-root", type=Path)
+
+
+def _add_completion_voice_light_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "predict-voice-light-completion-v2",
+        help="Cache completion-head scores from multiple checkpoints in one Nemotron pass.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("output_directory", type=Path)
+    parser.add_argument("checkpoints", type=Path, nargs="+")
+    parser.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
+    parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
+    parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--model-revision", default=PINNED_NEMOTRON_REVISION)
+    parser.add_argument("--batch-size", type=_positive_int, default=4)
+    parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=0)
+
+
+def _add_completion_analyze_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "analyze-completion-v2",
+        help="Sweep validation policies using confident completion label bands.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("predictions", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--thresholds", type=_float_tuple, default=DEFAULT_THRESHOLDS)
+    parser.add_argument(
+        "--action-delays-seconds",
+        type=_float_tuple,
+        default=DEFAULT_ACTION_DELAYS_SECONDS,
+    )
+    parser.add_argument("--timeouts-seconds", type=_float_tuple, default=DEFAULT_TIMEOUTS_SECONDS)
 
 
 def _create_inventory(arguments: argparse.Namespace) -> None:
@@ -485,6 +594,253 @@ def _analyze(arguments: argparse.Namespace) -> None:
             predictions=artifact.predictions,
             policy=selected.policy,
             evaluation=evaluation,
+        ),
+    )
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    arguments.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(selected.model_dump_json(indent=2), flush=True)
+
+
+def _create_completion_inventory(arguments: argparse.Namespace) -> None:
+    split = TrainingCorpusSplit.VALIDATION
+    if arguments.local_export_root is None:
+        samples = HuggingFaceTurnTakingDataset(
+            split=split,
+            revision=arguments.hub_revision,
+            repository_id=arguments.hub_repository,
+            cache_directory=arguments.hub_cache_directory,
+        ).samples
+    else:
+        samples = _read_local_samples(arguments.local_export_root, split)
+    inventory = build_turn_completion_inventory(
+        samples=samples,
+        corpus_repository=arguments.hub_repository,
+        corpus_revision=arguments.hub_revision,
+        split=split,
+    )
+    write_turn_completion_inventory(arguments.output, inventory)
+    print(inventory.manifest.model_dump_json(indent=2), flush=True)
+
+
+def _predict_completion_baseline(arguments: argparse.Namespace) -> None:
+    inventory = read_turn_completion_inventory(arguments.inventory)
+    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
+        raise ValueError("Turn-completion prediction is restricted to validation.")
+    audio_provider = _audio_provider(arguments)
+    match arguments.detector:
+        case "silero":
+            predictions = silero_completion_candidate_predictions(
+                inventory.candidates,
+                audio_provider,
+                load_causal_silero_model(use_onnx=True),
+            )
+            provenance: CompletionDetectorProvenance = SileroCompletionDetectorProvenance(
+                display_name="Silero VAD 6.2.1 silence proxy",
+                implementation_version="voice-light-turn-completion-adapters-v2",
+                package_name="silero-vad",
+                package_version=version("silero-vad"),
+                configuration=SileroDetectorConfiguration(
+                    speech_threshold=0.5,
+                    minimum_speech_seconds=0.1,
+                    minimum_silence_seconds=SILERO_FRAME_SECONDS,
+                    use_onnx=True,
+                ),
+            )
+        case "smart-turn":
+            inference = load_smart_turn_v3_inference(
+                model_repository=MODEL_REPOSITORY,
+                model_revision=MODEL_REVISION,
+                model_filename=MODEL_FILENAME,
+                cache_directory=arguments.hub_cache_directory,
+            )
+            predictions = smart_turn_completion_candidate_predictions(
+                inventory.candidates,
+                audio_provider,
+                SmartTurnInferenceScorer(inference),
+                candidate_silence_seconds=0.2,
+                maximum_window_seconds=MAX_MODEL_WINDOW_SECONDS,
+            )
+            model_path = Path(
+                hf_hub_download(
+                    repo_id=MODEL_REPOSITORY,
+                    filename=MODEL_FILENAME,
+                    revision=MODEL_REVISION,
+                    cache_dir=arguments.hub_cache_directory,
+                )
+            )
+            provenance = SmartTurnCompletionDetectorProvenance(
+                display_name="Pipecat Smart Turn v3.2 CPU ONNX completion",
+                implementation_version="voice-light-turn-completion-adapters-v2",
+                runtime_package_name="onnxruntime",
+                runtime_package_version=version("onnxruntime"),
+                model_repository=MODEL_REPOSITORY,
+                model_revision=MODEL_REVISION,
+                model_filename=MODEL_FILENAME,
+                model_sha256=_file_sha256(model_path),
+                configuration=SmartTurnDetectorConfiguration(
+                    sample_rate_hz=MODEL_SAMPLE_RATE,
+                    maximum_window_seconds=MAX_MODEL_WINDOW_SECONDS,
+                    candidate_silence_seconds=0.2,
+                ),
+            )
+        case "livekit":
+            inference = load_livekit_v1_mini_inference()
+            predictions = livekit_completion_candidate_predictions(
+                inventory.candidates,
+                audio_provider,
+                LiveKitInferenceScorer(inference.end_of_turn_model),
+                candidate_silence_seconds=0.3,
+                maximum_window_seconds=EOT_MAX_SAMPLES / MODEL_SAMPLE_RATE,
+            )
+            provenance = LiveKitCompletionDetectorProvenance(
+                display_name="LiveKit Turn Detector v1-mini completion",
+                implementation_version="voice-light-turn-completion-adapters-v2",
+                package_name="livekit-local-inference",
+                package_version=version("livekit-local-inference"),
+                model_sha256=None,
+                configuration=LiveKitDetectorConfiguration(
+                    sample_rate_hz=MODEL_SAMPLE_RATE,
+                    vad_speech_threshold=0.5,
+                    candidate_silence_seconds=0.3,
+                ),
+            )
+        case _:
+            raise AssertionError(f"Unhandled detector {arguments.detector!r}.")
+    ordered = tuple(
+        sorted(
+            predictions,
+            key=lambda prediction: (
+                prediction.candidate_id,
+                prediction.absolute_time_seconds,
+            ),
+        )
+    )
+    validate_completion_predictions(inventory.candidates, ordered)
+    artifact = CompletionPredictionArtifact(
+        manifest=CompletionPredictionManifest(
+            inventory_sha256=inventory.manifest.candidate_sha256,
+            split=inventory.manifest.split,
+            detector=provenance,
+            prediction_count=len(ordered),
+            predictions_sha256=completion_prediction_rows_sha256(ordered),
+        ),
+        predictions=ordered,
+    )
+    write_completion_predictions(arguments.output, artifact)
+    print(artifact.manifest.model_dump_json(indent=2), flush=True)
+
+
+def _predict_voice_light_completion(arguments: argparse.Namespace) -> None:
+    inventory = read_turn_completion_inventory(arguments.inventory)
+    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
+        raise ValueError("Turn-completion prediction is restricted to validation.")
+    checkpoints = tuple(load_voice_light_checkpoint(path) for path in arguments.checkpoints)
+    reference_config = checkpoints[0].config
+    dataset = HuggingFaceTurnTakingDataset(
+        split=TrainingCorpusSplit.VALIDATION,
+        revision=arguments.hub_revision,
+        repository_id=arguments.hub_repository,
+        cache_directory=arguments.hub_cache_directory,
+        sample_rate_hz=reference_config.sample_rate_hz,
+        pad_missing_audio_suffix=True,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    loader = DataLoader(
+        dataset,
+        batch_size=arguments.batch_size,
+        shuffle=False,
+        collate_fn=collate_training_items,
+        num_workers=arguments.data_loader_workers,
+        prefetch_factor=2 if arguments.data_loader_workers > 0 else None,
+        persistent_workers=arguments.data_loader_workers > 0,
+        pin_memory=device.type == "cuda",
+    )
+    backbone = NemotronStreamingBackbone(
+        model_identifier=reference_config.model_identifier,
+        tap_layer_indices=reference_config.adapter.tap_layer_indices,
+        lookahead_tokens=reference_config.lookahead_tokens,
+        model_revision=arguments.model_revision,
+        cache_directory=arguments.hub_cache_directory,
+    ).to(device)
+    backbone.eval()
+    artifacts = predict_voice_light_completion_checkpoints(
+        backbone=backbone,
+        checkpoints=checkpoints,
+        batches=loader,
+        samples=dataset.samples,
+        inventory=inventory,
+        model_repository=reference_config.model_identifier,
+        model_revision=arguments.model_revision,
+        device=device,
+        total_batch_count=len(loader),
+        progress_output=sys.stderr,
+    )
+    for checkpoint, artifact in zip(checkpoints, artifacts, strict=True):
+        validate_completion_predictions(inventory.candidates, artifact.predictions)
+        output_path = arguments.output_directory / (
+            "validation-v2-turn-completion-voice-light-step-"
+            f"{checkpoint.optimizer_step:06d}-predictions.json"
+        )
+        write_completion_predictions(output_path, artifact)
+        print(artifact.manifest.model_dump_json(indent=2), flush=True)
+
+
+def _analyze_completion(arguments: argparse.Namespace) -> None:
+    inventory = read_turn_completion_inventory(arguments.inventory)
+    artifact = read_completion_predictions(arguments.predictions)
+    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
+        raise ValueError("Turn-completion analysis is restricted to validation.")
+    if artifact.manifest.split is not inventory.manifest.split:
+        raise ValueError("Prediction split does not match the completion inventory split.")
+    if artifact.manifest.inventory_sha256 != inventory.manifest.candidate_sha256:
+        raise ValueError("Prediction artifact does not match the completion inventory.")
+    persistence = (
+        ScorePersistence.CURRENT
+        if artifact.manifest.detector.detector_kind is CompletionDetectorKind.SILERO_SILENCE
+        else ScorePersistence.LATCHED
+    )
+    evaluation = CompletionEvaluationConfiguration(
+        hold_completion_maximum=0.2,
+        hold_continuation_minimum=0.8,
+        eot_completion_minimum=0.8,
+        conflicting_continuation_minimum=0.8,
+        score_persistence=persistence,
+    )
+    sweep = sweep_completion_policies(
+        inventory.candidates,
+        artifact.predictions,
+        arguments.thresholds,
+        arguments.action_delays_seconds,
+        arguments.timeouts_seconds,
+        evaluation,
+    )
+    selected = select_completion_validation_point(sweep)
+    coverage = validate_completion_predictions(inventory.candidates, artifact.predictions)
+    calibration = (
+        None
+        if artifact.manifest.detector.detector_kind is CompletionDetectorKind.SILERO_SILENCE
+        else completion_calibration_metrics(inventory.candidates, artifact.predictions)
+    )
+    report = CompletionAnalysisReport(
+        inventory_sha256=inventory.manifest.candidate_sha256,
+        predictions_sha256=artifact.manifest.predictions_sha256,
+        detector=artifact.manifest.detector,
+        evaluation=evaluation,
+        prediction_coverage=coverage,
+        discrimination=completion_discrimination_metrics(
+            inventory.candidates,
+            artifact.predictions,
+            evaluation,
+        ),
+        calibration=calibration,
+        sweep=sweep,
+        pareto_frontier=completion_pareto_frontier(sweep),
+        selected_validation_point=selected,
+        selected_breakdowns=completion_breakdowns(
+            inventory.candidates,
+            artifact.predictions,
+            selected.policy,
+            evaluation,
         ),
     )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)

@@ -12,8 +12,15 @@ from app.training.turn_taking.benchmark_adapters import (
     livekit_candidate_predictions,
     silero_candidate_predictions,
     smart_turn_candidate_predictions,
+    smart_turn_completion_candidate_predictions,
 )
-from app.training.turn_taking.benchmark_models import CandidateTargetPoint, SilenceCandidate
+from app.training.turn_taking.benchmark_models import (
+    CandidateTargetPoint,
+    CompletionBoundaryKind,
+    CompletionTargetPoint,
+    SilenceCandidate,
+    TurnCompletionCandidate,
+)
 
 
 @dataclass
@@ -118,6 +125,23 @@ def test_silero_emits_only_native_32ms_frames_inside_candidate_silence() -> None
     assert predictions[-1].yield_probability == pytest.approx(0.8)
 
 
+def test_completion_adapter_preserves_v2_identity_and_semantics() -> None:
+    provider = _provider()
+    scorer = ConstantFloatScorer(probability=0.73)
+
+    predictions = smart_turn_completion_candidate_predictions(
+        candidates=(_completion_candidate(),),
+        audio_provider=provider,
+        scorer=scorer,
+        candidate_silence_seconds=0.2,
+        maximum_window_seconds=8.0,
+    )
+
+    assert predictions[0].candidate_id == "3" * 64
+    assert predictions[0].elapsed_seconds == pytest.approx(0.24)
+    assert predictions[0].completion_probability == pytest.approx(0.73)
+
+
 def _provider() -> RecordingAudioProvider:
     return RecordingAudioProvider(
         sample_rate_hz=16_000,
@@ -143,6 +167,33 @@ def _candidate() -> SilenceCandidate:
                 yield_probability=0.8,
             )
             for duration in (0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56)
+        ),
+        categories=("turn_shift",),
+        source_window_ids=("2" * 64,),
+    )
+
+
+def _completion_candidate() -> TurnCompletionCandidate:
+    return TurnCompletionCandidate(
+        candidate_id="3" * 64,
+        dataset_id="dataset-id",
+        dataset_name="dataset",
+        conversation_id="conversation",
+        external_id="external",
+        user_side="speaker1",
+        user_audio_path="audio.flac",
+        preceding_speech_start_seconds=1.0,
+        anchor_seconds=2.0,
+        end_seconds=2.6,
+        boundary_kind=CompletionBoundaryKind.TERMINAL,
+        continuation_probability=None,
+        target_points=tuple(
+            CompletionTargetPoint(
+                absolute_time_seconds=2.0 + elapsed,
+                elapsed_seconds=elapsed,
+                completion_probability=0.8,
+            )
+            for elapsed in (0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56)
         ),
         categories=("turn_shift",),
         source_window_ids=("2" * 64,),

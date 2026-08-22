@@ -22,7 +22,10 @@ from app.local.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
 from app.training.turn_taking.benchmark_models import (
     CandidatePrediction,
     CandidateTargetPoint,
+    CompletionCandidatePrediction,
+    CompletionTargetPoint,
     SilenceCandidate,
+    TurnCompletionCandidate,
 )
 from app.training.turn_taking.data import load_audio_window
 
@@ -51,7 +54,7 @@ class CausalSileroModel(Protocol):
 class CandidateAudioProvider(Protocol):
     def load(
         self,
-        candidate: SilenceCandidate,
+        candidate: SilenceCandidate | TurnCompletionCandidate,
         start_seconds: float,
         end_seconds: float,
     ) -> NDArray[np.float32]: ...
@@ -90,7 +93,7 @@ class ResolvedCandidateAudioProvider:
 
     def load(
         self,
-        candidate: SilenceCandidate,
+        candidate: SilenceCandidate | TurnCompletionCandidate,
         start_seconds: float,
         end_seconds: float,
     ) -> NDArray[np.float32]:
@@ -235,6 +238,129 @@ def silero_candidate_predictions(
 
 def load_causal_silero_model(use_onnx: bool) -> CausalSileroModel:
     return cast(CausalSileroModel, load_silero_vad(onnx=use_onnx))
+
+
+def smart_turn_completion_candidate_predictions(
+    candidates: tuple[TurnCompletionCandidate, ...],
+    audio_provider: CandidateAudioProvider,
+    scorer: FloatProbabilityScorer,
+    candidate_silence_seconds: float,
+    maximum_window_seconds: float,
+) -> tuple[CompletionCandidatePrediction, ...]:
+    predictions: list[CompletionCandidatePrediction] = []
+    for candidate in candidates:
+        target_point = _completion_target_point_at_gate(candidate, candidate_silence_seconds)
+        if target_point is None:
+            continue
+        start_seconds = max(
+            candidate.preceding_speech_start_seconds,
+            target_point.absolute_time_seconds - maximum_window_seconds,
+        )
+        audio = audio_provider.load(candidate, start_seconds, target_point.absolute_time_seconds)
+        started_at = time.perf_counter()
+        probability = scorer.score(audio)
+        predictions.append(
+            CompletionCandidatePrediction(
+                candidate_id=candidate.candidate_id,
+                absolute_time_seconds=target_point.absolute_time_seconds,
+                elapsed_seconds=target_point.elapsed_seconds,
+                completion_probability=probability,
+                inference_duration_seconds=time.perf_counter() - started_at,
+            )
+        )
+    return tuple(predictions)
+
+
+def livekit_completion_candidate_predictions(
+    candidates: tuple[TurnCompletionCandidate, ...],
+    audio_provider: CandidateAudioProvider,
+    scorer: Int16ProbabilityScorer,
+    candidate_silence_seconds: float,
+    maximum_window_seconds: float,
+) -> tuple[CompletionCandidatePrediction, ...]:
+    predictions: list[CompletionCandidatePrediction] = []
+    for candidate in candidates:
+        target_point = _completion_target_point_at_gate(candidate, candidate_silence_seconds)
+        if target_point is None:
+            continue
+        start_seconds = max(0.0, target_point.absolute_time_seconds - maximum_window_seconds)
+        float_audio = audio_provider.load(
+            candidate,
+            start_seconds,
+            target_point.absolute_time_seconds,
+        )
+        pcm_audio = np.clip(float_audio * 32767.0, -32768.0, 32767.0).astype(np.int16)
+        started_at = time.perf_counter()
+        probability = scorer.score(pcm_audio)
+        predictions.append(
+            CompletionCandidatePrediction(
+                candidate_id=candidate.candidate_id,
+                absolute_time_seconds=target_point.absolute_time_seconds,
+                elapsed_seconds=target_point.elapsed_seconds,
+                completion_probability=probability,
+                inference_duration_seconds=time.perf_counter() - started_at,
+            )
+        )
+    return tuple(predictions)
+
+
+def silero_completion_candidate_predictions(
+    candidates: tuple[TurnCompletionCandidate, ...],
+    audio_provider: CandidateAudioProvider,
+    model: CausalSileroModel,
+) -> tuple[CompletionCandidatePrediction, ...]:
+    predictions: list[CompletionCandidatePrediction] = []
+    for candidate in candidates:
+        model.reset_states()
+        audio = audio_provider.load(
+            candidate,
+            candidate.preceding_speech_start_seconds,
+            candidate.end_seconds,
+        )
+        for start_index in range(0, audio.size, SILERO_WINDOW_SAMPLES):
+            window = audio[start_index : start_index + SILERO_WINDOW_SAMPLES]
+            if window.size < SILERO_WINDOW_SAMPLES:
+                window = np.pad(window, (0, SILERO_WINDOW_SAMPLES - window.size))
+            started_at = time.perf_counter()
+            speech_probability = float(
+                model(torch.from_numpy(window.astype(np.float32, copy=False)), MODEL_SAMPLE_RATE_HZ)
+                .reshape(-1)[0]
+                .item()
+            )
+            inference_duration = time.perf_counter() - started_at
+            absolute_time = (
+                candidate.preceding_speech_start_seconds
+                + (start_index + SILERO_WINDOW_SAMPLES) / MODEL_SAMPLE_RATE_HZ
+            )
+            elapsed = absolute_time - candidate.anchor_seconds
+            if elapsed <= 0.0 or absolute_time > candidate.end_seconds + 1e-6:
+                continue
+            predictions.append(
+                CompletionCandidatePrediction(
+                    candidate_id=candidate.candidate_id,
+                    absolute_time_seconds=absolute_time,
+                    elapsed_seconds=elapsed,
+                    completion_probability=1.0 - speech_probability,
+                    inference_duration_seconds=inference_duration,
+                )
+            )
+    return tuple(predictions)
+
+
+def _completion_target_point_at_gate(
+    candidate: TurnCompletionCandidate,
+    candidate_silence_seconds: float,
+) -> CompletionTargetPoint | None:
+    if candidate_silence_seconds <= 0.0:
+        raise ValueError("candidate_silence_seconds must be positive.")
+    return next(
+        (
+            target_point
+            for target_point in candidate.target_points
+            if target_point.elapsed_seconds + 1e-6 >= candidate_silence_seconds
+        ),
+        None,
+    )
 
 
 def _target_point_at_gate(

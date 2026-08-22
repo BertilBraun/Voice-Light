@@ -16,10 +16,17 @@ from app.training.turn_taking.backbone import FeatureBackbone
 from app.training.turn_taking.benchmark_models import (
     CandidateInventory,
     CandidatePrediction,
+    CompletionCandidatePrediction,
+    CompletionPredictionArtifact,
+    CompletionPredictionManifest,
     PredictionArtifact,
     PredictionManifest,
+    TurnCompletionInventory,
+    VoiceLightCompletionDetectorConfiguration,
+    VoiceLightCompletionDetectorProvenance,
     VoiceLightDetectorConfiguration,
     VoiceLightDetectorProvenance,
+    completion_prediction_rows_sha256,
     prediction_rows_sha256,
 )
 from app.training.turn_taking.config import TrainingConfig
@@ -60,6 +67,20 @@ class _SelectedPrediction:
     context_frame_count: int
     window_id: str
     prediction: CandidatePrediction
+
+
+@dataclass(frozen=True)
+class _CompletionTargetReference:
+    candidate_id: str
+    absolute_time_seconds: float
+    elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class _SelectedCompletionPrediction:
+    context_frame_count: int
+    window_id: str
+    prediction: CompletionCandidatePrediction
 
 
 def load_voice_light_checkpoint(path: Path) -> LoadedVoiceLightCheckpoint:
@@ -167,6 +188,95 @@ def predict_voice_light_checkpoints(
     )
 
 
+def predict_voice_light_completion_checkpoints(
+    backbone: FeatureBackbone,
+    checkpoints: tuple[LoadedVoiceLightCheckpoint, ...],
+    batches: Iterable[TrainingBatch],
+    samples: tuple[MaterializedTrainingSample, ...],
+    inventory: TurnCompletionInventory,
+    model_repository: str,
+    model_revision: str,
+    device: torch.device,
+    total_batch_count: int | None = None,
+    progress_output: TextIO | None = None,
+) -> tuple[CompletionPredictionArtifact, ...]:
+    if inventory.manifest.split.value != "validation":
+        raise ValueError("Turn-completion prediction is restricted to validation.")
+    if not math.isclose(inventory.manifest.causal_horizon_seconds, 2.0, abs_tol=1e-6):
+        raise ValueError("Voice Light completion inference requires full two-second candidates.")
+    if not checkpoints:
+        raise ValueError("Voice Light prediction requires at least one checkpoint.")
+    if total_batch_count is not None and total_batch_count <= 0:
+        raise ValueError("Total batch count must be positive when provided.")
+    _validate_checkpoint_configs(checkpoints)
+    sample_by_window_id = {sample.window_id: sample for sample in samples}
+    target_lookup = _completion_target_lookup(inventory)
+    selected_by_checkpoint: list[dict[_TargetFrameKey, _SelectedCompletionPrediction]] = [
+        {} for _ in checkpoints
+    ]
+    for checkpoint in checkpoints:
+        checkpoint.adapter.to(device).eval()
+    progress_started_at = time.perf_counter()
+    if progress_output is not None:
+        _write_progress(progress_output, 0, total_batch_count, 0.0)
+    with torch.no_grad():
+        for batch_index, batch in enumerate(batches, start=1):
+            feature_started_at = time.perf_counter()
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16,
+                enabled=device.type == "cuda",
+            ):
+                features = backbone.extract(batch.waveforms, batch.waveform_lengths)
+            feature_duration_per_sample = (time.perf_counter() - feature_started_at) / len(
+                batch.sample_ids
+            )
+            taps = tuple(tap.to(device) for tap in features.taps)
+            assistant_speaking = _align_assistant_speaking(
+                batch.assistant_speaking.to(device), taps[0].shape[1]
+            )
+            for checkpoint_index, checkpoint in enumerate(checkpoints):
+                adapter_started_at = time.perf_counter()
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=device.type == "cuda",
+                ):
+                    output = checkpoint.adapter(taps, assistant_speaking)
+                adapter_duration_per_sample = (time.perf_counter() - adapter_started_at) / len(
+                    batch.sample_ids
+                )
+                _collect_completion_batch_predictions(
+                    probabilities=output.event_logits[..., 0].sigmoid().cpu(),
+                    frame_mask=features.frame_mask.cpu(),
+                    batch=batch,
+                    sample_by_window_id=sample_by_window_id,
+                    target_lookup=target_lookup,
+                    frame_seconds=inventory.manifest.frame_seconds,
+                    inference_duration_seconds=(
+                        feature_duration_per_sample + adapter_duration_per_sample
+                    ),
+                    selected=selected_by_checkpoint[checkpoint_index],
+                )
+            if progress_output is not None:
+                _write_progress(
+                    progress_output,
+                    batch_index,
+                    total_batch_count,
+                    time.perf_counter() - progress_started_at,
+                )
+    return tuple(
+        _completion_prediction_artifact(
+            checkpoint=checkpoint,
+            inventory=inventory,
+            model_repository=model_repository,
+            model_revision=model_revision,
+            selected=selected,
+        )
+        for checkpoint, selected in zip(checkpoints, selected_by_checkpoint, strict=True)
+    )
+
+
 def _write_progress(
     output: TextIO,
     completed_batch_count: int,
@@ -216,9 +326,7 @@ def _collect_batch_predictions(
 ) -> None:
     output_frame_count = probabilities.shape[1]
     target_frame_count = batch.targets.yield_probability.shape[1]
-    target_indices = (
-        torch.linspace(0, target_frame_count - 1, output_frame_count).round().long().tolist()
-    )
+    target_indices = _aligned_target_indices(output_frame_count, target_frame_count)
     for batch_index, window_id in enumerate(batch.sample_ids):
         sample = sample_by_window_id[window_id]
         sample_start_frame = round(sample.start_seconds / frame_seconds)
@@ -252,6 +360,53 @@ def _collect_batch_predictions(
                 selected[key] = candidate_selection
 
 
+def _collect_completion_batch_predictions(
+    probabilities: Tensor,
+    frame_mask: Tensor,
+    batch: TrainingBatch,
+    sample_by_window_id: dict[str, MaterializedTrainingSample],
+    target_lookup: dict[_TargetFrameKey, _CompletionTargetReference],
+    frame_seconds: float,
+    inference_duration_seconds: float,
+    selected: dict[_TargetFrameKey, _SelectedCompletionPrediction],
+) -> None:
+    output_frame_count = probabilities.shape[1]
+    target_frame_count = batch.targets.yield_probability.shape[1]
+    for batch_index, window_id in enumerate(batch.sample_ids):
+        sample = sample_by_window_id[window_id]
+        sample_start_frame = round(sample.start_seconds / frame_seconds)
+        for output_index, target_index in _earliest_aligned_output_indices(
+            output_frame_count,
+            target_frame_count,
+        ):
+            if not bool(frame_mask[batch_index, output_index]):
+                continue
+            key = _TargetFrameKey(
+                dataset_id=str(sample.dataset_id),
+                conversation_id=str(sample.sample_id),
+                user_side=sample.user_side.value,
+                user_audio_path=sample.user_audio_path,
+                frame_index=sample_start_frame + target_index,
+            )
+            target = target_lookup.get(key)
+            if target is None:
+                continue
+            selection = _SelectedCompletionPrediction(
+                context_frame_count=target_index + 1,
+                window_id=window_id,
+                prediction=CompletionCandidatePrediction(
+                    candidate_id=target.candidate_id,
+                    absolute_time_seconds=target.absolute_time_seconds,
+                    elapsed_seconds=target.elapsed_seconds,
+                    completion_probability=float(probabilities[batch_index, output_index].item()),
+                    inference_duration_seconds=inference_duration_seconds,
+                ),
+            )
+            existing = selected.get(key)
+            if existing is None or _prefer_completion_candidate(selection, existing):
+                selected[key] = selection
+
+
 def _target_lookup(inventory: CandidateInventory) -> dict[_TargetFrameKey, _TargetReference]:
     frame_seconds = inventory.manifest.frame_seconds
     lookup: dict[_TargetFrameKey, _TargetReference] = {}
@@ -278,6 +433,48 @@ def _target_lookup(inventory: CandidateInventory) -> dict[_TargetFrameKey, _Targ
                 absolute_time_seconds=target_point.absolute_time_seconds,
                 silence_duration_seconds=target_point.silence_duration_seconds,
             )
+    return lookup
+
+
+def _completion_target_lookup(
+    inventory: TurnCompletionInventory,
+) -> dict[_TargetFrameKey, _CompletionTargetReference]:
+    frame_seconds = inventory.manifest.frame_seconds
+    lookup: dict[_TargetFrameKey, _CompletionTargetReference] = {}
+    for candidate in inventory.candidates:
+        anchor_frame = round(candidate.anchor_seconds / frame_seconds)
+        if not math.isclose(
+            anchor_frame * frame_seconds,
+            candidate.anchor_seconds,
+            abs_tol=1e-6,
+        ):
+            raise ValueError("Completion candidate anchor is not aligned to the frame grid.")
+        first_target = candidate.target_points[0]
+        expected_time = (anchor_frame + 1) * frame_seconds
+        if not math.isclose(
+            first_target.absolute_time_seconds,
+            expected_time,
+            abs_tol=1e-6,
+        ) or not math.isclose(
+            first_target.elapsed_seconds,
+            frame_seconds,
+            abs_tol=1e-6,
+        ):
+            raise ValueError("Completion candidate first score must be one frame after its anchor.")
+        key = _TargetFrameKey(
+            dataset_id=candidate.dataset_id,
+            conversation_id=candidate.conversation_id,
+            user_side=candidate.user_side,
+            user_audio_path=candidate.user_audio_path,
+            frame_index=anchor_frame,
+        )
+        if key in lookup:
+            raise ValueError("Completion inventory contains duplicate boundary frame keys.")
+        lookup[key] = _CompletionTargetReference(
+            candidate_id=candidate.candidate_id,
+            absolute_time_seconds=first_target.absolute_time_seconds,
+            elapsed_seconds=first_target.elapsed_seconds,
+        )
     return lookup
 
 
@@ -323,7 +520,60 @@ def _prediction_artifact(
     )
 
 
+def _completion_prediction_artifact(
+    checkpoint: LoadedVoiceLightCheckpoint,
+    inventory: TurnCompletionInventory,
+    model_repository: str,
+    model_revision: str,
+    selected: dict[_TargetFrameKey, _SelectedCompletionPrediction],
+) -> CompletionPredictionArtifact:
+    predictions = tuple(
+        sorted(
+            (selection.prediction for selection in selected.values()),
+            key=lambda prediction: (
+                prediction.candidate_id,
+                prediction.absolute_time_seconds,
+            ),
+        )
+    )
+    if len(predictions) != inventory.manifest.candidate_count:
+        raise ValueError("Voice Light completion inference did not score every inventory boundary.")
+    detector = VoiceLightCompletionDetectorProvenance(
+        display_name=f"Voice Light completion head step {checkpoint.optimizer_step:,}",
+        implementation_version="voice-light-turn-completion-adapter-v2",
+        model_repository=model_repository,
+        model_revision=model_revision,
+        checkpoint_path=str(checkpoint.path),
+        checkpoint_sha256=checkpoint.sha256,
+        configuration=VoiceLightCompletionDetectorConfiguration(
+            model_identifier=checkpoint.config.model_identifier,
+            lookahead_tokens=checkpoint.config.lookahead_tokens,
+            encoder_frame_seconds=checkpoint.config.encoder_frame_seconds,
+            optimizer_step=checkpoint.optimizer_step,
+        ),
+    )
+    return CompletionPredictionArtifact(
+        manifest=CompletionPredictionManifest(
+            inventory_sha256=inventory.manifest.candidate_sha256,
+            split=inventory.manifest.split,
+            detector=detector,
+            prediction_count=len(predictions),
+            predictions_sha256=completion_prediction_rows_sha256(predictions),
+        ),
+        predictions=predictions,
+    )
+
+
 def _prefer_candidate(candidate: _SelectedPrediction, existing: _SelectedPrediction) -> bool:
+    if candidate.context_frame_count != existing.context_frame_count:
+        return candidate.context_frame_count > existing.context_frame_count
+    return candidate.window_id < existing.window_id
+
+
+def _prefer_completion_candidate(
+    candidate: _SelectedCompletionPrediction,
+    existing: _SelectedCompletionPrediction,
+) -> bool:
     if candidate.context_frame_count != existing.context_frame_count:
         return candidate.context_frame_count > existing.context_frame_count
     return candidate.window_id < existing.window_id
@@ -347,6 +597,30 @@ def _align_assistant_speaking(values: Tensor, frame_count: int) -> Tensor:
         torch.linspace(0, values.shape[1] - 1, frame_count, device=values.device).round().long()
     )
     return values[:, indices]
+
+
+def _aligned_target_indices(output_frame_count: int, target_frame_count: int) -> tuple[int, ...]:
+    if output_frame_count <= 0 or target_frame_count <= 0:
+        raise ValueError("Frame counts must be positive.")
+    return tuple(
+        torch.linspace(0, target_frame_count - 1, output_frame_count).round().long().tolist()
+    )
+
+
+def _earliest_aligned_output_indices(
+    output_frame_count: int,
+    target_frame_count: int,
+) -> tuple[tuple[int, int], ...]:
+    pairs: list[tuple[int, int]] = []
+    observed_target_indices: set[int] = set()
+    for output_index, target_index in enumerate(
+        _aligned_target_indices(output_frame_count, target_frame_count)
+    ):
+        if target_index in observed_target_indices:
+            continue
+        observed_target_indices.add(target_index)
+        pairs.append((output_index, target_index))
+    return tuple(pairs)
 
 
 def _file_sha256(path: Path) -> str:
