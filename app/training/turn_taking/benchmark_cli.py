@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 from huggingface_hub import hf_hub_download
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from app.local.analyses.end_of_turn.detectors.livekit_v1_mini import (
     EOT_MAX_SAMPLES,
@@ -744,9 +744,22 @@ def _predict_voice_light_completion(arguments: argparse.Namespace) -> None:
         sample_rate_hz=reference_config.sample_rate_hz,
         pad_missing_audio_suffix=True,
     )
+    relevant_window_ids = {
+        window_id for candidate in inventory.candidates for window_id in candidate.source_window_ids
+    }
+    relevant_indices = tuple(
+        index
+        for index, sample in enumerate(dataset.samples)
+        if sample.window_id in relevant_window_ids
+    )
+    loaded_window_ids = {dataset.samples[index].window_id for index in relevant_indices}
+    missing_window_ids = relevant_window_ids - loaded_window_ids
+    if missing_window_ids:
+        raise ValueError("Completion inventory references windows absent from the corpus split.")
+    relevant_dataset = Subset(dataset, relevant_indices)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = DataLoader(
-        dataset,
+        relevant_dataset,
         batch_size=arguments.batch_size,
         shuffle=False,
         collate_fn=collate_training_items,
