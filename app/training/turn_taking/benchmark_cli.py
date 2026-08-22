@@ -42,6 +42,14 @@ from app.training.turn_taking.benchmark_adapters import (
     smart_turn_candidate_predictions,
     smart_turn_completion_candidate_predictions,
 )
+from app.training.turn_taking.benchmark_completion_audit import (
+    CompletionAuditConfiguration,
+    build_completion_audit_manifest,
+)
+from app.training.turn_taking.benchmark_completion_audit_export import (
+    ResolvedCompletionAuditAudioLoader,
+    write_completion_audit_package,
+)
 from app.training.turn_taking.benchmark_completion_inventory import (
     build_turn_completion_inventory,
 )
@@ -158,6 +166,7 @@ def main() -> None:
     _add_completion_baseline_parser(subparsers)
     _add_completion_voice_light_parser(subparsers)
     _add_completion_analyze_parser(subparsers)
+    _add_completion_audit_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
         case "inventory":
@@ -182,6 +191,8 @@ def main() -> None:
             _predict_voice_light_completion(arguments)
         case "analyze-completion-v2":
             _analyze_completion(arguments)
+        case "completion-label-audit-v2":
+            _completion_label_audit(arguments)
         case _:
             raise AssertionError(f"Unhandled command {arguments.command!r}.")
 
@@ -358,6 +369,27 @@ def _add_completion_analyze_parser(
         default=DEFAULT_COMPLETION_ACTION_DELAYS_SECONDS,
     )
     parser.add_argument("--timeouts-seconds", type=_float_tuple, default=DEFAULT_TIMEOUTS_SECONDS)
+
+
+def _add_completion_audit_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "completion-label-audit-v2",
+        help="Build a deterministic validation label-audit package with stereo review clips.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("voice_light_predictions", type=Path)
+    parser.add_argument("smart_turn_predictions", type=Path)
+    parser.add_argument("livekit_predictions", type=Path)
+    parser.add_argument("output_directory", type=Path)
+    parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--local-export-root", type=Path)
+    parser.add_argument("--audio-root", type=Path)
+    parser.add_argument("--ambiguous-count", type=_nonnegative_int, default=80)
+    parser.add_argument("--confident-hold-count", type=_nonnegative_int, default=120)
+    parser.add_argument("--confident-eot-count", type=_nonnegative_int, default=120)
+    parser.add_argument("--double-review-count", type=_nonnegative_int, default=100)
 
 
 def _create_inventory(arguments: argparse.Namespace) -> None:
@@ -868,6 +900,57 @@ def _analyze_completion(arguments: argparse.Namespace) -> None:
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(selected.model_dump_json(indent=2), flush=True)
+
+
+def _completion_label_audit(arguments: argparse.Namespace) -> None:
+    inventory = read_turn_completion_inventory(arguments.inventory)
+    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
+        raise ValueError("Completion label audits are restricted to validation.")
+    if arguments.local_export_root is None:
+        samples = HuggingFaceTurnTakingDataset(
+            split=TrainingCorpusSplit.VALIDATION,
+            revision=inventory.manifest.corpus_revision,
+            repository_id=inventory.manifest.corpus_repository,
+            cache_directory=arguments.hub_cache_directory,
+        ).samples
+    else:
+        samples = _read_local_samples(
+            arguments.local_export_root,
+            TrainingCorpusSplit.VALIDATION,
+        )
+    manifest = build_completion_audit_manifest(
+        inventory=inventory,
+        voice_light_predictions=read_completion_predictions(arguments.voice_light_predictions),
+        smart_turn_predictions=read_completion_predictions(arguments.smart_turn_predictions),
+        livekit_predictions=read_completion_predictions(arguments.livekit_predictions),
+        configuration=CompletionAuditConfiguration(
+            ambiguous_count=arguments.ambiguous_count,
+            confident_hold_count=arguments.confident_hold_count,
+            confident_eot_count=arguments.confident_eot_count,
+            double_review_count=arguments.double_review_count,
+        ),
+    )
+    resolver = (
+        RootAudioPathResolver(arguments.audio_root)
+        if arguments.audio_root is not None
+        else HubAudioPathResolver(
+            repository_id=inventory.manifest.corpus_repository,
+            revision=inventory.manifest.corpus_revision,
+            cache_directory=arguments.hub_cache_directory,
+        )
+    )
+    write_completion_audit_package(
+        output_directory=arguments.output_directory,
+        manifest=manifest,
+        inventory=inventory,
+        samples=samples,
+        audio_loader=ResolvedCompletionAuditAudioLoader(path_resolver=resolver),
+        progress_output=sys.stderr,
+    )
+    print(
+        f"Wrote {manifest.item_count} completion-label audit cases to {arguments.output_directory}",
+        flush=True,
+    )
 
 
 def _overlap_audit(arguments: argparse.Namespace) -> None:

@@ -1,14 +1,23 @@
 import hashlib
+import wave
 from pathlib import Path
+from uuid import UUID
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
+from app.local.db.models import TrackSide
+from app.local.training_corpus.export import MaterializedTrainingSample
 from app.local.training_corpus.splits import TrainingCorpusSplit
 from app.training.turn_taking.benchmark_completion_audit import (
     CompletionAuditConfiguration,
     CompletionAuditGroup,
     CompletionAuditSelectionReason,
     build_completion_audit_manifest,
+)
+from app.training.turn_taking.benchmark_completion_audit_export import (
+    write_completion_audit_package,
 )
 from app.training.turn_taking.benchmark_models import (
     CompletionBoundaryKind,
@@ -131,6 +140,43 @@ def test_completion_audit_rejects_missing_prediction_coverage() -> None:
         )
 
 
+def test_completion_audit_package_writes_stereo_clips_and_blind_review_page(
+    tmp_path: Path,
+) -> None:
+    inventory = _inventory()
+    manifest = build_completion_audit_manifest(
+        inventory,
+        _artifact(inventory, "voice_light"),
+        _artifact(inventory, "smart_turn"),
+        _artifact(inventory, "livekit"),
+        CompletionAuditConfiguration(
+            ambiguous_count=1,
+            confident_hold_count=1,
+            confident_eot_count=1,
+            double_review_count=1,
+        ),
+    )
+
+    write_completion_audit_package(
+        output_directory=tmp_path,
+        manifest=manifest,
+        inventory=inventory,
+        samples=tuple(_sample(index) for index in range(18)),
+        audio_loader=_FixedAudioLoader(),
+        sample_rate_hz=8_000,
+    )
+
+    assert (tmp_path / "audit-manifest.json").is_file()
+    assert (tmp_path / "review-template.csv").is_file()
+    page = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "Listen blind before revealing metadata" in page
+    assert "Export reviews JSON" in page
+    with wave.open(str(tmp_path / manifest.items[0].clip_path), "rb") as audio:
+        assert audio.getnchannels() == 2
+        assert audio.getframerate() == 8_000
+        assert audio.getnframes() == 56_000
+
+
 def _inventory() -> TurnCompletionInventory:
     candidates = tuple(
         _candidate(index, completion, continuation)
@@ -205,6 +251,54 @@ def _candidate(
         categories=("hold_pause" if index % 2 else "turn_shift",),
         source_window_ids=(hashlib.sha256(f"window-{index}".encode()).hexdigest(),),
     )
+
+
+def _sample(index: int) -> MaterializedTrainingSample:
+    frame_count = 250
+    zeros = tuple(0.0 for _ in range(frame_count))
+    return MaterializedTrainingSample(
+        schema_version="voice-light-turn-taking-v1",
+        training_label_version="turn-taking-frame-labels-v1",
+        window_id=hashlib.sha256(f"window-{index}".encode()).hexdigest(),
+        dataset_id=UUID(int=index % 2 + 1),
+        dataset_name=f"dataset-{index % 2}",
+        sample_id=UUID(int=index % 2 + 3),
+        external_id=f"external-{index % 2}",
+        user_side=TrackSide.SPEAKER1,
+        assistant_side=TrackSide.SPEAKER2,
+        split=TrainingCorpusSplit.VALIDATION,
+        user_audio_path=f"audio-{index % 2}.flac",
+        assistant_audio_path="assistant.flac",
+        start_seconds=0.0,
+        end_seconds=20.0,
+        quality_score=1.0,
+        category="turn_shift",
+        assistant_has_floor=zeros,
+        p_user_has_floor=zeros,
+        p_user_yield=zeros,
+        p_assistant_backchannel=zeros,
+        future_activity_0_200=zeros,
+        future_activity_200_500=zeros,
+        future_activity_500_1000=zeros,
+        future_activity_1000_1500=zeros,
+        turn_completion=zeros,
+        continuation_pause=zeros,
+        non_floor_feedback=zeros,
+        floor_take=zeros,
+    )
+
+
+class _FixedAudioLoader:
+    def load(
+        self,
+        relative_path: str,
+        start_seconds: float,
+        end_seconds: float,
+        sample_rate_hz: int,
+    ) -> NDArray[np.float32]:
+        sample_count = round((end_seconds - start_seconds) * sample_rate_hz)
+        value = -0.25 if relative_path == "assistant.flac" else 0.25
+        return np.full(sample_count, value, dtype=np.float32)
 
 
 def _artifact(
