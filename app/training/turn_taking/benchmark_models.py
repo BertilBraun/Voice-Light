@@ -56,7 +56,9 @@ class SilenceCandidate(BenchmarkModel):
 
 
 class CandidateInventoryManifest(BenchmarkModel):
-    schema_version: str = "voice-light-causal-candidate-inventory-v1"
+    schema_version: Literal["voice-light-causal-candidate-inventory-v1"] = (
+        "voice-light-causal-candidate-inventory-v1"
+    )
     corpus_repository: str
     corpus_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     split: TrainingCorpusSplit
@@ -78,6 +80,86 @@ class CandidateInventory(BenchmarkModel):
         if len(self.candidates) != self.manifest.candidate_count:
             raise ValueError("Candidate count does not match the inventory manifest.")
         if candidate_rows_sha256(self.candidates) != self.manifest.candidate_sha256:
+            raise ValueError("Candidate rows do not match the inventory manifest hash.")
+        return self
+
+
+class CompletionBoundaryKind(StrEnum):
+    CONTINUATION = "continuation"
+    TERMINAL = "terminal"
+
+
+class CompletionTargetPoint(BenchmarkModel):
+    absolute_time_seconds: float = Field(ge=0.0)
+    elapsed_seconds: float = Field(gt=0.0)
+    completion_probability: float = Field(ge=0.0, le=1.0)
+
+
+class TurnCompletionCandidate(BenchmarkModel):
+    candidate_id: str = Field(pattern=SHA256_PATTERN)
+    dataset_id: str
+    dataset_name: str
+    conversation_id: str
+    external_id: str
+    user_side: str
+    user_audio_path: str
+    preceding_speech_start_seconds: float = Field(ge=0.0)
+    anchor_seconds: float = Field(ge=0.0)
+    end_seconds: float = Field(gt=0.0)
+    boundary_kind: CompletionBoundaryKind
+    continuation_probability: float | None = Field(ge=0.0, le=1.0)
+    target_points: tuple[CompletionTargetPoint, ...] = Field(min_length=1)
+    categories: tuple[str, ...] = Field(min_length=1)
+    source_window_ids: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_candidate(self) -> TurnCompletionCandidate:
+        if self.end_seconds <= self.anchor_seconds:
+            raise ValueError("Candidate end_seconds must follow anchor_seconds.")
+        if self.preceding_speech_start_seconds >= self.anchor_seconds:
+            raise ValueError("Candidate preceding speech must start before its anchor.")
+        times = tuple(point.absolute_time_seconds for point in self.target_points)
+        if times != tuple(sorted(set(times))):
+            raise ValueError("Candidate target points must have unique increasing timestamps.")
+        if times[0] <= self.anchor_seconds or times[-1] > self.end_seconds:
+            raise ValueError("Candidate target points must fall after anchor and at or before end.")
+        elapsed = tuple(point.elapsed_seconds for point in self.target_points)
+        if elapsed != tuple(sorted(elapsed)):
+            raise ValueError("Candidate elapsed times must be increasing.")
+        probabilities = {point.completion_probability for point in self.target_points}
+        if len(probabilities) != 1:
+            raise ValueError("A sparse completion target must remain fixed across the candidate.")
+        return self
+
+
+class TurnCompletionInventoryManifest(BenchmarkModel):
+    schema_version: Literal["voice-light-turn-completion-candidate-inventory-v2"] = (
+        "voice-light-turn-completion-candidate-inventory-v2"
+    )
+    corpus_repository: str
+    corpus_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    split: TrainingCorpusSplit
+    frame_seconds: float = Field(gt=0.0)
+    user_floor_threshold: float = Field(ge=0.0, le=1.0)
+    assistant_active_threshold: float = Field(ge=0.0, le=1.0)
+    causal_horizon_seconds: float = Field(gt=0.0)
+    sample_window_count: int = Field(gt=0)
+    conversation_count: int = Field(gt=0)
+    candidate_count: int = Field(ge=0)
+    candidate_sha256: str = Field(pattern=SHA256_PATTERN)
+
+
+class TurnCompletionInventory(BenchmarkModel):
+    manifest: TurnCompletionInventoryManifest
+    candidates: tuple[TurnCompletionCandidate, ...]
+
+    @model_validator(mode="after")
+    def validate_inventory(self) -> TurnCompletionInventory:
+        if len(self.candidates) != self.manifest.candidate_count:
+            raise ValueError("Candidate count does not match the inventory manifest.")
+        if turn_completion_candidate_rows_sha256(self.candidates) != (
+            self.manifest.candidate_sha256
+        ):
             raise ValueError("Candidate rows do not match the inventory manifest hash.")
         return self
 
@@ -225,6 +307,16 @@ def candidate_rows_sha256(candidates: tuple[SilenceCandidate, ...]) -> str:
     return digest.hexdigest()
 
 
+def turn_completion_candidate_rows_sha256(
+    candidates: tuple[TurnCompletionCandidate, ...],
+) -> str:
+    digest = hashlib.sha256()
+    for candidate in candidates:
+        digest.update(candidate.model_dump_json().encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def prediction_rows_sha256(predictions: tuple[CandidatePrediction, ...]) -> str:
     digest = hashlib.sha256()
     for prediction in predictions:
@@ -264,6 +356,18 @@ def write_inventory(path: Path, inventory: CandidateInventory) -> None:
 
 def read_inventory(path: Path) -> CandidateInventory:
     return CandidateInventory.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def write_turn_completion_inventory(
+    path: Path,
+    inventory: TurnCompletionInventory,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(inventory.model_dump_json(indent=2), encoding="utf-8")
+
+
+def read_turn_completion_inventory(path: Path) -> TurnCompletionInventory:
+    return TurnCompletionInventory.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def write_predictions(path: Path, artifact: PredictionArtifact) -> None:
