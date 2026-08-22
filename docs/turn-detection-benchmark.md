@@ -123,6 +123,51 @@ audit supports the label contract, semantic completion/EOT should become the pri
 objective and the model should be retrained. Continuing the old `p_user_yield` objective or merely
 training its current checkpoint longer is not justified by these results.
 
+### Completion-label audit package
+
+`completion-label-audit-v2` builds a validation-only, deterministic 320-case review package from
+the v2 inventory and the step-3,500, Smart Turn, and LiveKit prediction artifacts:
+
+- 80 ambiguous cases ranked by label midpoint uncertainty, completion/continuation tension, Voice
+  Light disagreement, and cross-model disagreement;
+- 120 confident HOLD cases and 120 confident EOT cases, each split evenly between high-disagreement
+  challenges and deterministic representative controls; and
+- 100 cases flagged for independent double review.
+
+Selection is balanced round-robin across dataset/conversation streams before filling additional
+slots. Presentation order is separately SHA-256 shuffled so reviewers do not encounter the three
+groups in blocks. The generated review page hides the automatic group, selection reason, and model
+scores until the reviewer opens the metadata panel. Reviewer-local autosave is keyed by both the
+manifest hash and reviewer name, preventing one reviewer from seeing another's decisions.
+
+Each seven-second, 16 kHz stereo WAV contains four seconds before and three seconds after the
+boundary. The candidate user is on the left and the other speaker is on the right. The page supports
+keyboard decisions (`1` safe to take, `2` hold, `3` ambiguous/unratable), structured error tags,
+notes, progress tracking, and JSON export. `review-template.csv` is a non-interactive fallback.
+
+The generated package is
+`.cache/local/training-runs/2026-08-21-4080-pilot/benchmark/completion-label-audit-v1/`.
+Its item SHA-256 is
+`f30bd9d18f382116dd8042411025633a80a016a90a3880f13deb2882f32389f4`. It contains all 13
+available `dataset_2` candidates and covers all ten validation conversations that produced v2
+candidates. The selected ambiguous panel contains 72 middle-band targets and eight low-completion
+cases lacking strong HOLD confirmation; 47 end in a same-user continuation within the two-second
+opportunity and 33 do not.
+
+After one or more reviewers export their JSON files, the analysis command validates reviewer and
+manifest identity, rejects duplicate or unknown items, forms per-item consensus, reports automatic
+label agreement and unsafe EOT errors, and calculates exact double-review agreement and Cohen's
+kappa:
+
+```powershell
+$auditRoot = '.cache\local\training-runs\2026-08-21-4080-pilot\benchmark\completion-label-audit-v1'
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli analyze-completion-label-audit-v2 (Join-Path $auditRoot 'audit-manifest.json') (Join-Path $auditRoot 'analysis.json') reviewer-a.json reviewer-b.json
+```
+
+The label gate remains at least 90% agreement on confident labels, at most 5% unsafe EOT errors,
+at least 85% exact double-review agreement, and preferably Cohen's kappa of at least 0.70. The
+ambiguous panel is diagnostic and must not be used to estimate population-wide error prevalence.
+
 The v2 reports and compact predictions are under
 `.cache/local/training-runs/2026-08-21-4080-pilot/benchmark/`. Prediction row hashes are
 `469a2491f65027454e0cf085c8964813711975a82ab2bf4670fbcfe1c00272e2` for Voice Light step 3,500,

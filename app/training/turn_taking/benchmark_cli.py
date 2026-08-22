@@ -44,6 +44,9 @@ from app.training.turn_taking.benchmark_adapters import (
 )
 from app.training.turn_taking.benchmark_completion_audit import (
     CompletionAuditConfiguration,
+    CompletionAuditManifest,
+    CompletionAuditReviewArtifact,
+    analyze_completion_audit_reviews,
     build_completion_audit_manifest,
 )
 from app.training.turn_taking.benchmark_completion_audit_export import (
@@ -167,6 +170,7 @@ def main() -> None:
     _add_completion_voice_light_parser(subparsers)
     _add_completion_analyze_parser(subparsers)
     _add_completion_audit_parser(subparsers)
+    _add_completion_audit_analysis_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
         case "inventory":
@@ -193,6 +197,8 @@ def main() -> None:
             _analyze_completion(arguments)
         case "completion-label-audit-v2":
             _completion_label_audit(arguments)
+        case "analyze-completion-label-audit-v2":
+            _analyze_completion_label_audit(arguments)
         case _:
             raise AssertionError(f"Unhandled command {arguments.command!r}.")
 
@@ -390,6 +396,18 @@ def _add_completion_audit_parser(
     parser.add_argument("--confident-hold-count", type=_nonnegative_int, default=120)
     parser.add_argument("--confident-eot-count", type=_nonnegative_int, default=120)
     parser.add_argument("--double-review-count", type=_nonnegative_int, default=100)
+
+
+def _add_completion_audit_analysis_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "analyze-completion-label-audit-v2",
+        help="Analyze one or more exported completion-label review files.",
+    )
+    parser.add_argument("manifest", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("reviews", type=Path, nargs="+")
 
 
 def _create_inventory(arguments: argparse.Namespace) -> None:
@@ -951,6 +969,20 @@ def _completion_label_audit(arguments: argparse.Namespace) -> None:
         f"Wrote {manifest.item_count} completion-label audit cases to {arguments.output_directory}",
         flush=True,
     )
+
+
+def _analyze_completion_label_audit(arguments: argparse.Namespace) -> None:
+    manifest = CompletionAuditManifest.model_validate_json(
+        arguments.manifest.read_text(encoding="utf-8")
+    )
+    reviews = tuple(
+        CompletionAuditReviewArtifact.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in arguments.reviews
+    )
+    report = analyze_completion_audit_reviews(manifest, reviews)
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    arguments.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.agreement.model_dump_json(indent=2), flush=True)
 
 
 def _overlap_audit(arguments: argparse.Namespace) -> None:

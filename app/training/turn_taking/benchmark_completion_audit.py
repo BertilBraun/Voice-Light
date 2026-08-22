@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from enum import StrEnum
 from typing import Literal
@@ -132,6 +132,125 @@ class CompletionAuditManifest(BenchmarkModel):
         return self
 
 
+class CompletionAuditReview(BenchmarkModel):
+    audit_id: str = Field(pattern=SHA256_PATTERN)
+    review_label: CompletionAuditReviewLabel
+    error_tags: tuple[CompletionAuditErrorTag, ...] = ()
+    notes: str = ""
+
+
+class CompletionAuditReviewArtifact(BenchmarkModel):
+    schema_version: Literal["voice-light-completion-label-reviews-v1"] = (
+        "voice-light-completion-label-reviews-v1"
+    )
+    manifest_sha256: str = Field(pattern=SHA256_PATTERN)
+    reviewer: str = Field(min_length=1)
+    reviews: tuple[CompletionAuditReview, ...]
+
+    @model_validator(mode="after")
+    def validate_reviews(self) -> CompletionAuditReviewArtifact:
+        audit_ids = tuple(review.audit_id for review in self.reviews)
+        if len(set(audit_ids)) != len(audit_ids):
+            raise ValueError("Completion audit review artifact contains duplicate audit IDs.")
+        return self
+
+
+class CompletionAuditReviewerSummary(BenchmarkModel):
+    reviewer: str
+    reviewed_support: int = Field(ge=0)
+
+
+class CompletionAuditGroupReviewSummary(BenchmarkModel):
+    group: CompletionAuditGroup
+    selected_support: int = Field(ge=0)
+    reviewed_support: int = Field(ge=0)
+    safe_to_take_count: int = Field(ge=0)
+    hold_count: int = Field(ge=0)
+    ambiguous_unratable_count: int = Field(ge=0)
+
+
+class CompletionAuditTagCount(BenchmarkModel):
+    tag: CompletionAuditErrorTag
+    count: int = Field(ge=0)
+
+
+class CompletionAuditAgreementSummary(BenchmarkModel):
+    confident_consensus_support: int = Field(ge=0)
+    automatic_label_agreement_count: int = Field(ge=0)
+    automatic_label_agreement_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    confident_eot_consensus_support: int = Field(ge=0)
+    unsafe_eot_error_count: int = Field(ge=0)
+    unsafe_eot_error_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    double_review_support: int = Field(ge=0)
+    exact_double_review_agreement_count: int = Field(ge=0)
+    exact_double_review_agreement_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    cohen_kappa: float | None = Field(default=None, ge=-1.0, le=1.0)
+
+
+class CompletionAuditAnalysisReport(BenchmarkModel):
+    schema_version: Literal["voice-light-completion-label-audit-analysis-v1"] = (
+        "voice-light-completion-label-audit-analysis-v1"
+    )
+    manifest_sha256: str = Field(pattern=SHA256_PATTERN)
+    reviewer_summaries: tuple[CompletionAuditReviewerSummary, ...]
+    group_summaries: tuple[CompletionAuditGroupReviewSummary, ...]
+    agreement: CompletionAuditAgreementSummary
+    error_tag_counts: tuple[CompletionAuditTagCount, ...]
+
+
+def analyze_completion_audit_reviews(
+    manifest: CompletionAuditManifest,
+    review_artifacts: Iterable[CompletionAuditReviewArtifact],
+) -> CompletionAuditAnalysisReport:
+    artifacts = tuple(review_artifacts)
+    if not artifacts:
+        raise ValueError("Completion audit analysis requires at least one review artifact.")
+    if len({artifact.reviewer for artifact in artifacts}) != len(artifacts):
+        raise ValueError("Completion audit review artifacts must use unique reviewer names.")
+    item_by_id = {item.audit_id: item for item in manifest.items}
+    reviews_by_id: defaultdict[str, list[tuple[str, CompletionAuditReview]]] = defaultdict(list)
+    for artifact in artifacts:
+        if artifact.manifest_sha256 != manifest.items_sha256:
+            raise ValueError("Completion audit review artifact uses a different manifest hash.")
+        for review in artifact.reviews:
+            if review.audit_id not in item_by_id:
+                raise ValueError(f"Review references unknown audit item {review.audit_id}.")
+            reviews_by_id[review.audit_id].append((artifact.reviewer, review))
+
+    consensus = {
+        audit_id: label
+        for audit_id, reviews in reviews_by_id.items()
+        if (label := _consensus_label(tuple(review.review_label for _, review in reviews)))
+        is not None
+    }
+    group_summaries = tuple(
+        _group_review_summary(group, manifest, consensus) for group in CompletionAuditGroup
+    )
+    agreement = _agreement_summary(manifest, reviews_by_id, consensus)
+    tag_counts = Counter(
+        tag
+        for reviews in reviews_by_id.values()
+        for _, review in reviews
+        for tag in review.error_tags
+    )
+    return CompletionAuditAnalysisReport(
+        manifest_sha256=manifest.items_sha256,
+        reviewer_summaries=tuple(
+            CompletionAuditReviewerSummary(
+                reviewer=artifact.reviewer,
+                reviewed_support=len(artifact.reviews),
+            )
+            for artifact in sorted(artifacts, key=lambda artifact: artifact.reviewer)
+        ),
+        group_summaries=group_summaries,
+        agreement=agreement,
+        error_tag_counts=tuple(
+            CompletionAuditTagCount(tag=tag, count=tag_counts[tag])
+            for tag in CompletionAuditErrorTag
+        ),
+    )
+
+
 class _AuditCandidate(BenchmarkModel):
     candidate: TurnCompletionCandidate
     group: CompletionAuditGroup
@@ -238,6 +357,102 @@ def completion_audit_rows_sha256(items: tuple[CompletionAuditItem, ...]) -> str:
         digest.update(item.model_dump_json().encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _consensus_label(
+    labels: tuple[CompletionAuditReviewLabel, ...],
+) -> CompletionAuditReviewLabel | None:
+    counts = Counter(labels)
+    if not counts:
+        return None
+    ordered = counts.most_common()
+    if len(ordered) > 1 and ordered[0][1] == ordered[1][1]:
+        return None
+    return ordered[0][0]
+
+
+def _group_review_summary(
+    group: CompletionAuditGroup,
+    manifest: CompletionAuditManifest,
+    consensus: dict[str, CompletionAuditReviewLabel],
+) -> CompletionAuditGroupReviewSummary:
+    items = tuple(item for item in manifest.items if item.group is group)
+    labels = tuple(consensus[item.audit_id] for item in items if item.audit_id in consensus)
+    return CompletionAuditGroupReviewSummary(
+        group=group,
+        selected_support=len(items),
+        reviewed_support=len(labels),
+        safe_to_take_count=labels.count(CompletionAuditReviewLabel.SAFE_TO_TAKE),
+        hold_count=labels.count(CompletionAuditReviewLabel.HOLD),
+        ambiguous_unratable_count=labels.count(CompletionAuditReviewLabel.AMBIGUOUS_UNRATABLE),
+    )
+
+
+def _agreement_summary(
+    manifest: CompletionAuditManifest,
+    reviews_by_id: dict[str, list[tuple[str, CompletionAuditReview]]],
+    consensus: dict[str, CompletionAuditReviewLabel],
+) -> CompletionAuditAgreementSummary:
+    confident_items = tuple(
+        item
+        for item in manifest.items
+        if item.group is not CompletionAuditGroup.AMBIGUOUS and item.audit_id in consensus
+    )
+    expected_labels = {
+        CompletionAuditGroup.CONFIDENT_HOLD: CompletionAuditReviewLabel.HOLD,
+        CompletionAuditGroup.CONFIDENT_EOT: CompletionAuditReviewLabel.SAFE_TO_TAKE,
+    }
+    agreement_count = sum(
+        consensus[item.audit_id] is expected_labels[item.group] for item in confident_items
+    )
+    confident_eot_items = tuple(
+        item for item in confident_items if item.group is CompletionAuditGroup.CONFIDENT_EOT
+    )
+    unsafe_eot_count = sum(
+        consensus[item.audit_id] is CompletionAuditReviewLabel.HOLD for item in confident_eot_items
+    )
+    double_pairs = tuple(
+        tuple(
+            review.review_label
+            for _, review in sorted(reviews_by_id[item.audit_id], key=lambda pair: pair[0])[:2]
+        )
+        for item in manifest.items
+        if item.double_review and len(reviews_by_id[item.audit_id]) >= 2
+    )
+    exact_count = sum(first is second for first, second in double_pairs)
+    return CompletionAuditAgreementSummary(
+        confident_consensus_support=len(confident_items),
+        automatic_label_agreement_count=agreement_count,
+        automatic_label_agreement_rate=_optional_rate(agreement_count, len(confident_items)),
+        confident_eot_consensus_support=len(confident_eot_items),
+        unsafe_eot_error_count=unsafe_eot_count,
+        unsafe_eot_error_rate=_optional_rate(unsafe_eot_count, len(confident_eot_items)),
+        double_review_support=len(double_pairs),
+        exact_double_review_agreement_count=exact_count,
+        exact_double_review_agreement_rate=_optional_rate(exact_count, len(double_pairs)),
+        cohen_kappa=_cohen_kappa(double_pairs),
+    )
+
+
+def _optional_rate(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def _cohen_kappa(
+    pairs: tuple[tuple[CompletionAuditReviewLabel, CompletionAuditReviewLabel], ...],
+) -> float | None:
+    if not pairs:
+        return None
+    observed = sum(first is second for first, second in pairs) / len(pairs)
+    first_counts = Counter(first for first, _ in pairs)
+    second_counts = Counter(second for _, second in pairs)
+    expected = sum(
+        first_counts[label] / len(pairs) * second_counts[label] / len(pairs)
+        for label in CompletionAuditReviewLabel
+    )
+    if expected == 1.0:
+        return None
+    return (observed - expected) / (1.0 - expected)
 
 
 def _first_score_by_candidate(

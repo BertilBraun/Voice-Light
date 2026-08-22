@@ -12,8 +12,13 @@ from app.local.training_corpus.export import MaterializedTrainingSample
 from app.local.training_corpus.splits import TrainingCorpusSplit
 from app.training.turn_taking.benchmark_completion_audit import (
     CompletionAuditConfiguration,
+    CompletionAuditErrorTag,
     CompletionAuditGroup,
+    CompletionAuditReview,
+    CompletionAuditReviewArtifact,
+    CompletionAuditReviewLabel,
     CompletionAuditSelectionReason,
+    analyze_completion_audit_reviews,
     build_completion_audit_manifest,
 )
 from app.training.turn_taking.benchmark_completion_audit_export import (
@@ -175,6 +180,83 @@ def test_completion_audit_package_writes_stereo_clips_and_blind_review_page(
         assert audio.getnchannels() == 2
         assert audio.getframerate() == 8_000
         assert audio.getnframes() == 56_000
+
+
+def test_completion_audit_analysis_reports_label_and_double_review_agreement() -> None:
+    inventory = _inventory()
+    manifest = build_completion_audit_manifest(
+        inventory,
+        _artifact(inventory, "voice_light"),
+        _artifact(inventory, "smart_turn"),
+        _artifact(inventory, "livekit"),
+        CompletionAuditConfiguration(
+            ambiguous_count=1,
+            confident_hold_count=1,
+            confident_eot_count=1,
+            double_review_count=1,
+        ),
+    )
+    first_reviews = tuple(
+        CompletionAuditReview(
+            audit_id=item.audit_id,
+            review_label=(
+                CompletionAuditReviewLabel.HOLD
+                if item.group is CompletionAuditGroup.CONFIDENT_HOLD
+                else CompletionAuditReviewLabel.SAFE_TO_TAKE
+                if item.group is CompletionAuditGroup.CONFIDENT_EOT
+                else CompletionAuditReviewLabel.AMBIGUOUS_UNRATABLE
+            ),
+            error_tags=(CompletionAuditErrorTag.OVERLAP,),
+        )
+        for item in manifest.items
+    )
+    double_item = next(item for item in manifest.items if item.double_review)
+    first_double_label = next(
+        review.review_label for review in first_reviews if review.audit_id == double_item.audit_id
+    )
+    second_label = (
+        CompletionAuditReviewLabel.HOLD
+        if first_double_label is not CompletionAuditReviewLabel.HOLD
+        else CompletionAuditReviewLabel.SAFE_TO_TAKE
+    )
+
+    report = analyze_completion_audit_reviews(
+        manifest,
+        (
+            CompletionAuditReviewArtifact(
+                manifest_sha256=manifest.items_sha256,
+                reviewer="reviewer-a",
+                reviews=first_reviews,
+            ),
+            CompletionAuditReviewArtifact(
+                manifest_sha256=manifest.items_sha256,
+                reviewer="reviewer-b",
+                reviews=(
+                    CompletionAuditReview(
+                        audit_id=double_item.audit_id,
+                        review_label=second_label,
+                    ),
+                ),
+            ),
+            CompletionAuditReviewArtifact(
+                manifest_sha256=manifest.items_sha256,
+                reviewer="reviewer-c",
+                reviews=(
+                    CompletionAuditReview(
+                        audit_id=double_item.audit_id,
+                        review_label=first_double_label,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert report.agreement.confident_consensus_support == 2
+    assert report.agreement.automatic_label_agreement_rate == pytest.approx(1.0)
+    assert report.agreement.double_review_support == 1
+    assert report.agreement.exact_double_review_agreement_rate == pytest.approx(0.0)
+    assert report.error_tag_counts[2].tag is CompletionAuditErrorTag.OVERLAP
+    assert report.error_tag_counts[2].count == 3
 
 
 def _inventory() -> TurnCompletionInventory:

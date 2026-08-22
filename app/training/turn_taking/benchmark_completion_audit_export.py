@@ -261,12 +261,21 @@ def _review_page(manifest: CompletionAuditManifest) -> str:
     const labels = ["safe_to_take", "hold", "ambiguous_unratable"];
     const tags = ["continuation", "backchannel", "overlap", "transcript_error",
       "timing_error", "censored_context", "audio_quality"];
-    const storageKey = `completion-audit:${{manifest.items_sha256}}`;
-    let state = JSON.parse(localStorage.getItem(storageKey) || '{{"index":0,"reviews":{{}}}}');
+    const storagePrefix = `completion-audit:${{manifest.items_sha256}}`;
+    let state = {{index:0, reviews:{{}}}};
     const byId = id => document.getElementById(id);
 
     function current() {{ return manifest.items[state.index]; }}
-    function save() {{ localStorage.setItem(storageKey, JSON.stringify(state)); }}
+    function reviewerName() {{ return byId("reviewer").value.trim(); }}
+    function save() {{
+      if (reviewerName()) localStorage.setItem(`${{storagePrefix}}:${{reviewerName()}}`,
+        JSON.stringify(state));
+    }}
+    function loadReviewer() {{
+      state = JSON.parse(localStorage.getItem(`${{storagePrefix}}:${{reviewerName()}}`) ||
+        '{{"index":0,"reviews":{{}}}}');
+      render();
+    }}
     function review() {{
       const item = current();
       return state.reviews[item.audit_id] ||= {{review_label:null, error_tags:[], notes:""}};
@@ -317,16 +326,18 @@ def _review_page(manifest: CompletionAuditManifest) -> str:
       button.onclick = () => setLabel(button.dataset.label));
     byId("previous").onclick = () => move(-1); byId("next").onclick = () => move(1);
     byId("notes").oninput = event => {{ review().notes = event.target.value; save(); }};
+    byId("reviewer").onchange = loadReviewer;
     byId("play-boundary").onclick = () => {{
       const audio = byId("audio");
       audio.currentTime = Math.max(0, current().boundary_offset_seconds - 2);
       audio.play();
     }};
     byId("export").onclick = () => {{
+      if (!reviewerName()) {{ alert("Enter a reviewer name before exporting."); return; }}
       const payload = {{schema_version:"voice-light-completion-label-reviews-v1",
-        manifest_sha256:manifest.items_sha256, reviewer:byId("reviewer").value,
-        reviews:manifest.items.map(item =>
-          ({{audit_id:item.audit_id, ...state.reviews[item.audit_id]}}))}};
+        manifest_sha256:manifest.items_sha256, reviewer:reviewerName(),
+        reviews:manifest.items.filter(item => state.reviews[item.audit_id]?.review_label)
+          .map(item => ({{audit_id:item.audit_id, ...state.reviews[item.audit_id]}}))}};
       const link = document.createElement("a");
       const blob = new Blob([JSON.stringify(payload, null, 2)], {{type:"application/json"}});
       link.href = URL.createObjectURL(blob);
