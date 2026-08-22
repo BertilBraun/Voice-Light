@@ -2,18 +2,149 @@
 
 ## Scope and interpretation
 
-This benchmark compares only Voice Light's primary `p_user_yield` output with external end-of-turn
-detectors. The five event labels and four future-activity labels are training auxiliaries and are
-excluded from every external comparison. Deepgram Flux is excluded. VAP is not included because its
-two-channel inputs and native targets do not share this benchmark's single-channel HOLD/YIELD
-contract.
+The original v1 benchmark compares Voice Light's primary `p_user_yield` output with external
+end-of-turn detectors. Its completed validation and test results are retained below as historical
+evidence, but its label means future user silence rather than semantic turn completion. The current
+v2 validation diagnostic instead evaluates the existing auxiliary `turn_completion` head at
+speech-offset boundaries. It is explicitly a diagnostic of whether the saved checkpoints already
+contain usable completion signal, not a retrospective external claim about the primary head.
+
+Deepgram Flux is excluded. VAP is not included because its two-channel inputs and native targets do
+not share this benchmark's single-channel decision contract.
 
 The protocol is adapted from LiveKit eot-bench at source revision
 `7f2acca997211908c6ee962ace8bcc8d6a66fbac`. Results are not entries on its public leaderboard:
 Voice Light uses overlapping windows and soft conversation labels, not the leaderboard's row and
 label contract.
 
-## Reproducible protocol
+## V2 boundary-only completion diagnostic
+
+### Candidate and label contract
+
+V2 uses the same pinned corpus revision as v1. It reconstructs absolute 80 ms frame observations
+from the overlapping 20-second windows and rejects conflicting duplicates. A candidate begins only
+at a frame carrying valid `turn_completion` supervision when all of the following hold:
+
+- the assistant is inactive (`assistant_has_floor < 0.5`);
+- the user is no longer speaking (`p_user_has_floor < 0.5`);
+- the immediately preceding observed frame belongs to a contiguous user-speech span; and
+- the subsequent candidate opportunity is fully observed, either until the user resumes or through
+  the fixed two-second causal horizon.
+
+Candidates that lack the required observed suffix are censored instead of padded with labels.
+Assistant-active anchors are excluded. A candidate is `continuation` when same-user speech resumes
+within two seconds and `terminal` otherwise. The boundary's soft completion target is carried across
+the candidate for bookkeeping; no future observation is exposed to detector inference.
+
+The operational labels deliberately use high-confidence bands:
+
+- HOLD requires `turn_completion <= 0.2` and `continuation_pause >= 0.8`;
+- EOT requires `turn_completion >= 0.8` without a conflicting
+  `continuation_pause >= 0.8`; and
+- all other candidates are ignored for cutoff, recall, AUROC, and AP.
+
+The validation inventory contains 1,005 candidates from 1,503 windows but only 11 independent
+conversations. Its SHA-256 is
+`8f4bd09b216a05a02472c2023d4088c63966ef98546da199808dbc3afc48d8e6`. There are 726 terminal and
+279 continuation opportunities. The clean evaluation support is 789: 134 HOLD and 655 EOT, with
+216 ambiguous candidates ignored and no completion/continuation conflicts. The EOT prevalence in
+the clean set is 83.02%, so EOT average precision must be interpreted against a 0.8302 prevalence
+baseline.
+
+| Dataset | HOLD | EOT | Ignored |
+| --- | ---: | ---: | ---: |
+| `dataset_1-local` | 95 | 343 | 153 |
+| `dataset_2` | 1 | 12 | 0 |
+| `dataset_3` | 14 | 29 | 10 |
+| `meetings-s3` | 24 | 271 | 53 |
+
+These are candidate counts, not independent conversation counts. In particular, dataset-level
+percentages cannot be treated as stable estimates with only 11 validation conversations.
+
+### Native gates and policy interpretation
+
+Every detector receives only causal audio, but the detectors do not score at a shared timestamp:
+
+- Voice Light emits one completion-head score at the first native frame, 80 ms after the annotated
+  boundary. Its one-frame lookahead and user/assistant inputs remain causal through that scoring
+  frame. The boundary-only score is latched for later policy delays; it is not recomputed throughout
+  the pause.
+- Smart Turn emits one score at 240 ms, the first 80 ms inventory frame after its 200 ms native
+  silence gate, and that score is latched.
+- LiveKit v1-mini emits one score at 320 ms, the first inventory frame after its 300 ms gate, and
+  that score is latched.
+- Silero emits current inverse-speech scores on its native 32 ms chunks. Its scores are not latched,
+  and they are a silence proxy rather than completion probabilities.
+
+Accordingly, first-score AUROC and AP measure ranking at each model's own native gate, not ranking
+after identical amounts of silence. Calibration is reported for Voice Light, Smart Turn, and
+LiveKit because they expose completion-like probabilities, but their different gates and the soft
+heuristic target limit direct comparison. Silero calibration is undefined here.
+
+A policy sweep covers thresholds 0.05 through 0.95 plus 0.99 and 1.0, action delays from 80 ms
+through two seconds, and timeouts from 300 ms through two seconds. Under the 5% cutoff budget,
+selection maximizes detector EOT recall, then minimizes timeout-inclusive mean latency and cutoff.
+If no point satisfies the budget, selection falls back to the Pareto point with the lowest cutoff
+and latency. A HOLD false cutoff is an action before the observed continuation opportunity ends.
+EOT recall counts only detector-triggered actions before the timeout or opportunity end; timeout-only
+actions do not count. Latency is capped by the shorter of timeout and observed opportunity.
+
+### V2 validation result and decision
+
+| Detector | Threshold / delay / timeout | False cutoff | EOT recall | Mean latency | AUROC | EOT AP | BCE | Brier | ECE |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Voice Light completion step 3,500 | 0.50 / 1,600 ms / 2,000 ms | 3.73% (5/134) | 65.80% (431/655) | 1,732 ms | 0.6866 | 0.8993 | 0.6719 | 0.1843 | 0.2175 |
+| Voice Light completion step 7,000 | 0.50 / 1,600 ms / 2,000 ms | 4.48% (6/134) | 65.80% (431/655) | 1,732 ms | 0.6832 | 0.8952 | 0.6803 | 0.1875 | 0.2194 |
+| Smart Turn v3.2 | 0.05 / 1,600 ms / 2,000 ms | 4.48% (6/134) | 70.53% (462/655) | 1,713 ms | 0.5595 | 0.8532 | 1.5817 | 0.3653 | 0.4111 |
+| LiveKit v1-mini | 0.35 / 1,600 ms / 2,000 ms | 4.48% (6/134) | 63.66% (417/655) | 1,741 ms | 0.5238 | 0.8316 | 0.8732 | 0.2636 | 0.2864 |
+| Silero VAD 6.2.1 | 0.99 / 1,600 ms / 2,000 ms | 3.73% (5/134) | 86.56% (567/655) | 1,676 ms | 0.5504 | 0.8531 | n/a | n/a | n/a |
+
+The probability metrics use all 1,005 soft completion targets, whereas AUROC and AP use only the
+789 clean hard labels. A constant soft-prior predictor has BCE 0.5847 and Brier 0.1453. Both Voice
+Light checkpoints are worse than that calibration baseline despite ranking above chance, so the
+completion head is under-confident and not a satisfactory probability estimator.
+
+Every selected policy has p95 EOT latency of two seconds. The Voice Light, Smart Turn, and LiveKit
+points have p50 latency of 1.6 seconds; Silero's p50 is 1.616 seconds. No detector has a swept point
+that simultaneously achieves false cutoff at or below 5%, EOT recall at or above 70%, and p95
+latency at or below 800 ms. Silero's high recall comes from a delayed sequential silence policy, and
+its first-score AUROC/AP are not semantically comparable to completion-probability models. Smart
+Turn remains contamination-risk context because its training data and Voice Light `dataset_3` both
+include Mundo-derived material; it cannot support a clean aggregate superiority claim.
+
+Step 3,500 has some completion ranking signal, but the validation diagnostic fails the predefined
+go/no-go standard: AUROC is below 0.75, and reaching 65.80% recall requires a 1.6-second action
+delay with two-second p95 latency. Step 7,000 is no better. The v2 test split must therefore remain
+unopened; there is no v2 test inventory, threshold lock, or test result.
+
+The next step is a deterministic human audit of the validation completion labels, especially the
+216 ignored cases, continuation pauses, backchannels, overlap, and dataset-specific errors. If that
+audit supports the label contract, semantic completion/EOT should become the primary training
+objective and the model should be retrained. Continuing the old `p_user_yield` objective or merely
+training its current checkpoint longer is not justified by these results.
+
+The v2 reports and compact predictions are under
+`.cache/local/training-runs/2026-08-21-4080-pilot/benchmark/`. Prediction row hashes are
+`469a2491f65027454e0cf085c8964813711975a82ab2bf4670fbcfe1c00272e2` for Voice Light step 3,500,
+`8e341a4ca0617ef09b38741d737271d5035484bc2502e4adaf1254b4ac653c8e` for step 7,000,
+`de03b4bfecd9b4b77e7249a66f4b7d71c635c54b8c3450b56b95afda70dbde27` for Smart Turn,
+`aa5150c09f33c08834767892bbab8ffcf9d038e01a2704511a0d5b9d08ee9414` for LiveKit, and
+`43a91468299f53da1f71c3db298600d4209b922be31376d1ed33d32e91395994` for Silero.
+
+The validation sequence is reproducible with the v2-only commands below. Repeat the baseline
+prediction and analysis commands for `smart-turn` and `livekit`, and analyze each generated Voice
+Light checkpoint artifact separately.
+
+```powershell
+$benchmarkRoot = '.cache\local\training-runs\2026-08-21-4080-pilot\benchmark'
+$inventory = Join-Path $benchmarkRoot 'v2-validation-inventory.json'
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli completion-inventory-v2 $inventory
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli predict-completion-baseline-v2 $inventory (Join-Path $benchmarkRoot 'v2-validation-silero-predictions.json') --detector silero
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli predict-voice-light-completion-v2 $inventory $benchmarkRoot '.cache\local\training-runs\2026-08-21-4080-pilot\adapter-pilot.pt' '.cache\local\training-runs\2026-08-21-4080-pilot\adapter-step-007000.pt' --batch-size 4 --data-loader-workers 0
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli analyze-completion-v2 $inventory (Join-Path $benchmarkRoot 'v2-validation-silero-predictions.json') (Join-Path $benchmarkRoot 'v2-validation-silero-analysis.json')
+```
+
+## Historical v1 future-silence protocol
 
 The source corpus is `BertilBraun/voice-light-audio` at revision
 `56e68eb8fb1d42159483612f508b9ce27672f724`. The inventory reconstructs absolute timestamps from
@@ -51,7 +182,7 @@ validation metrics, the chosen Voice Light checkpoint SHA, and the contamination
 inventory and prediction commands require that lock. `final-test` has no sweep options and rejects a
 prediction artifact whose full detector provenance is absent from the lock.
 
-## Validation artifacts and preliminary baselines
+## Historical v1 validation artifacts and preliminary baselines
 
 The generated validation inventory contains 1,547 silence candidates from 1,503 windows and 11
 conversations. Its candidate SHA-256 is
@@ -94,7 +225,7 @@ The validation prediction hashes are
 `0cc3ebac2c4b3075e739a5d5efcd22509337833b0e7e2c22077b14e00f0d7ea1` for step 3,500 and
 `f72f5ed023a9fc30f79e5682337bf2f749b10d47826d66dd55a543ece2ecd37c` for step 7,000.
 
-## Smart Turn overlap boundary
+## Smart Turn overlap boundary for both protocols
 
 Smart Turn's pinned v3.2 training-data repository is
 `pipecat-ai/smart-turn-data-v3.2-train` at
@@ -106,7 +237,7 @@ download the roughly 41 GB external corpus, so no exact audio/PCM comparison was
 must not support a clean aggregate superiority claim. The audit artifact is
 `smart-turn-overlap-audit.json`.
 
-## Voice Light feasibility and execution
+## Historical v1 Voice Light feasibility and execution
 
 The checkpoint hashes are:
 
@@ -137,7 +268,7 @@ reports. Only then create the test inventory:
 .\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli inventory .cache\local\training-runs\2026-08-21-4080-pilot\benchmark\test-inventory.json --split test --validation-lock .cache\local\training-runs\2026-08-21-4080-pilot\benchmark\validation-lock.json
 ```
 
-## Locked test result
+## Historical v1 locked test result
 
 The test inventory was created only after `validation-lock.json` selected step 3,500. It contains
 1,673 candidates from 1,302 windows and 11 conversations, with candidate SHA-256
@@ -171,7 +302,7 @@ Test prediction hashes are:
 - Smart Turn: `709c5c9cf530f835a2b3bd24f9de9f8e8d727c4e2f785b6d3b793a3469ffe920`.
 - LiveKit: `5d7b38e213607e3744805dc263009f0b8e833213ca87b5adc898cf952c1cd973`.
 
-## CLI sequence
+## Historical v1 CLI sequence
 
 Run `python -m app.training.turn_taking.benchmark_cli --help` for all arguments. The intended order
 is `inventory`, `predict-baseline` and `predict-voice-light`, `analyze`, `overlap-audit`,

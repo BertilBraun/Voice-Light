@@ -132,6 +132,15 @@ IMPLEMENTATION_VERSION = "voice-light-causal-adapters-v1"
 DEFAULT_THRESHOLDS = tuple(index / 20 for index in range(1, 20))
 DEFAULT_ACTION_DELAYS_SECONDS = (0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56, 0.64)
 DEFAULT_TIMEOUTS_SECONDS = (0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.2, 1.6, 2.0)
+DEFAULT_COMPLETION_THRESHOLDS = (*DEFAULT_THRESHOLDS, 0.99, 1.0)
+DEFAULT_COMPLETION_ACTION_DELAYS_SECONDS = (
+    *DEFAULT_ACTION_DELAYS_SECONDS,
+    0.8,
+    1.0,
+    1.2,
+    1.6,
+    2.0,
+)
 HASH_CHUNK_BYTES = 1024 * 1024
 
 
@@ -342,11 +351,11 @@ def _add_completion_analyze_parser(
     parser.add_argument("inventory", type=Path)
     parser.add_argument("predictions", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--thresholds", type=_float_tuple, default=DEFAULT_THRESHOLDS)
+    parser.add_argument("--thresholds", type=_float_tuple, default=DEFAULT_COMPLETION_THRESHOLDS)
     parser.add_argument(
         "--action-delays-seconds",
         type=_float_tuple,
-        default=DEFAULT_ACTION_DELAYS_SECONDS,
+        default=DEFAULT_COMPLETION_ACTION_DELAYS_SECONDS,
     )
     parser.add_argument("--timeouts-seconds", type=_float_tuple, default=DEFAULT_TIMEOUTS_SECONDS)
 
