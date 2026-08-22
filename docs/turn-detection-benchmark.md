@@ -78,6 +78,22 @@ Prediction row hashes are:
 The artifacts live under
 `.cache/local/training-runs/2026-08-21-4080-pilot/benchmark/` and are intentionally ignored by Git.
 
+### Voice Light validation selection
+
+Both checkpoints used one completed shared-backbone local CPU pass. Step 3,500 was locked as the
+operational checkpoint because it produced one false cutoff rather than two; step 7,000's 2.5 ms
+mean-latency improvement and one percentage point of detector EOT recall did not justify doubling
+the observed interruption count on the small HOLD support.
+
+| Checkpoint | Locked threshold / delay / timeout | False cutoff | EOT recall | Mean latency | BCE | Brier |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Step 3,500 | 0.90 / 560 ms / 800 ms | 2% (1/50) | 13.56% | 768 ms | 0.3705 | 0.0577 |
+| Step 7,000 | 0.90 / 560 ms / 800 ms | 4% (2/50) | 14.56% | 766 ms | 0.3741 | 0.0593 |
+
+The validation prediction hashes are
+`0cc3ebac2c4b3075e739a5d5efcd22509337833b0e7e2c22077b14e00f0d7ea1` for step 3,500 and
+`f72f5ed023a9fc30f79e5682337bf2f749b10d47826d66dd55a543ece2ecd37c` for step 7,000.
+
 ## Smart Turn overlap boundary
 
 Smart Turn's pinned v3.2 training-data repository is
@@ -90,7 +106,7 @@ download the roughly 41 GB external corpus, so no exact audio/PCM comparison was
 must not support a clean aggregate superiority claim. The audit artifact is
 `smart-turn-overlap-audit.json`.
 
-## Voice Light feasibility and GPU handoff
+## Voice Light feasibility and execution
 
 The checkpoint hashes are:
 
@@ -100,8 +116,9 @@ The checkpoint hashes are:
 The Nemotron model revision is pinned to `ebe59e5a817142986528bbbee5dba8db7b38ed50`.
 A local CPU probe on one real 20-second validation window took 5.08 seconds for shared backbone
 features and 0.12 seconds total for both adapters, projecting about 2.12 hours for the 1,503-window
-validation pass. The three baselines and all metric analysis are practical locally; the shared
-Voice Light pass should run on a GPU.
+validation pass. The complete validation and test runs were subsequently executed locally with
+per-batch elapsed-time and ETA reporting. The three baselines and all metric analysis were also run
+locally.
 
 On a prepared GPU workspace containing this Git revision, the two checkpoints, and the Hugging Face
 cache, run:
@@ -120,9 +137,39 @@ reports. Only then create the test inventory:
 .\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli inventory .cache\local\training-runs\2026-08-21-4080-pilot\benchmark\test-inventory.json --split test --validation-lock .cache\local\training-runs\2026-08-21-4080-pilot\benchmark\validation-lock.json
 ```
 
-The test split has not been opened or evaluated in this implementation run. This is intentional:
-the two Voice Light validation artifacts are required to choose and freeze the checkpoint and policy
-first.
+## Locked test result
+
+The test inventory was created only after `validation-lock.json` selected step 3,500. It contains
+1,673 candidates from 1,302 windows and 11 conversations, with candidate SHA-256
+`402408bd4f6ae20e5f66c0eed6c41004eea102ba0b25298022aec410555a788e9`. The fixed label point has 37
+HOLD and 1,636 EOT candidates. The first inference attempt stopped before producing an artifact when
+a final source window exceeded its FLAC by 10,069 decoded samples. The evaluator now permits
+zero-padding only for a contiguous missing suffix, while training and interior gaps remain strict.
+The last scored candidate in that recording ends more than five seconds before the real audio end,
+so the padded samples cannot affect a causal scored output. No partial results were analyzed or used
+to change the lock.
+
+The completed locked-policy results are:
+
+| Detector | Locked threshold / delay / timeout | False cutoff | EOT recall | Mean latency | BCE | Brier |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Voice Light step 3,500 | 0.90 / 560 ms / 800 ms | 2.70% (1/37) | 12.53% | 770 ms | 0.3899 | 0.0590 |
+| Silero VAD 6.2.1 | 0.05 / 640 ms / 800 ms | 2.70% (1/37) | 95.60% | 656 ms | n/a | n/a |
+| Smart Turn v3.2 | 0.95 / 80 ms / 800 ms | 13.51% (5/37) | 20.72% | 684 ms | 1.7473 | 0.3820 |
+| LiveKit v1-mini | 0.15 / 640 ms / 800 ms | 2.70% (1/37) | 91.50% | 654 ms | 0.7809 | 0.2098 |
+
+Voice Light preserves a low false-cutoff rate but crosses its learned threshold for only 205 of
+1,636 EOT candidates; most endpoint decisions therefore use the locked 800 ms timeout. On this
+protocol it does not outperform either the Silero timing policy or LiveKit v1-mini. The HOLD support
+is only 37, so one error changes the reported cutoff rate by 2.70 percentage points. Smart Turn's
+result remains contamination-risk context and cannot support a clean comparative claim.
+
+Test prediction hashes are:
+
+- Voice Light step 3,500: `45533fe5842c2712bea4b2f75970df43a74974e9c64614f4bc80dea677ba846a`.
+- Silero: `984d2155cfc420e3d208ca81a0684b5c585f18301623412a528ed7cf2a327d3f`.
+- Smart Turn: `709c5c9cf530f835a2b3bd24f9de9f8e8d727c4e2f785b6d3b793a3469ffe920`.
+- LiveKit: `5d7b38e213607e3744805dc263009f0b8e833213ca87b5adc898cf952c1cd973`.
 
 ## CLI sequence
 
