@@ -137,6 +137,32 @@ def test_audio_window_rejects_invalid_request(
         load_audio_window(tmp_path / "unused.flac", sample_rate, start_seconds, end_seconds)
 
 
+def test_audio_window_can_zero_pad_only_a_missing_suffix(tmp_path: Path) -> None:
+    wave_path = tmp_path / "source.wav"
+    flac_path = tmp_path / "source.flac"
+    write_wave(wave_path, sample_rate=16_000, duration_seconds=1.0)
+    transcode_lossless_flac(wave_path, flac_path)
+
+    with pytest.raises(ValueError, match="missing 8000 decoded samples"):
+        load_audio_window(
+            path=flac_path,
+            sample_rate_hz=16_000,
+            start_seconds=0.0,
+            end_seconds=1.5,
+        )
+
+    padded = load_audio_window(
+        path=flac_path,
+        sample_rate_hz=16_000,
+        start_seconds=0.0,
+        end_seconds=1.5,
+        pad_missing_suffix=True,
+    )
+
+    assert padded.shape == (24_000,)
+    assert torch.count_nonzero(padded[16_000:]) == 0
+
+
 def _decision(
     time_seconds: float, yield_probability: float, reliability: float | None
 ) -> DecisionTarget:

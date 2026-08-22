@@ -50,6 +50,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         cache_directory: Path | None = None,
         sample_rate_hz: int = 16_000,
         augmenter: Callable[[Tensor, random.Random], Tensor] | None = None,
+        pad_missing_audio_suffix: bool = False,
         random_seed: int = 17,
         downloader: HubFileDownloader = hf_hub_download,
     ) -> None:
@@ -63,6 +64,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         self.cache_directory = cache_directory
         self.sample_rate_hz = sample_rate_hz
         self.augmenter = augmenter
+        self.pad_missing_audio_suffix = pad_missing_audio_suffix
         self.random_seed = random_seed
         self.augmentation_worker_seed: int | None = None
         self.augmentation_generator = random.Random()
@@ -81,6 +83,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
             sample_rate_hz=self.sample_rate_hz,
             start_seconds=sample.start_seconds,
             end_seconds=sample.end_seconds,
+            pad_missing_suffix=self.pad_missing_audio_suffix,
         )
         if self.augmenter is not None:
             waveform = self.augmenter(waveform, self._worker_augmentation_generator())

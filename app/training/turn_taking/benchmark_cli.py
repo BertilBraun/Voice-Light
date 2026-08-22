@@ -390,6 +390,7 @@ def _predict_voice_light(arguments: argparse.Namespace) -> None:
         repository_id=arguments.hub_repository,
         cache_directory=arguments.hub_cache_directory,
         sample_rate_hz=reference_config.sample_rate_hz,
+        pad_missing_audio_suffix=True,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = DataLoader(

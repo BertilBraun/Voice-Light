@@ -124,7 +124,11 @@ class TurnTakingDataset(Dataset[TrainingItem]):
 
 
 def load_audio_window(
-    path: Path, sample_rate_hz: int, start_seconds: float, end_seconds: float
+    path: Path,
+    sample_rate_hz: int,
+    start_seconds: float,
+    end_seconds: float,
+    pad_missing_suffix: bool = False,
 ) -> Tensor:
     if sample_rate_hz <= 0:
         raise ValueError("sample_rate_hz must be positive.")
@@ -132,7 +136,7 @@ def load_audio_window(
         raise ValueError("Audio window must satisfy 0 <= start < end.")
     start_sample = round(start_seconds * sample_rate_hz)
     end_sample = round(end_seconds * sample_rate_hz)
-    output = np.empty(end_sample - start_sample, dtype=np.float32)
+    output = np.zeros(end_sample - start_sample, dtype=np.float32)
     covered = np.zeros(output.size, dtype=np.bool_)
     with av.open(str(path)) as container:
         if not container.streams.audio:
@@ -176,6 +180,12 @@ def load_audio_window(
                 )
     if not covered.all():
         missing_count = int((~covered).sum())
+        first_missing_index = int(np.flatnonzero(~covered)[0])
+        missing_is_suffix = bool(
+            covered[:first_missing_index].all() and (~covered[first_missing_index:]).all()
+        )
+        if pad_missing_suffix and covered.any() and missing_is_suffix:
+            return torch.from_numpy(output)
         raise ValueError(f"Audio window {path} is missing {missing_count} decoded samples.")
     return torch.from_numpy(output)
 
