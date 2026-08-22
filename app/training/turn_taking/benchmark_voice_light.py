@@ -6,6 +6,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 import torch
 from torch import Tensor
@@ -84,9 +85,13 @@ def predict_voice_light_checkpoints(
     model_repository: str,
     model_revision: str,
     device: torch.device,
+    total_batch_count: int | None = None,
+    progress_output: TextIO | None = None,
 ) -> tuple[PredictionArtifact, ...]:
     if not checkpoints:
         raise ValueError("Voice Light prediction requires at least one checkpoint.")
+    if total_batch_count is not None and total_batch_count <= 0:
+        raise ValueError("Total batch count must be positive when provided.")
     _validate_checkpoint_configs(checkpoints)
     sample_by_window_id = {sample.window_id: sample for sample in samples}
     target_lookup = _target_lookup(inventory)
@@ -95,8 +100,16 @@ def predict_voice_light_checkpoints(
     ]
     for checkpoint in checkpoints:
         checkpoint.adapter.to(device).eval()
+    progress_started_at = time.perf_counter()
+    if progress_output is not None:
+        _write_progress(
+            output=progress_output,
+            completed_batch_count=0,
+            total_batch_count=total_batch_count,
+            elapsed_seconds=0.0,
+        )
     with torch.no_grad():
-        for batch in batches:
+        for batch_index, batch in enumerate(batches, start=1):
             feature_started_at = time.perf_counter()
             with torch.autocast(
                 device_type=device.type,
@@ -135,6 +148,13 @@ def predict_voice_light_checkpoints(
                     ),
                     selected=selected_by_checkpoint[checkpoint_index],
                 )
+            if progress_output is not None:
+                _write_progress(
+                    output=progress_output,
+                    completed_batch_count=batch_index,
+                    total_batch_count=total_batch_count,
+                    elapsed_seconds=time.perf_counter() - progress_started_at,
+                )
     return tuple(
         _prediction_artifact(
             checkpoint=checkpoint,
@@ -145,6 +165,43 @@ def predict_voice_light_checkpoints(
         )
         for checkpoint, selected in zip(checkpoints, selected_by_checkpoint, strict=True)
     )
+
+
+def _write_progress(
+    output: TextIO,
+    completed_batch_count: int,
+    total_batch_count: int | None,
+    elapsed_seconds: float,
+) -> None:
+    average_seconds = elapsed_seconds / completed_batch_count if completed_batch_count > 0 else None
+    if total_batch_count is None:
+        total = "?"
+        percent = "?"
+        eta = "?"
+    else:
+        total = str(total_batch_count)
+        percent = f"{completed_batch_count / total_batch_count:.1%}"
+        remaining_batches = total_batch_count - completed_batch_count
+        eta = (
+            _format_duration(remaining_batches * average_seconds)
+            if average_seconds is not None
+            else "?"
+        )
+    average = f"{average_seconds:.1f}s/batch" if average_seconds is not None else "?"
+    print(
+        "Voice Light inference: "
+        f"{completed_batch_count}/{total} batches ({percent}), "
+        f"elapsed {_format_duration(elapsed_seconds)}, ETA {eta}, average {average}",
+        file=output,
+        flush=True,
+    )
+
+
+def _format_duration(seconds: float) -> str:
+    rounded_seconds = max(0, round(seconds))
+    hours, remainder = divmod(rounded_seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{remaining_seconds:02d}"
 
 
 def _collect_batch_predictions(

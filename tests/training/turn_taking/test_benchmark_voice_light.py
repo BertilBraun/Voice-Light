@@ -1,3 +1,4 @@
+from io import StringIO
 from pathlib import Path
 from uuid import UUID
 
@@ -95,6 +96,68 @@ def test_voice_light_checkpoints_share_features_and_cache_only_candidate_points(
         artifact.manifest.inventory_sha256 == inventory.manifest.candidate_sha256
         for artifact in artifacts
     )
+
+
+def test_voice_light_prediction_reports_batch_progress_and_eta() -> None:
+    sample = _sample()
+    inventory = build_candidate_inventory(
+        samples=(sample,),
+        corpus_repository="owner/corpus",
+        corpus_revision="1" * 40,
+        split=TrainingCorpusSplit.VALIDATION,
+    )
+    adapter_config = AdapterConfig(
+        feature_dimension=2,
+        tap_layer_indices=(0,),
+        tap_projection_dimension=2,
+        fused_dimension=2,
+        recurrent_dimension=2,
+        dropout=0.0,
+    )
+    checkpoint = LoadedVoiceLightCheckpoint(
+        path=Path("checkpoint.pt"),
+        sha256="3" * 64,
+        optimizer_step=3_500,
+        config=TrainingConfig(model_identifier="model", adapter=adapter_config),
+        adapter=TurnTakingAdapter(adapter_config),
+    )
+    targets = frame_targets_from_sample(sample)
+    batch = TrainingBatch(
+        sample_ids=(sample.window_id,),
+        waveforms=torch.zeros((1, 320_000)),
+        waveform_lengths=torch.tensor([320_000]),
+        assistant_speaking=torch.zeros((1, FRAMES_PER_SAMPLE)),
+        targets=FrameTargets(
+            yield_probability=targets.yield_probability.unsqueeze(0),
+            primary_weight=targets.primary_weight.unsqueeze(0),
+            primary_mask=targets.primary_mask.unsqueeze(0),
+            event_targets=targets.event_targets.unsqueeze(0),
+            event_mask=targets.event_mask.unsqueeze(0),
+            future_activity=targets.future_activity.unsqueeze(0),
+            future_activity_mask=targets.future_activity_mask.unsqueeze(0),
+        ),
+    )
+    output = StringIO()
+
+    predict_voice_light_checkpoints(
+        backbone=FixedBackbone(),
+        checkpoints=(checkpoint,),
+        batches=(batch,),
+        samples=(sample,),
+        inventory=inventory,
+        model_repository="model",
+        model_revision="2" * 40,
+        device=torch.device("cpu"),
+        total_batch_count=1,
+        progress_output=output,
+    )
+
+    lines = output.getvalue().splitlines()
+    assert lines[0] == (
+        "Voice Light inference: 0/1 batches (0.0%), elapsed 00:00:00, ETA ?, average ?"
+    )
+    assert "Voice Light inference: 1/1 batches (100.0%)" in lines[1]
+    assert "ETA 00:00:00" in lines[1]
 
 
 def _sample() -> MaterializedTrainingSample:

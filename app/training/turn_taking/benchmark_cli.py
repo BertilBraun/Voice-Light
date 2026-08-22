@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from importlib.metadata import version
 from pathlib import Path
 
@@ -418,6 +419,8 @@ def _predict_voice_light(arguments: argparse.Namespace) -> None:
         model_repository=reference_config.model_identifier,
         model_revision=arguments.model_revision,
         device=device,
+        total_batch_count=len(loader),
+        progress_output=sys.stderr,
     )
     for checkpoint, artifact in zip(checkpoints, artifacts, strict=True):
         if lock is not None and not any(
