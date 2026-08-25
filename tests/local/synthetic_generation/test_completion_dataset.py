@@ -29,6 +29,7 @@ def test_analysis_labels_long_internal_silence_as_hold_and_trims_tail() -> None:
     trimmed, annotation = analyze_generated_samples(
         samples=samples,
         sample_rate_hz=sample_rate_hz,
+        utterance_id="example_prompt",
         prompt=_prompt(),
         audio_path=Path("audio/example.wav"),
         provenance=_provenance(),
@@ -57,6 +58,7 @@ def test_window_plans_move_each_boundary_and_include_all_visible_labels() -> Non
     _, annotation = analyze_generated_samples(
         samples=samples,
         sample_rate_hz=sample_rate_hz,
+        utterance_id="example_prompt",
         prompt=_prompt(),
         audio_path=Path("audio/example.wav"),
         provenance=_provenance(),
@@ -85,6 +87,7 @@ def test_analysis_keeps_quiet_speech_inside_the_turn() -> None:
     _, annotation = analyze_generated_samples(
         samples=samples,
         sample_rate_hz=sample_rate_hz,
+        utterance_id="example_prompt",
         prompt=_prompt(),
         audio_path=Path("audio/example.wav"),
         provenance=_provenance(),

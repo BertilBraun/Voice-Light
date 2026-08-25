@@ -42,6 +42,18 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B", "ANN", "ARG", "PTH"]
 ignore = ["ANN401"]
 
+[tool.uv]
+conflicts = [
+    [
+        { extra = "chatterbox" },
+        { extra = "prompt" },
+    ],
+    [
+        { extra = "chatterbox" },
+        { extra = "qwen" },
+    ],
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 markers = [

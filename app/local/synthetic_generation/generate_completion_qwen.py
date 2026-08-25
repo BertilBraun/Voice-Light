@@ -99,6 +99,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
             trimmed, annotation = analyze_generated_samples(
                 samples=samples,
                 sample_rate_hz=sample_rate_hz,
+                utterance_id=prompt.prompt_id,
                 prompt=prompt,
                 audio_path=audio_relative_path,
                 provenance=provenance,

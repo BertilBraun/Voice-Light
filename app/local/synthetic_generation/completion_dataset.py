@@ -69,8 +69,17 @@ class ChatterboxMultilingualProvenance(TtsGenerationProvenanceBase):
     temperature: float = Field(gt=0.0)
 
 
+class Voxtream2Provenance(TtsGenerationProvenanceBase):
+    provider: Literal[TtsProvider.VOXTREAM2] = TtsProvider.VOXTREAM2
+    runtime_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reference_audio_path: Path
+    reference_audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    speaking_rate_syllables_per_second: float = Field(gt=0.0)
+
+
 TtsGenerationProvenance = Annotated[
-    QwenVoiceDesignProvenance | ChatterboxMultilingualProvenance,
+    QwenVoiceDesignProvenance | ChatterboxMultilingualProvenance | Voxtream2Provenance,
     Field(discriminator="provider"),
 ]
 
@@ -93,6 +102,7 @@ class CompletionBoundaryAnnotation(SyntheticModel):
 
 class GeneratedUtteranceAnnotation(SyntheticModel):
     schema_version: str = "voice-light-synthetic-completion-v1"
+    utterance_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     prompt: SyntheticSpeechPrompt
     audio_path: Path
     sample_rate_hz: int = Field(gt=0)
@@ -126,6 +136,7 @@ class WindowBoundaryAnnotation(SyntheticModel):
 class CompletionWindowPlan(SyntheticModel):
     schema_version: str = "voice-light-synthetic-completion-window-v1"
     window_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    utterance_id: str
     prompt_id: str
     anchor_kind: CompletionBoundaryKind
     source_audio_path: Path
@@ -152,6 +163,7 @@ class CompletionWindowPlan(SyntheticModel):
 def analyze_generated_samples(
     samples: np.ndarray,
     sample_rate_hz: int,
+    utterance_id: str,
     prompt: SyntheticSpeechPrompt,
     audio_path: Path,
     provenance: TtsGenerationProvenance,
@@ -215,6 +227,7 @@ def analyze_generated_samples(
         )
     )
     annotation = GeneratedUtteranceAnnotation(
+        utterance_id=utterance_id,
         prompt=prompt,
         audio_path=audio_path,
         sample_rate_hz=sample_rate_hz,
@@ -238,7 +251,7 @@ def completion_window_plans(
         raise ValueError("Boundary positions must define an increasing range inside 20 seconds.")
     plans = []
     for boundary_index, anchor in enumerate(annotation.boundaries):
-        generator = random.Random(_window_seed(seed, annotation.prompt.prompt_id, boundary_index))
+        generator = random.Random(_window_seed(seed, annotation.utterance_id, boundary_index))
         requested_position = generator.uniform(
             minimum_boundary_position_seconds,
             maximum_boundary_position_seconds,
@@ -262,11 +275,12 @@ def completion_window_plans(
             and 0.0 <= left_padding + boundary.time_seconds - source_start < 20.0
         )
         digest = hashlib.sha256(
-            f"{annotation.prompt.prompt_id}:{boundary_index}:{source_start:.6f}".encode()
+            f"{annotation.utterance_id}:{boundary_index}:{source_start:.6f}".encode()
         ).hexdigest()
         plans.append(
             CompletionWindowPlan(
                 window_id=digest,
+                utterance_id=annotation.utterance_id,
                 prompt_id=annotation.prompt.prompt_id,
                 anchor_kind=anchor.kind,
                 source_audio_path=annotation.audio_path,
