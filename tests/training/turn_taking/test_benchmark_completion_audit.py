@@ -23,7 +23,16 @@ from app.training.turn_taking.benchmark_completion_audit import (
 )
 from app.training.turn_taking.benchmark_completion_audit_export import (
     refresh_completion_audit_review_page,
+    refresh_corpus_quality_audit_review_page,
     write_completion_audit_package,
+    write_corpus_quality_audit_package,
+)
+from app.training.turn_taking.benchmark_corpus_quality_audit import (
+    CorpusQualityAuditConfiguration,
+    CorpusQualityAuditReview,
+    CorpusQualityAuditReviewArtifact,
+    CorpusQualityReviewLabel,
+    build_corpus_quality_audit_manifest,
 )
 from app.training.turn_taking.benchmark_models import (
     CompletionBoundaryKind,
@@ -200,6 +209,70 @@ def test_completion_audit_package_writes_stereo_clips_and_blind_review_page(
     refreshed_page = (tmp_path / "index.html").read_text(encoding="utf-8")
     assert "Candidate user waveform" in refreshed_page
     assert '"duration_seconds":7.0' in refreshed_page
+
+
+def test_corpus_quality_audit_is_deterministic_and_stratified_by_dataset() -> None:
+    inventory = _inventory()
+    configuration = CorpusQualityAuditConfiguration(items_per_dataset=2)
+
+    first = build_corpus_quality_audit_manifest(inventory, configuration)
+    second = build_corpus_quality_audit_manifest(inventory, configuration)
+
+    assert first == second
+    assert first.item_count == 4
+    assert first.dataset_names == ("dataset-0", "dataset-1")
+    assert {
+        dataset_name: sum(item.dataset_name == dataset_name for item in first.items)
+        for dataset_name in first.dataset_names
+    } == {"dataset-0": 2, "dataset-1": 2}
+
+
+def test_corpus_quality_audit_package_asks_only_for_data_usability(tmp_path: Path) -> None:
+    inventory = _inventory()
+    manifest = build_corpus_quality_audit_manifest(
+        inventory,
+        CorpusQualityAuditConfiguration(items_per_dataset=1),
+    )
+
+    write_corpus_quality_audit_package(
+        output_directory=tmp_path,
+        manifest=manifest,
+        inventory=inventory,
+        samples=tuple(_sample(index) for index in range(18)),
+        audio_loader=_FixedAudioLoader(),
+        sample_rate_hz=8_000,
+    )
+
+    page = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "20-case go/no-go check, not a completion-labeling task" in page
+    assert "Is this usable training material?" in page
+    assert "Bad source" in page
+    assert "Wrong alignment / channel" in page
+    assert (
+        'const labels = ["usable","unusable_source","wrong_alignment_or_channel","unsure"]' in page
+    )
+    assert 'const reviewerKind = "quality"' in page
+    assert "voice-light-corpus-quality-reviews-v1" in page
+    assert "SAFE TO TAKE" not in page
+    assert '"duration_seconds":7.0' in page
+
+    (tmp_path / "index.html").write_text("stale", encoding="utf-8")
+    refresh_corpus_quality_audit_review_page(tmp_path)
+    assert "Corpus quality control" in (tmp_path / "index.html").read_text(encoding="utf-8")
+
+
+def test_corpus_quality_review_artifact_rejects_duplicate_cases() -> None:
+    review = CorpusQualityAuditReview(
+        audit_id="1" * 64,
+        review_label=CorpusQualityReviewLabel.USABLE,
+    )
+
+    with pytest.raises(ValueError, match="duplicate audit IDs"):
+        CorpusQualityAuditReviewArtifact(
+            manifest_sha256="2" * 64,
+            reviewer="reviewer",
+            reviews=(review, review),
+        )
 
 
 def test_completion_audit_analysis_reports_label_and_double_review_agreement() -> None:

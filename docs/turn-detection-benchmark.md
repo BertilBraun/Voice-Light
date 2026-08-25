@@ -125,6 +125,32 @@ training its current checkpoint longer is not justified by these results.
 
 ### Completion-label audit package
 
+Before treating completion-label disagreements as annotation errors, use
+`corpus-quality-audit-v1` for a small source-quality and extraction sanity check. It selects five
+validation candidates independently from every dataset using a pinned SHA-256 order, yielding 20
+cases for the current four-source corpus. Selection does not use Voice Light or baseline scores and
+does not mine ambiguous or disagreement cases. The presentation order is independently shuffled.
+
+The reviewer asks only whether the clip is usable training material. Its four outcomes distinguish
+usable audio, an inherently unusable recording/conversation, a likely boundary/channel extraction
+error, and uncertainty. It explicitly does not request a HOLD/EOT label. The stereo waveform,
+autoplay, boundary marker, local progress, optional notes, and typed JSON export remain available.
+This small panel is a go/no-go diagnostic and must not be used as a precise corpus-wide unusable-rate
+estimate.
+
+```powershell
+$runRoot = '.cache\local\training-runs\2026-08-25-completion-v1'
+$qualityRoot = Join-Path $runRoot 'corpus-quality-control-v1'
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli corpus-quality-audit-v1 (Join-Path $runRoot 'validation-completion-inventory.json') $qualityRoot
+python -m http.server 8765 --bind 127.0.0.1 --directory $qualityRoot
+```
+
+After reviewer-only changes, regenerate the page without rebuilding audio:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli refresh-corpus-quality-audit-ui-v1 $qualityRoot
+```
+
 `completion-label-audit-v2` builds a validation-only, deterministic 320-case review package from
 the v2 inventory and the step-3,500, Smart Turn, and LiveKit prediction artifacts:
 

@@ -52,7 +52,9 @@ from app.training.turn_taking.benchmark_completion_audit import (
 from app.training.turn_taking.benchmark_completion_audit_export import (
     ResolvedCompletionAuditAudioLoader,
     refresh_completion_audit_review_page,
+    refresh_corpus_quality_audit_review_page,
     write_completion_audit_package,
+    write_corpus_quality_audit_package,
 )
 from app.training.turn_taking.benchmark_completion_inventory import (
     build_turn_completion_inventory,
@@ -67,6 +69,10 @@ from app.training.turn_taking.benchmark_completion_metrics import (
     select_completion_validation_point,
     sweep_completion_policies,
     validate_completion_predictions,
+)
+from app.training.turn_taking.benchmark_corpus_quality_audit import (
+    CorpusQualityAuditConfiguration,
+    build_corpus_quality_audit_manifest,
 )
 from app.training.turn_taking.benchmark_gate import (
     ValidationLockManifest,
@@ -173,6 +179,8 @@ def main() -> None:
     _add_completion_audit_parser(subparsers)
     _add_completion_audit_refresh_parser(subparsers)
     _add_completion_audit_analysis_parser(subparsers)
+    _add_corpus_quality_audit_parser(subparsers)
+    _add_corpus_quality_audit_refresh_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
         case "inventory":
@@ -203,6 +211,10 @@ def main() -> None:
             _refresh_completion_label_audit_ui(arguments)
         case "analyze-completion-label-audit-v2":
             _analyze_completion_label_audit(arguments)
+        case "corpus-quality-audit-v1":
+            _corpus_quality_audit(arguments)
+        case "refresh-corpus-quality-audit-ui-v1":
+            _refresh_corpus_quality_audit_ui(arguments)
         case _:
             raise AssertionError(f"Unhandled command {arguments.command!r}.")
 
@@ -420,6 +432,31 @@ def _add_completion_audit_refresh_parser(
     parser = subparsers.add_parser(
         "refresh-completion-label-audit-ui-v2",
         help="Rebuild the visual review page from an existing audit package.",
+    )
+    parser.add_argument("audit_directory", type=Path)
+
+
+def _add_corpus_quality_audit_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "corpus-quality-audit-v1",
+        help="Build a source-stratified corpus-quality control review package.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("output_directory", type=Path)
+    parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--local-export-root", type=Path)
+    parser.add_argument("--audio-root", type=Path)
+    parser.add_argument("--items-per-dataset", type=_positive_int, default=5)
+
+
+def _add_corpus_quality_audit_refresh_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "refresh-corpus-quality-audit-ui-v1",
+        help="Rebuild the corpus-quality review page from an existing audit package.",
     )
     parser.add_argument("audit_directory", type=Path)
 
@@ -988,6 +1025,56 @@ def _completion_label_audit(arguments: argparse.Namespace) -> None:
 def _refresh_completion_label_audit_ui(arguments: argparse.Namespace) -> None:
     refresh_completion_audit_review_page(arguments.audit_directory)
     print(f"Refreshed completion-label reviewer at {arguments.audit_directory}", flush=True)
+
+
+def _corpus_quality_audit(arguments: argparse.Namespace) -> None:
+    inventory = read_turn_completion_inventory(arguments.inventory)
+    if inventory.manifest.split is not TrainingCorpusSplit.VALIDATION:
+        raise ValueError("Corpus quality audits are restricted to validation.")
+    if arguments.local_export_root is None:
+        samples = HuggingFaceTurnTakingDataset(
+            split=TrainingCorpusSplit.VALIDATION,
+            revision=inventory.manifest.corpus_revision,
+            repository_id=inventory.manifest.corpus_repository,
+            cache_directory=arguments.hub_cache_directory,
+        ).samples
+    else:
+        samples = _read_local_samples(
+            arguments.local_export_root,
+            TrainingCorpusSplit.VALIDATION,
+        )
+    manifest = build_corpus_quality_audit_manifest(
+        inventory=inventory,
+        configuration=CorpusQualityAuditConfiguration(
+            items_per_dataset=arguments.items_per_dataset,
+        ),
+    )
+    resolver = (
+        RootAudioPathResolver(arguments.audio_root)
+        if arguments.audio_root is not None
+        else HubAudioPathResolver(
+            repository_id=inventory.manifest.corpus_repository,
+            revision=inventory.manifest.corpus_revision,
+            cache_directory=arguments.hub_cache_directory,
+        )
+    )
+    write_corpus_quality_audit_package(
+        output_directory=arguments.output_directory,
+        manifest=manifest,
+        inventory=inventory,
+        samples=samples,
+        audio_loader=ResolvedCompletionAuditAudioLoader(path_resolver=resolver),
+        progress_output=sys.stderr,
+    )
+    print(
+        f"Wrote {manifest.item_count} corpus-quality audit cases to {arguments.output_directory}",
+        flush=True,
+    )
+
+
+def _refresh_corpus_quality_audit_ui(arguments: argparse.Namespace) -> None:
+    refresh_corpus_quality_audit_review_page(arguments.audit_directory)
+    print(f"Refreshed corpus-quality reviewer at {arguments.audit_directory}", flush=True)
 
 
 def _analyze_completion_label_audit(arguments: argparse.Namespace) -> None:

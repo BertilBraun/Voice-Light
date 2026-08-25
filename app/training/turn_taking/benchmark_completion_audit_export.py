@@ -8,7 +8,7 @@ import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Literal, Protocol, TextIO
 
 import numpy as np
 from numpy.typing import NDArray
@@ -17,6 +17,9 @@ from pydantic import Field
 from app.local.training_corpus.export import MaterializedTrainingSample
 from app.training.turn_taking.benchmark_adapters import AudioPathResolver
 from app.training.turn_taking.benchmark_completion_audit import CompletionAuditManifest
+from app.training.turn_taking.benchmark_corpus_quality_audit import (
+    CorpusQualityAuditManifest,
+)
 from app.training.turn_taking.benchmark_models import BenchmarkModel, TurnCompletionInventory
 from app.training.turn_taking.data import load_audio_window
 
@@ -44,6 +47,33 @@ class CompletionAuditAudioLoader(Protocol):
         end_seconds: float,
         sample_rate_hz: int,
     ) -> NDArray[np.float32]: ...
+
+
+class CompletionAuditClipItem(Protocol):
+    audit_id: str
+    candidate_id: str
+    clip_path: str
+    clip_start_seconds: float
+    clip_end_seconds: float
+
+
+@dataclass(frozen=True)
+class AuditReviewPageDefinition:
+    kind: Literal["completion", "quality"]
+    title: str
+    instructions_html: str
+    case_kicker: str
+    question_html: str
+    labels: tuple[str, ...]
+    label_names: dict[str, str]
+    decision_buttons_html: str
+    tags: tuple[str, ...]
+    notes_summary: str
+    notes_placeholder: str
+    metadata_summary: str
+    storage_namespace: str
+    review_schema_version: str
+    review_filename_prefix: str
 
 
 @dataclass(frozen=True)
@@ -80,17 +110,80 @@ def write_completion_audit_package(
         raise ValueError("Completion audit sample rate must be positive.")
     if inventory.manifest.candidate_sha256 != manifest.inventory_sha256:
         raise ValueError("Completion audit manifest and inventory do not match.")
-    candidates_by_id = {candidate.candidate_id: candidate for candidate in inventory.candidates}
-    samples_by_window_id = {sample.window_id: sample for sample in samples}
     output_directory.mkdir(parents=True, exist_ok=True)
     clips_directory = output_directory / "clips"
     clips_directory.mkdir(parents=True, exist_ok=True)
+    waveforms = _write_audit_clips(
+        output_directory=output_directory,
+        items=manifest.items,
+        inventory=inventory,
+        samples=samples,
+        audio_loader=audio_loader,
+        sample_rate_hz=sample_rate_hz,
+        progress_output=progress_output,
+    )
 
+    (output_directory / "audit-manifest.json").write_text(
+        manifest.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    _write_review_template(output_directory / "review-template.csv", manifest)
+    (output_directory / "index.html").write_text(
+        _review_page(manifest, waveforms, _completion_review_definition()),
+        encoding="utf-8",
+    )
+
+
+def write_corpus_quality_audit_package(
+    output_directory: Path,
+    manifest: CorpusQualityAuditManifest,
+    inventory: TurnCompletionInventory,
+    samples: Sequence[MaterializedTrainingSample],
+    audio_loader: CompletionAuditAudioLoader,
+    sample_rate_hz: int = AUDIT_SAMPLE_RATE_HZ,
+    progress_output: TextIO | None = None,
+) -> None:
+    if sample_rate_hz <= 0:
+        raise ValueError("Corpus quality audit sample rate must be positive.")
+    if inventory.manifest.candidate_sha256 != manifest.inventory_sha256:
+        raise ValueError("Corpus quality audit manifest and inventory do not match.")
+    output_directory.mkdir(parents=True, exist_ok=True)
+    (output_directory / "clips").mkdir(parents=True, exist_ok=True)
+    waveforms = _write_audit_clips(
+        output_directory=output_directory,
+        items=manifest.items,
+        inventory=inventory,
+        samples=samples,
+        audio_loader=audio_loader,
+        sample_rate_hz=sample_rate_hz,
+        progress_output=progress_output,
+    )
+    (output_directory / "audit-manifest.json").write_text(
+        manifest.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    (output_directory / "index.html").write_text(
+        _review_page(manifest, waveforms, _quality_review_definition()),
+        encoding="utf-8",
+    )
+
+
+def _write_audit_clips(
+    output_directory: Path,
+    items: Sequence[CompletionAuditClipItem],
+    inventory: TurnCompletionInventory,
+    samples: Sequence[MaterializedTrainingSample],
+    audio_loader: CompletionAuditAudioLoader,
+    sample_rate_hz: int,
+    progress_output: TextIO | None,
+) -> tuple[CompletionAuditWaveform, ...]:
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in inventory.candidates}
+    samples_by_window_id = {sample.window_id: sample for sample in samples}
     started_at = time.perf_counter()
     if progress_output is not None:
-        _write_progress(progress_output, 0, manifest.item_count, 0.0)
+        _write_progress(progress_output, 0, len(items), 0.0)
     waveforms: list[CompletionAuditWaveform] = []
-    for completed_count, item in enumerate(manifest.items, start=1):
+    for completed_count, item in enumerate(items, start=1):
         candidate = candidates_by_id.get(item.candidate_id)
         if candidate is None:
             raise ValueError(f"Audit item references unknown candidate {item.candidate_id}.")
@@ -127,19 +220,10 @@ def write_completion_audit_package(
             _write_progress(
                 progress_output,
                 completed_count,
-                manifest.item_count,
+                len(items),
                 time.perf_counter() - started_at,
             )
-
-    (output_directory / "audit-manifest.json").write_text(
-        manifest.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
-    _write_review_template(output_directory / "review-template.csv", manifest)
-    (output_directory / "index.html").write_text(
-        _review_page(manifest, tuple(waveforms)),
-        encoding="utf-8",
-    )
+    return tuple(waveforms)
 
 
 def refresh_completion_audit_review_page(output_directory: Path) -> None:
@@ -152,7 +236,22 @@ def refresh_completion_audit_review_page(output_directory: Path) -> None:
         for item in manifest.items
     )
     (output_directory / "index.html").write_text(
-        _review_page(manifest, waveforms),
+        _review_page(manifest, waveforms, _completion_review_definition()),
+        encoding="utf-8",
+    )
+
+
+def refresh_corpus_quality_audit_review_page(output_directory: Path) -> None:
+    manifest_path = output_directory / "audit-manifest.json"
+    manifest = CorpusQualityAuditManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    waveforms = tuple(
+        _read_completion_audit_waveform(output_directory / item.clip_path, item.audit_id)
+        for item in manifest.items
+    )
+    (output_directory / "index.html").write_text(
+        _review_page(manifest, waveforms, _quality_review_definition()),
         encoding="utf-8",
     )
 
@@ -281,9 +380,127 @@ def _read_completion_audit_waveform(
     )
 
 
+def _completion_review_definition() -> AuditReviewPageDefinition:
+    return AuditReviewPageDefinition(
+        kind="completion",
+        title="Voice Light completion-label audit",
+        instructions_html="""
+      <p><strong>There is one decision point per clip: the vertical pink line at t = 0.</strong>
+      Label whether the candidate user has completed their turn at that exact instant.</p>
+      <div class="instruction-grid">
+        <div><strong>SAFE TO TAKE</strong>The assistant can begin at the line without cutting off
+        the candidate user.</div>
+        <div><strong>HOLD</strong>The candidate user is pausing mid-turn; beginning at the line
+        would interrupt their continuation.</div>
+        <div><strong>AMBIGUOUS</strong>The audio, timing, overlap, or wording does not support a
+        reliable binary judgment.</div>
+      </div>
+      <p class="muted">Use audio after the line to verify what followed, but do not move the
+      decision point. The top waveform is always the candidate user; the bottom is the other
+      speaker.</p>""",
+        case_kicker="Completion boundary review",
+        question_html="""<strong>At the pink line:</strong> can the assistant start speaking
+      without cutting off the candidate user?""",
+        labels=("safe_to_take", "hold", "ambiguous_unratable"),
+        label_names={
+            "safe_to_take": "SAFE TO TAKE",
+            "hold": "HOLD",
+            "ambiguous_unratable": "AMBIGUOUS / UNRATABLE",
+        },
+        decision_buttons_html="""
+        <button data-label="safe_to_take" aria-pressed="false"><kbd>1</kbd>
+          <strong>Safe to take</strong>
+          <span>The candidate user's turn is complete at the line.</span></button>
+        <button data-label="hold" aria-pressed="false"><kbd>2</kbd>
+          <strong>Hold</strong>
+          <span>The candidate user still owns the turn at the line.</span></button>
+        <button data-label="ambiguous_unratable" aria-pressed="false"><kbd>3</kbd>
+          <strong>Ambiguous / unratable</strong>
+          <span>A reliable binary label is not justified.</span></button>""",
+        tags=(
+            "continuation",
+            "backchannel",
+            "overlap",
+            "transcript_error",
+            "timing_error",
+            "censored_context",
+            "audio_quality",
+        ),
+        notes_summary="Optional error tags and notes",
+        notes_placeholder="Why is this label questionable?",
+        metadata_summary="Reveal automatic label, selection reasons, and model scores",
+        storage_namespace="completion-audit",
+        review_schema_version="voice-light-completion-label-reviews-v1",
+        review_filename_prefix="completion-label-reviews",
+    )
+
+
+def _quality_review_definition() -> AuditReviewPageDefinition:
+    return AuditReviewPageDefinition(
+        kind="quality",
+        title="Voice Light corpus-quality control audit",
+        instructions_html="""
+      <p><strong>This is a 20-case go/no-go check, not a completion-labeling task.</strong>
+      Judge whether each clip is suitable training material and whether the marked boundary and
+      channel roles look correctly extracted.</p>
+      <div class="instruction-grid">
+        <div><strong>USABLE</strong>A coherent two-party exchange with intelligible audio,
+        plausible channel roles, and a boundary in the expected conversational location.</div>
+        <div><strong>BAD SOURCE</strong>The recording or conversation itself is too degraded,
+        fragmented, or unnatural to be useful training material.</div>
+        <div><strong>WRONG ALIGNMENT / CHANNEL</strong>The underlying audio may be usable, but the
+        pink boundary, timing, or candidate/other-speaker channel assignment looks wrong.</div>
+        <div><strong>UNSURE</strong>You cannot reliably distinguish source quality from an
+        extraction problem.</div>
+      </div>
+      <p class="muted">Do not decide HOLD versus end-of-turn. The top waveform is the candidate
+      user channel and the bottom is the other speaker. Use the pink line only to check whether
+      extraction and conversational timing are plausible.</p>""",
+        case_kicker="Corpus quality control",
+        question_html="""<strong>Is this usable training material?</strong> Separate an
+      inherently bad recording/conversation from a likely timing or channel extraction error.""",
+        labels=(
+            "usable",
+            "unusable_source",
+            "wrong_alignment_or_channel",
+            "unsure",
+        ),
+        label_names={
+            "usable": "USABLE",
+            "unusable_source": "BAD SOURCE",
+            "wrong_alignment_or_channel": "WRONG ALIGNMENT / CHANNEL",
+            "unsure": "UNSURE",
+        },
+        decision_buttons_html="""
+        <button data-label="usable" aria-pressed="false"><kbd>1</kbd>
+          <strong>Usable</strong>
+          <span>Coherent audio, plausible channels, and plausible boundary placement.</span>
+        </button>
+        <button data-label="unusable_source" aria-pressed="false"><kbd>2</kbd>
+          <strong>Bad source</strong>
+          <span>The original recording or conversation is not useful training material.</span>
+        </button>
+        <button data-label="wrong_alignment_or_channel" aria-pressed="false"><kbd>3</kbd>
+          <strong>Wrong alignment / channel</strong>
+          <span>The timing, boundary, or speaker-channel assignment appears incorrect.</span>
+        </button>
+        <button data-label="unsure" aria-pressed="false"><kbd>4</kbd>
+          <strong>Unsure</strong>
+          <span>The cause of the problem cannot be determined reliably.</span></button>""",
+        tags=(),
+        notes_summary="Optional note",
+        notes_placeholder="Only add a note if it helps explain the failure.",
+        metadata_summary="Reveal source and candidate metadata",
+        storage_namespace="corpus-quality-audit",
+        review_schema_version="voice-light-corpus-quality-reviews-v1",
+        review_filename_prefix="corpus-quality-reviews",
+    )
+
+
 def _review_page(
-    manifest: CompletionAuditManifest,
+    manifest: CompletionAuditManifest | CorpusQualityAuditManifest,
     waveforms: tuple[CompletionAuditWaveform, ...],
+    definition: AuditReviewPageDefinition,
 ) -> str:
     if tuple(waveform.audit_id for waveform in waveforms) != tuple(
         item.audit_id for item in manifest.items
@@ -294,7 +511,14 @@ def _review_page(
         tuple(waveform.model_dump(mode="json") for waveform in waveforms),
         separators=(",", ":"),
     ).replace("<", "\\u003c")
-    title = html.escape("Voice Light completion-label audit")
+    title = html.escape(definition.title)
+    labels_json = json.dumps(definition.labels, separators=(",", ":"))
+    label_names_json = json.dumps(definition.label_names, separators=(",", ":"))
+    tags_json = json.dumps(definition.tags, separators=(",", ":"))
+    kind_json = json.dumps(definition.kind)
+    storage_namespace_json = json.dumps(definition.storage_namespace)
+    review_schema_version_json = json.dumps(definition.review_schema_version)
+    review_filename_prefix_json = json.dumps(definition.review_filename_prefix)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -313,7 +537,8 @@ def _review_page(
     .card {{ background: #121a2d; border: 1px solid #2b3855; border-radius: 16px;
       box-shadow: 0 12px 38px #0005; padding: 22px; }}
     .instructions {{ display: grid; gap: 12px; border-left: 5px solid #fb7185; }}
-    .instruction-grid {{ display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); }}
+    .instruction-grid {{ display: grid; gap: 10px;
+      grid-template-columns: repeat({len(definition.labels)}, 1fr); }}
     .instruction-grid div {{ background: #0d1425; border-radius: 10px; padding: 12px; }}
     .instruction-grid strong {{ color: #fda4af; display: block; margin-bottom: 4px; }}
     .row {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }}
@@ -380,19 +605,7 @@ def _review_page(
     <h1>{title}</h1>
     <section class="card instructions" aria-labelledby="instructions-heading">
       <h2 id="instructions-heading">What you are annotating</h2>
-      <p><strong>There is one decision point per clip: the vertical pink line at t = 0.</strong>
-      Label whether the candidate user has completed their turn at that exact instant.</p>
-      <div class="instruction-grid">
-        <div><strong>SAFE TO TAKE</strong>The assistant can begin at the line without cutting off
-        the candidate user.</div>
-        <div><strong>HOLD</strong>The candidate user is pausing mid-turn; beginning at the line
-        would interrupt their continuation.</div>
-        <div><strong>AMBIGUOUS</strong>The audio, timing, overlap, or wording does not support a
-        reliable binary judgment.</div>
-      </div>
-      <p class="muted">Use audio after the line to verify what followed, but do not move the
-      decision point. The top waveform is always the candidate user; the bottom is the other
-      speaker.</p>
+      {definition.instructions_html}
     </section>
     <div class="row spread">
       <div class="row">
@@ -406,7 +619,7 @@ def _review_page(
   <main class="card case-card">
     <div class="row spread">
       <div>
-        <div class="case-kicker">Completion boundary review</div>
+        <div class="case-kicker">{html.escape(definition.case_kicker)}</div>
         <strong id="position"></strong>
         <span id="double-review" class="muted"></span>
       </div>
@@ -415,8 +628,7 @@ def _review_page(
         <button id="next">Next →</button>
       </div>
     </div>
-    <div class="question"><strong>At the pink line:</strong> can the assistant start speaking
-      without cutting off the candidate user?</div>
+    <div class="question">{definition.question_html}</div>
     <div id="feedback" class="feedback hidden" role="status" aria-live="polite"></div>
     <section aria-label="Synchronized two-channel waveform">
       <div class="waveform-stack">
@@ -451,36 +663,33 @@ def _review_page(
     <section aria-labelledby="decision-heading">
       <h2 id="decision-heading">Your label</h2>
       <div class="decision-grid" id="labels">
-        <button data-label="safe_to_take" aria-pressed="false"><kbd>1</kbd>
-          <strong>Safe to take</strong>
-          <span>The candidate user's turn is complete at the line.</span></button>
-        <button data-label="hold" aria-pressed="false"><kbd>2</kbd>
-          <strong>Hold</strong>
-          <span>The candidate user still owns the turn at the line.</span></button>
-        <button data-label="ambiguous_unratable" aria-pressed="false"><kbd>3</kbd>
-          <strong>Ambiguous / unratable</strong>
-          <span>A reliable binary label is not justified.</span></button>
+        {definition.decision_buttons_html}
       </div>
     </section>
     <details>
-      <summary>Optional error tags and notes</summary>
+      <summary>{html.escape(definition.notes_summary)}</summary>
       <div class="tags" id="tags"></div>
       <label>Notes
-        <textarea id="notes" placeholder="Why is this label questionable?"></textarea></label>
+        <textarea id="notes" placeholder="{html.escape(definition.notes_placeholder)}"></textarea>
+      </label>
     </details>
     <details id="metadata">
-      <summary>Reveal automatic label, selection reasons, and model scores</summary>
+      <summary>{html.escape(definition.metadata_summary)}</summary>
       <pre id="metadata-text"></pre>
     </details>
   </main>
   <script>
     const manifest = {manifest_json};
     const waveformRows = {waveform_json};
+    const reviewerKind = {kind_json};
     const waveformById = Object.fromEntries(waveformRows.map(row => [row.audit_id, row]));
-    const labels = ["safe_to_take", "hold", "ambiguous_unratable"];
-    const tags = ["continuation", "backchannel", "overlap", "transcript_error",
-      "timing_error", "censored_context", "audio_quality"];
-    const storagePrefix = `completion-audit:${{manifest.items_sha256}}`;
+    const labels = {labels_json};
+    const labelNames = {label_names_json};
+    const tags = {tags_json};
+    const storageNamespace = {storage_namespace_json};
+    const reviewSchemaVersion = {review_schema_version_json};
+    const reviewFilenamePrefix = {review_filename_prefix_json};
+    const storagePrefix = `${{storageNamespace}}:${{manifest.items_sha256}}`;
     let state = {{index:0, reviews:{{}}}};
     let playbackEnd = null;
     let animationFrame = null;
@@ -509,13 +718,13 @@ def _review_page(
       return state.reviews[item.audit_id] ||= {{review_label:null, error_tags:[], notes:""}};
     }}
     function originalLabel(item) {{
+      if (reviewerKind !== "completion") return null;
       if (item.group === "confident_eot") return "safe_to_take";
       if (item.group === "confident_hold") return "hold";
       return "ambiguous_unratable";
     }}
     function displayLabel(value) {{
-      return {{safe_to_take:"SAFE TO TAKE", hold:"HOLD",
-        ambiguous_unratable:"AMBIGUOUS / UNRATABLE"}}[value];
+      return labelNames[value];
     }}
     function setLabel(value) {{
       if (feedback !== null) return;
@@ -541,7 +750,10 @@ def _review_page(
       }}
       const matches = feedback.original === feedback.reviewer;
       panel.classList.remove("hidden");
-      panel.innerHTML = matches
+      panel.innerHTML = feedback.original === null
+        ? `<span class="feedback-chip feedback-original">RECORDED</span>
+          ${{displayLabel(feedback.reviewer)}} — advancing in one second`
+        : matches
         ? `<span class="feedback-chip feedback-original">AGREEMENT</span>
           Original and your label: ${{displayLabel(feedback.original)}}`
         : `<span class="feedback-chip feedback-original">ORIGINAL ·
@@ -554,7 +766,7 @@ def _review_page(
       const value = review();
       document.querySelectorAll("[data-label]").forEach(button => {{
         const selected = button.dataset.label === value.review_label;
-        const disagrees = selected && feedback !== null &&
+        const disagrees = selected && feedback?.original !== null &&
           feedback.original !== feedback.reviewer;
         button.classList.toggle("selected", selected);
         button.classList.toggle("reviewer-disagrees", disagrees);
@@ -573,7 +785,8 @@ def _review_page(
         ...waveform.assistant.minimums.map(Math.abs),
         ...waveform.assistant.maximums.map(Math.abs));
       byId("position").textContent = `Case ${{item.order}} of ${{manifest.item_count}}`;
-      byId("double-review").textContent = item.double_review ? " · independent double review" : "";
+      byId("double-review").textContent = reviewerKind === "completion" && item.double_review
+        ? " · independent double review" : "";
       audio.oncanplay = null;
       audio.oncanplay = () => {{
         audio.oncanplay = null;
@@ -593,20 +806,23 @@ def _review_page(
       }});
       byId("notes").value = value.notes;
       byId("metadata").open = false;
-      byId("metadata-text").textContent = JSON.stringify({{
+      const metadata = {{
+        boundary_kind: item.boundary_kind,
+        dataset: item.dataset_name,
+        categories: item.categories,
+        candidate_id: item.candidate_id
+      }};
+      if (reviewerKind === "completion") Object.assign(metadata, {{
         automatic_group: item.group,
         completion_probability: item.completion_probability,
         continuation_probability: item.continuation_probability,
-        boundary_kind: item.boundary_kind,
         selection_reasons: item.selection_reasons,
         challenge_score: item.challenge_score,
         voice_light: item.voice_light,
         smart_turn: item.smart_turn,
-        livekit: item.livekit,
-        dataset: item.dataset_name,
-        categories: item.categories,
-        candidate_id: item.candidate_id
-      }}, null, 2);
+        livekit: item.livekit
+      }});
+      byId("metadata-text").textContent = JSON.stringify(metadata, null, 2);
       renderDecision(); renderFeedback();
       requestAnimationFrame(drawWaveforms);
     }}
@@ -676,7 +892,8 @@ def _review_page(
       const activeFeedback = feedback?.auditId === item.audit_id ? feedback : null;
       if (activeFeedback === null) {{
         drawBoundary(context, boundaryX, "#fb7185", 3, height);
-      }} else if (activeFeedback.original === activeFeedback.reviewer) {{
+      }} else if (activeFeedback.original === null ||
+        activeFeedback.original === activeFeedback.reviewer) {{
         drawBoundary(context, boundaryX, "#4ade80", 5, height);
       }} else {{
         drawBoundary(context, boundaryX - 3, "#4ade80", 4, height);
@@ -692,6 +909,10 @@ def _review_page(
           context.textAlign = boundaryX > width * .75 ? "right" : "left";
           context.fillText("DECISION POINT · t=0",
             boundaryX + (boundaryX > width * .75 ? -8 : 8), 34);
+        }} else if (activeFeedback.original === null) {{
+          context.fillStyle = "#4ade80"; context.textAlign = "left";
+          context.fillText(`RECORDED · ${{displayLabel(activeFeedback.reviewer)}}`,
+            boundaryX + 9, 34);
         }} else if (activeFeedback.original === activeFeedback.reviewer) {{
           context.fillStyle = "#4ade80"; context.textAlign = "left";
           context.fillText(`AGREEMENT · ${{displayLabel(activeFeedback.original)}}`,
@@ -761,19 +982,23 @@ def _review_page(
     audio.onpause = () => {{ cancelAnimationFrame(animationFrame); drawWaveforms(); }};
     byId("export").onclick = () => {{
       if (!reviewerName()) {{ alert("Enter a reviewer name before exporting."); return; }}
-      const payload = {{schema_version:"voice-light-completion-label-reviews-v1",
+      const payload = {{schema_version:reviewSchemaVersion,
         manifest_sha256:manifest.items_sha256, reviewer:reviewerName(),
         reviews:manifest.items.filter(item => state.reviews[item.audit_id]?.review_label)
-          .map(item => ({{audit_id:item.audit_id, ...state.reviews[item.audit_id]}}))}};
+          .map(item => reviewerKind === "completion"
+            ? ({{audit_id:item.audit_id, ...state.reviews[item.audit_id]}})
+            : ({{audit_id:item.audit_id,
+              review_label:state.reviews[item.audit_id].review_label,
+              notes:state.reviews[item.audit_id].notes}}))}};
       const link = document.createElement("a");
       const blob = new Blob([JSON.stringify(payload, null, 2)], {{type:"application/json"}});
       link.href = URL.createObjectURL(blob);
-      link.download = `completion-label-reviews-${{payload.reviewer}}.json`;
+      link.download = `${{reviewFilenamePrefix}}-${{payload.reviewer}}.json`;
       link.click(); URL.revokeObjectURL(link.href);
     }};
     document.onkeydown = event => {{
       if (event.target.matches("input, textarea")) return;
-      if (["1", "2", "3"].includes(event.key)) setLabel(labels[Number(event.key) - 1]);
+      if (labels[Number(event.key) - 1]) setLabel(labels[Number(event.key) - 1]);
       if (event.key === "ArrowRight") move(1); if (event.key === "ArrowLeft") move(-1);
       if (event.key === " ") {{
         event.preventDefault(); audio.paused ? audio.play() : audio.pause();
