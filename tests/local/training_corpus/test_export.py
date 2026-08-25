@@ -12,7 +12,7 @@ from app.local.training_corpus.export import (
     MaterializedTrainingSample,
     _validate_export_destination,
     _window_id,
-    _write_training_shards,
+    write_training_shards,
 )
 from app.local.training_corpus.splits import TrainingCorpusSplit
 
@@ -35,7 +35,7 @@ def test_training_shards_are_separated_and_use_fixed_size_frame_arrays(
         ),
     )
 
-    shards = _write_training_shards(output_directory=tmp_path, samples=samples)
+    shards = write_training_shards(output_directory=tmp_path, samples=samples)
 
     assert tuple(shard.path for shard in shards) == (
         "training/train/shard-00000.parquet",

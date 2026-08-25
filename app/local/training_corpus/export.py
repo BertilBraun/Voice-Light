@@ -326,7 +326,7 @@ def export_training_corpus(request: TrainingCorpusExportRequest) -> ExportManife
         selections=review_plan.review_set.config.datasets,
         audio_assets=audio_assets,
     )
-    shards = _write_training_shards(
+    shards = write_training_shards(
         output_directory=request.output_directory,
         samples=training_samples,
     )
@@ -662,7 +662,7 @@ def _materialized_training_sample(
     )
 
 
-def _write_training_shards(
+def write_training_shards(
     output_directory: Path,
     samples: Sequence[MaterializedTrainingSample],
 ) -> tuple[ExportShard, ...]:
