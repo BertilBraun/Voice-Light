@@ -147,7 +147,10 @@ pre-boundary and outcome-context regions, relative time ticks, a playback cursor
 and playback ranges that stop at or surround the boundary. It explicitly asks whether starting the
 assistant at that line would cut off the candidate user. Keyboard decisions are `1` safe to take,
 `2` hold, and `3` ambiguous/unratable. Structured error tags, notes, reviewer-local progress, and
-typed JSON export are also available. `review-template.csv` is a non-interactive fallback.
+typed JSON export are also available. After the browser's one-time sound-permission gesture, every
+case autoplays. Selecting a label reveals the original label in green and a disagreeing reviewer
+label in red for one second, then advances and autoplays the next case. `review-template.csv` is a
+non-interactive fallback.
 
 Open an existing package through a local HTTP origin so audio, autosave, and canvas behavior use a
 normal browser security context:

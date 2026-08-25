@@ -179,6 +179,11 @@ def test_completion_audit_package_writes_stereo_clips_and_blind_review_page(
     assert "Candidate user waveform" in page
     assert "DECISION POINT · t=0" in page
     assert "Play −3 s to boundary" in page
+    assert "Autoplaying full clip" in page
+    assert "Start review and enable autoplay" in page
+    assert "Disagreement — advancing in one second" in page
+    assert "ORIGINAL ·" in page
+    assert "YOURS ·" in page
     assert "Export reviews JSON" in page
     assert '"duration_seconds":7.0' in page
     with wave.open(str(tmp_path / manifest.items[0].clip_path), "rb") as audio:

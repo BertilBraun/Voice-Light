@@ -325,6 +325,7 @@ def _review_page(
     button:focus-visible, input:focus-visible, textarea:focus-visible {{
       outline: 3px solid #38bdf8; }}
     button.selected {{ border-color: #34d399; box-shadow: 0 0 0 3px #34d39955; }}
+    button.reviewer-disagrees {{ border-color: #fb7185; box-shadow: 0 0 0 3px #fb718555; }}
     input, textarea {{ background: #0b1222; border: 1px solid #3b4e73; border-radius: 8px;
       color: #eef4ff; padding: 8px; }}
     .bar {{ height: 9px; background: #26334d; border-radius: 8px; overflow: hidden; }}
@@ -335,6 +336,13 @@ def _review_page(
     .question {{ background: #231725; border: 1px solid #713448; border-radius: 12px;
       font-size: 18px; padding: 15px; }}
     .question strong {{ color: #fda4af; }}
+    .feedback {{ align-items: center; background: #0d1728; border: 1px solid #3b4e73;
+      border-radius: 12px; display: flex; flex-wrap: wrap; font-weight: 700; gap: 10px;
+      min-height: 52px; padding: 10px 14px; }}
+    .feedback.hidden {{ display: none; }}
+    .feedback-chip {{ border-radius: 7px; color: #071016; padding: 6px 9px; }}
+    .feedback-original {{ background: #4ade80; }}
+    .feedback-reviewer {{ background: #fb7185; }}
     .waveform-stack {{ border: 1px solid #334565; border-radius: 13px; overflow: hidden; }}
     .waveform-panel {{ background: #091121; padding: 10px 12px 12px; }}
     .waveform-panel + .waveform-panel {{ border-top: 1px solid #334565; }}
@@ -347,6 +355,8 @@ def _review_page(
     .boundary-swatch {{ background: #fb7185; display: inline-block; height: 18px; width: 3px; }}
     audio {{ width: 100%; }}
     .playback {{ display: grid; gap: 10px; }}
+    .autoplay-gate {{ background: #2563eb; border-color: #60a5fa; font-weight: 800; }}
+    .autoplay-gate.hidden {{ display: none; }}
     .decision-grid {{ display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); }}
     .decision-grid button {{ min-height: 112px; text-align: left; }}
     .decision-grid strong {{ display: block; font-size: 17px; margin: 6px 0; }}
@@ -407,6 +417,7 @@ def _review_page(
     </div>
     <div class="question"><strong>At the pink line:</strong> can the assistant start speaking
       without cutting off the candidate user?</div>
+    <div id="feedback" class="feedback hidden" role="status" aria-live="polite"></div>
     <section aria-label="Synchronized two-channel waveform">
       <div class="waveform-stack">
         <div class="waveform-panel">
@@ -426,12 +437,15 @@ def _review_page(
       </div>
     </section>
     <section class="playback" aria-label="Playback controls">
-      <audio id="audio" controls preload="metadata"></audio>
+      <audio id="audio" controls preload="auto" autoplay></audio>
+      <button id="enable-autoplay" class="autoplay-gate hidden">
+        Start review and enable autoplay</button>
       <div class="row">
         <button id="play-full">Play full clip</button>
         <button id="play-before">Play −3 s to boundary</button>
         <button id="play-around">Play −2 s to +2 s</button>
         <span class="muted">Click either waveform to seek.</span>
+        <span id="autoplay-status" class="muted"></span>
       </div>
     </section>
     <section aria-labelledby="decision-heading">
@@ -470,6 +484,10 @@ def _review_page(
     let state = {{index:0, reviews:{{}}}};
     let playbackEnd = null;
     let animationFrame = null;
+    let feedback = null;
+    let feedbackTimer = null;
+    let waveformPeak = 0.01;
+    let autoplayAttempt = 0;
     const byId = id => document.getElementById(id);
     const audio = byId("audio");
     const canvases = [byId("user-waveform"), byId("assistant-waveform")];
@@ -490,17 +508,58 @@ def _review_page(
       const item = current();
       return state.reviews[item.audit_id] ||= {{review_label:null, error_tags:[], notes:""}};
     }}
-    function setLabel(value) {{ review().review_label = value; save(); renderDecision(); }}
+    function originalLabel(item) {{
+      if (item.group === "confident_eot") return "safe_to_take";
+      if (item.group === "confident_hold") return "hold";
+      return "ambiguous_unratable";
+    }}
+    function displayLabel(value) {{
+      return {{safe_to_take:"SAFE TO TAKE", hold:"HOLD",
+        ambiguous_unratable:"AMBIGUOUS / UNRATABLE"}}[value];
+    }}
+    function setLabel(value) {{
+      if (feedback !== null) return;
+      const item = current();
+      review().review_label = value; save(); audio.pause(); autoplayAttempt += 1;
+      byId("enable-autoplay").classList.add("hidden");
+      feedback = {{auditId:item.audit_id, original:originalLabel(item), reviewer:value}};
+      renderDecision(); renderFeedback(); drawWaveforms();
+      feedbackTimer = setTimeout(() => {{
+        if (state.index < manifest.items.length - 1) move(1);
+        else {{ feedback = null; renderDecision(); renderFeedback(); drawWaveforms(); }}
+      }}, 1000);
+    }}
     function move(delta) {{
+      clearTimeout(feedbackTimer); feedback = null;
       state.index = Math.max(0, Math.min(manifest.items.length - 1, state.index + delta));
       playbackEnd = null; audio.pause(); save(); render();
+    }}
+    function renderFeedback() {{
+      const panel = byId("feedback");
+      if (feedback === null || feedback.auditId !== current().audit_id) {{
+        panel.classList.add("hidden"); panel.replaceChildren(); return;
+      }}
+      const matches = feedback.original === feedback.reviewer;
+      panel.classList.remove("hidden");
+      panel.innerHTML = matches
+        ? `<span class="feedback-chip feedback-original">AGREEMENT</span>
+          Original and your label: ${{displayLabel(feedback.original)}}`
+        : `<span class="feedback-chip feedback-original">ORIGINAL ·
+          ${{displayLabel(feedback.original)}}</span>
+          <span class="feedback-chip feedback-reviewer">YOUR LABEL ·
+          ${{displayLabel(feedback.reviewer)}}</span>
+          <span>Disagreement — advancing in one second</span>`;
     }}
     function renderDecision() {{
       const value = review();
       document.querySelectorAll("[data-label]").forEach(button => {{
         const selected = button.dataset.label === value.review_label;
+        const disagrees = selected && feedback !== null &&
+          feedback.original !== feedback.reviewer;
         button.classList.toggle("selected", selected);
+        button.classList.toggle("reviewer-disagrees", disagrees);
         button.setAttribute("aria-pressed", String(selected));
+        button.disabled = feedback !== null;
       }});
       const completed = Object.values(state.reviews).filter(item => item.review_label).length;
       byId("progress").textContent = `${{completed}} / ${{manifest.item_count}} reviewed`;
@@ -508,9 +567,16 @@ def _review_page(
     }}
     function render() {{
       const item = current(); const value = review();
+      const waveform = currentWaveform();
+      waveformPeak = Math.max(0.01,
+        ...waveform.user.minimums.map(Math.abs), ...waveform.user.maximums.map(Math.abs),
+        ...waveform.assistant.minimums.map(Math.abs),
+        ...waveform.assistant.maximums.map(Math.abs));
       byId("position").textContent = `Case ${{item.order}} of ${{manifest.item_count}}`;
       byId("double-review").textContent = item.double_review ? " · independent double review" : "";
+      audio.oncanplay = () => attemptAutoplay(item.audit_id);
       audio.src = item.clip_path;
+      audio.load();
       byId("boundary").textContent = `(${{item.boundary_offset_seconds.toFixed(2)}} s into clip)`;
       byId("tags").innerHTML = tags.map(tag =>
         `<label><input type="checkbox" value="${{tag}}"
@@ -537,24 +603,42 @@ def _review_page(
         categories: item.categories,
         candidate_id: item.candidate_id
       }}, null, 2);
-      renderDecision();
+      renderDecision(); renderFeedback();
       requestAnimationFrame(drawWaveforms);
+    }}
+
+    function attemptAutoplay(auditId) {{
+      if (current().audit_id !== auditId || feedback !== null) return;
+      const attempt = ++autoplayAttempt;
+      playbackEnd = null; audio.currentTime = 0;
+      audio.play().then(() => {{
+        if (attempt !== autoplayAttempt || current().audit_id !== auditId) return;
+        byId("enable-autoplay").classList.add("hidden");
+        byId("autoplay-status").textContent = "Autoplaying full clip";
+      }}).catch(() => {{
+        if (attempt !== autoplayAttempt || current().audit_id !== auditId) return;
+        byId("enable-autoplay").classList.remove("hidden");
+        byId("autoplay-status").textContent =
+          "The browser requires one click before it permits sound.";
+      }});
     }}
 
     function drawWaveforms() {{
       const waveform = currentWaveform();
-      const peak = Math.max(0.01,
-        ...waveform.user.minimums.map(Math.abs), ...waveform.user.maximums.map(Math.abs),
-        ...waveform.assistant.minimums.map(Math.abs), ...waveform.assistant.maximums.map(Math.abs));
-      drawChannel(canvases[0], waveform.user, waveform, peak, "#38bdf8", true);
-      drawChannel(canvases[1], waveform.assistant, waveform, peak, "#a78bfa", false);
+      drawChannel(canvases[0], waveform.user, waveform, waveformPeak, "#38bdf8", true);
+      drawChannel(canvases[1], waveform.assistant, waveform, waveformPeak, "#a78bfa", false);
     }}
     function drawChannel(canvas, channel, waveform, peak, color, labelBoundary) {{
       const ratio = window.devicePixelRatio || 1;
       const width = Math.max(1, canvas.clientWidth);
       const height = Math.max(1, canvas.clientHeight);
-      canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
-      const context = canvas.getContext("2d"); context.scale(ratio, ratio);
+      const pixelWidth = Math.round(width * ratio); const pixelHeight = Math.round(height * ratio);
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {{
+        canvas.width = pixelWidth; canvas.height = pixelHeight;
+      }}
+      const context = canvas.getContext("2d");
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
       const item = current();
       const boundaryX = width * item.boundary_offset_seconds / waveform.duration_seconds;
       context.fillStyle = "#38bdf80b"; context.fillRect(0, 0, boundaryX, height);
@@ -585,17 +669,37 @@ def _review_page(
         context.lineTo(x, center - channel.minimums[index] * amplitude);
       }}
       context.closePath(); context.fill(); context.stroke();
-      context.strokeStyle = "#fb7185"; context.lineWidth = 3;
-      context.beginPath(); context.moveTo(boundaryX, 0);
-      context.lineTo(boundaryX, height); context.stroke();
+      const activeFeedback = feedback?.auditId === item.audit_id ? feedback : null;
+      if (activeFeedback === null) {{
+        drawBoundary(context, boundaryX, "#fb7185", 3, height);
+      }} else if (activeFeedback.original === activeFeedback.reviewer) {{
+        drawBoundary(context, boundaryX, "#4ade80", 5, height);
+      }} else {{
+        drawBoundary(context, boundaryX - 3, "#4ade80", 4, height);
+        drawBoundary(context, boundaryX + 3, "#fb7185", 4, height);
+      }}
       if (labelBoundary) {{
         context.fillStyle = "#8290a7"; context.font = "11px system-ui";
         context.textAlign = "left"; context.fillText("BEFORE BOUNDARY", 8, 16);
         context.textAlign = "right"; context.fillText("AFTER · OUTCOME CONTEXT", width - 8, 16);
-        context.fillStyle = "#fb7185"; context.font = "bold 12px system-ui";
-        context.textAlign = boundaryX > width * .75 ? "right" : "left";
-        context.fillText("DECISION POINT · t=0",
-          boundaryX + (boundaryX > width * .75 ? -8 : 8), 34);
+        context.font = "bold 12px system-ui";
+        if (activeFeedback === null) {{
+          context.fillStyle = "#fb7185";
+          context.textAlign = boundaryX > width * .75 ? "right" : "left";
+          context.fillText("DECISION POINT · t=0",
+            boundaryX + (boundaryX > width * .75 ? -8 : 8), 34);
+        }} else if (activeFeedback.original === activeFeedback.reviewer) {{
+          context.fillStyle = "#4ade80"; context.textAlign = "left";
+          context.fillText(`AGREEMENT · ${{displayLabel(activeFeedback.original)}}`,
+            boundaryX + 9, 34);
+        }} else {{
+          context.fillStyle = "#4ade80"; context.textAlign = "right";
+          context.fillText(`ORIGINAL · ${{displayLabel(activeFeedback.original)}}`,
+            boundaryX - 10, 34);
+          context.fillStyle = "#fb7185"; context.textAlign = "left";
+          context.fillText(`YOURS · ${{displayLabel(activeFeedback.reviewer)}}`,
+            boundaryX + 10, 52);
+        }}
       }}
       if (Number.isFinite(audio.currentTime)) {{
         const playheadX = width * audio.currentTime / waveform.duration_seconds;
@@ -603,6 +707,10 @@ def _review_page(
         context.beginPath(); context.moveTo(playheadX, 0);
         context.lineTo(playheadX, height); context.stroke();
       }}
+    }}
+    function drawBoundary(context, x, color, width, height) {{
+      context.strokeStyle = color; context.lineWidth = width;
+      context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
     }}
     function seekFromPointer(event) {{
       const rectangle = event.currentTarget.getBoundingClientRect();
@@ -624,6 +732,12 @@ def _review_page(
     byId("previous").onclick = () => move(-1); byId("next").onclick = () => move(1);
     byId("notes").oninput = event => {{ review().notes = event.target.value; save(); }};
     byId("reviewer").onchange = loadReviewer;
+    byId("enable-autoplay").onclick = () => {{
+      autoplayAttempt += 1;
+      byId("enable-autoplay").classList.add("hidden");
+      byId("autoplay-status").textContent = "Autoplay enabled";
+      playRange(0, null);
+    }};
     byId("play-full").onclick = () => playRange(0, null);
     byId("play-before").onclick = () => {{
       const boundary = current().boundary_offset_seconds;
