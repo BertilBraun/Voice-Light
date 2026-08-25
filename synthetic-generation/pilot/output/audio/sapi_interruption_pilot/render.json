@@ -1,0 +1,132 @@
+{
+  "schema_version": "voice-light-synthetic-render-v1",
+  "plan": {
+    "schema_version": "voice-light-synthetic-plan-v1",
+    "plan_id": "sapi_interruption_pilot",
+    "description": "Local speech smoke case with a successful corrective interruption and overlap.",
+    "seed": 260826,
+    "duration_seconds": 20.0,
+    "speakers": [
+      {
+        "speaker_id": "speaker_1",
+        "role": "user",
+        "voice_id": "Microsoft Zira Desktop",
+        "language": "en-US",
+        "voice_prompt_path": null
+      },
+      {
+        "speaker_id": "speaker_2",
+        "role": "assistant",
+        "voice_id": "Microsoft David Desktop",
+        "language": "en-US",
+        "voice_prompt_path": null
+      }
+    ],
+    "events": [
+      {
+        "event_id": "user_interrupted_turn",
+        "speaker_id": "speaker_1",
+        "start_seconds": 0.5,
+        "end_seconds": 4.5,
+        "kind": "speech",
+        "text": "I can send the contract draft by Thursday morning, if legal finishes the review by-",
+        "boundary_after": "none",
+        "delivery_instruction": "Focused, ending in a cut-off word.",
+        "contains_disfluency": false
+      },
+      {
+        "event_id": "assistant_correction",
+        "speaker_id": "speaker_2",
+        "start_seconds": 3.82,
+        "end_seconds": 6.4,
+        "kind": "interruption",
+        "text": "Friday morning is safer. Legal already asked for another day.",
+        "interrupted_event_id": "user_interrupted_turn",
+        "outcome": "floor_take",
+        "delivery_instruction": "Quick corrective entry, then calm explanation."
+      },
+      {
+        "event_id": "user_acknowledgement",
+        "speaker_id": "speaker_1",
+        "start_seconds": 6.82,
+        "end_seconds": 8.3,
+        "kind": "speech",
+        "text": "Right, Friday morning it is.",
+        "boundary_after": "completion",
+        "delivery_instruction": null,
+        "contains_disfluency": false
+      }
+    ],
+    "tags": [
+      "pilot",
+      "interruption",
+      "competitive_overlap",
+      "repair"
+    ]
+  },
+  "sample_rate_hz": 16000,
+  "sources": [
+    {
+      "event_id": "user_interrupted_turn",
+      "audio_path": "synthetic-generation\\pilot\\sources\\sapi_interruption_pilot\\user_interrupted_turn.wav",
+      "audio_sha256": "210944d91f0c2f3ec11012d6b684905fe8ce9e804f4551dee916f9d884749c47",
+      "provenance": {
+        "backend_id": "windows-sapi-smoke-only",
+        "runtime_version": "Microsoft Windows NT 10.0.26200.0",
+        "model_id": "Microsoft Zira Desktop",
+        "model_revision": "installed-voice-2026-08-25",
+        "model_license": "Microsoft-Windows-component-terms-review-required",
+        "seed": 260826,
+        "generation_seconds": null,
+        "real_time_factor": null
+      }
+    },
+    {
+      "event_id": "assistant_correction",
+      "audio_path": "synthetic-generation\\pilot\\sources\\sapi_interruption_pilot\\assistant_correction.wav",
+      "audio_sha256": "f28b49135dfe3a3b6faaf9dd496f0a80f9651a111b0d40551d6361f289814861",
+      "provenance": {
+        "backend_id": "windows-sapi-smoke-only",
+        "runtime_version": "Microsoft Windows NT 10.0.26200.0",
+        "model_id": "Microsoft David Desktop",
+        "model_revision": "installed-voice-2026-08-25",
+        "model_license": "Microsoft-Windows-component-terms-review-required",
+        "seed": 260826,
+        "generation_seconds": null,
+        "real_time_factor": null
+      }
+    },
+    {
+      "event_id": "user_acknowledgement",
+      "audio_path": "synthetic-generation\\pilot\\sources\\sapi_interruption_pilot\\user_acknowledgement.wav",
+      "audio_sha256": "1a4fd96a19a7a33bbc1ca67e746037bdc3bb95fe84395eace5fbf213be836eb1",
+      "provenance": {
+        "backend_id": "windows-sapi-smoke-only",
+        "runtime_version": "Microsoft Windows NT 10.0.26200.0",
+        "model_id": "Microsoft Zira Desktop",
+        "model_revision": "installed-voice-2026-08-25",
+        "model_license": "Microsoft-Windows-component-terms-review-required",
+        "seed": 260826,
+        "generation_seconds": null,
+        "real_time_factor": null
+      }
+    }
+  ],
+  "augmentation": {
+    "user_gain_db": -1.5,
+    "assistant_gain_db": -0.5,
+    "signal_to_noise_db": 28.0,
+    "reverb_decay_seconds": 0.12,
+    "codec": "mulaw_8bit",
+    "microphone_low_hz": 100.0,
+    "microphone_high_hz": 7200.0,
+    "user_to_assistant_crosstalk_db": -35.0,
+    "assistant_to_user_crosstalk_db": -32.0
+  },
+  "user_audio_path": "synthetic-generation\\pilot\\output\\audio\\sapi_interruption_pilot\\speaker1-user.wav",
+  "assistant_audio_path": "synthetic-generation\\pilot\\output\\audio\\sapi_interruption_pilot\\speaker2-assistant.wav",
+  "user_audio_sha256": "e7cac841c6730d2a981ad29c74bb9d65d59a770b67b4a2ff137359d4729e5da6",
+  "assistant_audio_sha256": "b0eefc21c71d7875cd12c9fadf634f4b3098ee5b8f7c6ee9968bde9cb916a679",
+  "user_normalization_gain": 1.0,
+  "assistant_normalization_gain": 0.9801215715998709
+}

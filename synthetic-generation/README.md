@@ -2,6 +2,12 @@
 
 Small local proof of concept for generating, comparing, manually aligning, and exporting synthetic two-speaker conversational interactions.
 
+> This directory's original `--auto-place` flow uses ASR only for exploratory listening
+> experiments. It is not a training-label source. The canonical planned-timeline compiler,
+> independent-channel renderer, Hugging Face export, current model assessment, and train-only
+> evaluation policy are documented in
+> [`../docs/synthetic-conversation-pipeline.md`](../docs/synthetic-conversation-pipeline.md).
+
 The generation pipeline is backend-independent. Qwen VoiceDesign is the first real backend; a fake backend is included for local tests and pipeline checks.
 
 Case authoring rules live in [CASE_DESIGN_GUIDE.md](CASE_DESIGN_GUIDE.md). Use that guide

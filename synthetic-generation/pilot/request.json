@@ -1,0 +1,279 @@
+{
+    "corpus_id":  "sapi_speech_smoke_v1",
+    "description":  "Local SAPI speech smoke artifact for validating the planned-timeline pipeline.",
+    "plans":  [
+                  {
+                      "plan":  {
+                                   "schema_version":  "voice-light-synthetic-plan-v1",
+                                   "plan_id":  "sapi_pause_backchannel_pilot",
+                                   "description":  "Local speech smoke case with a continuation pause, listener backchannel, and completed handoff.",
+                                   "seed":  260825,
+                                   "duration_seconds":  20.0,
+                                   "speakers":  [
+                                                    {
+                                                        "speaker_id":  "speaker_1",
+                                                        "role":  "user",
+                                                        "voice_id":  "Microsoft David Desktop",
+                                                        "language":  "en-US"
+                                                    },
+                                                    {
+                                                        "speaker_id":  "speaker_2",
+                                                        "role":  "assistant",
+                                                        "voice_id":  "Microsoft Zira Desktop",
+                                                        "language":  "en-US"
+                                                    }
+                                                ],
+                                   "events":  [
+                                                  {
+                                                      "kind":  "speech",
+                                                      "event_id":  "user_setup",
+                                                      "speaker_id":  "speaker_1",
+                                                      "text":  "I checked the train schedule and, uh, the early service looks reliable.",
+                                                      "start_seconds":  0.5,
+                                                      "end_seconds":  3.2,
+                                                      "boundary_after":  "continuation",
+                                                      "delivery_instruction":  "Conversational, with a brief hesitation before early.",
+                                                      "contains_disfluency":  true
+                                                  },
+                                                  {
+                                                      "kind":  "backchannel",
+                                                      "event_id":  "assistant_backchannel",
+                                                      "speaker_id":  "speaker_2",
+                                                      "text":  "Mm-hm.",
+                                                      "start_seconds":  2.0,
+                                                      "end_seconds":  2.45,
+                                                      "delivery_instruction":  "Quiet and attentive."
+                                                  },
+                                                  {
+                                                      "kind":  "pause",
+                                                      "event_id":  "user_thinking_pause",
+                                                      "speaker_id":  "speaker_1",
+                                                      "start_seconds":  3.2,
+                                                      "end_seconds":  3.9,
+                                                      "continuation_event_id":  "user_completion"
+                                                  },
+                                                  {
+                                                      "kind":  "speech",
+                                                      "event_id":  "user_completion",
+                                                      "speaker_id":  "speaker_1",
+                                                      "text":  "so we should leave before eight.",
+                                                      "start_seconds":  3.9,
+                                                      "end_seconds":  5.5,
+                                                      "boundary_after":  "completion"
+                                                  },
+                                                  {
+                                                      "kind":  "speech",
+                                                      "event_id":  "assistant_response",
+                                                      "speaker_id":  "speaker_2",
+                                                      "text":  "That works for me. I will meet you by the station entrance.",
+                                                      "start_seconds":  5.88,
+                                                      "end_seconds":  8.7,
+                                                      "boundary_after":  "completion"
+                                                  }
+                                              ],
+                                   "tags":  [
+                                                "pilot",
+                                                "continuation",
+                                                "backchannel",
+                                                "disfluency",
+                                                "handoff"
+                                            ]
+                               },
+                      "sample_rate_hz":  16000,
+                      "sources":  [
+                                      {
+                                          "event_id":  "user_setup",
+                                          "audio_path":  "synthetic-generation\\pilot\\sources\\sapi_pause_backchannel_pilot\\user_setup.wav",
+                                          "audio_sha256":  "38ba764f9676b83120087721cd6ca8468d80b2ca11fb1619e0182189c3a4e88e",
+                                          "provenance":  {
+                                                             "backend_id":  "windows-sapi-smoke-only",
+                                                             "runtime_version":  "Microsoft Windows NT 10.0.26200.0",
+                                                             "model_id":  "Microsoft David Desktop",
+                                                             "model_revision":  "installed-voice-2026-08-25",
+                                                             "model_license":  "Microsoft-Windows-component-terms-review-required",
+                                                             "seed":  260825,
+                                                             "generation_seconds":  null,
+                                                             "real_time_factor":  null
+                                                         }
+                                      },
+                                      {
+                                          "event_id":  "assistant_backchannel",
+                                          "audio_path":  "synthetic-generation\\pilot\\sources\\sapi_pause_backchannel_pilot\\assistant_backchannel.wav",
+                                          "audio_sha256":  "5b42a89b404e4ab8846c7097da4799643a44ac7dbbf6a0277a8bf336057ab8c9",
+                                          "provenance":  {
+                                                             "backend_id":  "windows-sapi-smoke-only",
+                                                             "runtime_version":  "Microsoft Windows NT 10.0.26200.0",
+                                                             "model_id":  "Microsoft Zira Desktop",
+                                                             "model_revision":  "installed-voice-2026-08-25",
+                                                             "model_license":  "Microsoft-Windows-component-terms-review-required",
+                                                             "seed":  260825,
+                                                             "generation_seconds":  null,
+                                                             "real_time_factor":  null
+                                                         }
+                                      },
+                                      {
+                                          "event_id":  "user_completion",
+                                          "audio_path":  "synthetic-generation\\pilot\\sources\\sapi_pause_backchannel_pilot\\user_completion.wav",
+                                          "audio_sha256":  "4c0c66c72b4d867970de38e477ebb4463a33e11da4fdde59dfe8cc89752e4715",
+                                          "provenance":  {
+                                                             "backend_id":  "windows-sapi-smoke-only",
+                                                             "runtime_version":  "Microsoft Windows NT 10.0.26200.0",
+                                                             "model_id":  "Microsoft David Desktop",
+                                                             "model_revision":  "installed-voice-2026-08-25",
+                                                             "model_license":  "Microsoft-Windows-component-terms-review-required",
+                                                             "seed":  260825,
+                                                             "generation_seconds":  null,
+                                                             "real_time_factor":  null
+                                                         }
+                                      },
+                                      {
+                                          "event_id":  "assistant_response",
+                                          "audio_path":  "synthetic-generation\\pilot\\sources\\sapi_pause_backchannel_pilot\\assistant_response.wav",
+                                          "audio_sha256":  "5ed8c91af2b111494de29cbe06b0bddb3cfe7f76229fb352f9287200764bc91d",
+                                          "provenance":  {
+                                                             "backend_id":  "windows-sapi-smoke-only",
+                                                             "runtime_version":  "Microsoft Windows NT 10.0.26200.0",
+                                                             "model_id":  "Microsoft Zira Desktop",
+                                                             "model_revision":  "installed-voice-2026-08-25",
+                                                             "model_license":  "Microsoft-Windows-component-terms-review-required",
+                                                             "seed":  260825,
+                                                             "generation_seconds":  null,
+                                                             "real_time_factor":  null
+                                                         }
+                                      }
+                                  ],
+                      "augmentation":  {
+                                           "user_gain_db":  -1.5,
+                                           "assistant_gain_db":  -0.5,
+                                           "signal_to_noise_db":  28,
+                                           "reverb_decay_seconds":  0.12,
+                                           "codec":  "mulaw_8bit",
+                                           "microphone_low_hz":  100,
+                                           "microphone_high_hz":  7200,
+                                           "user_to_assistant_crosstalk_db":  -35,
+                                           "assistant_to_user_crosstalk_db":  -32
+                                       }
+                  },
+                  {
+                      "plan":  {
+                                   "schema_version":  "voice-light-synthetic-plan-v1",
+                                   "plan_id":  "sapi_interruption_pilot",
+                                   "description":  "Local speech smoke case with a successful corrective interruption and overlap.",
+                                   "seed":  260826,
+                                   "duration_seconds":  20.0,
+                                   "speakers":  [
+                                                    {
+                                                        "speaker_id":  "speaker_1",
+                                                        "role":  "user",
+                                                        "voice_id":  "Microsoft Zira Desktop",
+                                                        "language":  "en-US"
+                                                    },
+                                                    {
+                                                        "speaker_id":  "speaker_2",
+                                                        "role":  "assistant",
+                                                        "voice_id":  "Microsoft David Desktop",
+                                                        "language":  "en-US"
+                                                    }
+                                                ],
+                                   "events":  [
+                                                  {
+                                                      "kind":  "speech",
+                                                      "event_id":  "user_interrupted_turn",
+                                                      "speaker_id":  "speaker_1",
+                                                      "text":  "I can send the contract draft by Thursday morning, if legal finishes the review by-",
+                                                      "start_seconds":  0.5,
+                                                      "end_seconds":  4.5,
+                                                      "boundary_after":  "none",
+                                                      "delivery_instruction":  "Focused, ending in a cut-off word.",
+                                                      "contains_disfluency":  false
+                                                  },
+                                                  {
+                                                      "kind":  "interruption",
+                                                      "event_id":  "assistant_correction",
+                                                      "speaker_id":  "speaker_2",
+                                                      "text":  "Friday morning is safer. Legal already asked for another day.",
+                                                      "start_seconds":  3.82,
+                                                      "end_seconds":  6.4,
+                                                      "interrupted_event_id":  "user_interrupted_turn",
+                                                      "outcome":  "floor_take",
+                                                      "delivery_instruction":  "Quick corrective entry, then calm explanation."
+                                                  },
+                                                  {
+                                                      "kind":  "speech",
+                                                      "event_id":  "user_acknowledgement",
+                                                      "speaker_id":  "speaker_1",
+                                                      "text":  "Right, Friday morning it is.",
+                                                      "start_seconds":  6.82,
+                                                      "end_seconds":  8.3,
+                                                      "boundary_after":  "completion"
+                                                  }
+                                              ],
+                                   "tags":  [
+                                                "pilot",
+                                                "interruption",
+                                                "competitive_overlap",
+                                                "repair"
+                                            ]
+                               },
+                      "sample_rate_hz":  16000,
+                      "sources":  [
+                                      {
+                                          "event_id":  "user_interrupted_turn",
+                                          "audio_path":  "synthetic-generation\\pilot\\sources\\sapi_interruption_pilot\\user_interrupted_turn.wav",
+                                          "audio_sha256":  "210944d91f0c2f3ec11012d6b684905fe8ce9e804f4551dee916f9d884749c47",
+                                          "provenance":  {
+                                                             "backend_id":  "windows-sapi-smoke-only",
+                                                             "runtime_version":  "Microsoft Windows NT 10.0.26200.0",
+                                                             "model_id":  "Microsoft Zira Desktop",
+                                                             "model_revision":  "installed-voice-2026-08-25",
+                                                             "model_license":  "Microsoft-Windows-component-terms-review-required",
+                                                             "seed":  260826,
+                                                             "generation_seconds":  null,
+                                                             "real_time_factor":  null
+                                                         }
+                                      },
+                                      {
+                                          "event_id":  "assistant_correction",
+                                          "audio_path":  "synthetic-generation\\pilot\\sources\\sapi_interruption_pilot\\assistant_correction.wav",
+                                          "audio_sha256":  "f28b49135dfe3a3b6faaf9dd496f0a80f9651a111b0d40551d6361f289814861",
+                                          "provenance":  {
+                                                             "backend_id":  "windows-sapi-smoke-only",
+                                                             "runtime_version":  "Microsoft Windows NT 10.0.26200.0",
+                                                             "model_id":  "Microsoft David Desktop",
+                                                             "model_revision":  "installed-voice-2026-08-25",
+                                                             "model_license":  "Microsoft-Windows-component-terms-review-required",
+                                                             "seed":  260826,
+                                                             "generation_seconds":  null,
+                                                             "real_time_factor":  null
+                                                         }
+                                      },
+                                      {
+                                          "event_id":  "user_acknowledgement",
+                                          "audio_path":  "synthetic-generation\\pilot\\sources\\sapi_interruption_pilot\\user_acknowledgement.wav",
+                                          "audio_sha256":  "1a4fd96a19a7a33bbc1ca67e746037bdc3bb95fe84395eace5fbf213be836eb1",
+                                          "provenance":  {
+                                                             "backend_id":  "windows-sapi-smoke-only",
+                                                             "runtime_version":  "Microsoft Windows NT 10.0.26200.0",
+                                                             "model_id":  "Microsoft Zira Desktop",
+                                                             "model_revision":  "installed-voice-2026-08-25",
+                                                             "model_license":  "Microsoft-Windows-component-terms-review-required",
+                                                             "seed":  260826,
+                                                             "generation_seconds":  null,
+                                                             "real_time_factor":  null
+                                                         }
+                                      }
+                                  ],
+                      "augmentation":  {
+                                           "user_gain_db":  -1.5,
+                                           "assistant_gain_db":  -0.5,
+                                           "signal_to_noise_db":  28,
+                                           "reverb_decay_seconds":  0.12,
+                                           "codec":  "mulaw_8bit",
+                                           "microphone_low_hz":  100,
+                                           "microphone_high_hz":  7200,
+                                           "user_to_assistant_crosstalk_db":  -35,
+                                           "assistant_to_user_crosstalk_db":  -32
+                                       }
+                  }
+              ]
+}

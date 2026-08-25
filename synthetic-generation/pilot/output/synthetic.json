@@ -1,0 +1,22 @@
+{
+  "schema_version": "voice-light-synthetic-corpus-v1",
+  "corpus_id": "sapi_speech_smoke_v1",
+  "description": "Local SAPI speech smoke artifact for validating the planned-timeline pipeline.",
+  "generated_at": "2026-08-25T21:23:11.803229Z",
+  "label_source": "planned_event_timeline",
+  "evaluation_policy": "train_only_real_validation_required",
+  "items": [
+    {
+      "plan_id": "sapi_pause_backchannel_pilot",
+      "render_manifest_path": "audio/sapi_pause_backchannel_pilot/render.json",
+      "render_manifest_sha256": "8d1c1d9c37bd230406442da8f6bc85581d1e2d6849975ea787fb9e414c2d41a0",
+      "training_window_id": "75267dca5785ed60ecd65e1078e80032ebcea0116706e3fd1dba89fd10705c90"
+    },
+    {
+      "plan_id": "sapi_interruption_pilot",
+      "render_manifest_path": "audio/sapi_interruption_pilot/render.json",
+      "render_manifest_sha256": "fb584c7161a45ccc35d95fbd224143a9cacd54a868493be80728fa4e4d387222",
+      "training_window_id": "72ba90ecd3ae99c247c7a2d861bef50aa807e9ac9aeeaea43c727aa4be1afc8a"
+    }
+  ]
+}

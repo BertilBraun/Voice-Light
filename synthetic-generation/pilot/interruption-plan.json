@@ -1,0 +1,55 @@
+{
+  "schema_version": "voice-light-synthetic-plan-v1",
+  "plan_id": "sapi_interruption_pilot",
+  "description": "Local speech smoke case with a successful corrective interruption and overlap.",
+  "seed": 260826,
+  "duration_seconds": 20.0,
+  "speakers": [
+    {
+      "speaker_id": "speaker_1",
+      "role": "user",
+      "voice_id": "Microsoft Zira Desktop",
+      "language": "en-US"
+    },
+    {
+      "speaker_id": "speaker_2",
+      "role": "assistant",
+      "voice_id": "Microsoft David Desktop",
+      "language": "en-US"
+    }
+  ],
+  "events": [
+    {
+      "kind": "speech",
+      "event_id": "user_interrupted_turn",
+      "speaker_id": "speaker_1",
+      "text": "I can send the contract draft by Thursday morning, if legal finishes the review by-",
+      "start_seconds": 0.5,
+      "end_seconds": 4.5,
+      "boundary_after": "none",
+      "delivery_instruction": "Focused, ending in a cut-off word.",
+      "contains_disfluency": false
+    },
+    {
+      "kind": "interruption",
+      "event_id": "assistant_correction",
+      "speaker_id": "speaker_2",
+      "text": "Friday morning is safer. Legal already asked for another day.",
+      "start_seconds": 3.82,
+      "end_seconds": 6.4,
+      "interrupted_event_id": "user_interrupted_turn",
+      "outcome": "floor_take",
+      "delivery_instruction": "Quick corrective entry, then calm explanation."
+    },
+    {
+      "kind": "speech",
+      "event_id": "user_acknowledgement",
+      "speaker_id": "speaker_1",
+      "text": "Right, Friday morning it is.",
+      "start_seconds": 6.82,
+      "end_seconds": 8.3,
+      "boundary_after": "completion"
+    }
+  ],
+  "tags": ["pilot", "interruption", "competitive_overlap", "repair"]
+}

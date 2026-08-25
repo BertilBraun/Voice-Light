@@ -1,0 +1,58 @@
+{
+  "schema_version": "voice-light-turn-taking-v1",
+  "generated_at": "2026-08-25T21:23:11.803229Z",
+  "metric_version": "synthetic-source-provenance-v1",
+  "annotation_version": "planned-event-timeline-v1",
+  "region_analysis_version": "planned-two-party-channel-v1",
+  "training_label_version": "turn-taking-frame-labels-v1",
+  "input_duration_seconds": 20.0,
+  "frame_seconds": 0.08,
+  "review_set_name": "synthetic:sapi_speech_smoke_v1:train-only",
+  "split_plan": {
+    "policy_version": "conversation-dataset-sha256-v1",
+    "seed": "synthetic:sapi_speech_smoke_v1",
+    "assignments": [
+      {
+        "dataset_id": "ca90cb01-b22e-54d8-95cb-167594738e12",
+        "sample_id": "fb78c211-428e-5026-ae42-f91f103f14be",
+        "split": "train"
+      },
+      {
+        "dataset_id": "ca90cb01-b22e-54d8-95cb-167594738e12",
+        "sample_id": "3581a952-6849-5320-b658-2a16b510a420",
+        "split": "train"
+      }
+    ]
+  },
+  "recording_count": 2,
+  "training_sample_count": 2,
+  "splits": [
+    {
+      "split": "train",
+      "recording_count": 2,
+      "training_sample_count": 2,
+      "source_duration_seconds": 40.0
+    },
+    {
+      "split": "validation",
+      "recording_count": 0,
+      "training_sample_count": 0,
+      "source_duration_seconds": 0.0
+    },
+    {
+      "split": "test",
+      "recording_count": 0,
+      "training_sample_count": 0,
+      "source_duration_seconds": 0.0
+    }
+  ],
+  "shards": [
+    {
+      "split": "train",
+      "path": "training/train/shard-00000.parquet",
+      "row_count": 2,
+      "size_bytes": 12361,
+      "sha256": "88ad30c5a048c4892db76ceb868b338f404c78a30047a1d36b118856568fd2c8"
+    }
+  ]
+}

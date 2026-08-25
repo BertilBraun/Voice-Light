@@ -53,7 +53,7 @@ class SyntheticCorpusRequest(SyntheticModel):
 
 class SyntheticCorpusItem(SyntheticModel):
     plan_id: str
-    render_manifest_path: Path
+    render_manifest_path: str = Field(min_length=1)
     render_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     training_window_id: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -101,7 +101,7 @@ def build_synthetic_corpus(
         items.append(
             SyntheticCorpusItem(
                 plan_id=plan_id,
-                render_manifest_path=render_manifest_path.relative_to(output_directory),
+                render_manifest_path=render_manifest_path.relative_to(output_directory).as_posix(),
                 render_manifest_sha256=_file_sha256(render_manifest_path),
                 training_window_id=sample.window_id,
             )
