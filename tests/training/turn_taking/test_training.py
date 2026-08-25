@@ -153,6 +153,46 @@ def test_training_loop_saves_checkpoint(tmp_path: Path) -> None:
     assert path.exists()
 
 
+def test_training_early_stops_and_saves_best_checkpoint(tmp_path: Path) -> None:
+    adapter_config = _adapter_config()
+    config = TrainingConfig(
+        gradient_accumulation_steps=1,
+        max_steps=4,
+        warmup_steps=1,
+        validation_interval_steps=1,
+        minimum_steps_before_stopping=0,
+        early_stopping_patience=1,
+        progress_interval_steps=1,
+        adapter=adapter_config,
+    )
+    batch = TrainingBatch(
+        sample_ids=("one", "two"),
+        waveforms=torch.randn(2, 320),
+        waveform_lengths=torch.tensor([320, 320]),
+        assistant_speaking=torch.zeros((2, 8), dtype=torch.bool),
+        targets=_targets(batch_size=2, frame_count=8),
+    )
+    scores = iter((0.7, 0.6))
+    path = tmp_path / "adapter.pt"
+
+    result = train(
+        backbone=FakeBackbone(3, 16, 8),
+        adapter=TurnTakingAdapter(adapter_config),
+        batches=[batch],
+        config=config,
+        checkpoint_path=path,
+        device=torch.device("cpu"),
+        validation_callback=lambda adapter, step: next(scores),
+    )
+
+    assert result.optimizer_steps == 2
+    assert result.stopped_early
+    assert result.best_validation_step == 1
+    assert result.best_validation_score == pytest.approx(0.7)
+    assert result.best_checkpoint_path == tmp_path / "adapter-best.pt"
+    assert result.best_checkpoint_path.exists()
+
+
 def test_training_defaults_to_bfloat16() -> None:
     assert TrainingConfig().precision is TrainingPrecision.BFLOAT16
 

@@ -13,6 +13,7 @@ from app.training.turn_taking.completion_training import (
     balanced_completion_weights,
     build_completion_boundaries,
 )
+from app.training.turn_taking.completion_validation import CompletionValidator
 from app.training.turn_taking.config import (
     TrainingConfig,
     TrainingPrecision,
@@ -51,6 +52,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=_positive_int)
     parser.add_argument("--gradient-accumulation-steps", type=_positive_int)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int)
+    parser.add_argument("--run-seed", type=_nonnegative_int)
     parser.add_argument(
         "--primary-objective",
         choices=("user_yield", "turn_completion"),
@@ -75,6 +77,10 @@ def main() -> None:
         if arguments.max_steps is None:
             parser.error("--max-steps is required when resuming a checkpoint.")
         config = config.model_copy(update={"target_optimizer_step": arguments.max_steps})
+        if arguments.run_seed is None:
+            config = config.model_copy(
+                update={"random_seed": config.random_seed + checkpoint["optimizer_step"]}
+            )
     if arguments.batch_size is not None:
         config = config.model_copy(update={"batch_size": arguments.batch_size})
     if arguments.gradient_accumulation_steps is not None:
@@ -85,6 +91,8 @@ def main() -> None:
         config = config.model_copy(update={"data_loader_workers": arguments.data_loader_workers})
     if arguments.precision is not None:
         config = config.model_copy(update={"precision": TrainingPrecision(arguments.precision)})
+    if arguments.run_seed is not None:
+        config = config.model_copy(update={"random_seed": arguments.run_seed})
     if arguments.primary_objective is not None:
         primary_objective = (
             TurnCompletionObjectiveConfig()
@@ -161,11 +169,53 @@ def main() -> None:
         pin_memory=device.type == "cuda",
         generator=data_loader_generator,
     )
+    optimizer_steps_per_epoch = len(loader) / config.gradient_accumulation_steps
+    print(
+        f"training_items={len(dataset)}; optimizer_steps_per_epoch="
+        f"{optimizer_steps_per_epoch:.2f}; target_epochs="
+        f"{(config.target_optimizer_step or config.max_steps) / optimizer_steps_per_epoch:.2f}; "
+        f"run_seed={config.random_seed}",
+        flush=True,
+    )
     backbone = NemotronStreamingBackbone(
         model_identifier=config.model_identifier,
         tap_layer_indices=config.adapter.tap_layer_indices,
         lookahead_tokens=config.lookahead_tokens,
     ).to(device)
+    validation_callback: CompletionValidator | None = None
+    match config.loss.primary_objective:
+        case TurnCompletionObjectiveConfig() as completion_objective:
+            validation_source = HuggingFaceTurnTakingDataset(
+                split=TrainingCorpusSplit.VALIDATION,
+                revision=arguments.hub_revision,
+                repository_id=arguments.hub_repository,
+                cache_directory=arguments.hub_cache_directory,
+                sample_rate_hz=config.sample_rate_hz,
+                pad_missing_audio_suffix=True,
+            )
+            validation_boundaries = build_completion_boundaries(
+                validation_source.samples,
+                completion_objective,
+            )
+            validation_dataset = CompletionBoundaryDataset(
+                validation_source,
+                validation_boundaries,
+            )
+            validation_loader = DataLoader(
+                validation_dataset,
+                batch_size=config.batch_size,
+                shuffle=False,
+                collate_fn=collate_training_items,
+                num_workers=config.data_loader_workers,
+                prefetch_factor=(
+                    config.data_loader_prefetch_factor if config.data_loader_workers > 0 else None
+                ),
+                persistent_workers=config.data_loader_workers > 0,
+                pin_memory=device.type == "cuda",
+            )
+            validation_callback = CompletionValidator(backbone, validation_loader, device)
+        case UserYieldObjectiveConfig():
+            pass
     result = train(
         backbone=backbone,
         adapter=TurnTakingAdapter(config.adapter),
@@ -174,6 +224,7 @@ def main() -> None:
         checkpoint_path=arguments.checkpoint,
         device=device,
         resume_checkpoint_path=arguments.resume_checkpoint,
+        validation_callback=validation_callback,
     )
     print(
         f"Completed optimizer steps {result.starting_optimizer_step} "
@@ -182,7 +233,10 @@ def main() -> None:
         f"steps_per_second={result.optimizer_steps_per_second:.3f}; "
         f"peak_allocated_gib={_gibibytes(result.peak_device_memory_bytes)}; "
         f"peak_reserved_gib={_gibibytes(result.peak_reserved_device_memory_bytes)}; "
-        f"checkpoint={result.checkpoint_path}"
+        f"checkpoint={result.checkpoint_path}; best_checkpoint={result.best_checkpoint_path}; "
+        f"best_validation_step={result.best_validation_step}; "
+        f"best_validation_score={result.best_validation_score}; "
+        f"stopped_early={result.stopped_early}"
     )
 
 

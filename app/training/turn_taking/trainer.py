@@ -28,6 +28,10 @@ class TrainingResult:
     peak_device_memory_bytes: int | None
     peak_reserved_device_memory_bytes: int | None
     checkpoint_path: Path
+    best_checkpoint_path: Path | None
+    best_validation_score: float | None
+    best_validation_step: int | None
+    stopped_early: bool
 
 
 def train(
@@ -38,6 +42,7 @@ def train(
     checkpoint_path: Path,
     device: torch.device,
     resume_checkpoint_path: Path | None = None,
+    validation_callback: Callable[[TurnTakingAdapter, int], float] | None = None,
 ) -> TrainingResult:
     _validate_precision(config.precision, device)
     adapter.to(device)
@@ -77,6 +82,13 @@ def train(
             raise ValueError("Checkpoint scheduler step does not match its optimizer step.")
     optimizer.zero_grad(set_to_none=True)
     starting_optimizer_step = optimizer_step
+    best_validation_score: float | None = None
+    best_validation_step: int | None = None
+    non_improving_validations = 0
+    stopped_early = False
+    best_checkpoint_path = checkpoint_path.with_name(
+        f"{checkpoint_path.stem}-best{checkpoint_path.suffix}"
+    )
     micro_step = 0
     final_loss = math.nan
     if device.type == "cuda":
@@ -98,6 +110,18 @@ def train(
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             optimizer_step += 1
+            if optimizer_step % config.progress_interval_steps == 0:
+                elapsed_seconds = time.perf_counter() - started_at
+                completed_steps = optimizer_step - starting_optimizer_step
+                steps_per_second = completed_steps / elapsed_seconds
+                remaining_steps = target_optimizer_step - optimizer_step
+                print(
+                    f"step={optimizer_step}; loss={final_loss:.6f}; "
+                    f"learning_rate={scheduler.get_last_lr()[0]:.8f}; "
+                    f"steps_per_second={steps_per_second:.3f}; "
+                    f"eta_seconds={remaining_steps / steps_per_second:.0f}",
+                    flush=True,
+                )
             if optimizer_step % config.checkpoint_interval_steps == 0:
                 save_checkpoint(
                     checkpoint_path,
@@ -108,15 +132,46 @@ def train(
                     config,
                     schedule_config,
                 )
-                print(
-                    f"step={optimizer_step}; loss={final_loss:.6f}; "
-                    f"learning_rate={scheduler.get_last_lr()[0]:.8f}",
-                    flush=True,
-                )
+            if (
+                validation_callback is not None
+                and optimizer_step % config.validation_interval_steps == 0
+            ):
+                validation_score = validation_callback(adapter, optimizer_step)
+                if not math.isfinite(validation_score):
+                    raise ValueError("Validation callback returned a non-finite score.")
+                if best_validation_score is None or validation_score > best_validation_score:
+                    best_validation_score = validation_score
+                    best_validation_step = optimizer_step
+                    non_improving_validations = 0
+                    save_checkpoint(
+                        best_checkpoint_path,
+                        adapter,
+                        optimizer,
+                        scheduler,
+                        optimizer_step,
+                        config,
+                        schedule_config,
+                    )
+                else:
+                    non_improving_validations += 1
+                if (
+                    optimizer_step >= config.minimum_steps_before_stopping
+                    and non_improving_validations >= config.early_stopping_patience
+                ):
+                    stopped_early = True
+                    print(
+                        f"early_stopping_step={optimizer_step}; "
+                        f"best_step={best_validation_step}; "
+                        f"best_score={best_validation_score:.6f}",
+                        flush=True,
+                    )
+                    break
             if optimizer_step >= target_optimizer_step:
                 break
         if not observed_batch:
             raise ValueError("Training data loader produced no batches.")
+        if stopped_early:
+            break
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     elapsed_seconds = time.perf_counter() - started_at
@@ -145,6 +200,10 @@ def train(
         peak_device_memory_bytes=peak_device_memory_bytes,
         peak_reserved_device_memory_bytes=peak_reserved_device_memory_bytes,
         checkpoint_path=checkpoint_path,
+        best_checkpoint_path=best_checkpoint_path if best_validation_step is not None else None,
+        best_validation_score=best_validation_score,
+        best_validation_step=best_validation_step,
+        stopped_early=stopped_early,
     )
 
 
@@ -275,6 +334,7 @@ def _validate_resume_config(config: TrainingConfig, checkpoint: TrainingConfig) 
                 "checkpoint_interval_steps": checkpoint.checkpoint_interval_steps,
                 "data_loader_workers": checkpoint.data_loader_workers,
                 "data_loader_prefetch_factor": checkpoint.data_loader_prefetch_factor,
+                "random_seed": checkpoint.random_seed,
             }
         )
         != checkpoint

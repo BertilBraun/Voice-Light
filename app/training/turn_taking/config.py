@@ -89,7 +89,10 @@ class TrainingConfig(FrozenBaseModel):
     max_steps: int = 3_500
     target_optimizer_step: int | None = Field(default=None, gt=0)
     checkpoint_interval_steps: int = Field(default=250, gt=0)
-    validation_interval_steps: int = 250
+    progress_interval_steps: int = Field(default=10, gt=0)
+    validation_interval_steps: int = Field(default=125, gt=0)
+    minimum_steps_before_stopping: int = Field(default=1_000, ge=0)
+    early_stopping_patience: int = Field(default=4, gt=0)
     gradient_clip_norm: float = 1.0
     random_seed: int = 17
     unmeasured_reliability_weight: float = Field(default=1.0, ge=0.0, le=1.0)
