@@ -7,11 +7,16 @@ from torch.utils.data import Dataset
 from app.local.db.models import TrackSide
 from app.local.training_corpus.export import FRAMES_PER_SAMPLE, MaterializedTrainingSample
 from app.local.training_corpus.splits import TrainingCorpusSplit
+from app.training.turn_taking.benchmark_completion_inventory import (
+    build_turn_completion_inventory,
+)
 from app.training.turn_taking.completion_training import (
     CompletionBoundaryDataset,
+    CompletionBoundaryIndex,
     CompletionClass,
     balanced_completion_weights,
     build_completion_boundaries,
+    build_inventory_completion_boundaries,
 )
 from app.training.turn_taking.config import TurnCompletionObjectiveConfig
 from app.training.turn_taking.data import FrameTargets, TrainingItem
@@ -100,6 +105,40 @@ def test_boundary_dataset_exposes_only_selected_completion_target() -> None:
     assert torch.count_nonzero(selected.targets.event_mask[:, 0]) == 1
     assert selected.targets.event_mask[7, 0]
     assert torch.all(selected.targets.event_mask[:, 1:])
+
+
+def test_inventory_boundaries_match_benchmark_eligibility() -> None:
+    completion = [-1.0] * FRAMES_PER_SAMPLE
+    completion[5] = 0.9
+    user_floor = [0.0] * FRAMES_PER_SAMPLE
+    user_floor[:5] = [1.0] * 5
+    sample = _sample(
+        completion,
+        [-1.0] * FRAMES_PER_SAMPLE,
+        user_floor,
+        [0.0] * FRAMES_PER_SAMPLE,
+    )
+    inventory = build_turn_completion_inventory(
+        samples=(sample,),
+        corpus_repository="owner/corpus",
+        corpus_revision="1" * 40,
+        split=TrainingCorpusSplit.TRAIN,
+    )
+
+    boundaries = build_inventory_completion_boundaries(
+        (sample,),
+        inventory,
+        TurnCompletionObjectiveConfig(),
+    )
+
+    assert len(inventory.candidates) == 1
+    assert boundaries == (
+        CompletionBoundaryIndex(
+            sample_index=0,
+            frame_index=5,
+            completion_class=CompletionClass.EOT,
+        ),
+    )
 
 
 def _sample(

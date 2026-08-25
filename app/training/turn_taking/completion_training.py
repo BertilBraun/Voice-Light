@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -8,8 +9,11 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from app.local.training_corpus.export import MaterializedTrainingSample
+from app.training.turn_taking.benchmark_models import TurnCompletionInventory
 from app.training.turn_taking.config import TurnCompletionObjectiveConfig
 from app.training.turn_taking.data import FrameTargets, TrainingItem
+
+FRAME_SECONDS = 0.08
 
 
 class CompletionClass(StrEnum):
@@ -71,16 +75,12 @@ def build_completion_boundaries(
             if completion_probability < 0.0:
                 continue
             continuation_probability = sample.continuation_pause[frame_index]
-            if (
-                completion_probability <= config.hold_completion_maximum
-                and continuation_probability >= config.hold_continuation_minimum
-            ):
-                completion_class = CompletionClass.HOLD
-            elif completion_probability >= config.eot_completion_minimum and not (
-                continuation_probability >= config.conflicting_continuation_minimum
-            ):
-                completion_class = CompletionClass.EOT
-            else:
+            completion_class = _completion_class(
+                completion_probability,
+                continuation_probability,
+                config,
+            )
+            if completion_class is None:
                 continue
             if sample.assistant_has_floor[frame_index] >= 0.5:
                 continue
@@ -94,6 +94,73 @@ def build_completion_boundaries(
                 )
             )
     return tuple(boundaries)
+
+
+def build_inventory_completion_boundaries(
+    samples: tuple[MaterializedTrainingSample, ...],
+    inventory: TurnCompletionInventory,
+    config: TurnCompletionObjectiveConfig,
+) -> tuple[CompletionBoundaryIndex, ...]:
+    samples_by_window_id = {
+        sample.window_id: (sample_index, sample) for sample_index, sample in enumerate(samples)
+    }
+    boundaries: list[CompletionBoundaryIndex] = []
+    for candidate in inventory.candidates:
+        completion_probability = candidate.target_points[0].completion_probability
+        continuation_probability = candidate.continuation_probability
+        completion_class = _completion_class(
+            completion_probability,
+            continuation_probability if continuation_probability is not None else -1.0,
+            config,
+        )
+        if completion_class is None:
+            continue
+        matching: list[tuple[int, int]] = []
+        for window_id in candidate.source_window_ids:
+            sample_entry = samples_by_window_id.get(window_id)
+            if sample_entry is None:
+                continue
+            sample_index, sample = sample_entry
+            frame_index = round((candidate.anchor_seconds - sample.start_seconds) / FRAME_SECONDS)
+            if not 0 <= frame_index < len(sample.turn_completion):
+                continue
+            if math.isclose(
+                sample.turn_completion[frame_index],
+                completion_probability,
+                abs_tol=1e-9,
+            ):
+                matching.append((sample_index, frame_index))
+        if len(matching) != 1:
+            raise ValueError(
+                f"Completion candidate {candidate.candidate_id} maps to {len(matching)} "
+                "supervised windows; expected exactly one."
+            )
+        sample_index, frame_index = matching[0]
+        boundaries.append(
+            CompletionBoundaryIndex(
+                sample_index=sample_index,
+                frame_index=frame_index,
+                completion_class=completion_class,
+            )
+        )
+    return tuple(boundaries)
+
+
+def _completion_class(
+    completion_probability: float,
+    continuation_probability: float,
+    config: TurnCompletionObjectiveConfig,
+) -> CompletionClass | None:
+    if (
+        completion_probability <= config.hold_completion_maximum
+        and continuation_probability >= config.hold_continuation_minimum
+    ):
+        return CompletionClass.HOLD
+    if completion_probability >= config.eot_completion_minimum and not (
+        continuation_probability >= config.conflicting_continuation_minimum
+    ):
+        return CompletionClass.EOT
+    return None
 
 
 def balanced_completion_weights(

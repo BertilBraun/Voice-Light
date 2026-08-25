@@ -8,10 +8,14 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from app.local.training_corpus.splits import TrainingCorpusSplit
 from app.training.turn_taking.backbone import NemotronStreamingBackbone
+from app.training.turn_taking.benchmark_completion_inventory import (
+    build_turn_completion_inventory,
+)
 from app.training.turn_taking.completion_training import (
     CompletionBoundaryDataset,
     balanced_completion_weights,
     build_completion_boundaries,
+    build_inventory_completion_boundaries,
 )
 from app.training.turn_taking.completion_validation import CompletionValidator
 from app.training.turn_taking.config import (
@@ -198,8 +202,15 @@ def main() -> None:
                 sample_rate_hz=config.sample_rate_hz,
                 pad_missing_audio_suffix=True,
             )
-            validation_boundaries = build_completion_boundaries(
+            validation_inventory = build_turn_completion_inventory(
+                samples=validation_source.samples,
+                corpus_repository=arguments.hub_repository,
+                corpus_revision=arguments.hub_revision,
+                split=TrainingCorpusSplit.VALIDATION,
+            )
+            validation_boundaries = build_inventory_completion_boundaries(
                 validation_source.samples,
+                validation_inventory,
                 completion_objective,
             )
             validation_dataset = CompletionBoundaryDataset(
