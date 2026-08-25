@@ -1,6 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
 import torch
 from torch import Tensor
 
@@ -10,10 +11,11 @@ from app.training.turn_taking.config import (
     LossConfig,
     TrainingConfig,
     TrainingPrecision,
+    TurnCompletionObjectiveConfig,
 )
 from app.training.turn_taking.data import FrameTargets, TrainingBatch
 from app.training.turn_taking.loss import compute_loss
-from app.training.turn_taking.model import TurnTakingAdapter
+from app.training.turn_taking.model import AdapterOutput, TurnTakingAdapter
 from app.training.turn_taking.trainer import train
 
 
@@ -86,6 +88,33 @@ def test_default_adapter_stays_below_parameter_budget() -> None:
     assert len(config.tap_layer_indices) == 4
     assert config.recurrent_dimension == 64
     assert trainable_parameter_count < 200_000
+
+
+def test_completion_objective_uses_event_head_zero_as_primary() -> None:
+    yield_logits = torch.full((1, 2), -10.0, requires_grad=True)
+    event_logits = torch.zeros((1, 2, 5), requires_grad=True)
+    output = AdapterOutput(
+        yield_logits=yield_logits,
+        event_logits=event_logits,
+        future_activity_logits=torch.zeros((1, 2, 4), requires_grad=True),
+        recurrent_state=torch.zeros((1, 1, 1)),
+    )
+    targets = _targets(batch_size=1, frame_count=2)
+    targets.event_targets[..., 0] = torch.tensor([[0.0, 1.0]])
+    targets.event_mask[..., 0] = torch.tensor([[True, False]])
+
+    loss = compute_loss(
+        output,
+        targets,
+        torch.ones((1, 2), dtype=torch.bool),
+        LossConfig(primary_objective=TurnCompletionObjectiveConfig()),
+    )
+    loss.total.backward()
+
+    assert loss.primary.item() == pytest.approx(torch.log(torch.tensor(2.0)).item())
+    assert yield_logits.grad is None
+    assert event_logits.grad is not None
+    assert event_logits.grad[..., 0].count_nonzero() == 1
 
 
 def test_training_loop_saves_checkpoint(tmp_path: Path) -> None:

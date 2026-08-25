@@ -25,14 +25,27 @@ def compute_loss(
     config: LossConfig,
 ) -> LossBreakdown:
     targets = align_targets(targets, output.yield_logits.shape[1])
-    primary_weights = targets.primary_weight * targets.primary_mask.float() * frame_mask.float()
+    match config.primary_objective.kind:
+        case "user_yield":
+            primary_logits = output.yield_logits
+            primary_targets = targets.yield_probability
+            primary_weights = (
+                targets.primary_weight * targets.primary_mask.float() * frame_mask.float()
+            )
+        case "turn_completion":
+            primary_logits = output.event_logits[..., 0]
+            primary_targets = targets.event_targets[..., 0]
+            primary_weights = targets.event_mask[..., 0].float() * frame_mask.float()
     primary = _weighted_mean(
         nn.functional.binary_cross_entropy_with_logits(
-            output.yield_logits, targets.yield_probability, reduction="none"
+            primary_logits, primary_targets, reduction="none"
         ),
         primary_weights,
     )
     event_mask = targets.event_mask & frame_mask.unsqueeze(-1)
+    if config.primary_objective.kind == "turn_completion":
+        event_mask = event_mask.clone()
+        event_mask[..., 0] = False
     events = _weighted_mean(
         nn.functional.binary_cross_entropy_with_logits(
             output.event_logits, targets.event_targets, reduction="none"

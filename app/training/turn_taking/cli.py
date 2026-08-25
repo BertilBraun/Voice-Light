@@ -4,11 +4,21 @@ import argparse
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from app.local.training_corpus.splits import TrainingCorpusSplit
 from app.training.turn_taking.backbone import NemotronStreamingBackbone
-from app.training.turn_taking.config import TrainingConfig, TrainingPrecision
+from app.training.turn_taking.completion_training import (
+    CompletionBoundaryDataset,
+    balanced_completion_weights,
+    build_completion_boundaries,
+)
+from app.training.turn_taking.config import (
+    TrainingConfig,
+    TrainingPrecision,
+    TurnCompletionObjectiveConfig,
+    UserYieldObjectiveConfig,
+)
 from app.training.turn_taking.data import (
     TurnTakingDataset,
     WaveformAugmenter,
@@ -42,6 +52,10 @@ def main() -> None:
     parser.add_argument("--gradient-accumulation-steps", type=_positive_int)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int)
     parser.add_argument(
+        "--primary-objective",
+        choices=("user_yield", "turn_completion"),
+    )
+    parser.add_argument(
         "--precision",
         choices=tuple(precision.value for precision in TrainingPrecision),
     )
@@ -71,6 +85,15 @@ def main() -> None:
         config = config.model_copy(update={"data_loader_workers": arguments.data_loader_workers})
     if arguments.precision is not None:
         config = config.model_copy(update={"precision": TrainingPrecision(arguments.precision)})
+    if arguments.primary_objective is not None:
+        primary_objective = (
+            TurnCompletionObjectiveConfig()
+            if arguments.primary_objective == "turn_completion"
+            else UserYieldObjectiveConfig()
+        )
+        config = config.model_copy(
+            update={"loss": config.loss.model_copy(update={"primary_objective": primary_objective})}
+        )
     torch.manual_seed(config.random_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if arguments.manifest is not None:
@@ -100,11 +123,35 @@ def main() -> None:
             ),
             random_seed=config.random_seed,
         )
+    sampler: WeightedRandomSampler[int] | None = None
+    match config.loss.primary_objective:
+        case TurnCompletionObjectiveConfig() as completion_objective:
+            if arguments.manifest is not None:
+                parser.error("Turn-completion training requires the pinned Hub corpus.")
+            if hub_split is not TrainingCorpusSplit.TRAIN:
+                parser.error("Turn-completion training requires --hub-split train.")
+            boundaries = build_completion_boundaries(dataset.samples, completion_objective)
+            dataset = CompletionBoundaryDataset(dataset, boundaries)
+            sampler = WeightedRandomSampler(
+                weights=balanced_completion_weights(boundaries),
+                num_samples=len(boundaries),
+                replacement=True,
+                generator=torch.Generator().manual_seed(config.random_seed + 1),
+            )
+            hold_count = sum(boundary.completion_class.value == "hold" for boundary in boundaries)
+            print(
+                f"completion_boundaries={len(boundaries)}; hold={hold_count}; "
+                f"eot={len(boundaries) - hold_count}",
+                flush=True,
+            )
+        case UserYieldObjectiveConfig():
+            pass
     data_loader_generator = torch.Generator().manual_seed(config.random_seed)
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        shuffle=sampler is None,
+        sampler=sampler,
         collate_fn=collate_training_items,
         num_workers=config.data_loader_workers,
         prefetch_factor=(

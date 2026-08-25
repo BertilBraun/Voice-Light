@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -17,7 +18,26 @@ class AdapterConfig(FrozenBaseModel):
     dropout: float = Field(default=0.1, ge=0.0, lt=1.0)
 
 
+class UserYieldObjectiveConfig(FrozenBaseModel):
+    kind: Literal["user_yield"] = "user_yield"
+
+
+class TurnCompletionObjectiveConfig(FrozenBaseModel):
+    kind: Literal["turn_completion"] = "turn_completion"
+    hold_completion_maximum: float = Field(default=0.2, ge=0.0, le=1.0)
+    hold_continuation_minimum: float = Field(default=0.8, ge=0.0, le=1.0)
+    eot_completion_minimum: float = Field(default=0.8, ge=0.0, le=1.0)
+    conflicting_continuation_minimum: float = Field(default=0.8, ge=0.0, le=1.0)
+
+
+PrimaryObjectiveConfig = Annotated[
+    UserYieldObjectiveConfig | TurnCompletionObjectiveConfig,
+    Field(discriminator="kind"),
+]
+
+
 class LossConfig(FrozenBaseModel):
+    primary_objective: PrimaryObjectiveConfig = UserYieldObjectiveConfig()
     event_weight: float = Field(default=0.25, ge=0.0)
     future_activity_weight: float = Field(default=0.25, ge=0.0)
 
