@@ -141,9 +141,27 @@ scores until the reviewer opens the metadata panel. Reviewer-local autosave is k
 manifest hash and reviewer name, preventing one reviewer from seeing another's decisions.
 
 Each seven-second, 16 kHz stereo WAV contains four seconds before and three seconds after the
-boundary. The candidate user is on the left and the other speaker is on the right. The page supports
-keyboard decisions (`1` safe to take, `2` hold, `3` ambiguous/unratable), structured error tags,
-notes, progress tracking, and JSON export. `review-template.csv` is a non-interactive fallback.
+boundary. The candidate user is on the left and the other speaker is on the right. The visual
+reviewer renders these as separate synchronized waveforms with a pink `t = 0` decision line,
+pre-boundary and outcome-context regions, relative time ticks, a playback cursor, click-to-seek,
+and playback ranges that stop at or surround the boundary. It explicitly asks whether starting the
+assistant at that line would cut off the candidate user. Keyboard decisions are `1` safe to take,
+`2` hold, and `3` ambiguous/unratable. Structured error tags, notes, reviewer-local progress, and
+typed JSON export are also available. `review-template.csv` is a non-interactive fallback.
+
+Open an existing package through a local HTTP origin so audio, autosave, and canvas behavior use a
+normal browser security context:
+
+```powershell
+python -m http.server 8765 --bind 127.0.0.1 --directory .cache\local\training-runs\2026-08-25-completion-v1\completion-label-audit
+```
+
+Then open `http://127.0.0.1:8765/index.html`. After changing only the reviewer UI, rebuild an
+existing package without regenerating its clips or selection manifest:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.training.turn_taking.benchmark_cli refresh-completion-label-audit-ui-v2 .cache\local\training-runs\2026-08-25-completion-v1\completion-label-audit
+```
 
 The generated package is
 `.cache/local/training-runs/2026-08-21-4080-pilot/benchmark/completion-label-audit-v1/`.

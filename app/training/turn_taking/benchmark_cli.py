@@ -51,6 +51,7 @@ from app.training.turn_taking.benchmark_completion_audit import (
 )
 from app.training.turn_taking.benchmark_completion_audit_export import (
     ResolvedCompletionAuditAudioLoader,
+    refresh_completion_audit_review_page,
     write_completion_audit_package,
 )
 from app.training.turn_taking.benchmark_completion_inventory import (
@@ -170,6 +171,7 @@ def main() -> None:
     _add_completion_voice_light_parser(subparsers)
     _add_completion_analyze_parser(subparsers)
     _add_completion_audit_parser(subparsers)
+    _add_completion_audit_refresh_parser(subparsers)
     _add_completion_audit_analysis_parser(subparsers)
     arguments = parser.parse_args()
     match arguments.command:
@@ -197,6 +199,8 @@ def main() -> None:
             _analyze_completion(arguments)
         case "completion-label-audit-v2":
             _completion_label_audit(arguments)
+        case "refresh-completion-label-audit-ui-v2":
+            _refresh_completion_label_audit_ui(arguments)
         case "analyze-completion-label-audit-v2":
             _analyze_completion_label_audit(arguments)
         case _:
@@ -408,6 +412,16 @@ def _add_completion_audit_analysis_parser(
     parser.add_argument("manifest", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("reviews", type=Path, nargs="+")
+
+
+def _add_completion_audit_refresh_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "refresh-completion-label-audit-ui-v2",
+        help="Rebuild the visual review page from an existing audit package.",
+    )
+    parser.add_argument("audit_directory", type=Path)
 
 
 def _create_inventory(arguments: argparse.Namespace) -> None:
@@ -969,6 +983,11 @@ def _completion_label_audit(arguments: argparse.Namespace) -> None:
         f"Wrote {manifest.item_count} completion-label audit cases to {arguments.output_directory}",
         flush=True,
     )
+
+
+def _refresh_completion_label_audit_ui(arguments: argparse.Namespace) -> None:
+    refresh_completion_audit_review_page(arguments.audit_directory)
+    print(f"Refreshed completion-label reviewer at {arguments.audit_directory}", flush=True)
 
 
 def _analyze_completion_label_audit(arguments: argparse.Namespace) -> None:

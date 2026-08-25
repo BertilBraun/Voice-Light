@@ -12,14 +12,28 @@ from typing import Protocol, TextIO
 
 import numpy as np
 from numpy.typing import NDArray
+from pydantic import Field
 
 from app.local.training_corpus.export import MaterializedTrainingSample
 from app.training.turn_taking.benchmark_adapters import AudioPathResolver
 from app.training.turn_taking.benchmark_completion_audit import CompletionAuditManifest
-from app.training.turn_taking.benchmark_models import TurnCompletionInventory
+from app.training.turn_taking.benchmark_models import BenchmarkModel, TurnCompletionInventory
 from app.training.turn_taking.data import load_audio_window
 
 AUDIT_SAMPLE_RATE_HZ = 16_000
+AUDIT_WAVEFORM_BIN_COUNT = 560
+
+
+class CompletionAuditWaveformChannel(BenchmarkModel):
+    minimums: tuple[float, ...] = Field(min_length=1)
+    maximums: tuple[float, ...] = Field(min_length=1)
+
+
+class CompletionAuditWaveform(BenchmarkModel):
+    audit_id: str
+    duration_seconds: float = Field(gt=0.0)
+    user: CompletionAuditWaveformChannel
+    assistant: CompletionAuditWaveformChannel
 
 
 class CompletionAuditAudioLoader(Protocol):
@@ -75,6 +89,7 @@ def write_completion_audit_package(
     started_at = time.perf_counter()
     if progress_output is not None:
         _write_progress(progress_output, 0, manifest.item_count, 0.0)
+    waveforms: list[CompletionAuditWaveform] = []
     for completed_count, item in enumerate(manifest.items, start=1):
         candidate = candidates_by_id.get(item.candidate_id)
         if candidate is None:
@@ -100,6 +115,14 @@ def write_completion_audit_package(
             assistant_audio,
             sample_rate_hz,
         )
+        waveforms.append(
+            _completion_audit_waveform(
+                item.audit_id,
+                user_audio,
+                assistant_audio,
+                sample_rate_hz,
+            )
+        )
         if progress_output is not None:
             _write_progress(
                 progress_output,
@@ -114,7 +137,22 @@ def write_completion_audit_package(
     )
     _write_review_template(output_directory / "review-template.csv", manifest)
     (output_directory / "index.html").write_text(
-        _review_page(manifest),
+        _review_page(manifest, tuple(waveforms)),
+        encoding="utf-8",
+    )
+
+
+def refresh_completion_audit_review_page(output_directory: Path) -> None:
+    manifest_path = output_directory / "audit-manifest.json"
+    manifest = CompletionAuditManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    waveforms = tuple(
+        _read_completion_audit_waveform(output_directory / item.clip_path, item.audit_id)
+        for item in manifest.items
+    )
+    (output_directory / "index.html").write_text(
+        _review_page(manifest, waveforms),
         encoding="utf-8",
     )
 
@@ -189,8 +227,73 @@ def _write_review_template(path: Path, manifest: CompletionAuditManifest) -> Non
             writer.writerow((item.order, item.audit_id, item.double_review, "", "", "", ""))
 
 
-def _review_page(manifest: CompletionAuditManifest) -> str:
+def _completion_audit_waveform(
+    audit_id: str,
+    user_audio: NDArray[np.float32],
+    assistant_audio: NDArray[np.float32],
+    sample_rate_hz: int,
+) -> CompletionAuditWaveform:
+    if user_audio.size != assistant_audio.size:
+        raise ValueError("Completion audit waveform channels must have equal durations.")
+    return CompletionAuditWaveform(
+        audit_id=audit_id,
+        duration_seconds=user_audio.size / sample_rate_hz,
+        user=_waveform_channel(user_audio),
+        assistant=_waveform_channel(assistant_audio),
+    )
+
+
+def _waveform_channel(samples: NDArray[np.float32]) -> CompletionAuditWaveformChannel:
+    if samples.ndim != 1 or not samples.size:
+        raise ValueError("Completion audit waveform input must be non-empty mono audio.")
+    edge_indices = np.linspace(
+        0,
+        samples.size,
+        min(AUDIT_WAVEFORM_BIN_COUNT, samples.size) + 1,
+        dtype=np.int64,
+    )
+    windows = tuple(
+        samples[edge_indices[index] : edge_indices[index + 1]]
+        for index in range(edge_indices.size - 1)
+    )
+    return CompletionAuditWaveformChannel(
+        minimums=tuple(float(window.min()) for window in windows),
+        maximums=tuple(float(window.max()) for window in windows),
+    )
+
+
+def _read_completion_audit_waveform(
+    clip_path: Path,
+    audit_id: str,
+) -> CompletionAuditWaveform:
+    with wave.open(str(clip_path), "rb") as audio:
+        if audio.getnchannels() != 2 or audio.getsampwidth() != 2:
+            raise ValueError("Completion audit review clips must be 16-bit stereo WAV files.")
+        sample_rate_hz = audio.getframerate()
+        sample_count = audio.getnframes()
+        stereo = np.frombuffer(audio.readframes(sample_count), dtype="<i2").reshape(-1, 2)
+    normalized = stereo.astype(np.float32) / 32768.0
+    return _completion_audit_waveform(
+        audit_id,
+        normalized[:, 0],
+        normalized[:, 1],
+        sample_rate_hz,
+    )
+
+
+def _review_page(
+    manifest: CompletionAuditManifest,
+    waveforms: tuple[CompletionAuditWaveform, ...],
+) -> str:
+    if tuple(waveform.audit_id for waveform in waveforms) != tuple(
+        item.audit_id for item in manifest.items
+    ):
+        raise ValueError("Completion audit waveform order does not match its manifest.")
     manifest_json = json.dumps(manifest.model_dump(mode="json")).replace("<", "\\u003c")
+    waveform_json = json.dumps(
+        tuple(waveform.model_dump(mode="json") for waveform in waveforms),
+        separators=(",", ":"),
+    ).replace("<", "\\u003c")
     title = html.escape("Voice Light completion-label audit")
     return f"""<!doctype html>
 <html lang="en">
@@ -199,58 +302,158 @@ def _review_page(manifest: CompletionAuditManifest) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
   <style>
-    :root {{ color-scheme: light dark; font-family: system-ui, sans-serif; }}
-    body {{ margin: 0 auto; max-width: 900px; padding: 24px; line-height: 1.45; }}
-    header, main {{ display: grid; gap: 16px; }}
-    .bar {{ height: 10px; background: #7774; border-radius: 8px; overflow: hidden; }}
-    .bar > div {{ height: 100%; background: #2c8; transition: width .2s; }}
-    .card {{ border: 1px solid #8886; border-radius: 12px; padding: 20px; }}
+    :root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #0b1020; color: #e8edf7; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0 auto; max-width: 1180px; padding: 28px; line-height: 1.45; }}
+    header, main {{ display: grid; gap: 18px; }}
+    h1, h2, h3, p {{ margin: 0; }}
+    h1 {{ font-size: clamp(24px, 4vw, 38px); letter-spacing: -0.03em; }}
+    h2 {{ font-size: 20px; }}
+    .card {{ background: #121a2d; border: 1px solid #2b3855; border-radius: 16px;
+      box-shadow: 0 12px 38px #0005; padding: 22px; }}
+    .instructions {{ display: grid; gap: 12px; border-left: 5px solid #fb7185; }}
+    .instruction-grid {{ display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); }}
+    .instruction-grid div {{ background: #0d1425; border-radius: 10px; padding: 12px; }}
+    .instruction-grid strong {{ color: #fda4af; display: block; margin-bottom: 4px; }}
     .row {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }}
+    .spread {{ justify-content: space-between; }}
     button, input, textarea {{ font: inherit; }}
-    button {{ padding: 9px 13px; }}
-    button.selected {{ outline: 3px solid #2c8; }}
+    button {{ background: #1b2944; border: 1px solid #3b4e73; border-radius: 9px;
+      color: #eef4ff; cursor: pointer; padding: 9px 13px; }}
+    button:hover {{ background: #243655; }}
+    button:focus-visible, input:focus-visible, textarea:focus-visible {{
+      outline: 3px solid #38bdf8; }}
+    button.selected {{ border-color: #34d399; box-shadow: 0 0 0 3px #34d39955; }}
+    input, textarea {{ background: #0b1222; border: 1px solid #3b4e73; border-radius: 8px;
+      color: #eef4ff; padding: 8px; }}
+    .bar {{ height: 9px; background: #26334d; border-radius: 8px; overflow: hidden; }}
+    .bar > div {{ height: 100%; background: #34d399; transition: width .2s; }}
+    .case-card {{ margin-top: 20px; }}
+    .case-kicker {{ color: #94a3b8; font-size: 13px; font-weight: 700; letter-spacing: .09em;
+      text-transform: uppercase; }}
+    .question {{ background: #231725; border: 1px solid #713448; border-radius: 12px;
+      font-size: 18px; padding: 15px; }}
+    .question strong {{ color: #fda4af; }}
+    .waveform-stack {{ border: 1px solid #334565; border-radius: 13px; overflow: hidden; }}
+    .waveform-panel {{ background: #091121; padding: 10px 12px 12px; }}
+    .waveform-panel + .waveform-panel {{ border-top: 1px solid #334565; }}
+    .channel-label {{ display: flex; justify-content: space-between; margin-bottom: 6px; }}
+    .channel-label strong {{ color: #dbeafe; }}
+    .channel-label span {{ color: #94a3b8; font-size: 13px; }}
+    canvas {{ cursor: crosshair; display: block; height: 132px; width: 100%; }}
+    .boundary-key {{ align-items: center; color: #cbd5e1; display: flex; font-size: 13px;
+      gap: 8px; margin-top: 10px; }}
+    .boundary-swatch {{ background: #fb7185; display: inline-block; height: 18px; width: 3px; }}
     audio {{ width: 100%; }}
-    textarea {{ box-sizing: border-box; min-height: 80px; width: 100%; }}
-    .tags label {{ display: inline-block; margin: 4px 12px 4px 0; }}
-    .muted {{ color: #888; }}
-    details {{ border-top: 1px solid #8884; margin-top: 14px; padding-top: 10px; }}
-    kbd {{ border: 1px solid #8888; border-radius: 4px; padding: 1px 5px; }}
+    .playback {{ display: grid; gap: 10px; }}
+    .decision-grid {{ display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); }}
+    .decision-grid button {{ min-height: 112px; text-align: left; }}
+    .decision-grid strong {{ display: block; font-size: 17px; margin: 6px 0; }}
+    .decision-grid span {{ color: #bdc8da; display: block; font-size: 13px; }}
+    textarea {{ min-height: 78px; resize: vertical; width: 100%; }}
+    .tags label {{ display: inline-block; margin: 5px 14px 5px 0; }}
+    .muted {{ color: #94a3b8; }}
+    details {{ border-top: 1px solid #334565; padding-top: 12px; }}
+    details summary {{ cursor: pointer; }}
+    pre {{ overflow-x: auto; white-space: pre-wrap; }}
+    kbd {{ border: 1px solid #64748b; border-radius: 4px; padding: 1px 5px; }}
+    @media (max-width: 760px) {{
+      body {{ padding: 14px; }}
+      .instruction-grid, .decision-grid {{ grid-template-columns: 1fr; }}
+      canvas {{ height: 108px; }}
+    }}
   </style>
 </head>
 <body>
   <header>
     <h1>{title}</h1>
-    <p>Listen blind before revealing metadata. Left channel is the candidate user; right channel
-    is the other speaker. Decide whether an assistant could safely take the turn at the marked
-    boundary.</p>
-    <div class="row">
-      <label>Reviewer <input id="reviewer" autocomplete="name"></label>
+    <section class="card instructions" aria-labelledby="instructions-heading">
+      <h2 id="instructions-heading">What you are annotating</h2>
+      <p><strong>There is one decision point per clip: the vertical pink line at t = 0.</strong>
+      Label whether the candidate user has completed their turn at that exact instant.</p>
+      <div class="instruction-grid">
+        <div><strong>SAFE TO TAKE</strong>The assistant can begin at the line without cutting off
+        the candidate user.</div>
+        <div><strong>HOLD</strong>The candidate user is pausing mid-turn; beginning at the line
+        would interrupt their continuation.</div>
+        <div><strong>AMBIGUOUS</strong>The audio, timing, overlap, or wording does not support a
+        reliable binary judgment.</div>
+      </div>
+      <p class="muted">Use audio after the line to verify what followed, but do not move the
+      decision point. The top waveform is always the candidate user; the bottom is the other
+      speaker.</p>
+    </section>
+    <div class="row spread">
+      <div class="row">
+        <label>Reviewer <input id="reviewer" autocomplete="name" placeholder="Your name"></label>
+        <span id="progress"></span>
+      </div>
       <button id="export">Export reviews JSON</button>
-      <span id="progress"></span>
     </div>
     <div class="bar"><div id="progress-bar"></div></div>
   </header>
-  <main class="card">
-    <div class="row">
-      <button id="previous">Previous</button>
-      <button id="next">Next</button>
-      <strong id="position"></strong>
-      <span id="double-review" class="muted"></span>
+  <main class="card case-card">
+    <div class="row spread">
+      <div>
+        <div class="case-kicker">Completion boundary review</div>
+        <strong id="position"></strong>
+        <span id="double-review" class="muted"></span>
+      </div>
+      <div class="row">
+        <button id="previous">← Previous</button>
+        <button id="next">Next →</button>
+      </div>
     </div>
-    <p id="context"></p>
-    <audio id="audio" controls preload="metadata"></audio>
-    <div class="row">
-      <button id="play-boundary">Play from 2 s before boundary</button>
-      <span id="boundary"></span>
-    </div>
-    <h2>Decision</h2>
-    <div class="row" id="labels">
-      <button data-label="safe_to_take"><kbd>1</kbd> Safe to take</button>
-      <button data-label="hold"><kbd>2</kbd> Hold</button>
-      <button data-label="ambiguous_unratable"><kbd>3</kbd> Ambiguous / unratable</button>
-    </div>
-    <div class="tags" id="tags"></div>
-    <label>Notes<textarea id="notes"></textarea></label>
+    <div class="question"><strong>At the pink line:</strong> can the assistant start speaking
+      without cutting off the candidate user?</div>
+    <section aria-label="Synchronized two-channel waveform">
+      <div class="waveform-stack">
+        <div class="waveform-panel">
+          <div class="channel-label"><strong>Candidate user</strong>
+            <span>audio left channel</span></div>
+          <canvas id="user-waveform" aria-label="Candidate user waveform"></canvas>
+        </div>
+        <div class="waveform-panel">
+          <div class="channel-label"><strong>Other speaker</strong>
+            <span>audio right channel</span></div>
+          <canvas id="assistant-waveform" aria-label="Other speaker waveform"></canvas>
+        </div>
+      </div>
+      <div class="boundary-key"><span class="boundary-swatch"></span>
+        <strong>Pink line = annotation boundary (t = 0)</strong>
+        <span id="boundary" class="muted"></span>
+      </div>
+    </section>
+    <section class="playback" aria-label="Playback controls">
+      <audio id="audio" controls preload="metadata"></audio>
+      <div class="row">
+        <button id="play-full">Play full clip</button>
+        <button id="play-before">Play −3 s to boundary</button>
+        <button id="play-around">Play −2 s to +2 s</button>
+        <span class="muted">Click either waveform to seek.</span>
+      </div>
+    </section>
+    <section aria-labelledby="decision-heading">
+      <h2 id="decision-heading">Your label</h2>
+      <div class="decision-grid" id="labels">
+        <button data-label="safe_to_take" aria-pressed="false"><kbd>1</kbd>
+          <strong>Safe to take</strong>
+          <span>The candidate user's turn is complete at the line.</span></button>
+        <button data-label="hold" aria-pressed="false"><kbd>2</kbd>
+          <strong>Hold</strong>
+          <span>The candidate user still owns the turn at the line.</span></button>
+        <button data-label="ambiguous_unratable" aria-pressed="false"><kbd>3</kbd>
+          <strong>Ambiguous / unratable</strong>
+          <span>A reliable binary label is not justified.</span></button>
+      </div>
+    </section>
+    <details>
+      <summary>Optional error tags and notes</summary>
+      <div class="tags" id="tags"></div>
+      <label>Notes
+        <textarea id="notes" placeholder="Why is this label questionable?"></textarea></label>
+    </details>
     <details id="metadata">
       <summary>Reveal automatic label, selection reasons, and model scores</summary>
       <pre id="metadata-text"></pre>
@@ -258,14 +461,21 @@ def _review_page(manifest: CompletionAuditManifest) -> str:
   </main>
   <script>
     const manifest = {manifest_json};
+    const waveformRows = {waveform_json};
+    const waveformById = Object.fromEntries(waveformRows.map(row => [row.audit_id, row]));
     const labels = ["safe_to_take", "hold", "ambiguous_unratable"];
     const tags = ["continuation", "backchannel", "overlap", "transcript_error",
       "timing_error", "censored_context", "audio_quality"];
     const storagePrefix = `completion-audit:${{manifest.items_sha256}}`;
     let state = {{index:0, reviews:{{}}}};
+    let playbackEnd = null;
+    let animationFrame = null;
     const byId = id => document.getElementById(id);
+    const audio = byId("audio");
+    const canvases = [byId("user-waveform"), byId("assistant-waveform")];
 
     function current() {{ return manifest.items[state.index]; }}
+    function currentWaveform() {{ return waveformById[current().audit_id]; }}
     function reviewerName() {{ return byId("reviewer").value.trim(); }}
     function save() {{
       if (reviewerName()) localStorage.setItem(`${{storagePrefix}}:${{reviewerName()}}`,
@@ -280,20 +490,28 @@ def _review_page(manifest: CompletionAuditManifest) -> str:
       const item = current();
       return state.reviews[item.audit_id] ||= {{review_label:null, error_tags:[], notes:""}};
     }}
-    function setLabel(value) {{ review().review_label = value; save(); render(); }}
+    function setLabel(value) {{ review().review_label = value; save(); renderDecision(); }}
     function move(delta) {{
       state.index = Math.max(0, Math.min(manifest.items.length - 1, state.index + delta));
-      save(); render();
+      playbackEnd = null; audio.pause(); save(); render();
+    }}
+    function renderDecision() {{
+      const value = review();
+      document.querySelectorAll("[data-label]").forEach(button => {{
+        const selected = button.dataset.label === value.review_label;
+        button.classList.toggle("selected", selected);
+        button.setAttribute("aria-pressed", String(selected));
+      }});
+      const completed = Object.values(state.reviews).filter(item => item.review_label).length;
+      byId("progress").textContent = `${{completed}} / ${{manifest.item_count}} reviewed`;
+      byId("progress-bar").style.width = `${{100 * completed / manifest.item_count}}%`;
     }}
     function render() {{
       const item = current(); const value = review();
-      byId("position").textContent = `${{item.order}} / ${{manifest.item_count}}`;
-      byId("double-review").textContent = item.double_review ? "Independent double review" : "";
-      byId("context").textContent = `${{item.dataset_name}} · ${{item.categories.join(", ")}}`;
-      byId("audio").src = item.clip_path;
-      byId("boundary").textContent = `Boundary at ${{item.boundary_offset_seconds.toFixed(2)}} s`;
-      document.querySelectorAll("[data-label]").forEach(button =>
-        button.classList.toggle("selected", button.dataset.label === value.review_label));
+      byId("position").textContent = `Case ${{item.order}} of ${{manifest.item_count}}`;
+      byId("double-review").textContent = item.double_review ? " · independent double review" : "";
+      audio.src = item.clip_path;
+      byId("boundary").textContent = `(${{item.boundary_offset_seconds.toFixed(2)}} s into clip)`;
       byId("tags").innerHTML = tags.map(tag =>
         `<label><input type="checkbox" value="${{tag}}"
         ${{value.error_tags.includes(tag) ? "checked" : ""}}>
@@ -315,23 +533,114 @@ def _review_page(manifest: CompletionAuditManifest) -> str:
         voice_light: item.voice_light,
         smart_turn: item.smart_turn,
         livekit: item.livekit,
+        dataset: item.dataset_name,
+        categories: item.categories,
         candidate_id: item.candidate_id
       }}, null, 2);
-      const completed = Object.values(state.reviews).filter(item => item.review_label).length;
-      byId("progress").textContent = `${{completed}} / ${{manifest.item_count}} reviewed`;
-      byId("progress-bar").style.width = `${{100 * completed / manifest.item_count}}%`;
+      renderDecision();
+      requestAnimationFrame(drawWaveforms);
+    }}
+
+    function drawWaveforms() {{
+      const waveform = currentWaveform();
+      const peak = Math.max(0.01,
+        ...waveform.user.minimums.map(Math.abs), ...waveform.user.maximums.map(Math.abs),
+        ...waveform.assistant.minimums.map(Math.abs), ...waveform.assistant.maximums.map(Math.abs));
+      drawChannel(canvases[0], waveform.user, waveform, peak, "#38bdf8", true);
+      drawChannel(canvases[1], waveform.assistant, waveform, peak, "#a78bfa", false);
+    }}
+    function drawChannel(canvas, channel, waveform, peak, color, labelBoundary) {{
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, canvas.clientWidth);
+      const height = Math.max(1, canvas.clientHeight);
+      canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+      const context = canvas.getContext("2d"); context.scale(ratio, ratio);
+      const item = current();
+      const boundaryX = width * item.boundary_offset_seconds / waveform.duration_seconds;
+      context.fillStyle = "#38bdf80b"; context.fillRect(0, 0, boundaryX, height);
+      context.fillStyle = "#fb923c0d"; context.fillRect(boundaryX, 0, width - boundaryX, height);
+      context.font = "11px system-ui"; context.textAlign = "center";
+      for (let second = Math.ceil(-item.boundary_offset_seconds);
+        second <= Math.floor(waveform.duration_seconds - item.boundary_offset_seconds); second++) {{
+        const x = width * (second + item.boundary_offset_seconds) / waveform.duration_seconds;
+        context.strokeStyle = second === 0 ? "#fb7185" : "#334155";
+        context.lineWidth = second === 0 ? 3 : 1;
+        context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
+        if (second !== 0) {{
+          context.fillStyle = "#8290a7";
+          context.textAlign = x < 24 ? "left" : (x > width - 24 ? "right" : "center");
+          context.fillText(`${{second > 0 ? "+" : ""}}${{second}}s`, x, height - 6);
+        }}
+      }}
+      context.strokeStyle = color; context.fillStyle = `${{color}}35`; context.lineWidth = 1;
+      context.beginPath();
+      const center = height / 2; const amplitude = height * 0.40 / peak;
+      for (let index = 0; index < channel.maximums.length; index++) {{
+        const x = width * index / Math.max(1, channel.maximums.length - 1);
+        const y = center - channel.maximums[index] * amplitude;
+        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      }}
+      for (let index = channel.minimums.length - 1; index >= 0; index--) {{
+        const x = width * index / Math.max(1, channel.minimums.length - 1);
+        context.lineTo(x, center - channel.minimums[index] * amplitude);
+      }}
+      context.closePath(); context.fill(); context.stroke();
+      context.strokeStyle = "#fb7185"; context.lineWidth = 3;
+      context.beginPath(); context.moveTo(boundaryX, 0);
+      context.lineTo(boundaryX, height); context.stroke();
+      if (labelBoundary) {{
+        context.fillStyle = "#8290a7"; context.font = "11px system-ui";
+        context.textAlign = "left"; context.fillText("BEFORE BOUNDARY", 8, 16);
+        context.textAlign = "right"; context.fillText("AFTER · OUTCOME CONTEXT", width - 8, 16);
+        context.fillStyle = "#fb7185"; context.font = "bold 12px system-ui";
+        context.textAlign = boundaryX > width * .75 ? "right" : "left";
+        context.fillText("DECISION POINT · t=0",
+          boundaryX + (boundaryX > width * .75 ? -8 : 8), 34);
+      }}
+      if (Number.isFinite(audio.currentTime)) {{
+        const playheadX = width * audio.currentTime / waveform.duration_seconds;
+        context.strokeStyle = "#f8fafc"; context.lineWidth = 1;
+        context.beginPath(); context.moveTo(playheadX, 0);
+        context.lineTo(playheadX, height); context.stroke();
+      }}
+    }}
+    function seekFromPointer(event) {{
+      const rectangle = event.currentTarget.getBoundingClientRect();
+      audio.currentTime = currentWaveform().duration_seconds *
+        Math.max(0, Math.min(1, (event.clientX - rectangle.left) / rectangle.width));
+      drawWaveforms();
+    }}
+    function playRange(start, end) {{
+      playbackEnd = end; audio.currentTime = Math.max(0, start); audio.play();
+    }}
+    function animatePlayback() {{
+      drawWaveforms();
+      if (!audio.paused) animationFrame = requestAnimationFrame(animatePlayback);
     }}
 
     document.querySelectorAll("[data-label]").forEach(button =>
       button.onclick = () => setLabel(button.dataset.label));
+    canvases.forEach(canvas => canvas.onpointerdown = seekFromPointer);
     byId("previous").onclick = () => move(-1); byId("next").onclick = () => move(1);
     byId("notes").oninput = event => {{ review().notes = event.target.value; save(); }};
     byId("reviewer").onchange = loadReviewer;
-    byId("play-boundary").onclick = () => {{
-      const audio = byId("audio");
-      audio.currentTime = Math.max(0, current().boundary_offset_seconds - 2);
-      audio.play();
+    byId("play-full").onclick = () => playRange(0, null);
+    byId("play-before").onclick = () => {{
+      const boundary = current().boundary_offset_seconds;
+      playRange(boundary - 3, boundary);
     }};
+    byId("play-around").onclick = () => {{
+      const boundary = current().boundary_offset_seconds;
+      playRange(boundary - 2, Math.min(currentWaveform().duration_seconds, boundary + 2));
+    }};
+    audio.ontimeupdate = () => {{
+      if (playbackEnd !== null && audio.currentTime >= playbackEnd) {{
+        audio.pause(); playbackEnd = null;
+      }}
+      drawWaveforms();
+    }};
+    audio.onplay = () => {{ cancelAnimationFrame(animationFrame); animatePlayback(); }};
+    audio.onpause = () => {{ cancelAnimationFrame(animationFrame); drawWaveforms(); }};
     byId("export").onclick = () => {{
       if (!reviewerName()) {{ alert("Enter a reviewer name before exporting."); return; }}
       const payload = {{schema_version:"voice-light-completion-label-reviews-v1",
@@ -341,15 +650,18 @@ def _review_page(manifest: CompletionAuditManifest) -> str:
       const link = document.createElement("a");
       const blob = new Blob([JSON.stringify(payload, null, 2)], {{type:"application/json"}});
       link.href = URL.createObjectURL(blob);
-      link.download = `completion-label-reviews-${{payload.reviewer || "anonymous"}}.json`;
-      link.click();
-      URL.revokeObjectURL(link.href);
+      link.download = `completion-label-reviews-${{payload.reviewer}}.json`;
+      link.click(); URL.revokeObjectURL(link.href);
     }};
     document.onkeydown = event => {{
       if (event.target.matches("input, textarea")) return;
       if (["1", "2", "3"].includes(event.key)) setLabel(labels[Number(event.key) - 1]);
       if (event.key === "ArrowRight") move(1); if (event.key === "ArrowLeft") move(-1);
+      if (event.key === " ") {{
+        event.preventDefault(); audio.paused ? audio.play() : audio.pause();
+      }}
     }};
+    new ResizeObserver(drawWaveforms).observe(byId("user-waveform"));
     render();
   </script>
 </body>

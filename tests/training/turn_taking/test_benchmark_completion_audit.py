@@ -22,6 +22,7 @@ from app.training.turn_taking.benchmark_completion_audit import (
     build_completion_audit_manifest,
 )
 from app.training.turn_taking.benchmark_completion_audit_export import (
+    refresh_completion_audit_review_page,
     write_completion_audit_package,
 )
 from app.training.turn_taking.benchmark_models import (
@@ -174,12 +175,22 @@ def test_completion_audit_package_writes_stereo_clips_and_blind_review_page(
     assert (tmp_path / "audit-manifest.json").is_file()
     assert (tmp_path / "review-template.csv").is_file()
     page = (tmp_path / "index.html").read_text(encoding="utf-8")
-    assert "Listen blind before revealing metadata" in page
+    assert "vertical pink line at t = 0" in page
+    assert "Candidate user waveform" in page
+    assert "DECISION POINT · t=0" in page
+    assert "Play −3 s to boundary" in page
     assert "Export reviews JSON" in page
+    assert '"duration_seconds":7.0' in page
     with wave.open(str(tmp_path / manifest.items[0].clip_path), "rb") as audio:
         assert audio.getnchannels() == 2
         assert audio.getframerate() == 8_000
         assert audio.getnframes() == 56_000
+
+    (tmp_path / "index.html").write_text("stale", encoding="utf-8")
+    refresh_completion_audit_review_page(tmp_path)
+    refreshed_page = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "Candidate user waveform" in refreshed_page
+    assert '"duration_seconds":7.0' in refreshed_page
 
 
 def test_completion_audit_analysis_reports_label_and_double_review_agreement() -> None:
