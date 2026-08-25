@@ -2190,6 +2190,7 @@ dev = [
     { name = "ruff" },
 ]
 training = [
+    { name = "librosa" },
     { name = "tensorboard" },
 ]
 
@@ -2229,7 +2230,10 @@ dev = [
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.6.0" },
 ]
-training = [{ name = "tensorboard", specifier = ">=2.20.0" }]
+training = [
+    { name = "librosa", specifier = ">=0.11.0" },
+    { name = "tensorboard", specifier = ">=2.20.0" },
+]
 
 [[package]]
 name = "wandb"
