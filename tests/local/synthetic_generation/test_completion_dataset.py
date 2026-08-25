@@ -8,9 +8,8 @@ import pytest
 from app.local.synthetic_generation.completion_dataset import (
     CompletionBoundaryKind,
     PromptLanguage,
+    QwenVoiceDesignProvenance,
     SyntheticSpeechPrompt,
-    TtsGenerationProvenance,
-    TtsProvider,
     analyze_generated_samples,
     completion_window_plans,
 )
@@ -118,9 +117,8 @@ def _prompt() -> SyntheticSpeechPrompt:
     )
 
 
-def _provenance() -> TtsGenerationProvenance:
-    return TtsGenerationProvenance(
-        provider=TtsProvider.QWEN3_VOICE_DESIGN,
+def _provenance() -> QwenVoiceDesignProvenance:
+    return QwenVoiceDesignProvenance(
         model_id="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
         model_revision="test-revision",
         runtime_version="0.1.1",

@@ -15,8 +15,7 @@ from qwen_tts import Qwen3TTSModel
 
 from app.local.synthetic_generation.completion_dataset import (
     GeneratedUtteranceAnnotation,
-    TtsGenerationProvenance,
-    TtsProvider,
+    QwenVoiceDesignProvenance,
     analyze_generated_samples,
     completion_window_plans,
 )
@@ -88,8 +87,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
             attributed_generation_seconds = batch_generation_seconds / len(batch)
             audio_relative_path = Path("audio") / f"{prompt.prompt_id}.wav"
             audio_path = parsed.output / audio_relative_path
-            provenance = TtsGenerationProvenance(
-                provider=TtsProvider.QWEN3_VOICE_DESIGN,
+            provenance = QwenVoiceDesignProvenance(
                 model_id=parsed.model,
                 model_revision=parsed.model_revision,
                 runtime_version=QWEN_TTS_RUNTIME_VERSION,

@@ -4,6 +4,7 @@ import hashlib
 import random
 from enum import StrEnum
 from pathlib import Path
+from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -44,8 +45,7 @@ class SyntheticSpeechPrompt(SyntheticModel):
         return self
 
 
-class TtsGenerationProvenance(SyntheticModel):
-    provider: TtsProvider
+class TtsGenerationProvenanceBase(SyntheticModel):
     model_id: str = Field(min_length=1)
     model_revision: str = Field(min_length=1)
     runtime_version: str = Field(min_length=1)
@@ -53,6 +53,26 @@ class TtsGenerationProvenance(SyntheticModel):
     generation_seconds: float = Field(gt=0.0)
     real_time_factor: float = Field(gt=0.0)
     batch_size: int = Field(gt=0)
+
+
+class QwenVoiceDesignProvenance(TtsGenerationProvenanceBase):
+    provider: Literal[TtsProvider.QWEN3_VOICE_DESIGN] = TtsProvider.QWEN3_VOICE_DESIGN
+
+
+class ChatterboxMultilingualProvenance(TtsGenerationProvenanceBase):
+    provider: Literal[TtsProvider.CHATTERBOX_MULTILINGUAL] = TtsProvider.CHATTERBOX_MULTILINGUAL
+    runtime_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    reference_audio_path: Path
+    reference_audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    exaggeration: float = Field(ge=0.0, le=1.0)
+    classifier_free_guidance_weight: float = Field(ge=0.0)
+    temperature: float = Field(gt=0.0)
+
+
+TtsGenerationProvenance = Annotated[
+    QwenVoiceDesignProvenance | ChatterboxMultilingualProvenance,
+    Field(discriminator="provider"),
+]
 
 
 class SilenceDetectionConfiguration(SyntheticModel):

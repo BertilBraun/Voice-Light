@@ -18,6 +18,9 @@ qwen = [
     "torch",
     "torchaudio",
 ]
+chatterbox = [
+    "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2",
+]
 prompt = [
     "accelerate>=1.10.0",
     "huggingface-hub>=0.34.0",
