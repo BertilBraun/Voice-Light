@@ -437,7 +437,7 @@ def _review_page(
       </div>
     </section>
     <section class="playback" aria-label="Playback controls">
-      <audio id="audio" controls preload="auto" autoplay></audio>
+      <audio id="audio" controls preload="auto"></audio>
       <button id="enable-autoplay" class="autoplay-gate hidden">
         Start review and enable autoplay</button>
       <div class="row">
@@ -574,7 +574,11 @@ def _review_page(
         ...waveform.assistant.maximums.map(Math.abs));
       byId("position").textContent = `Case ${{item.order}} of ${{manifest.item_count}}`;
       byId("double-review").textContent = item.double_review ? " · independent double review" : "";
-      audio.oncanplay = () => attemptAutoplay(item.audit_id);
+      audio.oncanplay = null;
+      audio.oncanplay = () => {{
+        audio.oncanplay = null;
+        attemptAutoplay(item.audit_id);
+      }};
       audio.src = item.clip_path;
       audio.load();
       byId("boundary").textContent = `(${{item.boundary_offset_seconds.toFixed(2)}} s into clip)`;
@@ -610,7 +614,7 @@ def _review_page(
     function attemptAutoplay(auditId) {{
       if (current().audit_id !== auditId || feedback !== null) return;
       const attempt = ++autoplayAttempt;
-      playbackEnd = null; audio.currentTime = 0;
+      playbackEnd = null;
       audio.play().then(() => {{
         if (attempt !== autoplayAttempt || current().audit_id !== auditId) return;
         byId("enable-autoplay").classList.add("hidden");

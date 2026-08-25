@@ -181,6 +181,10 @@ def test_completion_audit_package_writes_stereo_clips_and_blind_review_page(
     assert "Play −3 s to boundary" in page
     assert "Autoplaying full clip" in page
     assert "Start review and enable autoplay" in page
+    assert '<audio id="audio" controls preload="auto"></audio>' in page
+    assert 'preload="auto" autoplay' not in page
+    assert "audio.oncanplay = null;" in page
+    assert "playbackEnd = null; audio.currentTime = 0;" not in page
     assert "Disagreement — advancing in one second" in page
     assert "ORIGINAL ·" in page
     assert "YOURS ·" in page
