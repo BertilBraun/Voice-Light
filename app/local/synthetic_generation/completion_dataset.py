@@ -58,8 +58,8 @@ class TtsGenerationProvenance(SyntheticModel):
 class SilenceDetectionConfiguration(SyntheticModel):
     frame_milliseconds: int = Field(default=20, gt=0)
     minimum_silence_milliseconds: int = Field(default=500, ge=500)
-    absolute_rms_threshold: float = Field(default=0.002, gt=0.0)
-    peak_rms_ratio: float = Field(default=0.035, gt=0.0, lt=1.0)
+    absolute_rms_threshold: float = Field(default=0.001, gt=0.0)
+    peak_rms_ratio: float = Field(default=0.01, gt=0.0, lt=1.0)
 
 
 DEFAULT_SILENCE_DETECTION = SilenceDetectionConfiguration()

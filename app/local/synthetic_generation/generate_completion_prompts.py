@@ -83,13 +83,22 @@ def generate_speech_prompts(
     while len(prompts) < prompt_count:
         language = _sample_language(generator)
         requested_batch_size = min(batch_size, prompt_count - len(prompts))
-        draft_batch = _generate_draft_batch(
-            model=model,
-            tokenizer=tokenizer,
-            language=language,
-            batch_size=requested_batch_size,
-            seed=seed + attempt,
-        )
+        try:
+            draft_batch = _generate_draft_batch(
+                model=model,
+                tokenizer=tokenizer,
+                language=language,
+                batch_size=requested_batch_size,
+                seed=seed + attempt,
+            )
+        except ValueError as error:
+            print(f"Discarding invalid prompt batch: {error}", flush=True)
+            attempt += 1
+            if attempt > prompt_count * 4:
+                raise ValueError(
+                    "Prompt generation failed to produce enough unique valid drafts."
+                ) from error
+            continue
         for draft in draft_batch.prompts:
             normalized_text = " ".join(draft.text.lower().split())
             if normalized_text in used_texts:
@@ -133,7 +142,7 @@ def _generate_draft_batch(
     torch.manual_seed(seed)
     output = model.generate(
         **inputs,
-        max_new_tokens=1800,
+        max_new_tokens=1100,
         do_sample=True,
         temperature=0.85,
         top_p=0.92,

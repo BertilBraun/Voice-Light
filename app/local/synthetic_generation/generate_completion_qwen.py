@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
-import qwen_tts
 import soundfile as sf
 import torch
 from pydantic import Field
@@ -22,6 +22,8 @@ from app.local.synthetic_generation.completion_dataset import (
 )
 from app.local.synthetic_generation.completion_prompts import SyntheticSpeechPromptSet
 from app.local.synthetic_generation.models import SyntheticModel
+
+QWEN_TTS_RUNTIME_VERSION = importlib.metadata.version("qwen-tts")
 
 
 class QwenCompletionRunManifest(SyntheticModel):
@@ -90,7 +92,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
                 provider=TtsProvider.QWEN3_VOICE_DESIGN,
                 model_id=parsed.model,
                 model_revision=parsed.model_revision,
-                runtime_version=qwen_tts.__version__,
+                runtime_version=QWEN_TTS_RUNTIME_VERSION,
                 model_license="Apache-2.0",
                 generation_seconds=attributed_generation_seconds,
                 real_time_factor=attributed_generation_seconds / raw_duration_seconds,
@@ -124,7 +126,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         output_directory=parsed.output,
         model_id=parsed.model,
         model_revision=parsed.model_revision,
-        runtime_version=qwen_tts.__version__,
+        runtime_version=QWEN_TTS_RUNTIME_VERSION,
         requested_run_seconds=parsed.run_seconds,
         batch_size=parsed.batch_size,
         utterance_count=len(annotations),

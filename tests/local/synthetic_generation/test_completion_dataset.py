@@ -72,6 +72,31 @@ def test_window_plans_move_each_boundary_and_include_all_visible_labels() -> Non
     assert all(4.0 <= window.boundaries[0].time_seconds < 20.0 for window in windows)
 
 
+def test_analysis_keeps_quiet_speech_inside_the_turn() -> None:
+    sample_rate_hz = 16_000
+    samples = np.concatenate(
+        (
+            _tone(1.0, sample_rate_hz),
+            _tone(0.7, sample_rate_hz) * 0.02,
+            _tone(1.0, sample_rate_hz),
+            np.zeros(round(0.8 * sample_rate_hz), dtype=np.float32),
+        )
+    )
+
+    _, annotation = analyze_generated_samples(
+        samples=samples,
+        sample_rate_hz=sample_rate_hz,
+        prompt=_prompt(),
+        audio_path=Path("audio/example.wav"),
+        provenance=_provenance(),
+    )
+
+    assert [boundary.kind for boundary in annotation.boundaries] == [
+        CompletionBoundaryKind.END_OF_TURN
+    ]
+    assert annotation.trimmed_duration_seconds == 2.7
+
+
 def _tone(duration_seconds: float, sample_rate_hz: int) -> np.ndarray:
     times = np.arange(round(duration_seconds * sample_rate_hz)) / sample_rate_hz
     return (0.2 * np.sin(2.0 * np.pi * 220.0 * times)).astype(np.float32)
