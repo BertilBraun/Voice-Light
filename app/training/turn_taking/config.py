@@ -49,6 +49,11 @@ class TrainingPrecision(StrEnum):
     BFLOAT16 = "bfloat16"
 
 
+class WaveformAugmentationProfile(StrEnum):
+    LEGACY = "legacy"
+    EXPANDED = "expanded"
+
+
 class WaveformAugmentationConfig(FrozenBaseModel):
     gain_probability: float = Field(default=0.8, ge=0.0, le=1.0)
     minimum_gain_db: float = -12.0
@@ -60,6 +65,8 @@ class WaveformAugmentationConfig(FrozenBaseModel):
     bandwidth_probability: float = Field(default=0.25, ge=0.0, le=1.0)
     clipping_probability: float = Field(default=0.15, ge=0.0, le=1.0)
     packet_loss_probability: float = Field(default=0.15, ge=0.0, le=1.0)
+    minimum_packet_loss_seconds: float = Field(default=0.02, gt=0.0)
+    maximum_packet_loss_seconds: float = Field(default=0.12, gt=0.0)
 
     @model_validator(mode="after")
     def validate_ranges(self) -> WaveformAugmentationConfig:
@@ -69,7 +76,29 @@ class WaveformAugmentationConfig(FrozenBaseModel):
             raise ValueError(
                 "minimum_signal_to_noise_db must not exceed maximum_signal_to_noise_db."
             )
+        if self.minimum_packet_loss_seconds > self.maximum_packet_loss_seconds:
+            raise ValueError(
+                "minimum_packet_loss_seconds must not exceed maximum_packet_loss_seconds."
+            )
         return self
+
+
+def waveform_augmentation_config(
+    profile: WaveformAugmentationProfile,
+) -> WaveformAugmentationConfig:
+    match profile:
+        case WaveformAugmentationProfile.LEGACY:
+            return WaveformAugmentationConfig(
+                noise_probability=0.3,
+                reverberation_probability=0.0,
+                bandwidth_probability=0.0,
+                clipping_probability=0.0,
+                packet_loss_probability=0.1,
+                minimum_packet_loss_seconds=0.04,
+                maximum_packet_loss_seconds=0.04,
+            )
+        case WaveformAugmentationProfile.EXPANDED:
+            return WaveformAugmentationConfig()
 
 
 class TrainingConfig(FrozenBaseModel):

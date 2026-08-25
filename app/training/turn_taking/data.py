@@ -66,7 +66,10 @@ class WaveformAugmenter:
             threshold = generator.uniform(0.35, 0.9)
             augmented = augmented.clamp(-threshold, threshold) / threshold
         if augmented.numel() and generator.random() < self.config.packet_loss_probability:
-            duration_seconds = generator.uniform(0.02, 0.12)
+            duration_seconds = generator.uniform(
+                self.config.minimum_packet_loss_seconds,
+                self.config.maximum_packet_loss_seconds,
+            )
             width = min(augmented.numel(), max(1, round(duration_seconds * self.sample_rate_hz)))
             start = generator.randrange(augmented.numel() - width + 1)
             augmented[start : start + width] = 0.0

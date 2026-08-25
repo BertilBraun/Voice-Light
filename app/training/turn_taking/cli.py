@@ -23,6 +23,8 @@ from app.training.turn_taking.config import (
     TrainingPrecision,
     TurnCompletionObjectiveConfig,
     UserYieldObjectiveConfig,
+    WaveformAugmentationProfile,
+    waveform_augmentation_config,
 )
 from app.training.turn_taking.data import (
     TurnTakingDataset,
@@ -58,6 +60,12 @@ def main() -> None:
     parser.add_argument("--gradient-accumulation-steps", type=_positive_int)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int)
     parser.add_argument("--run-seed", type=_nonnegative_int)
+    parser.add_argument(
+        "--augmentation-profile",
+        type=WaveformAugmentationProfile,
+        choices=tuple(WaveformAugmentationProfile),
+        default=WaveformAugmentationProfile.EXPANDED,
+    )
     parser.add_argument(
         "--primary-objective",
         choices=("user_yield", "turn_completion"),
@@ -100,6 +108,9 @@ def main() -> None:
         config = config.model_copy(update={"model_revision": arguments.model_revision})
     if arguments.run_seed is not None:
         config = config.model_copy(update={"random_seed": arguments.run_seed})
+    config = config.model_copy(
+        update={"augmentation": waveform_augmentation_config(arguments.augmentation_profile)}
+    )
     if arguments.primary_objective is not None:
         primary_objective = (
             TurnCompletionObjectiveConfig()

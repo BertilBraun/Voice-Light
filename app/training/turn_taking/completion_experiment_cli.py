@@ -9,7 +9,10 @@ from pathlib import Path
 import torch
 
 from app.training.turn_taking.benchmark_cli import PINNED_CORPUS_REVISION
-from app.training.turn_taking.config import PINNED_NEMOTRON_REVISION
+from app.training.turn_taking.config import (
+    PINNED_NEMOTRON_REVISION,
+    WaveformAugmentationProfile,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,12 @@ def main() -> None:
     parser.add_argument("--gradient-accumulation-steps", type=_positive_int, default=2)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=4)
     parser.add_argument("--run-seed", type=_nonnegative_int, default=20_260_825)
+    parser.add_argument(
+        "--augmentation-profile",
+        type=WaveformAugmentationProfile,
+        choices=tuple(WaveformAugmentationProfile),
+        default=WaveformAugmentationProfile.EXPANDED,
+    )
     arguments = parser.parse_args()
     if not torch.cuda.is_available():
         parser.error("A CUDA GPU is required for the completion experiment.")
@@ -67,6 +76,8 @@ def main() -> None:
         str(arguments.data_loader_workers),
         "--run-seed",
         str(arguments.run_seed),
+        "--augmentation-profile",
+        arguments.augmentation_profile.value,
     )
     if not paths.best_checkpoint.exists():
         raise ValueError("Training finished without producing a best validation checkpoint.")
@@ -91,14 +102,17 @@ def main() -> None:
         )
         _analyze(paths.inventory, prediction_path, report_path)
 
-    checkpoint = torch.load(paths.best_checkpoint, map_location="cpu", weights_only=False)
-    optimizer_step = int(checkpoint["optimizer_step"])
+    checkpoints_by_step = {
+        int(checkpoint["optimizer_step"]): path
+        for path in (paths.best_checkpoint, paths.final_checkpoint)
+        for checkpoint in (torch.load(path, map_location="cpu", weights_only=False),)
+    }
     _run_module(
         "app.training.turn_taking.benchmark_cli",
         "predict-voice-light-completion-v2",
         str(paths.inventory),
         str(paths.predictions),
-        str(paths.best_checkpoint),
+        *(str(path) for path in checkpoints_by_step.values()),
         *common_hub_arguments,
         "--model-revision",
         arguments.model_revision,
@@ -107,14 +121,21 @@ def main() -> None:
         "--data-loader-workers",
         str(arguments.data_loader_workers),
     )
-    voice_light_predictions = paths.predictions / (
-        f"validation-v2-turn-completion-voice-light-step-{optimizer_step:06d}-predictions.json"
+    best_step = int(
+        torch.load(paths.best_checkpoint, map_location="cpu", weights_only=False)["optimizer_step"]
     )
-    _analyze(
-        paths.inventory,
-        voice_light_predictions,
-        paths.reports / "validation-voice-light-best.json",
+    final_step = int(
+        torch.load(paths.final_checkpoint, map_location="cpu", weights_only=False)["optimizer_step"]
     )
+    for label, optimizer_step in (("best", best_step), ("final", final_step)):
+        voice_light_predictions = paths.predictions / (
+            f"validation-v2-turn-completion-voice-light-step-{optimizer_step:06d}-predictions.json"
+        )
+        _analyze(
+            paths.inventory,
+            voice_light_predictions,
+            paths.reports / f"validation-voice-light-{label}.json",
+        )
     print(
         f"experiment_complete; best_checkpoint={paths.best_checkpoint}; reports={paths.reports}",
         flush=True,

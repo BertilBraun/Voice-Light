@@ -8,7 +8,11 @@ import pytest
 import torch
 
 from app.local.training_corpus.audio_staging import transcode_lossless_flac
-from app.training.turn_taking.config import WaveformAugmentationConfig
+from app.training.turn_taking.config import (
+    WaveformAugmentationConfig,
+    WaveformAugmentationProfile,
+    waveform_augmentation_config,
+)
 from app.training.turn_taking.data import (
     WaveformAugmenter,
     build_assistant_speaking_input,
@@ -191,6 +195,19 @@ def test_waveform_augmentation_combines_realistic_corruptions() -> None:
     assert first.min() >= -1.0
     assert first.max() <= 1.0
     assert torch.count_nonzero(first == 0.0) > 0
+
+
+def test_legacy_augmentation_profile_matches_original_recipe() -> None:
+    config = waveform_augmentation_config(WaveformAugmentationProfile.LEGACY)
+
+    assert config.gain_probability == pytest.approx(0.8)
+    assert config.noise_probability == pytest.approx(0.3)
+    assert config.reverberation_probability == 0.0
+    assert config.bandwidth_probability == 0.0
+    assert config.clipping_probability == 0.0
+    assert config.packet_loss_probability == pytest.approx(0.1)
+    assert config.minimum_packet_loss_seconds == pytest.approx(0.04)
+    assert config.maximum_packet_loss_seconds == pytest.approx(0.04)
 
 
 def _decision(
