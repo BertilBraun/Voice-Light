@@ -335,6 +335,8 @@ def _validate_resume_config(config: TrainingConfig, checkpoint: TrainingConfig) 
                 "data_loader_workers": checkpoint.data_loader_workers,
                 "data_loader_prefetch_factor": checkpoint.data_loader_prefetch_factor,
                 "random_seed": checkpoint.random_seed,
+                "minimum_steps_before_stopping": checkpoint.minimum_steps_before_stopping,
+                "early_stopping_patience": checkpoint.early_stopping_patience,
             }
         )
         != checkpoint

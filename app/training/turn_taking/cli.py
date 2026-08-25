@@ -56,6 +56,7 @@ def main() -> None:
     parser.add_argument("--model-revision")
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--max-steps", type=_positive_int)
+    parser.add_argument("--minimum-steps-before-stopping", type=_nonnegative_int)
     parser.add_argument("--batch-size", type=_positive_int)
     parser.add_argument("--gradient-accumulation-steps", type=_positive_int)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int)
@@ -102,6 +103,10 @@ def main() -> None:
         )
     if arguments.data_loader_workers is not None:
         config = config.model_copy(update={"data_loader_workers": arguments.data_loader_workers})
+    if arguments.minimum_steps_before_stopping is not None:
+        config = config.model_copy(
+            update={"minimum_steps_before_stopping": arguments.minimum_steps_before_stopping}
+        )
     if arguments.precision is not None:
         config = config.model_copy(update={"precision": TrainingPrecision(arguments.precision)})
     if arguments.model_revision is not None:

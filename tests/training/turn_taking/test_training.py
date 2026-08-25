@@ -238,11 +238,12 @@ def test_training_resume_matches_uninterrupted_training(tmp_path: Path) -> None:
         staged_path,
         torch.device("cpu"),
     )
+    resumed_config = uninterrupted_config.model_copy(update={"minimum_steps_before_stopping": 4})
     resumed_result = train(
         backbone,
         TurnTakingAdapter(adapter_config),
         [batch],
-        uninterrupted_config,
+        resumed_config,
         staged_path,
         torch.device("cpu"),
         resume_checkpoint_path=staged_path,
