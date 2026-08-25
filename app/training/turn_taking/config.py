@@ -7,6 +7,8 @@ from pydantic import Field, model_validator
 
 from app.shared.base_model import FrozenBaseModel
 
+PINNED_NEMOTRON_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
+
 
 class AdapterConfig(FrozenBaseModel):
     feature_dimension: int = 1024
@@ -72,6 +74,7 @@ class WaveformAugmentationConfig(FrozenBaseModel):
 
 class TrainingConfig(FrozenBaseModel):
     model_identifier: str = "nvidia/nemotron-speech-streaming-en-0.6b"
+    model_revision: str = PINNED_NEMOTRON_REVISION
     sample_rate_hz: int = 16_000
     context_seconds: float = 20.0
     burn_in_seconds: float = 4.0

@@ -47,6 +47,7 @@ def main() -> None:
         default=TrainingCorpusSplit.TRAIN.value,
     )
     parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--model-revision")
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--max-steps", type=_positive_int)
     parser.add_argument("--batch-size", type=_positive_int)
@@ -91,6 +92,8 @@ def main() -> None:
         config = config.model_copy(update={"data_loader_workers": arguments.data_loader_workers})
     if arguments.precision is not None:
         config = config.model_copy(update={"precision": TrainingPrecision(arguments.precision)})
+    if arguments.model_revision is not None:
+        config = config.model_copy(update={"model_revision": arguments.model_revision})
     if arguments.run_seed is not None:
         config = config.model_copy(update={"random_seed": arguments.run_seed})
     if arguments.primary_objective is not None:
@@ -181,6 +184,8 @@ def main() -> None:
         model_identifier=config.model_identifier,
         tap_layer_indices=config.adapter.tap_layer_indices,
         lookahead_tokens=config.lookahead_tokens,
+        model_revision=config.model_revision,
+        cache_directory=arguments.hub_cache_directory,
     ).to(device)
     validation_callback: CompletionValidator | None = None
     match config.loss.primary_objective:
