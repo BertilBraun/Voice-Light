@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.shared.base_model import FrozenBaseModel
 
@@ -25,6 +25,29 @@ class LossConfig(FrozenBaseModel):
 class TrainingPrecision(StrEnum):
     FLOAT32 = "float32"
     BFLOAT16 = "bfloat16"
+
+
+class WaveformAugmentationConfig(FrozenBaseModel):
+    gain_probability: float = Field(default=0.8, ge=0.0, le=1.0)
+    minimum_gain_db: float = -12.0
+    maximum_gain_db: float = 6.0
+    noise_probability: float = Field(default=0.4, ge=0.0, le=1.0)
+    minimum_signal_to_noise_db: float = 5.0
+    maximum_signal_to_noise_db: float = 30.0
+    reverberation_probability: float = Field(default=0.3, ge=0.0, le=1.0)
+    bandwidth_probability: float = Field(default=0.25, ge=0.0, le=1.0)
+    clipping_probability: float = Field(default=0.15, ge=0.0, le=1.0)
+    packet_loss_probability: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> WaveformAugmentationConfig:
+        if self.minimum_gain_db > self.maximum_gain_db:
+            raise ValueError("minimum_gain_db must not exceed maximum_gain_db.")
+        if self.minimum_signal_to_noise_db > self.maximum_signal_to_noise_db:
+            raise ValueError(
+                "minimum_signal_to_noise_db must not exceed maximum_signal_to_noise_db."
+            )
+        return self
 
 
 class TrainingConfig(FrozenBaseModel):
@@ -50,5 +73,6 @@ class TrainingConfig(FrozenBaseModel):
     gradient_clip_norm: float = 1.0
     random_seed: int = 17
     unmeasured_reliability_weight: float = Field(default=1.0, ge=0.0, le=1.0)
+    augmentation: WaveformAugmentationConfig = WaveformAugmentationConfig()
     adapter: AdapterConfig = AdapterConfig()
     loss: LossConfig = LossConfig()

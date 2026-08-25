@@ -80,7 +80,7 @@ def main() -> None:
             frame_seconds=config.encoder_frame_seconds,
             burn_in_seconds=config.burn_in_seconds,
             unmeasured_reliability_weight=config.unmeasured_reliability_weight,
-            augmenter=WaveformAugmenter(),
+            augmenter=WaveformAugmenter(config.augmentation, config.sample_rate_hz),
             random_seed=config.random_seed,
         )
     else:
@@ -93,7 +93,11 @@ def main() -> None:
             repository_id=arguments.hub_repository,
             cache_directory=arguments.hub_cache_directory,
             sample_rate_hz=config.sample_rate_hz,
-            augmenter=WaveformAugmenter() if hub_split is TrainingCorpusSplit.TRAIN else None,
+            augmenter=(
+                WaveformAugmenter(config.augmentation, config.sample_rate_hz)
+                if hub_split is TrainingCorpusSplit.TRAIN
+                else None
+            ),
             random_seed=config.random_seed,
         )
     data_loader_generator = torch.Generator().manual_seed(config.random_seed)

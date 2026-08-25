@@ -10,9 +10,11 @@ import av
 import numpy as np
 import torch
 from torch import Tensor
+from torch.nn import functional
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
+from app.training.turn_taking.config import WaveformAugmentationConfig
 from app.training.turn_taking.schema import TurnTakingSample
 
 EVENT_CLASS_COUNT = 5
@@ -22,25 +24,92 @@ SEEK_PREROLL_SECONDS = 1.0
 
 @dataclass(frozen=True)
 class WaveformAugmenter:
-    gain_probability: float = 0.8
-    noise_probability: float = 0.3
-    dropout_probability: float = 0.1
+    config: WaveformAugmentationConfig
+    sample_rate_hz: int
+
+    def __post_init__(self) -> None:
+        if self.sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be positive.")
 
     def __call__(self, waveform: Tensor, generator: random.Random) -> Tensor:
         augmented = waveform.clone()
-        if generator.random() < self.gain_probability:
-            gain_db = generator.uniform(-12.0, 6.0)
+        if generator.random() < self.config.gain_probability:
+            gain_db = generator.uniform(
+                self.config.minimum_gain_db,
+                self.config.maximum_gain_db,
+            )
             augmented *= 10.0 ** (gain_db / 20.0)
-        if generator.random() < self.noise_probability:
+        if generator.random() < self.config.noise_probability:
             signal_power = augmented.square().mean().clamp_min(1e-8)
-            signal_to_noise_db = generator.uniform(5.0, 30.0)
+            signal_to_noise_db = generator.uniform(
+                self.config.minimum_signal_to_noise_db,
+                self.config.maximum_signal_to_noise_db,
+            )
             noise_power = signal_power / (10.0 ** (signal_to_noise_db / 10.0))
-            augmented += torch.randn_like(augmented) * noise_power.sqrt()
-        if augmented.numel() and generator.random() < self.dropout_probability:
-            width = max(1, int(0.04 * augmented.numel()))
-            start = generator.randrange(max(1, augmented.numel() - width + 1))
+            noise_generator = torch.Generator().manual_seed(generator.randrange(2**63))
+            noise = torch.randn(
+                augmented.shape,
+                dtype=augmented.dtype,
+                device=augmented.device,
+                generator=noise_generator,
+            )
+            augmented += noise * noise_power.sqrt()
+        if augmented.numel() and generator.random() < self.config.reverberation_probability:
+            augmented = _add_synthetic_reverberation(
+                augmented,
+                self.sample_rate_hz,
+                generator,
+            )
+        if augmented.numel() and generator.random() < self.config.bandwidth_probability:
+            augmented = _limit_bandwidth(augmented, self.sample_rate_hz, generator)
+        if augmented.numel() and generator.random() < self.config.clipping_probability:
+            threshold = generator.uniform(0.35, 0.9)
+            augmented = augmented.clamp(-threshold, threshold) / threshold
+        if augmented.numel() and generator.random() < self.config.packet_loss_probability:
+            duration_seconds = generator.uniform(0.02, 0.12)
+            width = min(augmented.numel(), max(1, round(duration_seconds * self.sample_rate_hz)))
+            start = generator.randrange(augmented.numel() - width + 1)
             augmented[start : start + width] = 0.0
         return augmented.clamp(-1.0, 1.0)
+
+
+def _add_synthetic_reverberation(
+    waveform: Tensor,
+    sample_rate_hz: int,
+    generator: random.Random,
+) -> Tensor:
+    wet = generator.uniform(0.1, 0.35)
+    reverberant = waveform.clone()
+    for tap_index in range(generator.randint(2, 4)):
+        delay_seconds = generator.uniform(0.015, 0.08)
+        delay_samples = min(waveform.numel() - 1, round(delay_seconds * sample_rate_hz))
+        decay = wet * generator.uniform(0.45, 0.85) ** tap_index
+        reverberant[delay_samples:] += decay * waveform[: waveform.numel() - delay_samples]
+    return reverberant / (1.0 + wet)
+
+
+def _limit_bandwidth(
+    waveform: Tensor,
+    sample_rate_hz: int,
+    generator: random.Random,
+) -> Tensor:
+    target_sample_rate_hz = generator.choice((8_000, 12_000))
+    if target_sample_rate_hz >= sample_rate_hz:
+        return waveform
+    reduced_length = max(1, round(waveform.numel() * target_sample_rate_hz / sample_rate_hz))
+    batched = waveform.reshape(1, 1, -1)
+    reduced = functional.interpolate(
+        batched,
+        size=reduced_length,
+        mode="linear",
+        align_corners=False,
+    )
+    return functional.interpolate(
+        reduced,
+        size=waveform.numel(),
+        mode="linear",
+        align_corners=False,
+    ).reshape(-1)
 
 
 @dataclass(frozen=True)

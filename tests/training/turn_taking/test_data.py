@@ -1,3 +1,4 @@
+import random
 import wave
 from pathlib import Path
 
@@ -7,7 +8,9 @@ import pytest
 import torch
 
 from app.local.training_corpus.audio_staging import transcode_lossless_flac
+from app.training.turn_taking.config import WaveformAugmentationConfig
 from app.training.turn_taking.data import (
+    WaveformAugmenter,
     build_assistant_speaking_input,
     build_frame_targets,
     load_audio_window,
@@ -161,6 +164,33 @@ def test_audio_window_can_zero_pad_only_a_missing_suffix(tmp_path: Path) -> None
 
     assert padded.shape == (24_000,)
     assert torch.count_nonzero(padded[16_000:]) == 0
+
+
+def test_waveform_augmentation_combines_realistic_corruptions() -> None:
+    config = WaveformAugmentationConfig(
+        gain_probability=1.0,
+        minimum_gain_db=-6.0,
+        maximum_gain_db=-6.0,
+        noise_probability=1.0,
+        minimum_signal_to_noise_db=20.0,
+        maximum_signal_to_noise_db=20.0,
+        reverberation_probability=1.0,
+        bandwidth_probability=1.0,
+        clipping_probability=1.0,
+        packet_loss_probability=1.0,
+    )
+    waveform = torch.linspace(-0.8, 0.8, 32_000)
+
+    first = WaveformAugmenter(config, 16_000)(waveform, random.Random(17))
+    repeated = WaveformAugmenter(config, 16_000)(waveform, random.Random(17))
+    fresh = WaveformAugmenter(config, 16_000)(waveform, random.Random(18))
+
+    assert torch.equal(first, repeated)
+    assert not torch.equal(first, fresh)
+    assert first.shape == waveform.shape
+    assert first.min() >= -1.0
+    assert first.max() <= 1.0
+    assert torch.count_nonzero(first == 0.0) > 0
 
 
 def _decision(
