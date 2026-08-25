@@ -65,6 +65,7 @@ All figures below use the same 1,005-candidate validation inventory and 789 clea
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Voice Light completion-primary step 625 | 0.6864 | 0.9052 | 0.6270 | 0.1628 | 4.48% | 69.01% | 2.0 s |
 | Voice Light completion-primary step 1,125 | 0.6698 | 0.8973 | 0.7158 | 0.1975 | 4.48% | 69.31% | 2.0 s |
+| Voice Light completion-primary step 3,000 | 0.6319 | 0.8809 | 0.8343 | 0.1974 | 4.48% | 64.43% | 2.0 s |
 | Voice Light old step 3,500 | 0.6866 | 0.8993 | 0.6719 | 0.1843 | 3.73% | 65.80% | 2.0 s |
 | Silero silence policy | 0.5504 | 0.8531 | n/a | n/a | 3.73% | 86.56% | 2.0 s |
 | Smart Turn v3.2 | 0.5508 | 0.8486 | 1.5510 | 0.3634 | 4.48% | 57.86% | 2.0 s |
@@ -77,8 +78,13 @@ concentrated in `dataset_1-local` (50.73% recall) and `overlap_interruption` (62
 Step 1,125 finds two more EOT cases than step 625 at the selected operating points and the same six
 false cutoffs. That 0.30 percentage-point recall difference is not persuasive on a validation set
 used to choose both thresholds: step 625 remains the checkpoint choice because its AUROC, AP, BCE,
-and Brier are all better. Silero remains the stronger endpointing policy under this validation
-contract, so the test split must not be opened for this checkpoint.
+and Brier are all better. A requested fixed-step continuation from 1,125 to 3,000 confirms that
+longer training does not recover: at the same six false cutoffs, the selected threshold rises to
+0.80 and recall falls to 422/655, 32 detections below step 1,125. Its checkpoint SHA-256 is
+`a50f8a8a1b1343f3af0d193fee30bc938eb664089d23303f08f226d3a31d08d2` and prediction SHA-256 is
+`5dcccd568b24014aa2fa37cceb4beba81a24cf3291af99fc95dbaa045a439eb9`. Silero remains the
+stronger endpointing policy under this validation contract, so the test split must not be opened
+for this checkpoint.
 
 ### Augmentation ablation
 
