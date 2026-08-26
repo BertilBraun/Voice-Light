@@ -313,7 +313,7 @@ class EnglishConversationContentDraft(SyntheticModel):
     @model_validator(mode="after")
     def validate_content_lengths(self) -> EnglishConversationContentDraft:
         _validate_word_count("Voice reference text", self.voice_reference_text, 8, 18)
-        _validate_word_count("Opening user turn", self.opening_user_turn, 12, 44)
+        _validate_word_count("Opening user turn", self.opening_user_turn, 2, 44)
         _validate_word_count("Brief user turn", self.brief_user_turn, 2, 11)
         _validate_word_count("Normal user turn", self.normal_user_turn, 12, 44)
         _validate_word_count("Extended user turn", self.extended_user_turn, 45, 90)
@@ -550,9 +550,9 @@ Fixed requirements:
 - The code will use brief_user_turn as {_condition_content_instruction(brief_condition)}
 - The code will use normal_user_turn as {_condition_content_instruction(normal_condition)}
 - The code will use extended_user_turn as {_condition_content_instruction(extended_condition)}
-- opening_user_turn and normal_user_turn each contain 12-44 words. brief_user_turn contains 2-11
-  words. extended_user_turn contains 45-90 words and should sound like 20-30 seconds of natural
-  speech. Each assistant turn contains 3-25 words.
+- opening_user_turn contains 2-44 words. normal_user_turn contains 12-44 words. brief_user_turn
+  contains 2-11 words. extended_user_turn contains 45-90 words and should sound like 20-30 seconds
+  of natural speech. Each assistant turn contains 3-25 words.
 - Write voice_reference_text as one exact, neutral English sentence of 8-18 words suitable for a
   clean 3-8 second reference render. It need not mention the conversation topic.
 - All text is natural modern English with printable ASCII punctuation. Do not include stage
