@@ -14,13 +14,14 @@ from app.local.synthetic_generation.conversation_prompts import (
     EnglishConversationPromptPlan,
     EnglishConversationPromptSet,
     HoldUserPrompt,
-    NonFloorFeedbackKind,
+    MicroBackchannel,
     NonFloorFeedbackUserPrompt,
     PerceivedAge,
     SegmentDelivery,
     SpeakingPace,
     SpeechAct,
     TopicDomain,
+    UserTurnLength,
     VocalPitch,
     VocalWeight,
     conversation_generation_instruction,
@@ -68,6 +69,10 @@ def test_generation_instruction_fixes_semantics_without_timestamps() -> None:
     assert "English-only" in instruction
     assert "not fabricated audio timestamps" in instruction
     assert "will not be synthesized" in instruction
+    assert "60 to 120 seconds" in instruction
+    assert "2-8 words" in instruction
+    assert "45-90 words" in instruction
+    assert "completions are excluded from this pilot" in instruction
     assert '"discriminator":{"mapping"' in instruction
 
 
@@ -91,6 +96,19 @@ def test_repair_instruction_returns_semantic_errors_to_the_model() -> None:
 
     assert "omitted conditions: hold" in instruction
     assert "corrected complete JSON object" in instruction
+    assert "brief, normal, and extended" in instruction
+    assert "one acknowledgement" in instruction
+
+
+@pytest.mark.parametrize("target_duration_seconds", [59.9, 120.1])
+def test_plan_rejects_source_duration_outside_contract(
+    target_duration_seconds: float,
+) -> None:
+    values = _plan().model_dump()
+    values["target_duration_seconds"] = target_duration_seconds
+
+    with pytest.raises(ValidationError):
+        EnglishConversationPromptPlan.model_validate(values)
 
 
 def test_plan_rejects_unknown_assistant_reference() -> None:
@@ -113,9 +131,38 @@ def test_plan_is_english_only_by_schema_and_validation() -> None:
         EnglishConversationPromptPlan.model_validate(values)
 
 
+def test_backchannel_rejects_propositional_phrase() -> None:
+    values = _plan().model_dump()
+    values["user_prompts"][1]["text"] = "that sounds right"
+
+    with pytest.raises(ValidationError, match="enum"):
+        EnglishConversationPromptPlan.model_validate(values)
+
+
+def test_plan_requires_every_user_turn_length_band() -> None:
+    values = _plan().model_dump()
+    values["user_prompts"] = tuple(
+        prompt for index, prompt in enumerate(values["user_prompts"]) if index != 2
+    )
+
+    with pytest.raises(ValidationError, match="brief, normal, and extended"):
+        EnglishConversationPromptPlan.model_validate(values)
+
+
+def test_plan_requires_short_exact_voice_reference_text() -> None:
+    values = _plan().model_dump()
+    values["voice_reference_text"] = "Too short."
+
+    with pytest.raises(ValidationError, match="8 to 18 words"):
+        EnglishConversationPromptPlan.model_validate(values)
+
+
 def test_plan_accepts_english_typographic_punctuation() -> None:
     values = _plan().model_dump()
-    values["user_prompts"][0]["text"] = "That's useful\u2014I'd try it tomorrow."
+    values["user_prompts"][0]["text"] = (
+        "I would start with the lights\u2014because I adjust them every evening "
+        "and always forget the ideal setting."
+    )
 
     plan = EnglishConversationPromptPlan.model_validate(values)
 
@@ -159,12 +206,15 @@ def _plan() -> EnglishConversationPromptPlan:
         seed=41,
         domain=TopicDomain.TECHNOLOGY,
         topic="Choosing a useful home automation routine",
-        target_duration_seconds=24.0,
+        target_duration_seconds=75.0,
         base_user_voice=BaseUserVoice(
             perceived_age=PerceivedAge.ADULT,
             accent=EnglishAccent.GENERAL_AMERICAN,
             pitch=VocalPitch.MEDIUM,
             vocal_weight=VocalWeight.MEDIUM,
+        ),
+        voice_reference_text=(
+            "Every clear morning brings a fresh chance to notice something useful nearby."
         ),
         assistant_turns=(
             AssistantTurnPrompt(
@@ -181,25 +231,43 @@ def _plan() -> EnglishConversationPromptPlan:
                 sequence_index=0,
                 speech_act=SpeechAct.OPINION,
                 delivery=delivery,
-                text="I would start with the lights because I adjust them every evening.",
+                length_band=UserTurnLength.NORMAL,
+                text=(
+                    "I would start with the lights because I adjust them every evening and always "
+                    "forget the ideal setting."
+                ),
             ),
             NonFloorFeedbackUserPrompt(
                 unit_id="user_2",
                 sequence_index=2,
                 speech_act=SpeechAct.ANSWER,
                 delivery=delivery,
-                text="Right.",
-                feedback_kind=NonFloorFeedbackKind.BACKCHANNEL,
+                text=MicroBackchannel.RIGHT,
                 during_assistant_turn_id="assistant_1",
             ),
             HoldUserPrompt(
                 unit_id="user_3",
-                sequence_index=3,
+                sequence_index=4,
                 speech_act=SpeechAct.EXPLANATION,
                 delivery=delivery,
-                text_before_pause="The morning routine could also help",
-                text_after_pause="but I would need to test the timing first.",
+                length_band=UserTurnLength.EXTENDED,
+                text_before_pause=(
+                    "The morning routine could also help because the hallway gets surprisingly "
+                    "dark before sunrise, and finding the switch while carrying coffee is awkward"
+                ),
+                text_after_pause=(
+                    "but I would want to test several schedules, keep the weekends flexible, and "
+                    "make sure the lights never wake anyone who decided to sleep late."
+                ),
                 pause_duration_seconds=0.8,
+            ),
+            CompletionUserPrompt(
+                unit_id="user_4",
+                sequence_index=3,
+                speech_act=SpeechAct.ANSWER,
+                delivery=delivery,
+                length_band=UserTurnLength.BRIEF,
+                text="That would save time every morning.",
             ),
         ),
     )

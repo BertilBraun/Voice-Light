@@ -93,10 +93,21 @@ class Affect(StrEnum):
     URGENT = "urgent"
 
 
-class NonFloorFeedbackKind(StrEnum):
-    BACKCHANNEL = "backchannel"
-    REACTION = "reaction"
-    COLLABORATIVE_COMPLETION = "collaborative_completion"
+class MicroBackchannel(StrEnum):
+    YEAH = "yeah"
+    YEP = "yep"
+    RIGHT = "right"
+    OKAY = "okay"
+    SURE = "sure"
+    MHM = "mhm"
+    UH_HUH = "uh-huh"
+    MM_HMM = "mm-hmm"
+
+
+class UserTurnLength(StrEnum):
+    BRIEF = "brief"
+    NORMAL = "normal"
+    EXTENDED = "extended"
 
 
 class BaseUserVoice(SyntheticModel):
@@ -133,17 +144,26 @@ class UserPromptBase(SyntheticModel):
     delivery: SegmentDelivery
 
 
-class CompletionUserPrompt(UserPromptBase):
+class FloorOwningUserPromptBase(UserPromptBase):
+    length_band: UserTurnLength
+
+
+class CompletionUserPrompt(FloorOwningUserPromptBase):
     condition: Literal["completion"] = "completion"
-    text: str = Field(min_length=1, max_length=500)
+    text: str = Field(min_length=1, max_length=1200)
 
     @field_validator("text")
     @classmethod
     def validate_english_text(cls, value: str) -> str:
-        return _validate_short_user_text(value)
+        return _validate_english_text(value)
+
+    @model_validator(mode="after")
+    def validate_length_band(self) -> CompletionUserPrompt:
+        _validate_user_turn_length((self.text,), self.length_band)
+        return self
 
 
-class HoldUserPrompt(UserPromptBase):
+class HoldUserPrompt(FloorOwningUserPromptBase):
     condition: Literal["hold"] = "hold"
     text_before_pause: str = Field(min_length=1, max_length=350)
     text_after_pause: str = Field(min_length=1, max_length=350)
@@ -152,43 +172,55 @@ class HoldUserPrompt(UserPromptBase):
     @field_validator("text_before_pause", "text_after_pause")
     @classmethod
     def validate_english_text(cls, value: str) -> str:
-        return _validate_short_user_text(value)
+        return _validate_english_text(value)
+
+    @model_validator(mode="after")
+    def validate_length_band(self) -> HoldUserPrompt:
+        _validate_user_turn_length(
+            (self.text_before_pause, self.text_after_pause),
+            self.length_band,
+        )
+        return self
 
 
 class NonFloorFeedbackUserPrompt(UserPromptBase):
     condition: Literal["non_floor_feedback"] = "non_floor_feedback"
-    text: str = Field(min_length=1, max_length=80)
-    feedback_kind: NonFloorFeedbackKind
+    text: MicroBackchannel
     during_assistant_turn_id: str = Field(pattern=r"^assistant_[1-9][0-9]*$")
 
-    @field_validator("text")
-    @classmethod
-    def validate_english_text(cls, value: str) -> str:
-        return _validate_short_user_text(value, maximum_words=8)
 
-
-class ResponseFloorClaimUserPrompt(UserPromptBase):
+class ResponseFloorClaimUserPrompt(FloorOwningUserPromptBase):
     condition: Literal["response_floor_claim"] = "response_floor_claim"
-    text: str = Field(min_length=1, max_length=500)
+    text: str = Field(min_length=1, max_length=1200)
     after_assistant_turn_id: str = Field(pattern=r"^assistant_[1-9][0-9]*$")
     response_latency_seconds: float = Field(ge=0.05, le=2.5)
 
     @field_validator("text")
     @classmethod
     def validate_english_text(cls, value: str) -> str:
-        return _validate_short_user_text(value)
+        return _validate_english_text(value)
+
+    @model_validator(mode="after")
+    def validate_length_band(self) -> ResponseFloorClaimUserPrompt:
+        _validate_user_turn_length((self.text,), self.length_band)
+        return self
 
 
-class InterruptionFloorClaimUserPrompt(UserPromptBase):
+class InterruptionFloorClaimUserPrompt(FloorOwningUserPromptBase):
     condition: Literal["interruption_floor_claim"] = "interruption_floor_claim"
-    text: str = Field(min_length=1, max_length=500)
+    text: str = Field(min_length=1, max_length=1200)
     during_assistant_turn_id: str = Field(pattern=r"^assistant_[1-9][0-9]*$")
     assistant_yield_delay_seconds: float = Field(ge=0.08, le=0.6)
 
     @field_validator("text")
     @classmethod
     def validate_english_text(cls, value: str) -> str:
-        return _validate_short_user_text(value)
+        return _validate_english_text(value)
+
+    @model_validator(mode="after")
+    def validate_length_band(self) -> InterruptionFloorClaimUserPrompt:
+        _validate_user_turn_length((self.text,), self.length_band)
+        return self
 
 
 UserPrompt = Annotated[
@@ -209,15 +241,25 @@ class EnglishConversationPromptPlan(SyntheticModel):
     seed: int = Field(ge=0)
     domain: TopicDomain
     topic: str = Field(min_length=1, max_length=120)
-    target_duration_seconds: float = Field(ge=20.0, le=30.0)
+    target_duration_seconds: float = Field(ge=60.0, le=120.0)
     base_user_voice: BaseUserVoice
+    voice_reference_text: str = Field(min_length=1, max_length=180)
     assistant_turns: tuple[AssistantTurnPrompt, ...]
-    user_prompts: tuple[UserPrompt, ...] = Field(min_length=1, max_length=8)
+    user_prompts: tuple[UserPrompt, ...] = Field(min_length=3, max_length=12)
 
     @field_validator("topic")
     @classmethod
     def validate_english_topic(cls, value: str) -> str:
         return _validate_english_text(value)
+
+    @field_validator("voice_reference_text")
+    @classmethod
+    def validate_voice_reference_text(cls, value: str) -> str:
+        _validate_english_text(value)
+        word_count = len(value.split())
+        if not 8 <= word_count <= 18:
+            raise ValueError("Voice reference text requires 8 to 18 words.")
+        return value
 
     @model_validator(mode="after")
     def validate_semantic_plan(self) -> EnglishConversationPromptPlan:
@@ -232,6 +274,13 @@ class EnglishConversationPromptPlan(SyntheticModel):
         if len(sequence_indices) != len(set(sequence_indices)):
             raise ValueError("Conversation sequence indices must be unique.")
         assistant_ids = {turn.turn_id for turn in self.assistant_turns}
+        realized_length_bands = {
+            length_band
+            for prompt in self.user_prompts
+            if (length_band := _floor_length_band(prompt)) is not None
+        }
+        if realized_length_bands != set(UserTurnLength):
+            raise ValueError("A conversation requires brief, normal, and extended user turns.")
         for prompt in self.user_prompts:
             match prompt:
                 case NonFloorFeedbackUserPrompt(during_assistant_turn_id=turn_id):
@@ -268,6 +317,11 @@ class EnglishConversationPromptSet(SyntheticModel):
             raise ValueError("Conversation plan IDs must be unique.")
         if len(self.plans) > self.provenance.requested_plan_count:
             raise ValueError("Prompt set contains more plans than its requested plan count.")
+        reference_texts = tuple(
+            " ".join(plan.voice_reference_text.casefold().split()) for plan in self.plans
+        )
+        if len(reference_texts) != len(set(reference_texts)):
+            raise ValueError("Voice reference texts must be unique across a prompt set.")
         normalized_texts = tuple(
             " ".join(text.casefold().split())
             for plan in self.plans
@@ -351,14 +405,21 @@ Return only one JSON object accepted by the schema at the end of this instructio
 Fixed requirements:
 - plan_id is {brief.plan_id!r}; seed is {brief.seed}.
 - domain is {brief.domain.value!r}; invent a specific topic unlike generic rural or farming stories.
-- target_duration_seconds is 20 to 30 seconds after timing composition.
+- target_duration_seconds is 60 to 120 seconds after timing composition.
 - include these user conditions: {required_conditions}.
-- Use 2 to 6 short user prompts, normally 2 to 45 spoken words each. Prefer ordinary,
-  responsive conversation over monologues. A non-floor feedback prompt has at most 8 words.
+- Use 5 to 10 responsive user prompts. The plan must contain every length_band: a brief turn of
+  2-8 words, a normal turn of 12-28 words, and an extended turn of 45-90 words targeting 20-30
+  seconds of rendered user speech. Do not collapse the conversation into uniform turn lengths.
+- A non_floor_feedback prompt is exactly one item from: yeah, yep, right, okay, sure, mhm, uh-huh,
+  or mm-hmm. It cannot contain a clause, evaluation, reaction, or proposition. Collaborative
+  completions are excluded from this pilot.
 - Hidden assistant text exists only to make the exchange coherent and estimate duration. Keep each
   assistant turn under 45 words. It will not be synthesized.
 - Give the conversation one stable base_user_voice. Vary delivery per user prompt while keeping
   identity stable. The requested anchor delivery is {brief.pace.value} and {brief.affect.value}.
+- Write voice_reference_text as one exact, neutral English sentence of 8-18 words suitable for a
+  clean 3-8 second Qwen VoiceDesign reference render. This exact text will be retained with audio
+  and reused to build the conversation's single voice-clone prompt.
 - condition must be exactly one of completion, hold, non_floor_feedback,
   response_floor_claim, or interruption_floor_claim. It is never a speech_act.
 - speech_act must be exactly one of question, answer, explanation, opinion, anecdote, request,
@@ -402,11 +463,24 @@ def _validate_english_text(value: str) -> str:
     return value
 
 
-def _validate_short_user_text(value: str, maximum_words: int = 45) -> str:
-    _validate_english_text(value)
-    if len(value.split()) > maximum_words:
-        raise ValueError(f"User prompts require at most {maximum_words} words.")
-    return value
+def _validate_user_turn_length(
+    texts: tuple[str, ...],
+    length_band: UserTurnLength,
+) -> None:
+    word_count = sum(len(text.split()) for text in texts)
+    match length_band:
+        case UserTurnLength.BRIEF:
+            bounds = (2, 8)
+        case UserTurnLength.NORMAL:
+            bounds = (12, 28)
+        case UserTurnLength.EXTENDED:
+            bounds = (45, 90)
+    minimum_words, maximum_words = bounds
+    if not minimum_words <= word_count <= maximum_words:
+        raise ValueError(
+            f"{length_band.value.title()} user turns require "
+            f"{minimum_words} to {maximum_words} words."
+        )
 
 
 def _require_assistant_reference(
@@ -416,6 +490,19 @@ def _require_assistant_reference(
 ) -> None:
     if turn_id not in assistant_ids:
         raise ValueError(f"User prompt {unit_id} references unknown assistant turn {turn_id}.")
+
+
+def _floor_length_band(prompt: UserPrompt) -> UserTurnLength | None:
+    match prompt:
+        case (
+            CompletionUserPrompt(length_band=length_band)
+            | HoldUserPrompt(length_band=length_band)
+            | ResponseFloorClaimUserPrompt(length_band=length_band)
+            | InterruptionFloorClaimUserPrompt(length_band=length_band)
+        ):
+            return length_band
+        case NonFloorFeedbackUserPrompt():
+            return None
 
 
 def _user_prompt_texts(prompt: UserPrompt) -> tuple[str, ...]:
