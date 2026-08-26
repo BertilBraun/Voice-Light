@@ -1,0 +1,333 @@
+from __future__ import annotations
+
+import hashlib
+import wave
+from pathlib import Path
+
+import numpy as np
+
+from app.local.synthetic_generation.conversation_compiler import (
+    AfterAssistantUserTiming,
+    AfterUserAssistantTiming,
+    AssistantProbabilityDip,
+    CompletionPlacement,
+    ConversationCompilerConfig,
+    ConversationCompositionPlan,
+    DuringAssistantUserTiming,
+    FixedAssistantTiming,
+    FixedUserTiming,
+    HoldPlacement,
+    InterruptionFloorClaimPlacement,
+    MeasuredSilence,
+    NonFloorFeedbackPlacement,
+    RenderedUserClip,
+    ResponseFloorClaimPlacement,
+    VirtualAssistantTurn,
+    compile_conversation,
+    materialize_crop_audio,
+)
+
+
+def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path) -> None:
+    clips = (
+        _clip(tmp_path, "opening", 2.0, 0.1, 1.8),
+        _clip(tmp_path, "feedback", 0.5, 0.05, 0.42),
+        _clip(tmp_path, "response", 2.0, 0.1, 1.9),
+        _clip(tmp_path, "interruption", 2.0, 0.05, 1.9),
+        _clip(
+            tmp_path,
+            "hold_turn",
+            4.0,
+            0.1,
+            3.8,
+            continuation_silences=(MeasuredSilence(start_seconds=1.2, end_seconds=1.9),),
+        ),
+    )
+    plan = ConversationCompositionPlan(
+        conversation_id="multi_event",
+        seed=17,
+        duration_seconds=25.0,
+        user_events=(
+            CompletionPlacement(
+                event_id="opening",
+                clip_id="opening",
+                timing=FixedUserTiming(start_seconds=1.0),
+            ),
+            NonFloorFeedbackPlacement(
+                event_id="feedback",
+                clip_id="feedback",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant_one", position_fraction=0.4
+                ),
+            ),
+            ResponseFloorClaimPlacement(
+                event_id="response",
+                clip_id="response",
+                timing=AfterAssistantUserTiming(
+                    assistant_turn_id="assistant_one", delay_seconds=0.5
+                ),
+            ),
+            InterruptionFloorClaimPlacement(
+                event_id="interruption",
+                clip_id="interruption",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant_two", position_fraction=0.7
+                ),
+            ),
+            HoldPlacement(
+                event_id="hold_turn",
+                clip_id="hold_turn",
+                timing=FixedUserTiming(start_seconds=20.0),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant_one",
+                timing=AfterUserAssistantTiming(user_event_id="opening", delay_seconds=0.2),
+                duration_seconds=5.0,
+                probability_dips=(
+                    AssistantProbabilityDip(
+                        start_offset_seconds=1.7,
+                        end_offset_seconds=2.4,
+                        probability=0.7,
+                    ),
+                ),
+            ),
+            VirtualAssistantTurn(
+                turn_id="assistant_two",
+                timing=AfterUserAssistantTiming(user_event_id="response", delay_seconds=1.5),
+                duration_seconds=3.4,
+            ),
+        ),
+    )
+    config = ConversationCompilerConfig(
+        crop_variant_count=5,
+        event_light_fraction=0.2,
+        assistant_duration_variation=0.15,
+    )
+
+    compiled = compile_conversation(plan, clips, tmp_path / "conversation.wav", config)
+
+    assert _wave_duration(compiled.audio_path) == 25.0
+    assert len(compiled.crops) == 5
+    assert all(len(crop.labels.p_user_floor_now) == 250 for crop in compiled.crops)
+    assert all(len(crop.labels.speculative_eot) == 2 for crop in compiled.crops)
+    crop_audio_path = materialize_crop_audio(compiled, compiled.crops[0], tmp_path / "crop.wav")
+    assert _wave_duration(crop_audio_path) == 20.0
+    assert (
+        sum(value == 1.0 for crop in compiled.crops for value in crop.labels.turn_completion) >= 4
+    )
+    assert any(value == 1.0 for crop in compiled.crops for value in crop.labels.continuation_pause)
+    assert any(value == 1.0 for crop in compiled.crops for value in crop.labels.non_floor_feedback)
+    assert (
+        max(
+            sum(value == 1.0 for value in crop.labels.non_floor_feedback) for crop in compiled.crops
+        )
+        >= 4
+    )
+    assert any(value == 1.0 for crop in compiled.crops for value in crop.labels.floor_take)
+    assert any(
+        0.0 < value < 0.9
+        for crop in compiled.crops
+        for value in crop.labels.assistant_speaking_probability
+    )
+    assert any(
+        value == 1.0
+        for crop in compiled.crops
+        for horizon in crop.labels.speculative_eot
+        for value in horizon.probabilities
+    )
+
+
+def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path: Path) -> None:
+    plan = ConversationCompositionPlan(
+        conversation_id="assistant_only",
+        seed=9,
+        duration_seconds=20.0,
+        user_events=(),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="long_assistant",
+                timing=FixedAssistantTiming(start_seconds=0.0),
+                duration_seconds=19.0,
+            ),
+        ),
+    )
+
+    compiled = compile_conversation(
+        plan,
+        (),
+        tmp_path / "assistant-only.wav",
+        ConversationCompilerConfig(crop_variant_count=2, event_light_fraction=1.0),
+    )
+
+    assert all(crop.event_light for crop in compiled.crops)
+    assert all(value == -1.0 for value in compiled.crops[0].labels.turn_completion)
+    assert max(compiled.crops[0].labels.assistant_speaking_probability) > 0.9
+    assert set(compiled.crops[0].labels.p_user_floor_now) == {0.0}
+
+
+def test_compile_conversation_is_deterministic_across_epochs(tmp_path: Path) -> None:
+    clip = _clip(tmp_path, "turn", 2.0, 0.1, 1.8)
+    plan = ConversationCompositionPlan(
+        conversation_id="deterministic",
+        seed=51,
+        duration_seconds=22.0,
+        user_events=(
+            CompletionPlacement(
+                event_id="turn",
+                clip_id="turn",
+                timing=FixedUserTiming(start_seconds=10.0),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant",
+                timing=AfterUserAssistantTiming(user_event_id="turn", delay_seconds=0.5),
+                duration_seconds=7.5,
+            ),
+        ),
+    )
+    config = ConversationCompilerConfig(crop_variant_count=4, event_light_fraction=0.25)
+
+    first = compile_conversation(plan, (clip,), tmp_path / "first.wav", config)
+    second = compile_conversation(plan, (clip,), tmp_path / "second.wav", config)
+
+    assert tuple(crop.crop_id for crop in first.crops) == tuple(
+        crop.crop_id for crop in second.crops
+    )
+    assert tuple(crop.source_start_seconds for crop in first.crops) == tuple(
+        crop.source_start_seconds for crop in second.crops
+    )
+    assert len(set(crop.source_start_seconds for crop in first.crops)) > 1
+    assert tuple(crop.assistant_duration_scale for crop in first.crops) == tuple(
+        crop.assistant_duration_scale for crop in second.crops
+    )
+
+
+def test_assistant_duration_variation_reflows_audio_and_eot_labels(tmp_path: Path) -> None:
+    opening = _clip(tmp_path, "reflow_opening", 1.0, 0.0, 0.9)
+    response = _clip(tmp_path, "reflow_response", 1.0, 0.1, 0.9)
+    plan = ConversationCompositionPlan(
+        conversation_id="reflow",
+        seed=3,
+        duration_seconds=12.0,
+        user_events=(
+            CompletionPlacement(
+                event_id="opening",
+                clip_id="reflow_opening",
+                timing=FixedUserTiming(start_seconds=0.5),
+            ),
+            ResponseFloorClaimPlacement(
+                event_id="response",
+                clip_id="reflow_response",
+                timing=AfterAssistantUserTiming(assistant_turn_id="assistant", delay_seconds=0.2),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant",
+                timing=AfterUserAssistantTiming(user_event_id="opening", delay_seconds=0.1),
+                duration_seconds=4.0,
+            ),
+        ),
+    )
+    compiled = compile_conversation(
+        plan,
+        (opening, response),
+        tmp_path / "reflow-base.wav",
+        ConversationCompilerConfig(
+            crop_variant_count=6,
+            event_light_fraction=0.0,
+            assistant_duration_variation=0.25,
+        ),
+    )
+    early = min(compiled.crops, key=lambda crop: crop.assistant_duration_scale)
+    late = max(compiled.crops, key=lambda crop: crop.assistant_duration_scale)
+    early_response = next(event for event in early.user_events if event.event_id == "response")
+    late_response = next(event for event in late.user_events if event.event_id == "response")
+
+    expected_shift = (late.assistant_duration_scale - early.assistant_duration_scale) * 4.0
+    assert np.isclose(late_response.start_seconds - early_response.start_seconds, expected_shift)
+    for crop, response_event in ((early, early_response), (late, late_response)):
+        crop_origin = crop.source_start_seconds - crop.left_padding_seconds
+        expected_eot = response_event.start_seconds + response.active_end_seconds
+        labeled_eot_times = tuple(
+            crop_origin + (index + 0.5) * 0.08
+            for index, target in enumerate(crop.labels.turn_completion)
+            if target == 1.0
+        )
+        assert min(abs(time_seconds - expected_eot) for time_seconds in labeled_eot_times) < 0.08
+        crop_path = materialize_crop_audio(
+            compiled, crop, tmp_path / f"reflow-{crop.variant_index}.wav"
+        )
+        audio_onset = _activity_onset_near(
+            crop_path,
+            response_event.start_seconds - crop_origin,
+        )
+        expected_onset = response_event.start_seconds - crop_origin + response.active_start_seconds
+        assert abs(audio_onset - expected_onset) < 0.01
+
+
+def _clip(
+    directory: Path,
+    clip_id: str,
+    duration_seconds: float,
+    active_start_seconds: float,
+    active_end_seconds: float,
+    continuation_silences: tuple[MeasuredSilence, ...] = (),
+) -> RenderedUserClip:
+    path = directory / f"{clip_id}.wav"
+    _write_tone(
+        path,
+        duration_seconds,
+        active_start_seconds,
+        active_end_seconds,
+        continuation_silences,
+    )
+    return RenderedUserClip(
+        clip_id=clip_id,
+        audio_path=path,
+        audio_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        duration_seconds=duration_seconds,
+        active_start_seconds=active_start_seconds,
+        active_end_seconds=active_end_seconds,
+        continuation_silences=continuation_silences,
+    )
+
+
+def _write_tone(
+    path: Path,
+    duration_seconds: float,
+    active_start_seconds: float,
+    active_end_seconds: float,
+    continuation_silences: tuple[MeasuredSilence, ...],
+) -> None:
+    sample_rate_hz = 16_000
+    times = np.arange(round(sample_rate_hz * duration_seconds)) / sample_rate_hz
+    active = (times >= active_start_seconds) & (times < active_end_seconds)
+    for silence in continuation_silences:
+        active &= (times < silence.start_seconds) | (times >= silence.end_seconds)
+    waveform = np.sin(2.0 * np.pi * 220.0 * times) * 0.1 * active
+    samples = (waveform * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as audio_file:
+        audio_file.setnchannels(1)
+        audio_file.setsampwidth(2)
+        audio_file.setframerate(sample_rate_hz)
+        audio_file.writeframes(samples.tobytes())
+
+
+def _wave_duration(path: Path) -> float:
+    with wave.open(str(path), "rb") as audio_file:
+        return audio_file.getnframes() / audio_file.getframerate()
+
+
+def _activity_onset_near(path: Path, expected_clip_start_seconds: float) -> float:
+    with wave.open(str(path), "rb") as audio_file:
+        sample_rate_hz = audio_file.getframerate()
+        samples = np.frombuffer(audio_file.readframes(audio_file.getnframes()), dtype="<i2")
+    search_start = max(0, round((expected_clip_start_seconds - 0.02) * sample_rate_hz))
+    search_end = min(samples.size, round((expected_clip_start_seconds + 0.3) * sample_rate_hz))
+    active_indices = np.flatnonzero(np.abs(samples[search_start:search_end]) > 100)
+    assert active_indices.size > 0
+    return (search_start + int(active_indices[0])) / sample_rate_hz
