@@ -19,6 +19,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     CompletionUserPrompt,
     ConversationGenerationBrief,
     ConversationPromptGeneratorProvenance,
+    EnglishConversationPromptDraft,
     EnglishConversationPromptPlan,
     EnglishConversationPromptSet,
     HoldUserPrompt,
@@ -26,6 +27,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     NonFloorFeedbackUserPrompt,
     ResponseFloorClaimUserPrompt,
     UserPrompt,
+    canonicalize_conversation_prompt_draft,
     conversation_generation_instruction,
     representative_conversation_briefs,
     validate_conversation_prompt_set_id,
@@ -159,7 +161,8 @@ def _generate_conversation_plan(
             skip_special_tokens=True,
         )
         try:
-            plan = EnglishConversationPromptPlan.model_validate_json(_json_object(generated))
+            draft = EnglishConversationPromptDraft.model_validate_json(_json_object(generated))
+            plan = canonicalize_conversation_prompt_draft(draft)
             _validate_plan_against_brief(plan, brief)
             return plan
         except (ValidationError, ValueError) as error:

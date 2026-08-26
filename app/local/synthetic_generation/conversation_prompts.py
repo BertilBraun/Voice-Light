@@ -233,7 +233,7 @@ UserPrompt = Annotated[
 ]
 
 
-class EnglishConversationPromptPlan(SyntheticModel):
+class EnglishConversationPromptPlanData(SyntheticModel):
     schema_version: Literal["voice-light-english-conversation-prompts-v1"] = (
         "voice-light-english-conversation-prompts-v1"
     )
@@ -261,6 +261,12 @@ class EnglishConversationPromptPlan(SyntheticModel):
             raise ValueError("Voice reference text requires 8 to 18 words.")
         return value
 
+
+class EnglishConversationPromptDraft(EnglishConversationPromptPlanData):
+    pass
+
+
+class EnglishConversationPromptPlan(EnglishConversationPromptPlanData):
     @model_validator(mode="after")
     def validate_semantic_plan(self) -> EnglishConversationPromptPlan:
         element_ids = tuple(turn.turn_id for turn in self.assistant_turns) + tuple(
@@ -292,6 +298,41 @@ class EnglishConversationPromptPlan(SyntheticModel):
                 case CompletionUserPrompt() | HoldUserPrompt():
                     pass
         return self
+
+
+def canonicalize_conversation_prompt_draft(
+    draft: EnglishConversationPromptDraft,
+) -> EnglishConversationPromptPlan:
+    ordered_elements = sorted(
+        (*draft.assistant_turns, *draft.user_prompts),
+        key=lambda element: (
+            element.sequence_index,
+            _sequence_tie_priority(element),
+            _conversation_element_id(element),
+        ),
+    )
+    sequence_by_id = {
+        _conversation_element_id(element): sequence_index
+        for sequence_index, element in enumerate(ordered_elements)
+    }
+    return EnglishConversationPromptPlan(
+        schema_version=draft.schema_version,
+        plan_id=draft.plan_id,
+        seed=draft.seed,
+        domain=draft.domain,
+        topic=draft.topic,
+        target_duration_seconds=draft.target_duration_seconds,
+        base_user_voice=draft.base_user_voice,
+        voice_reference_text=draft.voice_reference_text,
+        assistant_turns=tuple(
+            turn.model_copy(update={"sequence_index": sequence_by_id[turn.turn_id]})
+            for turn in draft.assistant_turns
+        ),
+        user_prompts=tuple(
+            prompt.model_copy(update={"sequence_index": sequence_by_id[prompt.unit_id]})
+            for prompt in draft.user_prompts
+        ),
+    )
 
 
 class ConversationPromptGeneratorProvenance(SyntheticModel):
@@ -396,7 +437,7 @@ def validate_conversation_prompt_set_id(value: str) -> str:
 def conversation_generation_instruction(brief: ConversationGenerationBrief) -> str:
     required_conditions = ", ".join(brief.required_conditions)
     json_schema = json.dumps(
-        EnglishConversationPromptPlan.model_json_schema(),
+        EnglishConversationPromptDraft.model_json_schema(),
         separators=(",", ":"),
     )
     return f"""Create one coherent English-only synthetic conversation prompt plan.
@@ -493,6 +534,34 @@ def _require_assistant_reference(
 ) -> None:
     if turn_id not in assistant_ids:
         raise ValueError(f"User prompt {unit_id} references unknown assistant turn {turn_id}.")
+
+
+def _conversation_element_id(element: AssistantTurnPrompt | UserPrompt) -> str:
+    match element:
+        case AssistantTurnPrompt(turn_id=turn_id):
+            return turn_id
+        case (
+            CompletionUserPrompt(unit_id=unit_id)
+            | HoldUserPrompt(unit_id=unit_id)
+            | NonFloorFeedbackUserPrompt(unit_id=unit_id)
+            | ResponseFloorClaimUserPrompt(unit_id=unit_id)
+            | InterruptionFloorClaimUserPrompt(unit_id=unit_id)
+        ):
+            return unit_id
+
+
+def _sequence_tie_priority(element: AssistantTurnPrompt | UserPrompt) -> int:
+    match element:
+        case CompletionUserPrompt() | HoldUserPrompt():
+            return 0
+        case AssistantTurnPrompt():
+            return 1
+        case (
+            NonFloorFeedbackUserPrompt()
+            | ResponseFloorClaimUserPrompt()
+            | InterruptionFloorClaimUserPrompt()
+        ):
+            return 2
 
 
 def floor_user_turn_length(prompt: UserPrompt) -> UserTurnLength | None:

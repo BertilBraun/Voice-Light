@@ -11,6 +11,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     ConversationPromptGeneratorProvenance,
     Energy,
     EnglishAccent,
+    EnglishConversationPromptDraft,
     EnglishConversationPromptPlan,
     EnglishConversationPromptSet,
     HoldUserPrompt,
@@ -23,6 +24,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     TopicDomain,
     VocalPitch,
     VocalWeight,
+    canonicalize_conversation_prompt_draft,
     conversation_generation_instruction,
     qwen_voice_instruction,
     representative_conversation_briefs,
@@ -146,6 +148,20 @@ def test_plan_requires_every_user_turn_length_band() -> None:
 
     with pytest.raises(ValidationError, match="brief, normal, and extended"):
         EnglishConversationPromptPlan.model_validate(values)
+
+
+def test_llm_draft_sequence_indices_are_canonicalized() -> None:
+    values = _plan().model_dump()
+    values["assistant_turns"][0]["sequence_index"] = 0
+    values["user_prompts"][0]["sequence_index"] = 0
+    draft = EnglishConversationPromptDraft.model_validate(values)
+
+    plan = canonicalize_conversation_prompt_draft(draft)
+
+    sequence_indices = tuple(turn.sequence_index for turn in plan.assistant_turns) + tuple(
+        prompt.sequence_index for prompt in plan.user_prompts
+    )
+    assert sorted(sequence_indices) == list(range(len(sequence_indices)))
 
 
 def test_plan_requires_short_exact_voice_reference_text() -> None:
