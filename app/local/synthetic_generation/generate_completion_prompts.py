@@ -22,7 +22,7 @@ from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SpeechPromptDraftBatch,
     SyntheticSpeechPromptSet,
-    validate_prompt_draft_profile,
+    apply_prompt_draft_profile,
     validate_prompt_set_id,
 )
 
@@ -113,20 +113,24 @@ def generate_speech_prompts(
             continue
         for draft in draft_batch.prompts:
             try:
-                validate_prompt_draft_profile(draft, delivery_profile)
+                profiled_draft = apply_prompt_draft_profile(
+                    draft,
+                    delivery_profile,
+                    seed + attempt,
+                )
             except ValueError as error:
                 print(f"Discarding off-profile prompt draft: {error}", flush=True)
                 continue
-            normalized_text = " ".join(draft.text.lower().split())
+            normalized_text = " ".join(profiled_draft.text.lower().split())
             if normalized_text in used_texts:
                 continue
             prompt_index = len(prompts)
             try:
                 prompt = SyntheticEnglishSpeechPrompt(
                     prompt_id=f"prompt_{prompt_index:05d}",
-                    text=draft.text,
-                    voice_instruction=draft.voice_instruction,
-                    topic=draft.topic,
+                    text=profiled_draft.text,
+                    voice_instruction=profiled_draft.voice_instruction,
+                    topic=profiled_draft.topic,
                     seed=seed + prompt_index,
                 )
             except ValidationError as error:
@@ -232,11 +236,12 @@ def _profile_requirements(delivery_profile: PromptDeliveryProfile) -> _ProfileRe
             )
         case PromptDeliveryProfile.BRISK_ENGAGED:
             return _ProfileRequirements(
-                word_count_requirement="95-115 words",
+                word_count_requirement="90-115 words",
                 delivery_requirements=(
                     "- Every voice is brisk, engaged, energetic, and normally projected.\n"
-                    "- Request roughly 200-240 spoken words per minute without rushing or "
-                    "slurring.\n"
+                    "- Request a brisk, flowing pace without rushing or slurring. The pipeline "
+                    "adds an exact rate from 200-240 spoken words per minute when the instruction "
+                    "does not already contain one.\n"
                     "- Use lively everyday topics and active language; do not choose silence, "
                     "stillness, grief, meditation, nostalgia, loneliness, or quiet reflection as "
                     "topics.\n"

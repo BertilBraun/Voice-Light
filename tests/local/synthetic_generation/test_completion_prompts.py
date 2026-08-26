@@ -9,7 +9,7 @@ from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SpeechPromptDraft,
     SyntheticSpeechPromptSet,
-    validate_prompt_draft_profile,
+    apply_prompt_draft_profile,
     validate_prompt_set_id,
 )
 
@@ -65,7 +65,7 @@ def test_brisk_profile_rejects_low_energy_draft() -> None:
     )
 
     with pytest.raises(ValueError, match="low-energy phrases"):
-        validate_prompt_draft_profile(draft, PromptDeliveryProfile.BRISK_ENGAGED)
+        apply_prompt_draft_profile(draft, PromptDeliveryProfile.BRISK_ENGAGED, seed=7)
 
 
 def test_brisk_profile_accepts_explicit_fast_delivery() -> None:
@@ -75,7 +75,29 @@ def test_brisk_profile_accepts_explicit_fast_delivery() -> None:
         topic="a lively neighborhood event",
     )
 
-    validate_prompt_draft_profile(draft, PromptDeliveryProfile.BRISK_ENGAGED)
+    profiled_draft = apply_prompt_draft_profile(
+        draft,
+        PromptDeliveryProfile.BRISK_ENGAGED,
+        seed=7,
+    )
+
+    assert profiled_draft == draft
+
+
+def test_brisk_profile_adds_deterministic_rate() -> None:
+    draft = SpeechPromptDraft(
+        text=" ".join("word" for _ in range(100)),
+        voice_instruction="An upbeat projected voice with lively pacing.",
+        topic="a lively neighborhood event",
+    )
+
+    profiled_draft = apply_prompt_draft_profile(
+        draft,
+        PromptDeliveryProfile.BRISK_ENGAGED,
+        seed=7,
+    )
+
+    assert "207 words per minute" in profiled_draft.voice_instruction
 
 
 def _prompt(prompt_id: str) -> SyntheticEnglishSpeechPrompt:

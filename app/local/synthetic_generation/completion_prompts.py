@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Annotated
 
@@ -59,17 +60,18 @@ class SyntheticSpeechPromptSet(SyntheticModel):
         return self
 
 
-def validate_prompt_draft_profile(
+def apply_prompt_draft_profile(
     draft: SpeechPromptDraft,
     delivery_profile: PromptDeliveryProfile,
-) -> None:
+    seed: int,
+) -> SpeechPromptDraft:
     match delivery_profile:
         case PromptDeliveryProfile.BALANCED:
-            return
+            return draft
         case PromptDeliveryProfile.BRISK_ENGAGED:
             word_count = len(draft.text.split())
-            if not 95 <= word_count <= 115:
-                raise ValueError("Brisk engaged prompt drafts require 95 to 115 words.")
+            if not 90 <= word_count <= 115:
+                raise ValueError("Brisk engaged prompt drafts require 90 to 115 words.")
             normalized_description = f"{draft.topic} {draft.voice_instruction}".casefold()
             prohibited_phrases = (
                 "calm",
@@ -89,14 +91,24 @@ def validate_prompt_draft_profile(
                 raise ValueError(
                     f"Brisk engaged prompt drafts contain low-energy phrases: {', '.join(matches)}."
                 )
-            allowed_rates = tuple(
-                f"{words_per_minute} words per minute" for words_per_minute in range(200, 241)
+            rate_match = re.search(r"\b(\d{3}) words per minute\b", normalized_description)
+            if rate_match is not None:
+                words_per_minute = int(rate_match.group(1))
+                if not 200 <= words_per_minute <= 240:
+                    raise ValueError(
+                        "Brisk engaged voice instructions require a rate from 200 to 240 words "
+                        "per minute."
+                    )
+                return draft
+            words_per_minute = 200 + seed % 41
+            return draft.model_copy(
+                update={
+                    "voice_instruction": (
+                        f"{draft.voice_instruction.rstrip()} Maintain a consistently brisk rate "
+                        f"of {words_per_minute} words per minute without rushing or slurring."
+                    )
+                }
             )
-            if not any(rate in normalized_description for rate in allowed_rates):
-                raise ValueError(
-                    "Brisk engaged voice instructions require an explicit rate from 200 to 240 "
-                    "words per minute."
-                )
 
 
 def validate_prompt_set_id(value: str) -> str:
