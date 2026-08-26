@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.local.synthetic_generation.conversation_compiler import ConversationCompilerConfig
+from app.local.synthetic_generation.conversation_pipeline import build_conversation_corpus
 from app.local.synthetic_generation.corpus import (
     SyntheticCorpusRequest,
     build_synthetic_corpus,
@@ -29,6 +31,19 @@ def main(arguments: Sequence[str] | None = None) -> None:
                 )
                 manifest = build_synthetic_corpus(request, parsed.output)
                 print(manifest.model_dump_json(indent=2), flush=True)
+            case "compile-conversations":
+                manifest = build_conversation_corpus(
+                    prompt_set_path=parsed.prompt_set,
+                    tts_manifest_path=parsed.tts_manifest,
+                    output_directory=parsed.output,
+                    split_seed=parsed.split_seed,
+                    compiler_config=ConversationCompilerConfig(
+                        crop_variant_count=parsed.crop_variants,
+                        event_light_fraction=parsed.event_light_fraction,
+                        assistant_duration_variation=parsed.assistant_duration_variation,
+                    ),
+                )
+                print(manifest.model_dump_json(indent=2), flush=True)
             case _:
                 raise AssertionError(f"Unexpected command: {parsed.command}")
     except (OSError, ValidationError, ValueError) as error:
@@ -45,6 +60,17 @@ def _parser() -> argparse.ArgumentParser:
     build_parser = subparsers.add_parser("build-corpus")
     build_parser.add_argument("--request", required=True, type=Path)
     build_parser.add_argument("--output", required=True, type=Path)
+    conversation_parser = subparsers.add_parser(
+        "compile-conversations",
+        help="Compile rendered user-only conversations into training shards.",
+    )
+    conversation_parser.add_argument("--prompt-set", required=True, type=Path)
+    conversation_parser.add_argument("--tts-manifest", required=True, type=Path)
+    conversation_parser.add_argument("--output", required=True, type=Path)
+    conversation_parser.add_argument("--split-seed", default="synthetic-conversation-pilot-v1")
+    conversation_parser.add_argument("--crop-variants", default=4, type=int)
+    conversation_parser.add_argument("--event-light-fraction", default=0.15, type=float)
+    conversation_parser.add_argument("--assistant-duration-variation", default=0.1, type=float)
     return parser
 
 

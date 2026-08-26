@@ -150,7 +150,7 @@ class MaterializedTrainingSample(FrozenBaseModel):
     assistant_side: TrackSide
     split: TrainingCorpusSplit
     user_audio_path: str
-    assistant_audio_path: str
+    assistant_audio_path: str | None = None
     start_seconds: float = Field(ge=0.0)
     end_seconds: float = Field(gt=0.0)
     quality_score: float = Field(ge=0.0, le=1.0)
@@ -158,11 +158,23 @@ class MaterializedTrainingSample(FrozenBaseModel):
     assistant_has_floor: tuple[float, ...] = Field(
         min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
     )
+    assistant_speaking_probability: tuple[float, ...] | None = Field(
+        default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
     p_user_has_floor: tuple[float, ...] = Field(
         min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
     )
     p_user_yield: tuple[float, ...] = Field(
         min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    p_user_floor_now: tuple[float, ...] | None = Field(
+        default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    speculative_eot_500: tuple[float, ...] | None = Field(
+        default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    speculative_eot_1000: tuple[float, ...] | None = Field(
+        default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
     )
     p_assistant_backchannel: tuple[float, ...] = Field(
         min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
@@ -198,9 +210,20 @@ class MaterializedTrainingSample(FrozenBaseModel):
             raise ValueError("Training sample end time must follow its start time.")
         if any(value < 0.0 or value > 1.0 for value in self.assistant_has_floor):
             raise ValueError("Assistant-floor inputs must be probabilities between zero and one.")
+        if (
+            self.assistant_speaking_probability is not None
+            and self.assistant_speaking_probability != self.assistant_has_floor
+        ):
+            raise ValueError(
+                "Assistant-speaking and compatibility assistant-floor inputs must match."
+            )
+        if self.p_user_floor_now is not None and any(
+            floor != -1.0 and yielded != -1.0 and abs(yielded - (1.0 - floor)) > 1e-6
+            for floor, yielded in zip(self.p_user_floor_now, self.p_user_yield, strict=True)
+        ):
+            raise ValueError("User-floor and compatibility yield targets must be inverse values.")
         masked_targets = (
             self.p_user_has_floor,
-            self.p_user_yield,
             self.p_assistant_backchannel,
             self.future_activity_0_200,
             self.future_activity_200_500,
@@ -210,6 +233,13 @@ class MaterializedTrainingSample(FrozenBaseModel):
             self.continuation_pause,
             self.non_floor_feedback,
             self.floor_take,
+            self.p_user_yield,
+            *(track for track in (self.p_user_floor_now,) if track is not None),
+            *(
+                track
+                for track in (self.speculative_eot_500, self.speculative_eot_1000)
+                if track is not None
+            ),
         )
         if any(
             value != -1.0 and not 0.0 <= value <= 1.0
@@ -218,6 +248,17 @@ class MaterializedTrainingSample(FrozenBaseModel):
         ):
             raise ValueError("Training targets must be masked with -1 or be probabilities.")
         return self
+
+    def yield_oriented_primary_targets(self) -> tuple[float, ...]:
+        """Return the runtime-compatible probability that the user has yielded."""
+        if self.p_user_floor_now is not None:
+            return tuple(-1.0 if value == -1.0 else 1.0 - value for value in self.p_user_floor_now)
+        return self.p_user_yield
+
+    def assistant_speaking_inputs(self) -> tuple[float, ...]:
+        if self.assistant_speaking_probability is not None:
+            return self.assistant_speaking_probability
+        return self.assistant_has_floor
 
 
 class ExportShard(FrozenBaseModel):
@@ -706,12 +747,16 @@ def _training_arrow_schema() -> pa.Schema:
         pa.field("assistant_side", pa.string()),
         pa.field("split", pa.string()),
         pa.field("user_audio_path", pa.string()),
-        pa.field("assistant_audio_path", pa.string()),
+        pa.field("assistant_audio_path", pa.string(), nullable=True),
         pa.field("start_seconds", pa.float64()),
         pa.field("end_seconds", pa.float64()),
         pa.field("quality_score", pa.float64()),
         pa.field("category", pa.string()),
         *(pa.field(name, frame_values) for name in _frame_field_names()),
+        pa.field("assistant_speaking_probability", pa.list_(pa.float32()), nullable=True),
+        pa.field("p_user_floor_now", pa.list_(pa.float32()), nullable=True),
+        pa.field("speculative_eot_500", pa.list_(pa.float32()), nullable=True),
+        pa.field("speculative_eot_1000", pa.list_(pa.float32()), nullable=True),
     )
     return pa.schema(fields)
 

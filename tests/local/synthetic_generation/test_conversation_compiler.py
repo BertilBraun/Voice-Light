@@ -118,6 +118,12 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
         sum(value == 1.0 for crop in compiled.crops for value in crop.labels.turn_completion) >= 4
     )
     assert any(value == 1.0 for crop in compiled.crops for value in crop.labels.continuation_pause)
+    assert (
+        max(
+            sum(value == 1.0 for value in crop.labels.continuation_pause) for crop in compiled.crops
+        )
+        >= 8
+    )
     assert any(value == 1.0 for crop in compiled.crops for value in crop.labels.non_floor_feedback)
     assert (
         max(
@@ -137,6 +143,19 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
         for horizon in crop.labels.speculative_eot
         for value in horizon.probabilities
     )
+    interruption_event = next(
+        event for event in compiled.crops[0].user_events if event.event_id == "interruption"
+    )
+    interruption_crop = next(
+        crop
+        for crop in compiled.crops
+        if crop.source_start_seconds - crop.left_padding_seconds
+        <= interruption_event.start_seconds
+        < crop.source_start_seconds - crop.left_padding_seconds + crop.duration_seconds
+    )
+    crop_origin = interruption_crop.source_start_seconds - interruption_crop.left_padding_seconds
+    interruption_frame = round((interruption_event.start_seconds - crop_origin) / 0.08 - 0.5)
+    assert interruption_crop.labels.assistant_speaking_probability[interruption_frame] > 0.8
 
 
 def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path: Path) -> None:

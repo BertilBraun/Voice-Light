@@ -90,7 +90,9 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         return TrainingItem(
             sample_id=_training_item_id(sample),
             waveform=waveform,
-            assistant_speaking=torch.tensor(sample.assistant_has_floor, dtype=torch.float32),
+            assistant_speaking=torch.tensor(
+                sample.assistant_speaking_inputs(), dtype=torch.float32
+            ),
             targets=frame_targets_from_sample(sample),
         )
 
@@ -150,7 +152,7 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
 
 
 def frame_targets_from_sample(sample: MaterializedTrainingSample) -> FrameTargets:
-    yield_probability, primary_mask = _targets_and_mask(sample.p_user_yield)
+    yield_probability, primary_mask = _targets_and_mask(sample.yield_oriented_primary_targets())
     event_targets, event_mask = _stack_targets_and_masks(
         (
             sample.turn_completion,
@@ -200,9 +202,10 @@ def validate_sample_contract(
             f"requested split {split.value!r}."
         )
     expected_frame_count = round(manifest.input_duration_seconds / manifest.frame_seconds)
-    if expected_frame_count != len(sample.p_user_yield):
+    primary_targets = sample.yield_oriented_primary_targets()
+    if expected_frame_count != len(primary_targets):
         raise ValueError(
-            f"Training sample has {len(sample.p_user_yield)} frames; "
+            f"Training sample has {len(primary_targets)} frames; "
             f"manifest contract requires {expected_frame_count}."
         )
     sample_duration_seconds = sample.end_seconds - sample.start_seconds

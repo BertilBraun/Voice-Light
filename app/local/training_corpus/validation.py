@@ -401,6 +401,7 @@ def _validate_sample(
         or sample.assistant_audio_path != expected_assistant_path
     ):
         raise ValueError(f"Sample {sample.window_id} audio references are not canonical.")
+    assert sample.assistant_audio_path is not None
     for side, path in (
         (SpeakerSide(sample.user_side.value), sample.user_audio_path),
         (SpeakerSide(sample.assistant_side.value), sample.assistant_audio_path),

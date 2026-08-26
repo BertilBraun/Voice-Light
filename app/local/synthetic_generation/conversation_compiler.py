@@ -104,6 +104,7 @@ class InterruptionFloorClaimPlacement(SyntheticModel):
     event_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     clip_id: str
     timing: DuringAssistantUserTiming
+    assistant_yield_delay_seconds: float = Field(default=0.25, ge=0.08, le=0.6)
 
 
 UserClipPlacement = Annotated[
@@ -413,7 +414,7 @@ def _compile_crop(
     variation = config.assistant_duration_variation
     assistant_scale = float(generator.uniform(1.0 - variation, 1.0 + variation))
     user_events, assistant_turns = _resolve_variant_timeline(plan, clips_by_id, assistant_scale)
-    completions, holds, feedback_intervals, floor_takes, user_floor = _semantic_timeline(
+    completions, hold_intervals, feedback_intervals, floor_takes, user_floor = _semantic_timeline(
         user_events, clips_by_id
     )
     variant_duration = max(
@@ -424,7 +425,8 @@ def _compile_crop(
     if variant_duration > 30.0:
         raise ValueError("Reflowed conversation exceeds the 30-second source limit.")
     feedback_starts = tuple(start for start, _ in feedback_intervals)
-    event_times = completions + holds + feedback_starts + floor_takes
+    hold_starts = tuple(start for start, _ in hold_intervals)
+    event_times = completions + hold_starts + feedback_starts + floor_takes
     event_light_count = round(config.crop_variant_count * config.event_light_fraction)
     event_light_requested = variant_index >= config.crop_variant_count - event_light_count
     crop_start = _crop_start_for_variant(
@@ -465,8 +467,8 @@ def _compile_crop(
             else MASKED_TARGET
             for time_seconds in frame_times
         ),
-        turn_completion=_sparse_targets(frame_times, completions, holds),
-        continuation_pause=_sparse_targets(frame_times, holds, completions),
+        turn_completion=_sparse_targets(frame_times, completions, hold_starts),
+        continuation_pause=_interval_targets(frame_times, hold_intervals, completions),
         non_floor_feedback=_interval_targets(frame_times, feedback_intervals, floor_takes),
         floor_take=_sparse_targets(frame_times, floor_takes, feedback_starts),
         speculative_eot=speculative,
@@ -532,11 +534,10 @@ def _resolve_variant_timeline(
                 assistant_turn_id=assistant_turn_id, position_fraction=position_fraction
             ):
                 assistant_turn = resolve_assistant(assistant_turn_id)
-                resolved_start = (
-                    assistant_turn.start_seconds
-                    + (assistant_turn.end_seconds - assistant_turn.start_seconds)
-                    * position_fraction
+                nominal_duration = (
+                    assistant_by_id[assistant_turn_id].duration_seconds * assistant_duration_scale
                 )
+                resolved_start = assistant_turn.start_seconds + nominal_duration * position_fraction
         clip = clips_by_id[event.clip_id]
         resolved = ResolvedUserEvent(
             event_id=event.event_id,
@@ -565,12 +566,22 @@ def _resolve_variant_timeline(
             case AfterUserAssistantTiming(user_event_id=user_event_id, delay_seconds=delay_seconds):
                 resolved_start = resolve_user(user_event_id).end_seconds + delay_seconds
         scaled_duration = turn.duration_seconds * assistant_duration_scale
+        interruption_offsets = _interruption_end_offsets(
+            plan.user_events,
+            turn.turn_id,
+            scaled_duration,
+        )
+        interruption_yield_delays = _interruption_yield_delays(
+            plan.user_events,
+            turn.turn_id,
+        )
+        effective_duration = min((scaled_duration, *interruption_offsets))
         resolved = ResolvedAssistantTurn(
             turn_id=turn.turn_id,
             start_seconds=resolved_start,
-            end_seconds=resolved_start + scaled_duration,
+            end_seconds=resolved_start + effective_duration,
             speaking_probability=turn.speaking_probability,
-            transition_seconds=turn.transition_seconds,
+            transition_seconds=min((turn.transition_seconds, *interruption_yield_delays)),
             probability_dips=tuple(
                 AssistantProbabilityDip(
                     start_offset_seconds=dip.start_offset_seconds * assistant_duration_scale,
@@ -578,6 +589,8 @@ def _resolve_variant_timeline(
                     probability=dip.probability,
                 )
                 for dip in turn.probability_dips
+                if dip.start_offset_seconds * assistant_duration_scale < effective_duration
+                and dip.end_offset_seconds * assistant_duration_scale <= effective_duration
             ),
         )
         resolving.remove(dependency_key)
@@ -600,6 +613,44 @@ def _resolve_variant_timeline(
     return users, assistants
 
 
+def _interruption_end_offsets(
+    user_events: tuple[UserClipPlacement, ...],
+    assistant_turn_id: str,
+    assistant_duration_seconds: float,
+) -> tuple[float, ...]:
+    offsets: list[float] = []
+    for event in user_events:
+        match event:
+            case InterruptionFloorClaimPlacement(
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id=referenced_turn_id,
+                    position_fraction=position_fraction,
+                ),
+                assistant_yield_delay_seconds=yield_delay_seconds,
+            ) if referenced_turn_id == assistant_turn_id:
+                offsets.append(assistant_duration_seconds * position_fraction + yield_delay_seconds)
+            case _:
+                pass
+    return tuple(offsets)
+
+
+def _interruption_yield_delays(
+    user_events: tuple[UserClipPlacement, ...],
+    assistant_turn_id: str,
+) -> tuple[float, ...]:
+    delays: list[float] = []
+    for event in user_events:
+        match event:
+            case InterruptionFloorClaimPlacement(
+                timing=DuringAssistantUserTiming(assistant_turn_id=referenced_turn_id),
+                assistant_yield_delay_seconds=yield_delay_seconds,
+            ) if referenced_turn_id == assistant_turn_id:
+                delays.append(yield_delay_seconds)
+            case _:
+                pass
+    return tuple(delays)
+
+
 def _semantic_timeline(
     user_events: tuple[ResolvedUserEvent, ...],
     clips_by_id: dict[str, RenderedUserClip],
@@ -611,7 +662,7 @@ def _semantic_timeline(
     tuple[tuple[float, float], ...],
 ]:
     completions: list[float] = []
-    holds: list[float] = []
+    holds: list[tuple[float, float]] = []
     feedback: list[tuple[float, float]] = []
     floor_takes: list[float] = []
     user_floor: list[tuple[float, float]] = []
@@ -631,7 +682,10 @@ def _semantic_timeline(
                 feedback.append((active_start, active_end))
         if event.kind != "non_floor_feedback":
             holds.extend(
-                event.start_seconds + silence.start_seconds
+                (
+                    event.start_seconds + silence.start_seconds,
+                    event.start_seconds + silence.end_seconds,
+                )
                 for silence in clip.continuation_silences
             )
     return (
