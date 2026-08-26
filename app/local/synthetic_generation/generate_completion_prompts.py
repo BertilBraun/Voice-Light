@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import torch
@@ -24,6 +24,7 @@ from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SpeechPromptDraftBatch,
     SyntheticSpeechPromptSet,
+    validate_prompt_set_id,
 )
 
 LANGUAGE_WEIGHTS = (
@@ -36,6 +37,7 @@ LANGUAGE_WEIGHTS = (
 
 def main(arguments: Sequence[str] | None = None) -> None:
     parsed = _parser().parse_args(arguments)
+    set_id = validate_prompt_set_id(parsed.set_id)
     revision = model_info(parsed.model).sha
     if revision is None:
         raise ValueError(f"Hugging Face did not return a revision for {parsed.model}.")
@@ -46,26 +48,40 @@ def main(arguments: Sequence[str] | None = None) -> None:
         torch_dtype=torch.bfloat16,
         device_map="cuda:0",
     )
+    provenance = PromptGeneratorProvenance(
+        model_id=parsed.model,
+        model_revision=revision,
+        runtime_version=transformers.__version__,
+        seed=parsed.seed,
+        requested_prompt_count=parsed.count,
+    )
+    parsed.output.parent.mkdir(parents=True, exist_ok=True)
+    partial_output = parsed.output.with_suffix(f"{parsed.output.suffix}.partial")
+
+    def checkpoint(prompts: tuple[SyntheticSpeechPrompt, ...]) -> None:
+        artifact = SyntheticSpeechPromptSet(
+            set_id=set_id,
+            provenance=provenance,
+            prompts=prompts,
+        )
+        _write_atomically(partial_output, artifact)
+        print(f"Checkpointed {len(prompts)}/{parsed.count} prompts", flush=True)
+
     prompts = generate_speech_prompts(
         model=model,
         tokenizer=tokenizer,
         prompt_count=parsed.count,
         batch_size=parsed.batch_size,
         seed=parsed.seed,
+        on_progress=checkpoint,
     )
     artifact = SyntheticSpeechPromptSet(
-        set_id=parsed.set_id,
-        provenance=PromptGeneratorProvenance(
-            model_id=parsed.model,
-            model_revision=revision,
-            runtime_version=transformers.__version__,
-            seed=parsed.seed,
-            requested_prompt_count=parsed.count,
-        ),
+        set_id=set_id,
+        provenance=provenance,
         prompts=prompts,
     )
-    parsed.output.parent.mkdir(parents=True, exist_ok=True)
-    parsed.output.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+    _write_atomically(parsed.output, artifact)
+    partial_output.unlink(missing_ok=True)
     print(f"Wrote {len(prompts)} prompts to {parsed.output}", flush=True)
 
 
@@ -75,6 +91,7 @@ def generate_speech_prompts(
     prompt_count: int,
     batch_size: int,
     seed: int,
+    on_progress: Callable[[tuple[SyntheticSpeechPrompt, ...]], None],
 ) -> tuple[SyntheticSpeechPrompt, ...]:
     generator = random.Random(seed)
     prompts = []
@@ -118,9 +135,16 @@ def generate_speech_prompts(
             if len(prompts) == prompt_count:
                 break
         attempt += 1
+        on_progress(tuple(prompts))
         if attempt > prompt_count * 4:
             raise ValueError("Prompt generation failed to produce enough unique valid drafts.")
     return tuple(prompts)
+
+
+def _write_atomically(path: Path, artifact: SyntheticSpeechPromptSet) -> None:
+    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+    temporary_path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+    temporary_path.replace(path)
 
 
 def _generate_draft_batch(

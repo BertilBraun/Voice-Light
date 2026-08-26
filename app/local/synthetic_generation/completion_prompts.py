@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from typing import Annotated
+
+from pydantic import Field, StringConstraints, TypeAdapter, model_validator
 
 from app.local.synthetic_generation.completion_dataset import SyntheticSpeechPrompt
 from app.local.synthetic_generation.models import SyntheticModel
+
+PromptSetId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]*$")]
+prompt_set_id_adapter = TypeAdapter(PromptSetId)
 
 
 class SpeechPromptDraft(SyntheticModel):
@@ -32,7 +37,7 @@ class PromptGeneratorProvenance(SyntheticModel):
 
 class SyntheticSpeechPromptSet(SyntheticModel):
     schema_version: str = "voice-light-synthetic-speech-prompts-v1"
-    set_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    set_id: PromptSetId
     provenance: PromptGeneratorProvenance
     prompts: tuple[SyntheticSpeechPrompt, ...] = Field(min_length=1)
 
@@ -45,3 +50,7 @@ class SyntheticSpeechPromptSet(SyntheticModel):
         if len(normalized_texts) != len(set(normalized_texts)):
             raise ValueError("Synthetic speech prompt texts must be unique.")
         return self
+
+
+def validate_prompt_set_id(value: str) -> str:
+    return prompt_set_id_adapter.validate_python(value)

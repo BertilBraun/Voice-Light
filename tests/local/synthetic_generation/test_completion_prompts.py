@@ -10,6 +10,7 @@ from app.local.synthetic_generation.completion_dataset import (
 from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SyntheticSpeechPromptSet,
+    validate_prompt_set_id,
 )
 
 
@@ -30,6 +31,13 @@ def test_prompt_requires_long_spoken_text() -> None:
     values["text"] = "This is much too short."
     with pytest.raises(ValidationError, match="at least 45 words"):
         SyntheticSpeechPrompt.model_validate(values)
+
+
+def test_prompt_set_id_is_validated_before_generation() -> None:
+    with pytest.raises(ValidationError, match="string_pattern_mismatch"):
+        validate_prompt_set_id("completion-pilot-20260826")
+
+    assert validate_prompt_set_id("completion_pilot_20260826") == ("completion_pilot_20260826")
 
 
 def _prompt(prompt_id: str) -> SyntheticSpeechPrompt:
