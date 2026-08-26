@@ -21,7 +21,6 @@ from app.local.synthetic_generation.conversation_prompts import (
     SpeakingPace,
     SpeechAct,
     TopicDomain,
-    UserTurnLength,
     VocalPitch,
     VocalWeight,
     conversation_generation_instruction,
@@ -231,7 +230,6 @@ def _plan() -> EnglishConversationPromptPlan:
                 sequence_index=0,
                 speech_act=SpeechAct.OPINION,
                 delivery=delivery,
-                length_band=UserTurnLength.NORMAL,
                 text=(
                     "I would start with the lights because I adjust them every evening and always "
                     "forget the ideal setting."
@@ -240,7 +238,6 @@ def _plan() -> EnglishConversationPromptPlan:
             NonFloorFeedbackUserPrompt(
                 unit_id="user_2",
                 sequence_index=2,
-                speech_act=SpeechAct.ANSWER,
                 delivery=delivery,
                 text=MicroBackchannel.RIGHT,
                 during_assistant_turn_id="assistant_1",
@@ -250,7 +247,6 @@ def _plan() -> EnglishConversationPromptPlan:
                 sequence_index=4,
                 speech_act=SpeechAct.EXPLANATION,
                 delivery=delivery,
-                length_band=UserTurnLength.EXTENDED,
                 text_before_pause=(
                     "The morning routine could also help because the hallway gets surprisingly "
                     "dark before sunrise, and finding the switch while carrying coffee is awkward"
@@ -266,7 +262,6 @@ def _plan() -> EnglishConversationPromptPlan:
                 sequence_index=3,
                 speech_act=SpeechAct.ANSWER,
                 delivery=delivery,
-                length_band=UserTurnLength.BRIEF,
                 text="That would save time every morning.",
             ),
         ),

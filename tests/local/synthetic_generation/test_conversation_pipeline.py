@@ -41,6 +41,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     UserTurnLength,
     VocalPitch,
     VocalWeight,
+    floor_user_turn_length,
 )
 from app.local.synthetic_generation.conversation_tts import (
     ConversationTtsManifest,
@@ -201,13 +202,11 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=0,
                 speech_act=SpeechAct.REQUEST,
                 delivery=delivery,
-                length_band=UserTurnLength.BRIEF,
                 text="Help me choose a calmer reminder setting.",
             ),
             NonFloorFeedbackUserPrompt(
                 unit_id="user_2",
                 sequence_index=2,
-                speech_act=SpeechAct.ANSWER,
                 delivery=delivery,
                 text=MicroBackchannel.RIGHT,
                 during_assistant_turn_id="assistant_1",
@@ -217,7 +216,6 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=3,
                 speech_act=SpeechAct.OPINION,
                 delivery=delivery,
-                length_band=UserTurnLength.NORMAL,
                 text=(
                     "The quieter option sounds better because routine updates do not need to "
                     "interrupt everyone in the room."
@@ -230,7 +228,6 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=5,
                 speech_act=SpeechAct.CORRECTION,
                 delivery=delivery,
-                length_band=UserTurnLength.EXTENDED,
                 text=(
                     "Wait, urgent changes should still make a sound because a canceled meeting "
                     "or a sudden room change can affect the entire team. I only want the ordinary "
@@ -274,24 +271,15 @@ def _rendered_unit(
     audio_path = directory / relative_path
     audio_path.parent.mkdir(parents=True, exist_ok=True)
     sample_rate_hz = 16_000
-    match prompt:
-        case NonFloorFeedbackUserPrompt():
+    length_band = floor_user_turn_length(prompt)
+    match length_band:
+        case None:
             duration_seconds = 0.45
-        case (
-            CompletionUserPrompt(length_band=UserTurnLength.EXTENDED)
-            | HoldUserPrompt(length_band=UserTurnLength.EXTENDED)
-            | ResponseFloorClaimUserPrompt(length_band=UserTurnLength.EXTENDED)
-            | InterruptionFloorClaimUserPrompt(length_band=UserTurnLength.EXTENDED)
-        ):
+        case UserTurnLength.EXTENDED:
             duration_seconds = 26.0
-        case (
-            CompletionUserPrompt(length_band=UserTurnLength.NORMAL)
-            | HoldUserPrompt(length_band=UserTurnLength.NORMAL)
-            | ResponseFloorClaimUserPrompt(length_band=UserTurnLength.NORMAL)
-            | InterruptionFloorClaimUserPrompt(length_band=UserTurnLength.NORMAL)
-        ):
+        case UserTurnLength.NORMAL:
             duration_seconds = 4.0
-        case _:
+        case UserTurnLength.BRIEF:
             duration_seconds = 1.0
     times = np.arange(round(duration_seconds * sample_rate_hz)) / sample_rate_hz
     samples = (np.sin(2.0 * np.pi * 220.0 * times) * 0.1 * 32767.0).astype("<i2")

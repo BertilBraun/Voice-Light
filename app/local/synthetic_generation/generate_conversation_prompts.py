@@ -183,8 +183,9 @@ Assign every assistant turn and user prompt a distinct sequence_index. Renumber 
 consecutive integers 0, 1, 2, and so on in chronological conversational order. A condition such as
 response_floor_claim is never a speech_act; use only a speech_act value allowed by the schema.
 Keep target_duration_seconds between 60 and 120. Include brief, normal, and extended floor-owning
-turns within their exact word-count ranges. A non_floor_feedback text must be one acknowledgement
-allowed by the schema, never a phrase. Preserve an exact 8-18 word voice_reference_text.
+turns within their exact word-count ranges. Length is derived from text; remove every length_band
+field. A non_floor_feedback has no speech_act and its text must be one acknowledgement allowed by
+the schema, never a phrase. Preserve an exact 8-18 word voice_reference_text.
 
 Validation errors:
 {error}

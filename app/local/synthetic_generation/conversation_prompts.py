@@ -145,7 +145,7 @@ class UserPromptBase(SyntheticModel):
 
 
 class FloorOwningUserPromptBase(UserPromptBase):
-    length_band: UserTurnLength
+    pass
 
 
 class CompletionUserPrompt(FloorOwningUserPromptBase):
@@ -158,8 +158,8 @@ class CompletionUserPrompt(FloorOwningUserPromptBase):
         return _validate_english_text(value)
 
     @model_validator(mode="after")
-    def validate_length_band(self) -> CompletionUserPrompt:
-        _validate_user_turn_length((self.text,), self.length_band)
+    def validate_turn_length(self) -> CompletionUserPrompt:
+        _user_turn_length((self.text,))
         return self
 
 
@@ -175,15 +175,15 @@ class HoldUserPrompt(FloorOwningUserPromptBase):
         return _validate_english_text(value)
 
     @model_validator(mode="after")
-    def validate_length_band(self) -> HoldUserPrompt:
-        _validate_user_turn_length(
-            (self.text_before_pause, self.text_after_pause),
-            self.length_band,
-        )
+    def validate_turn_length(self) -> HoldUserPrompt:
+        _user_turn_length((self.text_before_pause, self.text_after_pause))
         return self
 
 
-class NonFloorFeedbackUserPrompt(UserPromptBase):
+class NonFloorFeedbackUserPrompt(SyntheticModel):
+    unit_id: str = Field(pattern=r"^user_[1-9][0-9]*$")
+    sequence_index: int = Field(ge=0)
+    delivery: SegmentDelivery
     condition: Literal["non_floor_feedback"] = "non_floor_feedback"
     text: MicroBackchannel
     during_assistant_turn_id: str = Field(pattern=r"^assistant_[1-9][0-9]*$")
@@ -201,8 +201,8 @@ class ResponseFloorClaimUserPrompt(FloorOwningUserPromptBase):
         return _validate_english_text(value)
 
     @model_validator(mode="after")
-    def validate_length_band(self) -> ResponseFloorClaimUserPrompt:
-        _validate_user_turn_length((self.text,), self.length_band)
+    def validate_turn_length(self) -> ResponseFloorClaimUserPrompt:
+        _user_turn_length((self.text,))
         return self
 
 
@@ -218,8 +218,8 @@ class InterruptionFloorClaimUserPrompt(FloorOwningUserPromptBase):
         return _validate_english_text(value)
 
     @model_validator(mode="after")
-    def validate_length_band(self) -> InterruptionFloorClaimUserPrompt:
-        _validate_user_turn_length((self.text,), self.length_band)
+    def validate_turn_length(self) -> InterruptionFloorClaimUserPrompt:
+        _user_turn_length((self.text,))
         return self
 
 
@@ -277,7 +277,7 @@ class EnglishConversationPromptPlan(SyntheticModel):
         realized_length_bands = {
             length_band
             for prompt in self.user_prompts
-            if (length_band := _floor_length_band(prompt)) is not None
+            if (length_band := floor_user_turn_length(prompt)) is not None
         }
         if realized_length_bands != set(UserTurnLength):
             raise ValueError("A conversation requires brief, normal, and extended user turns.")
@@ -407,9 +407,10 @@ Fixed requirements:
 - domain is {brief.domain.value!r}; invent a specific topic unlike generic rural or farming stories.
 - target_duration_seconds is 60 to 120 seconds after timing composition.
 - include these user conditions: {required_conditions}.
-- Use 5 to 10 responsive user prompts. The plan must contain every length_band: a brief turn of
-  2-8 words, a normal turn of 12-28 words, and an extended turn of 45-90 words targeting 20-30
-  seconds of rendered user speech. Do not collapse the conversation into uniform turn lengths.
+- Use 5 to 10 responsive user prompts. Include a brief turn of 2-8 words, a normal turn of 12-28
+  words, and an extended turn of 45-90 words targeting 20-30 seconds of rendered user speech.
+  Length is derived from text; never output a length_band field. Do not collapse the conversation
+  into uniform turn lengths.
 - A non_floor_feedback prompt is exactly one item from: yeah, yep, right, okay, sure, mhm, uh-huh,
   or mm-hmm. It cannot contain a clause, evaluation, reaction, or proposition. Collaborative
   completions are excluded from this pilot.
@@ -463,24 +464,17 @@ def _validate_english_text(value: str) -> str:
     return value
 
 
-def _validate_user_turn_length(
-    texts: tuple[str, ...],
-    length_band: UserTurnLength,
-) -> None:
+def _user_turn_length(texts: tuple[str, ...]) -> UserTurnLength:
     word_count = sum(len(text.split()) for text in texts)
-    match length_band:
-        case UserTurnLength.BRIEF:
-            bounds = (2, 8)
-        case UserTurnLength.NORMAL:
-            bounds = (12, 28)
-        case UserTurnLength.EXTENDED:
-            bounds = (45, 90)
-    minimum_words, maximum_words = bounds
-    if not minimum_words <= word_count <= maximum_words:
-        raise ValueError(
-            f"{length_band.value.title()} user turns require "
-            f"{minimum_words} to {maximum_words} words."
-        )
+    if 2 <= word_count <= 8:
+        return UserTurnLength.BRIEF
+    if 12 <= word_count <= 28:
+        return UserTurnLength.NORMAL
+    if 45 <= word_count <= 90:
+        return UserTurnLength.EXTENDED
+    raise ValueError(
+        f"Floor-owning user turns require 2-8, 12-28, or 45-90 words; received {word_count}."
+    )
 
 
 def _require_assistant_reference(
@@ -492,15 +486,15 @@ def _require_assistant_reference(
         raise ValueError(f"User prompt {unit_id} references unknown assistant turn {turn_id}.")
 
 
-def _floor_length_band(prompt: UserPrompt) -> UserTurnLength | None:
+def floor_user_turn_length(prompt: UserPrompt) -> UserTurnLength | None:
     match prompt:
         case (
-            CompletionUserPrompt(length_band=length_band)
-            | HoldUserPrompt(length_band=length_band)
-            | ResponseFloorClaimUserPrompt(length_band=length_band)
-            | InterruptionFloorClaimUserPrompt(length_band=length_band)
+            CompletionUserPrompt()
+            | HoldUserPrompt()
+            | ResponseFloorClaimUserPrompt()
+            | InterruptionFloorClaimUserPrompt()
         ):
-            return length_band
+            return _user_turn_length(_user_prompt_texts(prompt))
         case NonFloorFeedbackUserPrompt():
             return None
 

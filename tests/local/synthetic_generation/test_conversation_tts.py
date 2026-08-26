@@ -25,7 +25,6 @@ from app.local.synthetic_generation.conversation_prompts import (
     SpeakingPace,
     SpeechAct,
     TopicDomain,
-    UserTurnLength,
     VocalPitch,
     VocalWeight,
 )
@@ -280,7 +279,6 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=0,
                 speech_act=SpeechAct.OPINION,
                 delivery=delivery,
-                length_band=UserTurnLength.NORMAL,
                 text=(
                     "I would rather watch something funny tonight because the entire week has "
                     "already felt much too serious."
@@ -289,7 +287,6 @@ def _prompt_set() -> EnglishConversationPromptSet:
             NonFloorFeedbackUserPrompt(
                 unit_id="user_2",
                 sequence_index=2,
-                speech_act=SpeechAct.ANSWER,
                 delivery=delivery,
                 text=MicroBackchannel.RIGHT,
                 during_assistant_turn_id="assistant_1",
@@ -299,7 +296,6 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=3,
                 speech_act=SpeechAct.ANSWER,
                 delivery=delivery,
-                length_band=UserTurnLength.BRIEF,
                 text="The comedy sounds perfect.",
             ),
             HoldUserPrompt(
@@ -307,7 +303,6 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=4,
                 speech_act=SpeechAct.EXPLANATION,
                 delivery=delivery,
-                length_band=UserTurnLength.EXTENDED,
                 text_before_pause=(
                     "The mystery sounds interesting because I usually enjoy following small "
                     "clues and comparing theories before the final reveal arrives"
