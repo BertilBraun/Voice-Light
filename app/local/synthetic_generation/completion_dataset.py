@@ -12,13 +12,6 @@ from pydantic import Field, model_validator
 from app.local.synthetic_generation.models import SyntheticModel
 
 
-class PromptLanguage(StrEnum):
-    ENGLISH = "English"
-    GERMAN = "German"
-    FRENCH = "French"
-    SPANISH = "Spanish"
-
-
 class CompletionBoundaryKind(StrEnum):
     HOLD = "hold"
     END_OF_TURN = "end_of_turn"
@@ -32,7 +25,6 @@ class TtsProvider(StrEnum):
 
 class SyntheticSpeechPrompt(SyntheticModel):
     prompt_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    language: PromptLanguage
     text: str = Field(min_length=1)
     voice_instruction: str = Field(min_length=1)
     topic: str = Field(min_length=1)
@@ -92,6 +84,7 @@ class SilenceDetectionConfiguration(SyntheticModel):
 
 
 DEFAULT_SILENCE_DETECTION = SilenceDetectionConfiguration()
+FINAL_FADE_MILLISECONDS = 10
 
 
 class CompletionBoundaryAnnotation(SyntheticModel):
@@ -238,7 +231,9 @@ def analyze_generated_samples(
         boundaries=tuple(boundaries),
         provenance=provenance,
     )
-    return samples[:trimmed_sample_count].copy(), annotation
+    trimmed_samples = samples[:trimmed_sample_count].copy()
+    _apply_final_fade(trimmed_samples, sample_rate_hz)
+    return trimmed_samples, annotation
 
 
 def completion_window_plans(
@@ -323,3 +318,18 @@ def _internal_silence_boundaries(
 def _window_seed(seed: int, prompt_id: str, boundary_index: int) -> int:
     digest = hashlib.sha256(f"{seed}:{prompt_id}:{boundary_index}".encode()).digest()
     return int.from_bytes(digest[:8], "big")
+
+
+def _apply_final_fade(samples: np.ndarray, sample_rate_hz: int) -> None:
+    fade_sample_count = min(
+        samples.size,
+        round(sample_rate_hz * FINAL_FADE_MILLISECONDS / 1000.0),
+    )
+    if fade_sample_count == 0:
+        return
+    samples[-fade_sample_count:] *= np.linspace(
+        1.0,
+        0.0,
+        fade_sample_count,
+        dtype=np.float32,
+    )

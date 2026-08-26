@@ -73,7 +73,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         generation_started = time.monotonic()
         waveforms, sample_rate_hz = model.generate_voice_design(
             text=[prompt.text for prompt in batch],
-            language=[prompt.language.value for prompt in batch],
+            language=["English" for _ in batch],
             instruct=[prompt.voice_instruction for prompt in batch],
         )
         batch_generation_seconds = time.monotonic() - generation_started

@@ -7,6 +7,9 @@ generated utterance has one mono user WAV and deterministic annotations derived 
 does not contain an assistant track, artificial background noise, ASR-derived ground truth, or
 synthetic validation/test splits.
 
+The corpus and every provider invocation are English-only. Provider support for other languages is
+irrelevant to this pipeline and no language selector is exposed in its prompt schema.
+
 The two semantic labels are:
 
 - `hold`: every internal silent interval lasting at least 500 ms, represented by its start time and
@@ -25,10 +28,10 @@ frame targets can be materialized later without changing label timing.
 ## Prompt design
 
 `generate_completion_prompts.py` uses `Qwen/Qwen3-4B-Instruct-2507` to create validated structured
-prompts. Text is 55–115 words, a complete conversational turn, and contains two or three natural
-pause opportunities. English, German, French, and Spanish are sampled at 55/20/15/10 percent.
-VoiceDesign instructions vary perceived age, vocal character, accent, pace, emotion, pitch, energy,
-and pause delivery. Invalid JSON, invalid word counts, and duplicate text are discarded and retried.
+prompts. Text is English-only, 55–115 words, a complete conversational turn, and contains two or
+three natural pause opportunities. VoiceDesign instructions vary perceived age, vocal character,
+English accent or dialect, pace, emotion, pitch, energy, and pause delivery while requiring clean,
+close-mic voiced speech. Invalid JSON, invalid word counts, and duplicate text are discarded and retried.
 The prompt artifact records the exact model revision, runtime, and seed.
 
 ## TTS candidates

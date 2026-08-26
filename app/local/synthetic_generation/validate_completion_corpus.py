@@ -13,7 +13,6 @@ from pydantic import Field
 from app.local.synthetic_generation.completion_dataset import (
     CompletionBoundaryKind,
     GeneratedUtteranceAnnotation,
-    PromptLanguage,
     TtsProvider,
 )
 from app.local.synthetic_generation.models import SyntheticModel
@@ -28,6 +27,7 @@ class CompletionValidationIssueCode(StrEnum):
     TOO_SHORT = "too_short"
     TOO_LONG = "too_long"
     LOW_ENERGY = "low_energy"
+    ELEVATED_NOISE_FLOOR = "elevated_noise_floor"
     EXCESSIVE_CLIPPING = "excessive_clipping"
     NO_HOLD = "no_hold"
 
@@ -43,11 +43,6 @@ class CompletionProviderCount(SyntheticModel):
     utterance_count: int = Field(gt=0)
 
 
-class CompletionLanguageCount(SyntheticModel):
-    language: PromptLanguage
-    utterance_count: int = Field(gt=0)
-
-
 class CompletionCorpusValidationReport(SyntheticModel):
     schema_version: str = "voice-light-synthetic-completion-validation-v1"
     corpus_directory: Path
@@ -56,7 +51,6 @@ class CompletionCorpusValidationReport(SyntheticModel):
     generated_audio_seconds: float = Field(ge=0.0)
     hold_interval_count: int = Field(ge=0)
     provider_counts: tuple[CompletionProviderCount, ...]
-    language_counts: tuple[CompletionLanguageCount, ...]
     issues: tuple[CompletionValidationIssue, ...]
 
 
@@ -65,6 +59,7 @@ def validate_completion_corpus(
     minimum_duration_seconds: float = 20.0,
     maximum_duration_seconds: float = 60.0,
     minimum_root_mean_square: float = 0.005,
+    maximum_noise_floor_rms: float = 0.005,
     maximum_clipped_sample_fraction: float = 0.005,
 ) -> CompletionCorpusValidationReport:
     manifest_path = corpus_directory / "utterances.jsonl"
@@ -84,13 +79,13 @@ def validate_completion_corpus(
             minimum_duration_seconds=minimum_duration_seconds,
             maximum_duration_seconds=maximum_duration_seconds,
             minimum_root_mean_square=minimum_root_mean_square,
+            maximum_noise_floor_rms=maximum_noise_floor_rms,
             maximum_clipped_sample_fraction=maximum_clipped_sample_fraction,
         )
         issues.extend(utterance_issues)
         if not utterance_issues:
             valid_utterance_count += 1
     provider_counts = Counter(annotation.provenance.provider for annotation in annotations)
-    language_counts = Counter(annotation.prompt.language for annotation in annotations)
     return CompletionCorpusValidationReport(
         corpus_directory=corpus_directory,
         utterance_count=len(annotations),
@@ -106,10 +101,6 @@ def validate_completion_corpus(
             CompletionProviderCount(provider=provider, utterance_count=count)
             for provider, count in sorted(provider_counts.items())
         ),
-        language_counts=tuple(
-            CompletionLanguageCount(language=language, utterance_count=count)
-            for language, count in sorted(language_counts.items())
-        ),
         issues=tuple(issues),
     )
 
@@ -120,6 +111,7 @@ def _validate_utterance(
     minimum_duration_seconds: float,
     maximum_duration_seconds: float,
     minimum_root_mean_square: float,
+    maximum_noise_floor_rms: float,
     maximum_clipped_sample_fraction: float,
 ) -> tuple[CompletionValidationIssue, ...]:
     issues = []
@@ -185,6 +177,27 @@ def _validate_utterance(
                 annotation,
                 CompletionValidationIssueCode.LOW_ENERGY,
                 f"RMS {root_mean_square:.6f} is below {minimum_root_mean_square:.6f}.",
+            )
+        )
+    frame_size = min(samples.size, round(sample_rate_hz * 0.02))
+    complete_frame_count = samples.size // frame_size
+    frame_rms = np.sqrt(
+        np.mean(
+            np.square(samples[: complete_frame_count * frame_size]).reshape(
+                complete_frame_count,
+                frame_size,
+            ),
+            axis=1,
+        )
+    )
+    noise_floor_rms = float(np.quantile(frame_rms, 0.1))
+    if noise_floor_rms > maximum_noise_floor_rms:
+        issues.append(
+            _issue(
+                annotation,
+                CompletionValidationIssueCode.ELEVATED_NOISE_FLOOR,
+                f"Lower-decile frame RMS {noise_floor_rms:.6f} exceeds "
+                f"{maximum_noise_floor_rms:.6f}.",
             )
         )
     clipped_fraction = float(np.mean(np.abs(samples) >= 0.999))

@@ -7,7 +7,6 @@ import pytest
 
 from app.local.synthetic_generation.completion_dataset import (
     CompletionBoundaryKind,
-    PromptLanguage,
     QwenVoiceDesignProvenance,
     SyntheticSpeechPrompt,
     analyze_generated_samples,
@@ -44,6 +43,7 @@ def test_analysis_labels_long_internal_silence_as_hold_and_trims_tail() -> None:
     assert annotation.trimmed_duration_seconds == 2.9
     assert annotation.trimmed_trailing_seconds == 1.1
     assert trimmed.size == round(2.9 * sample_rate_hz)
+    assert trimmed[-1] == 0.0
 
 
 def test_window_plans_move_each_boundary_and_include_all_visible_labels() -> None:
@@ -107,7 +107,6 @@ def _tone(duration_seconds: float, sample_rate_hz: int) -> np.ndarray:
 def _prompt() -> SyntheticSpeechPrompt:
     return SyntheticSpeechPrompt(
         prompt_id="example_prompt",
-        language=PromptLanguage.ENGLISH,
         text=(
             "I reviewed the schedule carefully before calling the team, and after comparing "
             "the available trains with the meeting times, I realized we should leave much "

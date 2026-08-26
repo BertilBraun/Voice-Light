@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import random
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -16,22 +15,12 @@ from transformers import (
     PreTrainedTokenizerBase,
 )
 
-from app.local.synthetic_generation.completion_dataset import (
-    PromptLanguage,
-    SyntheticSpeechPrompt,
-)
+from app.local.synthetic_generation.completion_dataset import SyntheticSpeechPrompt
 from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SpeechPromptDraftBatch,
     SyntheticSpeechPromptSet,
     validate_prompt_set_id,
-)
-
-LANGUAGE_WEIGHTS = (
-    (PromptLanguage.ENGLISH, 0.55),
-    (PromptLanguage.GERMAN, 0.20),
-    (PromptLanguage.FRENCH, 0.15),
-    (PromptLanguage.SPANISH, 0.10),
 )
 
 
@@ -93,18 +82,15 @@ def generate_speech_prompts(
     seed: int,
     on_progress: Callable[[tuple[SyntheticSpeechPrompt, ...]], None],
 ) -> tuple[SyntheticSpeechPrompt, ...]:
-    generator = random.Random(seed)
     prompts = []
     used_texts: set[str] = set()
     attempt = 0
     while len(prompts) < prompt_count:
-        language = _sample_language(generator)
         requested_batch_size = min(batch_size, prompt_count - len(prompts))
         try:
             draft_batch = _generate_draft_batch(
                 model=model,
                 tokenizer=tokenizer,
-                language=language,
                 batch_size=requested_batch_size,
                 seed=seed + attempt,
             )
@@ -124,7 +110,6 @@ def generate_speech_prompts(
             prompts.append(
                 SyntheticSpeechPrompt(
                     prompt_id=f"prompt_{prompt_index:05d}",
-                    language=language,
                     text=draft.text,
                     voice_instruction=draft.voice_instruction,
                     topic=draft.topic,
@@ -150,11 +135,10 @@ def _write_atomically(path: Path, artifact: SyntheticSpeechPromptSet) -> None:
 def _generate_draft_batch(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
-    language: PromptLanguage,
     batch_size: int,
     seed: int,
 ) -> SpeechPromptDraftBatch:
-    instruction = _generation_instruction(language, batch_size)
+    instruction = _generation_instruction(batch_size)
     messages = [{"role": "user", "content": instruction}]
     inputs = tokenizer.apply_chat_template(
         messages,
@@ -182,8 +166,8 @@ def _generate_draft_batch(
         raise ValueError(f"Prompt model returned invalid structured output: {error}") from error
 
 
-def _generation_instruction(language: PromptLanguage, batch_size: int) -> str:
-    return f"""Create {batch_size} distinct long-form text-to-speech prompts in {language.value}.
+def _generation_instruction(batch_size: int) -> str:
+    return f"""Create {batch_size} distinct long-form English text-to-speech prompts.
 Return only one JSON object shaped exactly as:
 {{"prompts":[{{"text":"...","voice_instruction":"...","topic":"..."}}]}}
 
@@ -191,12 +175,14 @@ Requirements for every prompt:
 - Text contains 55-115 words and sounds like one natural conversational turn, not a list.
 - Use ordinary punctuation to create two or three plausible thoughtful pauses. At least one pause
   should plausibly last over 500 ms when spoken, using a sentence boundary, an em dash, or an
-  explicit hesitation such as "uh" or its natural {language.value} equivalent.
+  explicit hesitation such as "uh".
 - End with a clearly complete statement or question. No ellipsis at the end.
 - Vary syntax, sentence length, topic, emotion, age presentation, regional accent, speaking pace,
   pitch, energy, and vocal texture across items.
 - voice_instruction is a detailed natural-language instruction for Qwen3-TTS VoiceDesign and must
   specify perceived age, voice character, accent or dialect, pace, emotion, and how pauses sound.
+- Require a clean, close-mic studio recording with normal voiced projection. Do not request
+  whispering, breathiness, hushed delivery, ambient sound, room tone, or background noise.
 - Avoid quotations, unsafe content, copyrighted passages, names of real public figures, stage
   directions inside text, and repeated templates.
 - topic is a short descriptive phrase.
@@ -209,16 +195,6 @@ def _json_object(text: str) -> str:
     if start < 0 or end <= start:
         raise ValueError("Prompt model output did not contain a JSON object.")
     return text[start : end + 1]
-
-
-def _sample_language(generator: random.Random) -> PromptLanguage:
-    draw = generator.random()
-    cumulative = 0.0
-    for language, weight in LANGUAGE_WEIGHTS:
-        cumulative += weight
-        if draw <= cumulative:
-            return language
-    return PromptLanguage.SPANISH
 
 
 def _parser() -> argparse.ArgumentParser:

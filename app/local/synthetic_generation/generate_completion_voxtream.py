@@ -21,7 +21,6 @@ from voxtream.utils.generator import set_seed, text_generator
 
 from app.local.synthetic_generation.completion_dataset import (
     GeneratedUtteranceAnnotation,
-    PromptLanguage,
     Voxtream2Provenance,
     analyze_generated_samples,
     completion_window_plans,
@@ -58,9 +57,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     prompt_set = SyntheticSpeechPromptSet.model_validate_json(
         parsed.prompts.read_text(encoding="utf-8")
     )
-    prompts = tuple(
-        prompt for prompt in prompt_set.prompts if prompt.language is PromptLanguage.ENGLISH
-    )
+    prompts = prompt_set.prompts
     if not prompts:
         raise ValueError("VoXtream requires at least one English prompt.")
     reference_audio_paths = tuple(sorted(parsed.reference_voices.glob("*.wav")))

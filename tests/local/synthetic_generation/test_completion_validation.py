@@ -6,7 +6,6 @@ import numpy as np
 import soundfile as sf
 
 from app.local.synthetic_generation.completion_dataset import (
-    PromptLanguage,
     QwenVoiceDesignProvenance,
     SyntheticSpeechPrompt,
     analyze_generated_samples,
@@ -51,6 +50,7 @@ def test_validation_reports_short_audio_without_a_hold(tmp_path: Path) -> None:
     assert report.valid_utterance_count == 0
     assert {issue.code for issue in report.issues} == {
         CompletionValidationIssueCode.TOO_SHORT,
+        CompletionValidationIssueCode.ELEVATED_NOISE_FLOOR,
         CompletionValidationIssueCode.NO_HOLD,
     }
 
@@ -58,7 +58,6 @@ def test_validation_reports_short_audio_without_a_hold(tmp_path: Path) -> None:
 def _prompt() -> SyntheticSpeechPrompt:
     return SyntheticSpeechPrompt(
         prompt_id="example_prompt",
-        language=PromptLanguage.ENGLISH,
         text=(
             "I reviewed the schedule carefully before calling the team, and after comparing "
             "the available trains with the meeting times, I realized we should leave much "

@@ -19,7 +19,6 @@ from pydantic import Field
 from app.local.synthetic_generation.completion_dataset import (
     ChatterboxMultilingualProvenance,
     GeneratedUtteranceAnnotation,
-    PromptLanguage,
     analyze_generated_samples,
     completion_window_plans,
 )
@@ -28,12 +27,6 @@ from app.local.synthetic_generation.models import SyntheticModel
 
 CHATTERBOX_RUNTIME_VERSION = importlib.metadata.version("chatterbox-tts")
 CHATTERBOX_T3_FILENAME = "t3_mtl23ls_v3.safetensors"
-LANGUAGE_IDS = {
-    PromptLanguage.ENGLISH: "en",
-    PromptLanguage.GERMAN: "de",
-    PromptLanguage.FRENCH: "fr",
-    PromptLanguage.SPANISH: "es",
-}
 
 
 class ChatterboxCompletionRunManifest(SyntheticModel):
@@ -104,7 +97,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         generation_started = time.monotonic()
         waveform = model.generate(
             prompt.text,
-            language_id=LANGUAGE_IDS[prompt.language],
+            language_id="en",
             audio_prompt_path=str(reference_audio_path),
             exaggeration=exaggeration,
             cfg_weight=guidance_weight,
