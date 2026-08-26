@@ -31,7 +31,8 @@ frame targets can be materialized later without changing label timing.
 prompts. Text is English-only, 55–115 words, a complete conversational turn, and contains two or
 three natural pause opportunities. VoiceDesign instructions vary perceived age, vocal character,
 English accent or dialect, pace, emotion, pitch, energy, and pause delivery while requiring clean,
-close-mic voiced speech. Invalid JSON, invalid word counts, and duplicate text are discarded and retried.
+close-mic voiced speech. Invalid JSON, invalid word counts, duplicate text, and noise-prone voice
+directions such as breathy, hushed, or whispered delivery are discarded and retried.
 The prompt artifact records the exact model revision, runtime, and seed.
 
 ## TTS candidates

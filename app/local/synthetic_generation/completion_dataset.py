@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import numpy as np
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.local.synthetic_generation.models import SyntheticModel
 
@@ -29,6 +29,28 @@ class SyntheticEnglishSpeechPrompt(SyntheticModel):
     voice_instruction: str = Field(min_length=1)
     topic: str = Field(min_length=1)
     seed: int = Field(ge=0)
+
+    @field_validator("voice_instruction")
+    @classmethod
+    def validate_clean_voice_instruction(cls, value: str) -> str:
+        prohibited_phrases = (
+            "ambient sound",
+            "background noise",
+            "breathy",
+            "hushed",
+            "room tone",
+            "whisper",
+        )
+        normalized_value = value.casefold()
+        matched_phrases = tuple(
+            phrase for phrase in prohibited_phrases if phrase in normalized_value
+        )
+        if matched_phrases:
+            raise ValueError(
+                "English voice instructions require clean voiced speech; prohibited phrases: "
+                f"{', '.join(matched_phrases)}."
+            )
+        return value
 
     @model_validator(mode="after")
     def validate_long_form_text(self) -> SyntheticEnglishSpeechPrompt:

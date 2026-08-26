@@ -38,6 +38,15 @@ def test_prompt_rejects_language_field_because_corpus_is_english_only() -> None:
         SyntheticEnglishSpeechPrompt.model_validate(values)
 
 
+@pytest.mark.parametrize("prohibited_phrase", ["breathy", "hushed", "whispering"])
+def test_prompt_rejects_noise_prone_voice_instruction(prohibited_phrase: str) -> None:
+    values = _prompt("prompt_00001").model_dump()
+    values["voice_instruction"] = f"Use a {prohibited_phrase} intimate delivery."
+
+    with pytest.raises(ValidationError, match="clean voiced speech"):
+        SyntheticEnglishSpeechPrompt.model_validate(values)
+
+
 def test_prompt_set_id_is_validated_before_generation() -> None:
     with pytest.raises(ValidationError, match="string_pattern_mismatch"):
         validate_prompt_set_id("completion-pilot-20260826")
