@@ -138,29 +138,49 @@ def _generate_conversation_plan(
     seed: int,
 ) -> EnglishConversationPromptPlan:
     messages = [{"role": "user", "content": instruction}]
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt",
-    ).to(model.device)
-    torch.manual_seed(seed)
-    output = model.generate(
-        **inputs,
-        max_new_tokens=2400,
-        do_sample=True,
-        temperature=0.8,
-        top_p=0.92,
-    )
-    generated = tokenizer.decode(
-        output[0][inputs["input_ids"].shape[-1] :],
-        skip_special_tokens=True,
-    )
-    try:
-        return EnglishConversationPromptPlan.model_validate_json(_json_object(generated))
-    except ValidationError as error:
-        raise ValueError(f"Prompt model returned an invalid conversation plan: {error}") from error
+    final_error: ValidationError | None = None
+    for repair_index in range(3):
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        ).to(model.device)
+        torch.manual_seed(seed + repair_index)
+        output = model.generate(
+            **inputs,
+            max_new_tokens=2400,
+            do_sample=True,
+            temperature=0.8 if repair_index == 0 else 0.4,
+            top_p=0.92,
+        )
+        generated = tokenizer.decode(
+            output[0][inputs["input_ids"].shape[-1] :],
+            skip_special_tokens=True,
+        )
+        try:
+            return EnglishConversationPromptPlan.model_validate_json(_json_object(generated))
+        except ValidationError as error:
+            final_error = error
+            messages.extend(
+                (
+                    {"role": "assistant", "content": generated},
+                    {"role": "user", "content": _repair_instruction(error)},
+                )
+            )
+    assert final_error is not None
+    raise ValueError(f"Prompt model returned an invalid conversation plan: {final_error}")
+
+
+def _repair_instruction(error: ValidationError) -> str:
+    return f"""The JSON object failed typed validation.
+Return only a corrected complete JSON object. Preserve the requested plan identity, topic, and
+conversation meaning. Do not explain the correction.
+
+Validation errors:
+{error}
+"""
 
 
 def _validate_plan_against_brief(

@@ -28,6 +28,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     representative_conversation_briefs,
     validate_conversation_prompt_set_id,
 )
+from app.local.synthetic_generation.generate_conversation_prompts import _repair_instruction
 
 
 def test_representative_briefs_are_deterministic_and_cover_dimensions() -> None:
@@ -68,6 +69,19 @@ def test_generation_instruction_fixes_semantics_without_timestamps() -> None:
     assert "not fabricated audio timestamps" in instruction
     assert "will not be synthesized" in instruction
     assert '"discriminator":{"mapping"' in instruction
+
+
+def test_repair_instruction_returns_validation_errors_to_the_model() -> None:
+    values = _plan().model_dump()
+    values["user_prompts"][0]["speech_act"] = "completion"
+    with pytest.raises(ValidationError) as captured:
+        EnglishConversationPromptPlan.model_validate(values)
+
+    instruction = _repair_instruction(captured.value)
+
+    assert "failed typed validation" in instruction
+    assert "speech_act" in instruction
+    assert "corrected complete JSON object" in instruction
 
 
 def test_plan_rejects_unknown_assistant_reference() -> None:
