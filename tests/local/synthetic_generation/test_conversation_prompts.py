@@ -188,6 +188,19 @@ def test_deterministic_assembly_produces_complete_valid_plan() -> None:
     assert sorted(sequence_indices) == list(range(len(sequence_indices)))
     assert len(plan.assistant_turns) == 3
     assert plan.plan_id == brief.plan_id
+
+
+def test_deterministic_assembly_extends_short_voice_reference_text() -> None:
+    brief = representative_conversation_briefs(count=10, seed=41)[0]
+    values = _content_draft().model_dump()
+    values["voice_reference_text"] = "This neutral sentence provides a short reference for cloning."
+
+    plan = assemble_conversation_prompt_plan(
+        EnglishConversationContentDraft.model_validate(values), brief
+    )
+
+    assert 14 <= len(plan.voice_reference_text.split()) <= 24
+    assert plan.voice_reference_text.startswith("This neutral sentence")
     assert plan.seed == brief.seed
     assert plan.domain is brief.domain
     assert 60.0 <= plan.target_duration_seconds <= 120.0

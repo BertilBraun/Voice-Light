@@ -312,7 +312,7 @@ class EnglishConversationContentDraft(SyntheticModel):
 
     @model_validator(mode="after")
     def validate_content_lengths(self) -> EnglishConversationContentDraft:
-        _validate_word_count("Voice reference text", self.voice_reference_text, 14, 24)
+        _validate_word_count("Voice reference text", self.voice_reference_text, 8, 24)
         _validate_word_count("Opening user turn", self.opening_user_turn, 2, 44)
         _validate_word_count("Brief user turn", self.brief_user_turn, 2, 11)
         _validate_word_count("Normal user turn", self.normal_user_turn, 12, 44)
@@ -433,10 +433,16 @@ def assemble_conversation_prompt_plan(
         topic=draft.topic,
         target_duration_seconds=_target_duration_seconds(draft, brief.pace),
         base_user_voice=base_voice,
-        voice_reference_text=draft.voice_reference_text,
+        voice_reference_text=_clone_ready_reference_text(draft.voice_reference_text),
         assistant_turns=tuple(assistant_turns),
         user_prompts=tuple(user_prompts),
     )
+
+
+def _clone_ready_reference_text(reference_text: str) -> str:
+    if len(reference_text.split()) >= 14:
+        return reference_text
+    return f"{reference_text.rstrip('.!?')}, spoken clearly and steadily for this short recording."
 
 
 class ConversationPromptGeneratorProvenance(SyntheticModel):
