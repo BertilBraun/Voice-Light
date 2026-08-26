@@ -86,8 +86,7 @@ classes:
 
 1. **User completion:** user floor changes from high to low at genuine EOT.
 2. **User HOLD:** the user pauses and continues; user floor remains high.
-3. **Non-floor user speech:** a backchannel, short acknowledgment, reaction, or collaborative word
-   occurs while user floor remains low.
+3. **Non-floor user speech:** one lexical backchannel occurs while user floor remains low.
 4. **Response after assistant yield:** user floor changes from low to high after the assistant stops.
 5. **User interruption:** user floor changes from low to high while assistant-speaking probability
    is still high, and the assistant then yields.
@@ -98,14 +97,17 @@ condition according to their planned conversational intent; using the same surfa
 conditions prevents a lexical shortcut.
 
 The dataset also needs ordinary negative context: assistant-active spans with no user event,
-event-light windows, and longer continuous user speech without an imminent completion. These are
-sampling contexts, not additional semantic conditions.
+user-active spans with no imminent completion, and quiet transition-free spans. These are explicit
+sampling strata, not additional semantic conditions, and they must be materialized even when an
+event-focused crop would be easier to obtain.
 
 ## Conversation plan
 
-The LLM generates short, coherent conversation plans rather than isolated monologues. Plans are
-English-only and normally span 20-30 seconds after rendering. A plan may contain multiple user
-turns, virtual assistant replies, backchannels, HOLDs, and interruptions.
+The LLM generates coherent source conversations rather than isolated 20-second examples. Plans are
+English-only and normally span 60-120 seconds after rendering. A plan may contain multiple user
+turns, virtual assistant replies, backchannels, HOLDs, and interruptions. The source is longer than
+the training view so several dense, low-padding crops can be drawn from one consistent speaker and
+topic without forcing an event into every view.
 
 Each plan has four typed components:
 
@@ -115,7 +117,7 @@ Each plan has four typed components:
 - speech acts and relationship between successive turns;
 - virtual assistant reply text for coherence and duration estimation;
 - ordered interaction condition for every user unit;
-- explicit distinction between normal turns, reactions, backchannels, and interruptions.
+- explicit distinction between floor-owning responses, micro-backchannels, and interruptions.
 
 Domains, speech acts, and interaction conditions are selected through deterministic stratified
 sampling. The LLM realizes a selected plan; it does not freely choose the dataset distribution.
@@ -125,8 +127,25 @@ farmer-heavy prompts observed in the first review batch.
 ### Conversation speaker
 
 A conversation has one stable user identity: English accent or dialect, approximate age, pitch,
-vocal weight, and baseline conversational manner. Clean close-mic speech is invariant. The identity
-description is reused for every user TTS call in that conversation.
+vocal weight, and baseline conversational manner. Clean close-mic speech is invariant. A prose
+identity description alone is not a sufficient identity contract because VoiceDesign can realize a
+different speaker on every call.
+
+For Qwen, speaker creation and conversation rendering are separate stages:
+
+1. Use `Qwen3-TTS-12Hz-1.7B-VoiceDesign` once to create a clean 3-8 second English reference line
+   for the planned identity.
+2. Review and quality-gate that reference render.
+3. Load `Qwen3-TTS-12Hz-1.7B-Base`, create one reusable ICL voice-clone prompt from the reference
+   audio and its exact reference text, and retain its hash and provenance.
+4. Generate every user unit in that conversation with the same reusable clone prompt.
+
+Do not use x-vector-only cloning for the primary pilot: it avoids a reference transcript but the
+official runtime documents reduced cloning quality. Do not independently run VoiceDesign for each
+unit. Unit-level delivery variation must not silently replace the cloned identity; if the Base
+checkpoint cannot preserve enough prosodic variation, prefer stable identity and obtain delivery
+variation from punctuation, wording, pace-oriented text construction, and later acoustic
+augmentation.
 
 ### User units
 
@@ -136,12 +155,19 @@ curious to frustrated or calm to urgent, without changing speaker identity. The 
 covers slow, moderate, fast, engaged, restrained, playful, mysterious, and other natural delivery
 styles.
 
-Most units are short enough to make the 20-second training view event-efficient:
+User units deliberately cover several duration bands:
 
-- backchannels and reactions: approximately 0.2-1.5 seconds;
-- short turns: approximately 1.5-5 seconds;
-- medium turns: approximately 5-10 seconds;
-- long turns: approximately 10-22 seconds and relatively rare.
+- **micro-backchannels:** one lexical acknowledgment only, normally `yeah`, `yep`, `right`,
+  `okay`, `sure`, `mhm`, `uh-huh`, or `mm-hmm`; no clause, evaluation, or proposition is allowed;
+- **brief turns:** roughly 2-8 spoken words;
+- **normal turns:** roughly 12-28 spoken words;
+- **extended turns:** roughly 45-90 spoken words, targeting 20-30 seconds of actual user speech.
+
+A reaction that communicates a proposition such as "that sounds about right" is not a
+backchannel. It must be a floor-owning response or another explicitly planned turn. Collaborative
+completions are diagnosed separately and are not included in the first clone-consistency pilot.
+Duration quotas apply across a source conversation so it does not collapse into uniformly short
+question-answer pairs.
 
 ### Virtual assistant units
 
@@ -156,14 +182,16 @@ Semantic relationships are planned before TTS, but exact timestamps are not. The
 sequence is:
 
 1. Generate and validate a typed conversation plan.
-2. Send each user unit to Qwen independently, reusing the conversation's base voice description and
-   applying only its unit-level delivery change.
-3. Measure each rendered unit's actual active speech and silence regions.
-4. Remove terminal synthesis silence and reject noisy, empty, truncated, or artifact-heavy output.
-5. Estimate virtual assistant durations and response latencies.
-6. Place the measured user units and virtual assistant spans into a post-TTS scenario timeline.
-7. Construct the assistant-speaking input curve and semantic user-floor targets.
-8. Rasterize the scenario and materialize 20-second training views at 80 ms per frame.
+2. Create or select one quality-gated reference voice for the conversation and build one reusable
+   Qwen Base voice-clone prompt.
+3. Send every user unit to Qwen Base with that same clone prompt, batching compatible units from the
+   same speaker where useful.
+4. Measure each rendered unit's actual active speech and silence regions.
+5. Remove terminal synthesis silence and reject noisy, empty, truncated, or artifact-heavy output.
+6. Estimate virtual assistant durations and response latencies.
+7. Place the measured user units and virtual assistant spans into a post-TTS scenario timeline.
+8. Construct the assistant-speaking input curve and semantic user-floor targets.
+9. Rasterize the scenario and materialize 20-second training views at 80 ms per frame.
 
 No symmetric pre-TTS timestamp plan is treated as ground truth. No ASR or word alignment is needed
 to recover event timing. Audio energy may locate the actual start, end, and internal silence of a
@@ -215,14 +243,21 @@ deterministic seed derived from conversation identity, epoch, and view index to 
 The same seed must reproduce the waveform recipe, probability input, labels, and crop exactly.
 Conversation and speaker identities remain in one split across all materializations.
 
-Most sampled views should contain one or more supervised events, and a view may contain several
+Event-focused sampled views should contain one or more supervised events, and a view may contain several
 EOTs, HOLDs, backchannels, or floor acquisitions. Do not reduce a view to a single selected boundary
-or discard additional labels. Preserve a deliberate minority of event-light views, including:
+or discard additional labels. A separate quota sampler must also produce control views, including:
 
 - assistant probability high with no user speech;
 - continuous user speech with no imminent EOT;
 - ordinary silence or transition-free context;
 - a single event surrounded by longer context.
+
+The default source must be long enough that ordinary views use zero source padding. Padding is a
+last-resort boundary behavior, not a sampling strategy. Pilot validation reports the fraction of
+left- or right-padded crops and rejects a batch when it exceeds five percent. At least ten percent
+of views must be assistant-only controls and at least ten percent must be user-only controls; at
+least another ten percent must be event-light. A view can satisfy more than one control stratum, but
+the report must show each count independently.
 
 Crop selection must not remove audio needed by a speculative horizon label. Frames whose required
 future interval extends beyond the source scenario or crop contract are masked.
@@ -279,7 +314,8 @@ timing variations, and augmentations descended from one conversation belong to t
 
 ## Representative pilot
 
-Generate 10-20 conversations, preferably 20 if the valid-render rate permits it. The pilot should
+Generate 10-20 source conversations, preferably 20 if the valid-render rate permits it. Each source
+should normally yield 6-8 distinct 20-second views. The pilot should
 cover every semantic condition, several event-light contexts, broad topics, varied voice identities,
 and varied pace and affect. It need not exhaust the combination space or present polished production
 statistics.
@@ -358,7 +394,8 @@ backchannel robustness, interruption response, calibration, and streaming causal
 - No assistant audio encoder or assistant waveform in this corpus.
 - No ASR-, transcript-, or word-alignment-derived ground truth.
 - No failed-interruption class.
-- No minute-long synthetic stories for event training.
+- No minute-long uninterrupted synthetic stories; 60-120 second source conversations are allowed
+  only when they contain varied turn lengths and useful interaction or control spans.
 - No single-boundary reduction when a view contains multiple useful events.
 - No split leakage across related plans, renders, crops, or voices.
 - No synthetic validation result replaces the later real evaluation gate.
