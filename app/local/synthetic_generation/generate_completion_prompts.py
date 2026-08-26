@@ -236,7 +236,7 @@ def _profile_requirements(delivery_profile: PromptDeliveryProfile) -> _ProfileRe
             )
         case PromptDeliveryProfile.BRISK_ENGAGED:
             return _ProfileRequirements(
-                word_count_requirement="90-115 words",
+                word_count_requirement="110-130 words",
                 delivery_requirements=(
                     "- Every voice is brisk, engaged, energetic, and normally projected.\n"
                     "- Request a brisk, flowing pace without rushing or slurring. The pipeline "

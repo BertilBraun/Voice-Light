@@ -25,8 +25,8 @@ class SpeechPromptDraft(SyntheticModel):
 
     @model_validator(mode="after")
     def validate_word_count(self) -> SpeechPromptDraft:
-        if not 55 <= len(self.text.split()) <= 115:
-            raise ValueError("Prompt drafts require 55 to 115 words.")
+        if not 55 <= len(self.text.split()) <= 140:
+            raise ValueError("Prompt drafts require 55 to 140 words.")
         return self
 
 
@@ -67,11 +67,13 @@ def apply_prompt_draft_profile(
 ) -> SpeechPromptDraft:
     match delivery_profile:
         case PromptDeliveryProfile.BALANCED:
+            if len(draft.text.split()) > 115:
+                raise ValueError("Balanced prompt drafts require 55 to 115 words.")
             return draft
         case PromptDeliveryProfile.BRISK_ENGAGED:
             word_count = len(draft.text.split())
-            if not 90 <= word_count <= 115:
-                raise ValueError("Brisk engaged prompt drafts require 90 to 115 words.")
+            if not 90 <= word_count <= 130:
+                raise ValueError("Brisk engaged prompt drafts require 90 to 130 words.")
             normalized_description = f"{draft.topic} {draft.voice_instruction}".casefold()
             prohibited_phrases = (
                 "calm",

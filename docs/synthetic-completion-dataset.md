@@ -33,8 +33,9 @@ three natural pause opportunities. VoiceDesign instructions vary perceived age, 
 English accent or dialect, pace, emotion, pitch, energy, and pause delivery while requiring clean,
 close-mic voiced speech. Invalid JSON, invalid word counts, duplicate text, and noise-prone voice
 directions such as breathy, hushed, or whispered delivery are discarded and retried.
-The `balanced` delivery profile covers multiple speaking rates. The `brisk_engaged` profile uses
-90–115 words, compiles an explicit 200–240 spoken words-per-minute instruction, keeps one planned 500–800 ms
+The `balanced` delivery profile covers multiple speaking rates. The `brisk_engaged` profile accepts
+90–130 words while requesting 110–130, compiles an explicit 200–240 spoken words-per-minute
+instruction, keeps one planned 500–800 ms
 hold, and varies English accents, pitch, age presentation, and vocal weight without reflective or
 soft-spoken delivery. The prompt artifact records the profile, exact model revision, runtime, and
 seed.
