@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.local.synthetic_generation.completion_dataset import (
     DEFAULT_SILENCE_DETECTION,
@@ -18,7 +17,6 @@ from app.local.synthetic_generation.conversation_compiler import (
     RenderedUserClip,
 )
 from app.local.synthetic_generation.conversation_prompts import (
-    BaseUserVoice,
     CompletionUserPrompt,
     ConversationPromptSetId,
     EnglishConversationPromptPlan,
@@ -28,24 +26,22 @@ from app.local.synthetic_generation.conversation_prompts import (
     NonFloorFeedbackUserPrompt,
     ResponseFloorClaimUserPrompt,
     UserPrompt,
-    qwen_voice_instruction,
+)
+from app.local.synthetic_generation.conversation_voice_references import (
+    ConversationVoiceReference,
+    ConversationVoiceReferenceManifest,
+    TtsBackendIdentity,
+    file_sha256,
+    trim_generated_speech,
+    write_pcm16_wave,
 )
 from app.local.synthetic_generation.models import SyntheticModel
-
-
-class TtsBackendIdentity(SyntheticModel):
-    backend_id: str = Field(min_length=1)
-    model_id: str = Field(min_length=1)
-    model_revision: str = Field(min_length=1)
-    runtime_version: str = Field(min_length=1)
-    model_license: str = Field(min_length=1)
 
 
 @dataclass(frozen=True)
 class SpeechSynthesisRequest:
     clause_id: str
     text: str
-    voice_instruction: str
     seed: int
 
 
@@ -56,6 +52,16 @@ class SpeechSynthesisResult:
     sample_rate_hz: int
     generation_seconds: float
     batch_seed: int
+    clone_prompt: VoiceClonePromptProvenance
+
+
+class VoiceClonePromptProvenance(SyntheticModel):
+    plan_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reference_audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reference_text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    x_vector_only_mode: Literal[False] = False
+    backend: TtsBackendIdentity
 
 
 class BatchSpeechSynthesizer(Protocol):
@@ -64,6 +70,7 @@ class BatchSpeechSynthesizer(Protocol):
 
     def generate_batch(
         self,
+        reference: ConversationVoiceReference,
         requests: tuple[SpeechSynthesisRequest, ...],
     ) -> tuple[SpeechSynthesisResult, ...]: ...
 
@@ -88,9 +95,9 @@ class RenderedConversationUserUnit(SyntheticModel):
     )
     plan_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     prompt: UserPrompt
-    base_user_voice: BaseUserVoice
     backend: TtsBackendIdentity
-    voice_instruction: str = Field(min_length=1)
+    reference: ConversationVoiceReference
+    clone_prompt: VoiceClonePromptProvenance
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     clip: RenderedUserClip
     clauses: tuple[RenderedClauseProvenance, ...] = Field(min_length=1, max_length=2)
@@ -102,9 +109,23 @@ class ConversationTtsManifest(SyntheticModel):
     )
     prompt_set_id: ConversationPromptSetId
     prompt_set_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reference_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     backend: TtsBackendIdentity
     detection: SilenceDetectionConfiguration
+    clone_prompts: tuple[VoiceClonePromptProvenance, ...]
     rendered_units: tuple[RenderedConversationUserUnit, ...]
+
+    @model_validator(mode="after")
+    def validate_clone_bindings(self) -> ConversationTtsManifest:
+        clone_prompts_by_plan = {prompt.plan_id: prompt for prompt in self.clone_prompts}
+        if len(clone_prompts_by_plan) != len(self.clone_prompts):
+            raise ValueError("Clone-prompt plan IDs must be unique.")
+        for unit in self.rendered_units:
+            if clone_prompts_by_plan.get(unit.plan_id) != unit.clone_prompt:
+                raise ValueError(
+                    f"Rendered unit {unit.prompt.unit_id} has no matching clone prompt."
+                )
+        return self
 
 
 @dataclass(frozen=True)
@@ -120,13 +141,14 @@ class _SpeechActivity:
 class _PreparedUnit:
     plan: EnglishConversationPromptPlan
     prompt: UserPrompt
-    voice_instruction: str
     requests: tuple[SpeechSynthesisRequest, ...]
 
 
 def render_conversation_user_audio(
     prompt_set: EnglishConversationPromptSet,
     prompt_set_path: Path,
+    reference_manifest: ConversationVoiceReferenceManifest,
+    reference_manifest_path: Path,
     output_directory: Path,
     synthesizer: BatchSpeechSynthesizer,
     batch_size: int,
@@ -137,54 +159,74 @@ def render_conversation_user_audio(
     output_directory.mkdir(parents=True, exist_ok=True)
     records_path = output_directory / "rendered-units.jsonl"
     manifest_path = output_directory / "render.json"
+    references_by_plan = _validated_references(
+        prompt_set,
+        prompt_set_path,
+        reference_manifest,
+        reference_manifest_path,
+    )
     _validate_existing_manifest(
         manifest_path,
         prompt_set,
         prompt_set_path,
+        reference_manifest_path,
         synthesizer.identity,
     )
     existing = _read_records(records_path)
     expected = _prepared_units(prompt_set)
-    _validate_checkpoint(existing, expected, output_directory, synthesizer.identity)
+    _validate_checkpoint(
+        existing,
+        expected,
+        references_by_plan,
+        output_directory,
+        synthesizer.identity,
+    )
     rendered_by_unit_id = {
         _record_key(record.plan_id, record.prompt.unit_id): record for record in existing
     }
-    pending = tuple(
-        prepared
-        for prepared in expected
-        if _record_key(prepared.plan.plan_id, prepared.prompt.unit_id) not in rendered_by_unit_id
-    )
-    for offset in range(0, len(pending), batch_size):
-        batch = pending[offset : offset + batch_size]
-        requests = tuple(request for prepared in batch for request in prepared.requests)
-        results = synthesizer.generate_batch(requests)
-        results_by_clause = _validated_results(requests, results)
-        for prepared in batch:
-            record = _materialize_unit(
-                prepared,
-                results_by_clause,
-                output_directory,
-                detection,
+    for plan in prompt_set.plans:
+        pending = tuple(
+            prepared
+            for prepared in expected
+            if prepared.plan.plan_id == plan.plan_id
+            and _record_key(prepared.plan.plan_id, prepared.prompt.unit_id)
+            not in rendered_by_unit_id
+        )
+        reference = references_by_plan[plan.plan_id]
+        for offset in range(0, len(pending), batch_size):
+            batch = pending[offset : offset + batch_size]
+            requests = tuple(request for prepared in batch for request in prepared.requests)
+            results = synthesizer.generate_batch(reference, requests)
+            results_by_clause = _validated_results(requests, results)
+            for prepared in batch:
+                record = _materialize_unit(
+                    prepared,
+                    reference,
+                    results_by_clause,
+                    output_directory,
+                    detection,
+                    synthesizer.identity,
+                )
+                _append_record(records_path, record)
+                rendered_by_unit_id[_record_key(record.plan_id, record.prompt.unit_id)] = record
+            manifest = _manifest(
+                prompt_set,
+                prompt_set_path,
+                reference_manifest_path,
                 synthesizer.identity,
+                detection,
+                expected,
+                rendered_by_unit_id,
             )
-            _append_record(records_path, record)
-            rendered_by_unit_id[_record_key(record.plan_id, record.prompt.unit_id)] = record
-        manifest = _manifest(
-            prompt_set,
-            prompt_set_path,
-            synthesizer.identity,
-            detection,
-            expected,
-            rendered_by_unit_id,
-        )
-        _write_manifest_atomically(manifest_path, manifest)
-        print(
-            f"rendered={len(rendered_by_unit_id)}/{len(expected)} user units",
-            flush=True,
-        )
+            _write_manifest_atomically(manifest_path, manifest)
+            print(
+                f"rendered={len(rendered_by_unit_id)}/{len(expected)} user units",
+                flush=True,
+            )
     manifest = _manifest(
         prompt_set,
         prompt_set_path,
+        reference_manifest_path,
         synthesizer.identity,
         detection,
         expected,
@@ -208,13 +250,11 @@ def _prepared_units(prompt_set: EnglishConversationPromptSet) -> tuple[_Prepared
     prepared = []
     for plan in prompt_set.plans:
         for prompt in sorted(plan.user_prompts, key=lambda item: item.sequence_index):
-            instruction = qwen_voice_instruction(plan.base_user_voice, prompt.delivery)
             texts = _prompt_clauses(prompt)
             requests = tuple(
                 SpeechSynthesisRequest(
                     clause_id=_clause_id(plan.plan_id, prompt.unit_id, clause_index),
                     text=text,
-                    voice_instruction=instruction,
                     seed=_clause_seed(plan.seed, plan.plan_id, prompt.unit_id, clause_index),
                 )
                 for clause_index, text in enumerate(texts)
@@ -223,7 +263,6 @@ def _prepared_units(prompt_set: EnglishConversationPromptSet) -> tuple[_Prepared
                 _PreparedUnit(
                     plan=plan,
                     prompt=prompt,
-                    voice_instruction=instruction,
                     requests=requests,
                 )
             )
@@ -232,6 +271,7 @@ def _prepared_units(prompt_set: EnglishConversationPromptSet) -> tuple[_Prepared
 
 def _materialize_unit(
     prepared: _PreparedUnit,
+    reference: ConversationVoiceReference,
     results_by_clause: dict[str, SpeechSynthesisResult],
     output_directory: Path,
     detection: SilenceDetectionConfiguration,
@@ -256,12 +296,12 @@ def _materialize_unit(
         continuation_silences = activity.internal_silences
     relative_audio_path = Path("audio") / f"{prepared.plan.plan_id}_{prepared.prompt.unit_id}.wav"
     audio_path = output_directory / relative_audio_path
-    _write_pcm16_wave(audio_path, samples, sample_rate_hz)
+    write_pcm16_wave(audio_path, samples, sample_rate_hz)
     duration_seconds = samples.size / sample_rate_hz
     clip = RenderedUserClip(
         clip_id=f"{prepared.plan.plan_id}_{prepared.prompt.unit_id}",
         audio_path=relative_audio_path,
-        audio_sha256=_file_sha256(audio_path),
+        audio_sha256=file_sha256(audio_path),
         duration_seconds=duration_seconds,
         active_start_seconds=0.0,
         active_end_seconds=duration_seconds,
@@ -271,12 +311,24 @@ def _materialize_unit(
         _clause_provenance(request, results_by_clause[request.clause_id], activity)
         for request, (activity, _) in zip(prepared.requests, activities, strict=True)
     )
+    clone_prompts = {
+        results_by_clause[request.clause_id].clone_prompt for request in prepared.requests
+    }
+    if len(clone_prompts) != 1:
+        raise ValueError(f"TTS changed clone prompt within user unit {prepared.prompt.unit_id}.")
+    clone_prompt = next(iter(clone_prompts))
+    if clone_prompt.plan_id != prepared.plan.plan_id:
+        raise ValueError(f"TTS returned the wrong clone prompt for {prepared.prompt.unit_id}.")
+    if clone_prompt.reference_audio_sha256 != reference.audio_sha256:
+        raise ValueError(f"TTS used the wrong reference audio for {prepared.prompt.unit_id}.")
+    if clone_prompt.reference_text_sha256 != reference.reference_text_sha256:
+        raise ValueError(f"TTS used the wrong reference text for {prepared.prompt.unit_id}.")
     return RenderedConversationUserUnit(
         plan_id=prepared.plan.plan_id,
         prompt=prepared.prompt,
-        base_user_voice=prepared.plan.base_user_voice,
         backend=backend,
-        voice_instruction=prepared.voice_instruction,
+        reference=reference,
+        clone_prompt=clone_prompt,
         prompt_sha256=_prompt_sha256(prepared),
         clip=clip,
         clauses=clause_provenance,
@@ -287,47 +339,24 @@ def _trim_to_speech(
     result: SpeechSynthesisResult,
     detection: SilenceDetectionConfiguration,
 ) -> tuple[_SpeechActivity, int]:
-    samples = np.asarray(result.samples, dtype=np.float32).reshape(-1)
-    if samples.size == 0 or result.sample_rate_hz <= 0:
-        raise ValueError(f"TTS returned empty audio for {result.clause_id}.")
-    frame_size = round(result.sample_rate_hz * detection.frame_milliseconds / 1000.0)
-    root_mean_squares = np.asarray(
-        [
-            float(
-                np.sqrt(np.mean(np.square(samples[start : min(start + frame_size, samples.size)])))
-            )
-            for start in range(0, samples.size, frame_size)
-        ],
-        dtype=np.float32,
+    trimmed = trim_generated_speech(
+        result.samples,
+        result.sample_rate_hz,
+        result.clause_id,
+        detection,
     )
-    threshold = max(
-        detection.absolute_rms_threshold,
-        float(np.max(root_mean_squares)) * detection.peak_rms_ratio,
-    )
-    active_indices = np.flatnonzero(root_mean_squares >= threshold)
-    if active_indices.size == 0:
-        raise ValueError(f"TTS returned no speech-like energy for {result.clause_id}.")
-    first_frame = int(active_indices[0])
-    last_frame = int(active_indices[-1])
-    start_sample = first_frame * frame_size
-    end_sample = min(samples.size, (last_frame + 1) * frame_size)
-    trimmed = samples[start_sample:end_sample].copy()
-    active = root_mean_squares[first_frame : last_frame + 1] >= threshold
-    frame_seconds = detection.frame_milliseconds / 1000.0
     internal_silences = _internal_silences(
-        active,
-        frame_seconds,
+        trimmed.active_frames,
+        trimmed.frame_seconds,
         detection.minimum_silence_milliseconds / 1000.0,
-        trimmed.size / result.sample_rate_hz,
+        trimmed.samples.size / result.sample_rate_hz,
     )
-    _fade_edges(trimmed, result.sample_rate_hz)
-    original_duration = samples.size / result.sample_rate_hz
     return (
         _SpeechActivity(
-            samples=trimmed,
-            original_duration_seconds=original_duration,
-            leading_seconds=start_sample / result.sample_rate_hz,
-            trailing_seconds=(samples.size - end_sample) / result.sample_rate_hz,
+            samples=trimmed.samples,
+            original_duration_seconds=trimmed.original_duration_seconds,
+            leading_seconds=trimmed.leading_seconds,
+            trailing_seconds=trimmed.trailing_seconds,
             internal_silences=internal_silences,
         ),
         result.sample_rate_hz,
@@ -394,9 +423,10 @@ def _prompt_clauses(prompt: UserPrompt) -> tuple[str, ...]:
     match prompt:
         case HoldUserPrompt(text_before_pause=before, text_after_pause=after):
             return (before, after)
+        case NonFloorFeedbackUserPrompt(text=text):
+            return (text.value,)
         case (
             CompletionUserPrompt(text=text)
-            | NonFloorFeedbackUserPrompt(text=text)
             | ResponseFloorClaimUserPrompt(text=text)
             | InterruptionFloorClaimUserPrompt(text=text)
         ):
@@ -406,6 +436,7 @@ def _prompt_clauses(prompt: UserPrompt) -> tuple[str, ...]:
 def _manifest(
     prompt_set: EnglishConversationPromptSet,
     prompt_set_path: Path,
+    reference_manifest_path: Path,
     backend: TtsBackendIdentity,
     detection: SilenceDetectionConfiguration,
     expected: tuple[_PreparedUnit, ...],
@@ -416,11 +447,18 @@ def _manifest(
         for prepared in expected
         if _record_key(prepared.plan.plan_id, prepared.prompt.unit_id) in rendered_by_unit_id
     )
+    clone_prompts_by_plan = {unit.clone_prompt.plan_id: unit.clone_prompt for unit in rendered}
     return ConversationTtsManifest(
         prompt_set_id=prompt_set.set_id,
-        prompt_set_sha256=_file_sha256(prompt_set_path),
+        prompt_set_sha256=file_sha256(prompt_set_path),
+        reference_manifest_sha256=file_sha256(reference_manifest_path),
         backend=backend,
         detection=detection,
+        clone_prompts=tuple(
+            clone_prompts_by_plan[plan.plan_id]
+            for plan in prompt_set.plans
+            if plan.plan_id in clone_prompts_by_plan
+        ),
         rendered_units=rendered,
     )
 
@@ -428,6 +466,7 @@ def _manifest(
 def _validate_checkpoint(
     existing: tuple[RenderedConversationUserUnit, ...],
     expected: tuple[_PreparedUnit, ...],
+    references_by_plan: dict[str, ConversationVoiceReference],
     output_directory: Path,
     backend: TtsBackendIdentity,
 ) -> None:
@@ -450,8 +489,14 @@ def _validate_checkpoint(
             raise ValueError(f"Checkpoint prompt changed for user unit {record_key}.")
         if record.backend != backend:
             raise ValueError(f"Checkpoint backend changed for user unit {record_key}.")
+        if record.reference != references_by_plan[record.plan_id]:
+            raise ValueError(f"Checkpoint reference changed for user unit {record_key}.")
+        if record.clone_prompt.reference_audio_sha256 != record.reference.audio_sha256:
+            raise ValueError(f"Checkpoint clone prompt changed for user unit {record_key}.")
+        if record.clone_prompt.reference_text_sha256 != record.reference.reference_text_sha256:
+            raise ValueError(f"Checkpoint clone prompt text changed for user unit {record_key}.")
         audio_path = output_directory / record.clip.audio_path
-        if not audio_path.exists() or _file_sha256(audio_path) != record.clip.audio_sha256:
+        if not audio_path.exists() or file_sha256(audio_path) != record.clip.audio_sha256:
             raise ValueError(f"Checkpoint audio is missing or changed for user unit {record_key}.")
 
 
@@ -459,6 +504,7 @@ def _validate_existing_manifest(
     manifest_path: Path,
     prompt_set: EnglishConversationPromptSet,
     prompt_set_path: Path,
+    reference_manifest_path: Path,
     backend: TtsBackendIdentity,
 ) -> None:
     if not manifest_path.exists():
@@ -468,10 +514,51 @@ def _validate_existing_manifest(
     )
     if manifest.prompt_set_id != prompt_set.set_id:
         raise ValueError("Existing conversation render uses a different prompt set ID.")
-    if manifest.prompt_set_sha256 != _file_sha256(prompt_set_path):
+    if manifest.prompt_set_sha256 != file_sha256(prompt_set_path):
         raise ValueError("Existing conversation render uses different prompt-set content.")
+    if manifest.reference_manifest_sha256 != file_sha256(reference_manifest_path):
+        raise ValueError("Existing conversation render uses different voice references.")
     if manifest.backend != backend:
         raise ValueError("Existing conversation render uses a different TTS backend.")
+
+
+def _validated_references(
+    prompt_set: EnglishConversationPromptSet,
+    prompt_set_path: Path,
+    manifest: ConversationVoiceReferenceManifest,
+    manifest_path: Path,
+) -> dict[str, ConversationVoiceReference]:
+    if not manifest_path.exists():
+        raise ValueError("Voice-reference manifest file does not exist.")
+    if manifest.prompt_set_id != prompt_set.set_id:
+        raise ValueError("Voice references do not match the conversation prompt set ID.")
+    if manifest.prompt_set_sha256 != file_sha256(prompt_set_path):
+        raise ValueError("Voice references do not match the conversation prompt-set content.")
+    references_by_plan = {reference.plan_id: reference for reference in manifest.references}
+    if len(references_by_plan) != len(manifest.references):
+        raise ValueError("Voice-reference plan IDs must be unique.")
+    expected_plan_ids = {plan.plan_id for plan in prompt_set.plans}
+    if set(references_by_plan) != expected_plan_ids:
+        missing = sorted(expected_plan_ids - set(references_by_plan))
+        unexpected = sorted(set(references_by_plan) - expected_plan_ids)
+        raise ValueError(
+            "Voice references must exactly match plans; "
+            f"missing={missing}, unexpected={unexpected}."
+        )
+    for plan in prompt_set.plans:
+        reference = references_by_plan[plan.plan_id]
+        if reference.reference_text != plan.voice_reference_text:
+            raise ValueError(f"Voice reference text changed for plan {plan.plan_id}.")
+        if (
+            reference.reference_text_sha256
+            != hashlib.sha256(plan.voice_reference_text.encode()).hexdigest()
+        ):
+            raise ValueError(f"Voice reference text hash changed for plan {plan.plan_id}.")
+        if not reference.audio_path.exists():
+            raise ValueError(f"Voice reference audio is missing for plan {plan.plan_id}.")
+        if file_sha256(reference.audio_path) != reference.audio_sha256:
+            raise ValueError(f"Voice reference audio changed for plan {plan.plan_id}.")
+    return references_by_plan
 
 
 def _validated_results(
@@ -507,10 +594,7 @@ def _clause_provenance(
 
 
 def _prompt_sha256(prepared: _PreparedUnit) -> str:
-    content = (
-        f"{prepared.plan.plan_id}\n{prepared.plan.seed}\n"
-        f"{prepared.prompt.model_dump_json()}\n{prepared.voice_instruction}"
-    )
+    content = f"{prepared.plan.plan_id}\n{prepared.plan.seed}\n{prepared.prompt.model_dump_json()}"
     return hashlib.sha256(content.encode()).hexdigest()
 
 
@@ -547,30 +631,3 @@ def _write_manifest_atomically(path: Path, manifest: ConversationTtsManifest) ->
     temporary_path = path.with_suffix(f"{path.suffix}.partial")
     temporary_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     temporary_path.replace(path)
-
-
-def _write_pcm16_wave(path: Path, samples: np.ndarray, sample_rate_hz: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
-    with wave.open(str(path), "wb") as audio_file:
-        audio_file.setnchannels(1)
-        audio_file.setsampwidth(2)
-        audio_file.setframerate(sample_rate_hz)
-        audio_file.writeframes(encoded.tobytes())
-
-
-def _fade_edges(samples: np.ndarray, sample_rate_hz: int) -> None:
-    fade_count = min(samples.size // 2, round(0.005 * sample_rate_hz))
-    if fade_count == 0:
-        return
-    fade = np.linspace(0.0, 1.0, fade_count, dtype=np.float32)
-    samples[:fade_count] *= fade
-    samples[-fade_count:] *= fade[::-1]
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source_file:
-        while chunk := source_file.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
