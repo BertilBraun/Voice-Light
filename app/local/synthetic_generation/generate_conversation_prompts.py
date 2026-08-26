@@ -16,20 +16,15 @@ from transformers import (
 )
 
 from app.local.synthetic_generation.conversation_prompts import (
-    CompletionUserPrompt,
     ConversationGenerationBrief,
     ConversationPromptGeneratorProvenance,
-    EnglishConversationPromptDraft,
+    EnglishConversationContentDraft,
     EnglishConversationPromptPlan,
     EnglishConversationPromptSet,
-    HoldUserPrompt,
-    InterruptionFloorClaimUserPrompt,
-    NonFloorFeedbackUserPrompt,
-    ResponseFloorClaimUserPrompt,
-    UserPrompt,
-    canonicalize_conversation_prompt_draft,
+    assemble_conversation_prompt_plan,
     conversation_generation_instruction,
     representative_conversation_briefs,
+    user_prompt_texts_for_uniqueness,
     validate_conversation_prompt_set_id,
 )
 
@@ -105,7 +100,7 @@ def generate_conversation_prompt_set(
                 plan_texts = tuple(
                     _normalized_user_text(text)
                     for prompt in plan.user_prompts
-                    for text in _prompt_texts(prompt)
+                    for text in user_prompt_texts_for_uniqueness(prompt)
                 )
                 if normalized_user_texts.intersection(plan_texts):
                     raise ValueError("Generated conversation repeats user text from another plan.")
@@ -151,7 +146,7 @@ def _generate_conversation_plan(
         torch.manual_seed(seed + repair_index)
         output = model.generate(
             **inputs,
-            max_new_tokens=2400,
+            max_new_tokens=1100,
             do_sample=True,
             temperature=0.8 if repair_index == 0 else 0.4,
             top_p=0.92,
@@ -161,8 +156,8 @@ def _generate_conversation_plan(
             skip_special_tokens=True,
         )
         try:
-            draft = EnglishConversationPromptDraft.model_validate_json(_json_object(generated))
-            plan = canonicalize_conversation_prompt_draft(draft)
+            draft = EnglishConversationContentDraft.model_validate_json(_json_object(generated))
+            plan = assemble_conversation_prompt_plan(draft, brief)
             _validate_plan_against_brief(plan, brief)
             return plan
         except (ValidationError, ValueError) as error:
@@ -178,20 +173,12 @@ def _generate_conversation_plan(
 
 
 def _repair_instruction(error: ValidationError | ValueError) -> str:
-    return f"""The JSON object failed typed validation.
-Return only a corrected complete JSON object. Preserve the requested plan identity, topic, and
-conversation meaning. Do not explain the correction.
-
-Assign every assistant turn and user prompt a distinct sequence_index. Renumber all elements with
-consecutive integers 0, 1, 2, and so on in chronological conversational order. A condition such as
-response_floor_claim is never a speech_act; use only a speech_act value allowed by the schema.
-Do not delete required objects or fields while repairing another error. Every user needs condition
-and delivery with pace, energy, and affect. Every floor-owning user needs speech_act. A
-non_floor_feedback deliberately has no speech_act but still needs delivery and its assistant link.
-Keep target_duration_seconds between 60 and 120. Include brief, normal, and extended floor-owning
-turns within their exact word-count ranges. Length is derived from text; remove every length_band
-field. A non_floor_feedback has no speech_act and its text must be one acknowledgement allowed by
-the schema, never a phrase. Preserve an exact 8-18 word voice_reference_text.
+    return f"""The compact conversation-content JSON failed typed validation.
+Return only a corrected complete JSON object with the same topic and conversation meaning. Do not
+explain the correction. Keep exactly the schema fields from the original request. Do not add IDs,
+sequence numbers, semantic labels, timing, pauses, numeric parameters, voice metadata, delivery
+metadata, or backchannels. Correct the reported word count or missing natural-language field while
+preserving coherence between the four user turns and three assistant turns.
 
 Validation errors:
 {error}
@@ -219,19 +206,6 @@ def _validate_plan_against_brief(
         raise ValueError("Generated conversation omitted its anchor pace and affect.")
 
 
-def _prompt_texts(prompt: UserPrompt) -> tuple[str, ...]:
-    match prompt:
-        case HoldUserPrompt(text_before_pause=before, text_after_pause=after):
-            return (before, after)
-        case (
-            CompletionUserPrompt(text=text)
-            | NonFloorFeedbackUserPrompt(text=text)
-            | ResponseFloorClaimUserPrompt(text=text)
-            | InterruptionFloorClaimUserPrompt(text=text)
-        ):
-            return (text,)
-
-
 def _normalized_user_text(text: str) -> str:
     return " ".join(text.casefold().split())
 
@@ -257,7 +231,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--set-id", required=True)
-    parser.add_argument("--count", type=int, choices=range(10, 21), default=20)
+    parser.add_argument("--count", type=int, choices=range(5, 11), default=10)
     parser.add_argument("--seed", type=int, default=260826)
     parser.add_argument("--output", required=True, type=Path)
     return parser
