@@ -84,6 +84,22 @@ def test_brisk_profile_accepts_explicit_fast_delivery() -> None:
     assert profiled_draft == draft
 
 
+def test_brisk_profile_accepts_wpm_shorthand() -> None:
+    draft = SpeechPromptDraft(
+        text=" ".join("word" for _ in range(100)),
+        voice_instruction="An upbeat projected voice with a lively 225 wpm pace.",
+        topic="a lively neighborhood event",
+    )
+
+    profiled_draft = apply_prompt_draft_profile(
+        draft,
+        PromptDeliveryProfile.BRISK_ENGAGED,
+        seed=7,
+    )
+
+    assert profiled_draft == draft
+
+
 def test_brisk_profile_adds_deterministic_rate() -> None:
     draft = SpeechPromptDraft(
         text=" ".join("word" for _ in range(100)),

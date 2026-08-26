@@ -94,7 +94,10 @@ def apply_prompt_draft_profile(
                     f"Brisk engaged prompt drafts contain low-energy phrases: {', '.join(matches)}."
                 )
             maximum_rate_for_twenty_seconds = min(240, word_count * 3)
-            rate_match = re.search(r"\b(\d{3}) words per minute\b", normalized_description)
+            rate_match = re.search(
+                r"\b(\d{3})(?: words per minute| wpm)\b",
+                normalized_description,
+            )
             if rate_match is not None:
                 words_per_minute = int(rate_match.group(1))
                 if not 200 <= words_per_minute <= maximum_rate_for_twenty_seconds:
