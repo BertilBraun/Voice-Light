@@ -84,6 +84,15 @@ def test_repair_instruction_returns_validation_errors_to_the_model() -> None:
     assert "corrected complete JSON object" in instruction
 
 
+def test_repair_instruction_returns_semantic_errors_to_the_model() -> None:
+    instruction = _repair_instruction(
+        ValueError("Generated conversation omitted conditions: hold.")
+    )
+
+    assert "omitted conditions: hold" in instruction
+    assert "corrected complete JSON object" in instruction
+
+
 def test_plan_rejects_unknown_assistant_reference() -> None:
     values = _plan().model_dump()
     values["user_prompts"][1]["during_assistant_turn_id"] = "assistant_9"

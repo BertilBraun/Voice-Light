@@ -97,10 +97,9 @@ def generate_conversation_prompt_set(
                 plan = _generate_conversation_plan(
                     model=model,
                     tokenizer=tokenizer,
-                    instruction=conversation_generation_instruction(brief),
+                    brief=brief,
                     seed=brief.seed + attempt,
                 )
-                _validate_plan_against_brief(plan, brief)
                 plan_texts = tuple(
                     _normalized_user_text(text)
                     for prompt in plan.user_prompts
@@ -134,11 +133,11 @@ def generate_conversation_prompt_set(
 def _generate_conversation_plan(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
-    instruction: str,
+    brief: ConversationGenerationBrief,
     seed: int,
 ) -> EnglishConversationPromptPlan:
-    messages = [{"role": "user", "content": instruction}]
-    final_error: ValidationError | None = None
+    messages = [{"role": "user", "content": conversation_generation_instruction(brief)}]
+    final_error: ValidationError | ValueError | None = None
     for repair_index in range(3):
         inputs = tokenizer.apply_chat_template(
             messages,
@@ -160,8 +159,10 @@ def _generate_conversation_plan(
             skip_special_tokens=True,
         )
         try:
-            return EnglishConversationPromptPlan.model_validate_json(_json_object(generated))
-        except ValidationError as error:
+            plan = EnglishConversationPromptPlan.model_validate_json(_json_object(generated))
+            _validate_plan_against_brief(plan, brief)
+            return plan
+        except (ValidationError, ValueError) as error:
             final_error = error
             messages.extend(
                 (
@@ -173,7 +174,7 @@ def _generate_conversation_plan(
     raise ValueError(f"Prompt model returned an invalid conversation plan: {final_error}")
 
 
-def _repair_instruction(error: ValidationError) -> str:
+def _repair_instruction(error: ValidationError | ValueError) -> str:
     return f"""The JSON object failed typed validation.
 Return only a corrected complete JSON object. Preserve the requested plan identity, topic, and
 conversation meaning. Do not explain the correction.
