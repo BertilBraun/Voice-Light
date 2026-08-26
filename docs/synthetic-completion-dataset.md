@@ -50,6 +50,9 @@ The pilot pins Qwen VoiceDesign revision
 `5de7a54aa4e5e2baadb0182dde554908b48b85c2`, and VoXtream2 model revision
 `49addec130217e8e9e82a6f49437c315c5c851fc` with source revision
 `8ec2d62159dae4716ae7058827244a962d40603c`.
+The Chatterbox environment pins `setuptools==80.9.0` because Perth 1.0.1 still imports
+`pkg_resources`, which is absent from newer setuptools releases.
+VoXtream2 additionally requires the system `espeak-ng` package for English phonemization.
 
 Primary sources: [Qwen3-TTS model card](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign),
 [Chatterbox repository](https://github.com/resemble-ai/chatterbox),
