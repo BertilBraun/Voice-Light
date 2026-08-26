@@ -425,6 +425,15 @@ Fixed requirements:
   response_floor_claim, or interruption_floor_claim. It is never a speech_act.
 - speech_act must be exactly one of question, answer, explanation, opinion, anecdote, request,
   or correction. energy must be exactly one of subdued, conversational, or animated.
+- Every assistant object includes turn_id, sequence_index, text, speaking_rate_words_per_minute,
+  punctuation_pause_seconds, and duration_variation_fraction.
+- Every user object includes unit_id, sequence_index, condition, and a delivery object containing
+  pace, energy, and affect. Every floor-owning user also includes speech_act. A
+  non_floor_feedback deliberately has no speech_act.
+- completion includes text. hold includes text_before_pause, text_after_pause, and
+  pause_duration_seconds. response_floor_claim includes text, after_assistant_turn_id, and
+  response_latency_seconds. interruption_floor_claim includes text, during_assistant_turn_id, and
+  assistant_yield_delay_seconds. non_floor_feedback includes text and during_assistant_turn_id.
 - HOLD text is split into text_before_pause and text_after_pause with a 0.5 to 2.5 second pause.
 - Backchannels and reactions reference the assistant turn they occur during. Responses reference
   the assistant turn after which they begin. Interruptions reference the active assistant turn.
@@ -466,14 +475,14 @@ def _validate_english_text(value: str) -> str:
 
 def _user_turn_length(texts: tuple[str, ...]) -> UserTurnLength:
     word_count = sum(len(text.split()) for text in texts)
-    if 2 <= word_count <= 8:
+    if 2 <= word_count <= 11:
         return UserTurnLength.BRIEF
-    if 12 <= word_count <= 28:
+    if 12 <= word_count <= 44:
         return UserTurnLength.NORMAL
     if 45 <= word_count <= 90:
         return UserTurnLength.EXTENDED
     raise ValueError(
-        f"Floor-owning user turns require 2-8, 12-28, or 45-90 words; received {word_count}."
+        f"Floor-owning user turns require 2-11, 12-44, or 45-90 words; received {word_count}."
     )
 
 
