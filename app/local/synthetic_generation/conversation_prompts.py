@@ -359,6 +359,10 @@ Fixed requirements:
   assistant turn under 45 words. It will not be synthesized.
 - Give the conversation one stable base_user_voice. Vary delivery per user prompt while keeping
   identity stable. The requested anchor delivery is {brief.pace.value} and {brief.affect.value}.
+- condition must be exactly one of completion, hold, non_floor_feedback,
+  response_floor_claim, or interruption_floor_claim. It is never a speech_act.
+- speech_act must be exactly one of question, answer, explanation, opinion, anecdote, request,
+  or correction. energy must be exactly one of subdued, conversational, or animated.
 - HOLD text is split into text_before_pause and text_after_pause with a 0.5 to 2.5 second pause.
 - Backchannels and reactions reference the assistant turn they occur during. Responses reference
   the assistant turn after which they begin. Interruptions reference the active assistant turn.
@@ -388,10 +392,13 @@ def qwen_voice_instruction(
 
 
 def _validate_english_text(value: str) -> str:
-    if not value.isascii() or not any(character.isalpha() for character in value):
-        raise ValueError("English prompt text must use printable ASCII English text.")
     if any(not character.isprintable() for character in value):
-        raise ValueError("English prompt text must use printable ASCII English text.")
+        raise ValueError("English prompt text must use printable text.")
+    alphabetic_characters = tuple(character for character in value if character.isalpha())
+    if not alphabetic_characters or any(
+        not character.isascii() for character in alphabetic_characters
+    ):
+        raise ValueError("English prompt text must use unaccented Latin letters.")
     return value
 
 

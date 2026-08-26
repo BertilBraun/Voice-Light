@@ -85,10 +85,18 @@ def test_plan_is_english_only_by_schema_and_validation() -> None:
         EnglishConversationPromptPlan.model_validate(values)
 
     values = _plan().model_dump()
-    values["user_prompts"][0]["text"] = "Todavia no esta listo."
-    values["user_prompts"][0]["text"] += " \u00bfverdad?"
-    with pytest.raises(ValidationError, match="ASCII English text"):
+    values["user_prompts"][0]["text"] = "Todav\u00eda no est\u00e1 listo."
+    with pytest.raises(ValidationError, match="unaccented Latin letters"):
         EnglishConversationPromptPlan.model_validate(values)
+
+
+def test_plan_accepts_english_typographic_punctuation() -> None:
+    values = _plan().model_dump()
+    values["user_prompts"][0]["text"] = "That's useful\u2014I'd try it tomorrow."
+
+    plan = EnglishConversationPromptPlan.model_validate(values)
+
+    assert "\u2014" in plan.user_prompts[0].text
 
 
 def test_prompt_set_rejects_duplicate_spoken_text() -> None:
