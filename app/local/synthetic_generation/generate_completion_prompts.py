@@ -107,15 +107,18 @@ def generate_speech_prompts(
             if normalized_text in used_texts:
                 continue
             prompt_index = len(prompts)
-            prompts.append(
-                SyntheticEnglishSpeechPrompt(
+            try:
+                prompt = SyntheticEnglishSpeechPrompt(
                     prompt_id=f"prompt_{prompt_index:05d}",
                     text=draft.text,
                     voice_instruction=draft.voice_instruction,
                     topic=draft.topic,
                     seed=seed + prompt_index,
                 )
-            )
+            except ValidationError as error:
+                print(f"Discarding invalid prompt draft: {error}", flush=True)
+                continue
+            prompts.append(prompt)
             used_texts.add(normalized_text)
             if len(prompts) == prompt_count:
                 break
@@ -183,6 +186,8 @@ Requirements for every prompt:
   specify perceived age, voice character, accent or dialect, pace, emotion, and how pauses sound.
 - Require a clean, close-mic studio recording with normal voiced projection. Do not request
   whispering, breathiness, hushed delivery, ambient sound, room tone, or background noise.
+- Do not use the words whisper, breathy, hushed, ambient sound, room tone, or background noise,
+  even in a negative instruction.
 - Avoid quotations, unsafe content, copyrighted passages, names of real public figures, stage
   directions inside text, and repeated templates.
 - topic is a short descriptive phrase.
