@@ -178,6 +178,10 @@ def _repair_instruction(error: ValidationError) -> str:
 Return only a corrected complete JSON object. Preserve the requested plan identity, topic, and
 conversation meaning. Do not explain the correction.
 
+Assign every assistant turn and user prompt a distinct sequence_index. Renumber all elements with
+consecutive integers 0, 1, 2, and so on in chronological conversational order. A condition such as
+response_floor_claim is never a speech_act; use only a speech_act value allowed by the schema.
+
 Validation errors:
 {error}
 """
