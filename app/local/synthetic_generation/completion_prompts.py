@@ -72,8 +72,8 @@ def apply_prompt_draft_profile(
             return draft
         case PromptDeliveryProfile.BRISK_ENGAGED:
             word_count = len(draft.text.split())
-            if not 90 <= word_count <= 130:
-                raise ValueError("Brisk engaged prompt drafts require 90 to 130 words.")
+            if not 75 <= word_count <= 130:
+                raise ValueError("Brisk engaged prompt drafts require 75 to 130 words.")
             normalized_description = f"{draft.topic} {draft.voice_instruction}".casefold()
             prohibited_phrases = (
                 "calm",
@@ -93,16 +93,17 @@ def apply_prompt_draft_profile(
                 raise ValueError(
                     f"Brisk engaged prompt drafts contain low-energy phrases: {', '.join(matches)}."
                 )
+            maximum_rate_for_twenty_seconds = min(240, word_count * 3)
             rate_match = re.search(r"\b(\d{3}) words per minute\b", normalized_description)
             if rate_match is not None:
                 words_per_minute = int(rate_match.group(1))
-                if not 200 <= words_per_minute <= 240:
+                if not 200 <= words_per_minute <= maximum_rate_for_twenty_seconds:
                     raise ValueError(
-                        "Brisk engaged voice instructions require a rate from 200 to 240 words "
-                        "per minute."
+                        "Brisk engaged voice instructions require 200 to 240 words per minute "
+                        "without planning less than 20 seconds of speech."
                     )
                 return draft
-            words_per_minute = 200 + seed % 41
+            words_per_minute = 200 + seed % (maximum_rate_for_twenty_seconds - 199)
             return draft.model_copy(
                 update={
                     "voice_instruction": (
