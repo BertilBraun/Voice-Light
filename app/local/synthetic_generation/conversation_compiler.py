@@ -9,7 +9,7 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from app.local.synthetic_generation.models import SyntheticModel
-from app.local.training_samples.service import FRAME_SECONDS, INPUT_DURATION_SECONDS
+from app.local.training_samples.constants import FRAME_SECONDS, INPUT_DURATION_SECONDS
 
 MASKED_TARGET = -1.0
 

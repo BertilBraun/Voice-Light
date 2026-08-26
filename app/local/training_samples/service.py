@@ -21,6 +21,7 @@ from app.local.timeline_repair.transform import (
     canonical_available_intervals,
     map_canonical_audio_interval,
 )
+from app.local.training_samples.constants import FRAME_SECONDS, INPUT_DURATION_SECONDS
 from app.local.training_samples.models import (
     AuxiliaryTarget,
     CandidateSource,
@@ -52,9 +53,7 @@ from app.shared.quality import (
     SpeakerSide,
 )
 
-INPUT_DURATION_SECONDS = 20.0
 BURN_IN_SECONDS = 4.0
-FRAME_SECONDS = 0.08
 TRAINING_LABEL_VERSION = "turn-taking-frame-labels-v1"
 WAVEFORM_POINT_COUNT = 1000
 MAXIMUM_CANDIDATE_SILENCE_SECONDS = 2.0

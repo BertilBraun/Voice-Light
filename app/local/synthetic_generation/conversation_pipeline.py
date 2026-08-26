@@ -59,7 +59,7 @@ from app.local.training_corpus.splits import (
     TrainingCorpusSplit,
     assign_conversation_splits,
 )
-from app.local.training_samples.service import FRAME_SECONDS, INPUT_DURATION_SECONDS
+from app.local.training_samples.constants import FRAME_SECONDS, INPUT_DURATION_SECONDS
 
 SYNTHETIC_SCHEMA_VERSION = "voice-light-synthetic-turn-taking-v2"
 SYNTHETIC_LABEL_VERSION = "semantic-user-floor-v1"
