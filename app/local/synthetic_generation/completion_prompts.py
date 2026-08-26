@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated
 
 from pydantic import Field, StringConstraints, TypeAdapter, model_validator
@@ -9,6 +10,11 @@ from app.local.synthetic_generation.models import SyntheticModel
 
 PromptSetId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]*$")]
 prompt_set_id_adapter = TypeAdapter(PromptSetId)
+
+
+class PromptDeliveryProfile(StrEnum):
+    BALANCED = "balanced"
+    BRISK_ENGAGED = "brisk_engaged"
 
 
 class SpeechPromptDraft(SyntheticModel):
@@ -33,6 +39,7 @@ class PromptGeneratorProvenance(SyntheticModel):
     runtime_version: str
     seed: int = Field(ge=0)
     requested_prompt_count: int = Field(gt=0)
+    delivery_profile: PromptDeliveryProfile
 
 
 class SyntheticSpeechPromptSet(SyntheticModel):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -17,6 +18,7 @@ from transformers import (
 
 from app.local.synthetic_generation.completion_dataset import SyntheticEnglishSpeechPrompt
 from app.local.synthetic_generation.completion_prompts import (
+    PromptDeliveryProfile,
     PromptGeneratorProvenance,
     SpeechPromptDraftBatch,
     SyntheticSpeechPromptSet,
@@ -43,6 +45,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         runtime_version=transformers.__version__,
         seed=parsed.seed,
         requested_prompt_count=parsed.count,
+        delivery_profile=parsed.delivery_profile,
     )
     parsed.output.parent.mkdir(parents=True, exist_ok=True)
     partial_output = parsed.output.with_suffix(f"{parsed.output.suffix}.partial")
@@ -62,6 +65,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         prompt_count=parsed.count,
         batch_size=parsed.batch_size,
         seed=parsed.seed,
+        delivery_profile=parsed.delivery_profile,
         on_progress=checkpoint,
     )
     artifact = SyntheticSpeechPromptSet(
@@ -80,6 +84,7 @@ def generate_speech_prompts(
     prompt_count: int,
     batch_size: int,
     seed: int,
+    delivery_profile: PromptDeliveryProfile,
     on_progress: Callable[[tuple[SyntheticEnglishSpeechPrompt, ...]], None],
 ) -> tuple[SyntheticEnglishSpeechPrompt, ...]:
     prompts = []
@@ -93,6 +98,7 @@ def generate_speech_prompts(
                 tokenizer=tokenizer,
                 batch_size=requested_batch_size,
                 seed=seed + attempt,
+                delivery_profile=delivery_profile,
             )
         except ValueError as error:
             print(f"Discarding invalid prompt batch: {error}", flush=True)
@@ -140,8 +146,9 @@ def _generate_draft_batch(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     seed: int,
+    delivery_profile: PromptDeliveryProfile,
 ) -> SpeechPromptDraftBatch:
-    instruction = _generation_instruction(batch_size)
+    instruction = _generation_instruction(batch_size, delivery_profile)
     messages = [{"role": "user", "content": instruction}]
     inputs = tokenizer.apply_chat_template(
         messages,
@@ -169,13 +176,24 @@ def _generate_draft_batch(
         raise ValueError(f"Prompt model returned invalid structured output: {error}") from error
 
 
-def _generation_instruction(batch_size: int) -> str:
+@dataclass(frozen=True)
+class _ProfileRequirements:
+    word_count_requirement: str
+    delivery_requirements: str
+
+
+def _generation_instruction(
+    batch_size: int,
+    delivery_profile: PromptDeliveryProfile,
+) -> str:
+    profile_requirements = _profile_requirements(delivery_profile)
     return f"""Create {batch_size} distinct long-form English text-to-speech prompts.
 Return only one JSON object shaped exactly as:
 {{"prompts":[{{"text":"...","voice_instruction":"...","topic":"..."}}]}}
 
 Requirements for every prompt:
-- Text contains 55-115 words and sounds like one natural conversational turn, not a list.
+- Text contains {profile_requirements.word_count_requirement} and sounds like one natural
+  conversational turn, not a list.
 - Use ordinary punctuation to create two or three plausible thoughtful pauses. At least one pause
   should plausibly last over 500 ms when spoken, using a sentence boundary, an em dash, or an
   explicit hesitation such as "uh".
@@ -191,7 +209,36 @@ Requirements for every prompt:
 - Avoid quotations, unsafe content, copyrighted passages, names of real public figures, stage
   directions inside text, and repeated templates.
 - topic is a short descriptive phrase.
+{profile_requirements.delivery_requirements}
 """
+
+
+def _profile_requirements(delivery_profile: PromptDeliveryProfile) -> _ProfileRequirements:
+    match delivery_profile:
+        case PromptDeliveryProfile.BALANCED:
+            return _ProfileRequirements(
+                word_count_requirement="55-115 words",
+                delivery_requirements=(
+                    "- Cover a balanced mix of slow, moderate, and fast delivery across the batch."
+                ),
+            )
+        case PromptDeliveryProfile.BRISK_ENGAGED:
+            return _ProfileRequirements(
+                word_count_requirement="95-115 words",
+                delivery_requirements=(
+                    "- Every voice is brisk, engaged, energetic, and normally projected.\n"
+                    "- Request roughly 200-240 spoken words per minute without rushing or "
+                    "slurring.\n"
+                    "- Use lively everyday topics and active language; do not choose silence, "
+                    "stillness, grief, meditation, nostalgia, loneliness, or quiet reflection as "
+                    "topics.\n"
+                    "- Vary perceived age, pitch, vocal weight, and English accent across North "
+                    "American, British, Irish, Australian, and New Zealand voices.\n"
+                    "- Include one clearly planned 500-800 ms internal pause, but keep all other "
+                    "phrasing flowing and responsive. Do not request slow, subdued, soft-spoken, "
+                    "intimate, contemplative, or deliberate delivery."
+                ),
+            )
 
 
 def _json_object(text: str) -> str:
@@ -211,6 +258,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--count", type=int, default=320)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=260826)
+    parser.add_argument(
+        "--delivery-profile",
+        type=PromptDeliveryProfile,
+        choices=tuple(PromptDeliveryProfile),
+        default=PromptDeliveryProfile.BALANCED,
+    )
     parser.add_argument("--output", required=True, type=Path)
     return parser
 

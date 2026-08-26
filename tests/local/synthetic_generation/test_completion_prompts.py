@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.local.synthetic_generation.completion_dataset import SyntheticEnglishSpeechPrompt
 from app.local.synthetic_generation.completion_prompts import (
+    PromptDeliveryProfile,
     PromptGeneratorProvenance,
     SyntheticSpeechPromptSet,
     validate_prompt_set_id,
@@ -76,4 +77,5 @@ def _provenance() -> PromptGeneratorProvenance:
         runtime_version="5.0.0",
         seed=7,
         requested_prompt_count=2,
+        delivery_profile=PromptDeliveryProfile.BALANCED,
     )
