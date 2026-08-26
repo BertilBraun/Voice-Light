@@ -7,7 +7,7 @@ import soundfile as sf
 
 from app.local.synthetic_generation.completion_dataset import (
     QwenVoiceDesignProvenance,
-    SyntheticSpeechPrompt,
+    SyntheticEnglishSpeechPrompt,
     analyze_generated_samples,
 )
 from app.local.synthetic_generation.validate_completion_corpus import (
@@ -55,8 +55,8 @@ def test_validation_reports_short_audio_without_a_hold(tmp_path: Path) -> None:
     }
 
 
-def _prompt() -> SyntheticSpeechPrompt:
-    return SyntheticSpeechPrompt(
+def _prompt() -> SyntheticEnglishSpeechPrompt:
+    return SyntheticEnglishSpeechPrompt(
         prompt_id="example_prompt",
         text=(
             "I reviewed the schedule carefully before calling the team, and after comparing "

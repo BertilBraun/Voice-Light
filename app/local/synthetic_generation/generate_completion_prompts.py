@@ -15,7 +15,7 @@ from transformers import (
     PreTrainedTokenizerBase,
 )
 
-from app.local.synthetic_generation.completion_dataset import SyntheticSpeechPrompt
+from app.local.synthetic_generation.completion_dataset import SyntheticEnglishSpeechPrompt
 from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SpeechPromptDraftBatch,
@@ -47,7 +47,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     parsed.output.parent.mkdir(parents=True, exist_ok=True)
     partial_output = parsed.output.with_suffix(f"{parsed.output.suffix}.partial")
 
-    def checkpoint(prompts: tuple[SyntheticSpeechPrompt, ...]) -> None:
+    def checkpoint(prompts: tuple[SyntheticEnglishSpeechPrompt, ...]) -> None:
         artifact = SyntheticSpeechPromptSet(
             set_id=set_id,
             provenance=provenance,
@@ -80,8 +80,8 @@ def generate_speech_prompts(
     prompt_count: int,
     batch_size: int,
     seed: int,
-    on_progress: Callable[[tuple[SyntheticSpeechPrompt, ...]], None],
-) -> tuple[SyntheticSpeechPrompt, ...]:
+    on_progress: Callable[[tuple[SyntheticEnglishSpeechPrompt, ...]], None],
+) -> tuple[SyntheticEnglishSpeechPrompt, ...]:
     prompts = []
     used_texts: set[str] = set()
     attempt = 0
@@ -108,7 +108,7 @@ def generate_speech_prompts(
                 continue
             prompt_index = len(prompts)
             prompts.append(
-                SyntheticSpeechPrompt(
+                SyntheticEnglishSpeechPrompt(
                     prompt_id=f"prompt_{prompt_index:05d}",
                     text=draft.text,
                     voice_instruction=draft.voice_instruction,

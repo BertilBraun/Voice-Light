@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.local.synthetic_generation.completion_dataset import SyntheticSpeechPrompt
+from app.local.synthetic_generation.completion_dataset import SyntheticEnglishSpeechPrompt
 from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SyntheticSpeechPromptSet,
@@ -27,7 +27,7 @@ def test_prompt_requires_long_spoken_text() -> None:
     values = _prompt("prompt_00001").model_dump()
     values["text"] = "This is much too short."
     with pytest.raises(ValidationError, match="at least 45 words"):
-        SyntheticSpeechPrompt.model_validate(values)
+        SyntheticEnglishSpeechPrompt.model_validate(values)
 
 
 def test_prompt_rejects_language_field_because_corpus_is_english_only() -> None:
@@ -35,7 +35,7 @@ def test_prompt_rejects_language_field_because_corpus_is_english_only() -> None:
     values["language"] = "Spanish"
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        SyntheticSpeechPrompt.model_validate(values)
+        SyntheticEnglishSpeechPrompt.model_validate(values)
 
 
 def test_prompt_set_id_is_validated_before_generation() -> None:
@@ -45,8 +45,8 @@ def test_prompt_set_id_is_validated_before_generation() -> None:
     assert validate_prompt_set_id("completion_pilot_20260826") == ("completion_pilot_20260826")
 
 
-def _prompt(prompt_id: str) -> SyntheticSpeechPrompt:
-    return SyntheticSpeechPrompt(
+def _prompt(prompt_id: str) -> SyntheticEnglishSpeechPrompt:
+    return SyntheticEnglishSpeechPrompt(
         prompt_id=prompt_id,
         text=(
             "I reviewed the schedule carefully before calling the team, and after comparing "

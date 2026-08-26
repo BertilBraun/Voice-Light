@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field, StringConstraints, TypeAdapter, model_validator
 
-from app.local.synthetic_generation.completion_dataset import SyntheticSpeechPrompt
+from app.local.synthetic_generation.completion_dataset import SyntheticEnglishSpeechPrompt
 from app.local.synthetic_generation.models import SyntheticModel
 
 PromptSetId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]*$")]
@@ -39,7 +39,7 @@ class SyntheticSpeechPromptSet(SyntheticModel):
     schema_version: str = "voice-light-synthetic-speech-prompts-v1"
     set_id: PromptSetId
     provenance: PromptGeneratorProvenance
-    prompts: tuple[SyntheticSpeechPrompt, ...] = Field(min_length=1)
+    prompts: tuple[SyntheticEnglishSpeechPrompt, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_unique_prompts(self) -> SyntheticSpeechPromptSet:

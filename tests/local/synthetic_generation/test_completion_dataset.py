@@ -8,7 +8,7 @@ import pytest
 from app.local.synthetic_generation.completion_dataset import (
     CompletionBoundaryKind,
     QwenVoiceDesignProvenance,
-    SyntheticSpeechPrompt,
+    SyntheticEnglishSpeechPrompt,
     analyze_generated_samples,
     completion_window_plans,
 )
@@ -104,8 +104,8 @@ def _tone(duration_seconds: float, sample_rate_hz: int) -> np.ndarray:
     return (0.2 * np.sin(2.0 * np.pi * 220.0 * times)).astype(np.float32)
 
 
-def _prompt() -> SyntheticSpeechPrompt:
-    return SyntheticSpeechPrompt(
+def _prompt() -> SyntheticEnglishSpeechPrompt:
+    return SyntheticEnglishSpeechPrompt(
         prompt_id="example_prompt",
         text=(
             "I reviewed the schedule carefully before calling the team, and after comparing "

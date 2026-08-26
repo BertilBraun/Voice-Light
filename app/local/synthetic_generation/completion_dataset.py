@@ -23,7 +23,7 @@ class TtsProvider(StrEnum):
     VOXTREAM2 = "voxtream2"
 
 
-class SyntheticSpeechPrompt(SyntheticModel):
+class SyntheticEnglishSpeechPrompt(SyntheticModel):
     prompt_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     text: str = Field(min_length=1)
     voice_instruction: str = Field(min_length=1)
@@ -31,7 +31,7 @@ class SyntheticSpeechPrompt(SyntheticModel):
     seed: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def validate_long_form_text(self) -> SyntheticSpeechPrompt:
+    def validate_long_form_text(self) -> SyntheticEnglishSpeechPrompt:
         if len(self.text.split()) < 45:
             raise ValueError("Synthetic speech prompts require at least 45 words.")
         return self
@@ -96,7 +96,7 @@ class CompletionBoundaryAnnotation(SyntheticModel):
 class GeneratedUtteranceAnnotation(SyntheticModel):
     schema_version: str = "voice-light-synthetic-completion-v1"
     utterance_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    prompt: SyntheticSpeechPrompt
+    prompt: SyntheticEnglishSpeechPrompt
     audio_path: Path
     sample_rate_hz: int = Field(gt=0)
     original_duration_seconds: float = Field(gt=0.0)
@@ -157,7 +157,7 @@ def analyze_generated_samples(
     samples: np.ndarray,
     sample_rate_hz: int,
     utterance_id: str,
-    prompt: SyntheticSpeechPrompt,
+    prompt: SyntheticEnglishSpeechPrompt,
     audio_path: Path,
     provenance: TtsGenerationProvenance,
     configuration: SilenceDetectionConfiguration = DEFAULT_SILENCE_DETECTION,
