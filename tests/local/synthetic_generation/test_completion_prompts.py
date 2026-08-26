@@ -7,7 +7,9 @@ from app.local.synthetic_generation.completion_dataset import SyntheticEnglishSp
 from app.local.synthetic_generation.completion_prompts import (
     PromptDeliveryProfile,
     PromptGeneratorProvenance,
+    SpeechPromptDraft,
     SyntheticSpeechPromptSet,
+    validate_prompt_draft_profile,
     validate_prompt_set_id,
 )
 
@@ -53,6 +55,27 @@ def test_prompt_set_id_is_validated_before_generation() -> None:
         validate_prompt_set_id("completion-pilot-20260826")
 
     assert validate_prompt_set_id("completion_pilot_20260826") == ("completion_pilot_20260826")
+
+
+def test_brisk_profile_rejects_low_energy_draft() -> None:
+    draft = SpeechPromptDraft(
+        text=" ".join("word" for _ in range(100)),
+        voice_instruction="A calm voice speaking at 220 words per minute.",
+        topic="an energetic update",
+    )
+
+    with pytest.raises(ValueError, match="low-energy phrases"):
+        validate_prompt_draft_profile(draft, PromptDeliveryProfile.BRISK_ENGAGED)
+
+
+def test_brisk_profile_accepts_explicit_fast_delivery() -> None:
+    draft = SpeechPromptDraft(
+        text=" ".join("word" for _ in range(100)),
+        voice_instruction="An upbeat projected voice speaking at 225 words per minute.",
+        topic="a lively neighborhood event",
+    )
+
+    validate_prompt_draft_profile(draft, PromptDeliveryProfile.BRISK_ENGAGED)
 
 
 def _prompt(prompt_id: str) -> SyntheticEnglishSpeechPrompt:

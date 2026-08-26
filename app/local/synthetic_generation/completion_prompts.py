@@ -59,5 +59,45 @@ class SyntheticSpeechPromptSet(SyntheticModel):
         return self
 
 
+def validate_prompt_draft_profile(
+    draft: SpeechPromptDraft,
+    delivery_profile: PromptDeliveryProfile,
+) -> None:
+    match delivery_profile:
+        case PromptDeliveryProfile.BALANCED:
+            return
+        case PromptDeliveryProfile.BRISK_ENGAGED:
+            word_count = len(draft.text.split())
+            if not 95 <= word_count <= 115:
+                raise ValueError("Brisk engaged prompt drafts require 95 to 115 words.")
+            normalized_description = f"{draft.topic} {draft.voice_instruction}".casefold()
+            prohibited_phrases = (
+                "calm",
+                "contemplat",
+                "deliberate",
+                "intimate",
+                "quiet",
+                "reflect",
+                "slow",
+                "soft",
+                "subdued",
+            )
+            matches = tuple(
+                phrase for phrase in prohibited_phrases if phrase in normalized_description
+            )
+            if matches:
+                raise ValueError(
+                    f"Brisk engaged prompt drafts contain low-energy phrases: {', '.join(matches)}."
+                )
+            allowed_rates = tuple(
+                f"{words_per_minute} words per minute" for words_per_minute in range(200, 241)
+            )
+            if not any(rate in normalized_description for rate in allowed_rates):
+                raise ValueError(
+                    "Brisk engaged voice instructions require an explicit rate from 200 to 240 "
+                    "words per minute."
+                )
+
+
 def validate_prompt_set_id(value: str) -> str:
     return prompt_set_id_adapter.validate_python(value)

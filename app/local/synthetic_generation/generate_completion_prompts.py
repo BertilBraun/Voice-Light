@@ -22,6 +22,7 @@ from app.local.synthetic_generation.completion_prompts import (
     PromptGeneratorProvenance,
     SpeechPromptDraftBatch,
     SyntheticSpeechPromptSet,
+    validate_prompt_draft_profile,
     validate_prompt_set_id,
 )
 
@@ -109,6 +110,11 @@ def generate_speech_prompts(
                 ) from error
             continue
         for draft in draft_batch.prompts:
+            try:
+                validate_prompt_draft_profile(draft, delivery_profile)
+            except ValueError as error:
+                print(f"Discarding off-profile prompt draft: {error}", flush=True)
+                continue
             normalized_text = " ".join(draft.text.lower().split())
             if normalized_text in used_texts:
                 continue
@@ -194,12 +200,12 @@ Return only one JSON object shaped exactly as:
 Requirements for every prompt:
 - Text contains {profile_requirements.word_count_requirement} and sounds like one natural
   conversational turn, not a list.
-- Use ordinary punctuation to create two or three plausible thoughtful pauses. At least one pause
-  should plausibly last over 500 ms when spoken, using a sentence boundary, an em dash, or an
-  explicit hesitation such as "uh".
+- Use ordinary punctuation to create two or three plausible conversational pauses. At least one
+  pause should plausibly last over 500 ms when spoken, using a sentence boundary, an em dash, or
+  an explicit hesitation such as "uh".
 - End with a clearly complete statement or question. No ellipsis at the end.
-- Vary syntax, sentence length, topic, emotion, age presentation, regional accent, speaking pace,
-  pitch, energy, and vocal texture across items.
+- Vary syntax, sentence length, topic, emotion, age presentation, regional accent, pitch, energy,
+  and vocal texture across items.
 - voice_instruction is a detailed natural-language instruction for Qwen3-TTS VoiceDesign and must
   specify perceived age, voice character, accent or dialect, pace, emotion, and how pauses sound.
 - Require a clean, close-mic studio recording with normal voiced projection. Do not request
