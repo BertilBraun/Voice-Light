@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import wave
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -59,6 +60,12 @@ class AfterAssistantUserTiming(SyntheticModel):
     delay_seconds: float = Field(ge=0.0)
 
 
+class AfterUserUserTiming(SyntheticModel):
+    kind: Literal["after_user"] = "after_user"
+    user_event_id: str
+    delay_seconds: float = Field(ge=0.0)
+
+
 class DuringAssistantUserTiming(SyntheticModel):
     kind: Literal["during_assistant"] = "during_assistant"
     assistant_turn_id: str
@@ -66,7 +73,7 @@ class DuringAssistantUserTiming(SyntheticModel):
 
 
 FloorOwningUserTiming = Annotated[
-    FixedUserTiming | AfterAssistantUserTiming,
+    FixedUserTiming | AfterAssistantUserTiming | AfterUserUserTiming,
     Field(discriminator="kind"),
 ]
 
@@ -168,7 +175,7 @@ class ConversationCompositionPlan(SyntheticModel):
     )
     conversation_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     seed: int = Field(ge=0)
-    duration_seconds: float = Field(gt=0.0, le=30.0)
+    duration_seconds: float = Field(gt=0.0, le=120.0)
     user_events: tuple[UserClipPlacement, ...]
     assistant_turns: tuple[VirtualAssistantTurn, ...] = ()
 
@@ -186,8 +193,10 @@ class ConversationCompositionPlan(SyntheticModel):
 class ConversationCompilerConfig(SyntheticModel):
     sample_rate_hz: int = Field(default=16_000, gt=0)
     crop_duration_seconds: float = Field(default=INPUT_DURATION_SECONDS, gt=0.0)
-    crop_variant_count: int = Field(default=4, gt=0)
-    event_light_fraction: float = Field(default=0.15, ge=0.0, le=1.0)
+    crop_variant_count: int = Field(default=8, gt=0)
+    assistant_only_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
+    user_only_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
+    event_light_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
     assistant_duration_variation: float = Field(default=0.1, ge=0.0, le=0.4)
     speculative_eot_horizons_seconds: tuple[float, ...] = (0.5, 1.0)
 
@@ -200,7 +209,24 @@ class ConversationCompilerConfig(SyntheticModel):
             raise ValueError("At least one speculative EOT horizon is required.")
         if any(horizon <= 0.0 for horizon in self.speculative_eot_horizons_seconds):
             raise ValueError("Speculative EOT horizons must be positive.")
+        requested_control_count = sum(
+            _fraction_count(self.crop_variant_count, fraction)
+            for fraction in (
+                self.assistant_only_fraction,
+                self.user_only_fraction,
+                self.event_light_fraction,
+            )
+        )
+        if requested_control_count > self.crop_variant_count:
+            raise ValueError("Requested crop control strata exceed the crop variant count.")
         return self
+
+
+class CropSamplingStratum(StrEnum):
+    EVENT_FOCUSED = "event_focused"
+    ASSISTANT_ONLY = "assistant_only"
+    USER_ONLY = "user_only"
+    EVENT_LIGHT = "event_light"
 
 
 class SpeculativeEotTrack(SyntheticModel):
@@ -276,7 +302,11 @@ class TrainingCropPlan(SyntheticModel):
     right_padding_seconds: float = Field(ge=0.0)
     duration_seconds: float = Field(gt=0.0)
     assistant_duration_scale: float = Field(gt=0.0)
+    sampling_stratum: CropSamplingStratum
+    assistant_only: bool
+    user_only: bool
     event_light: bool
+    padded: bool
     user_events: tuple[ResolvedUserEvent, ...]
     assistant_turns: tuple[ResolvedAssistantTurn, ...]
     labels: ConversationFrameTracks
@@ -294,6 +324,20 @@ class TrainingCropPlan(SyntheticModel):
         expected_frames = round(self.duration_seconds / self.labels.frame_seconds)
         if len(self.labels.p_user_floor_now) != expected_frames:
             raise ValueError("Crop label count does not match its duration.")
+        has_padding = self.left_padding_seconds > 0.0 or self.right_padding_seconds > 0.0
+        if self.padded != has_padding:
+            raise ValueError("Crop padding status does not match its source bounds.")
+        match self.sampling_stratum:
+            case CropSamplingStratum.EVENT_FOCUSED if self.event_light:
+                raise ValueError("Event-focused crops must contain a supervised event.")
+            case CropSamplingStratum.ASSISTANT_ONLY if not self.assistant_only:
+                raise ValueError("Assistant-only crops must satisfy the requested control.")
+            case CropSamplingStratum.USER_ONLY if not self.user_only:
+                raise ValueError("User-only crops must satisfy the requested control.")
+            case CropSamplingStratum.EVENT_LIGHT if not self.event_light:
+                raise ValueError("Event-light crops must contain no supervised event.")
+            case _:
+                pass
         return self
 
 
@@ -422,18 +466,20 @@ def _compile_crop(
         *(event.end_seconds for event in user_events),
         *(turn.end_seconds for turn in assistant_turns),
     )
-    if variant_duration > 30.0:
-        raise ValueError("Reflowed conversation exceeds the 30-second source limit.")
+    if variant_duration > 120.0:
+        raise ValueError("Reflowed conversation exceeds the 120-second source limit.")
     feedback_starts = tuple(start for start, _ in feedback_intervals)
     hold_starts = tuple(start for start, _ in hold_intervals)
     event_times = completions + hold_starts + feedback_starts + floor_takes
-    event_light_count = round(config.crop_variant_count * config.event_light_fraction)
-    event_light_requested = variant_index >= config.crop_variant_count - event_light_count
-    crop_start = _crop_start_for_variant(
+    requested_sampling_stratum = _sampling_stratum(variant_index, config)
+    crop_start, sampling_stratum = _crop_start_for_stratum(
         variant_index,
         variant_duration,
         event_times,
-        event_light_requested,
+        user_events,
+        assistant_turns,
+        user_floor,
+        requested_sampling_stratum,
         config,
         generator,
     )
@@ -483,9 +529,25 @@ def _compile_crop(
             labels.continuation_pause,
             labels.non_floor_feedback,
             labels.floor_take,
+            *(track.probabilities for track in labels.speculative_eot),
         )
         for value in track
     )
+    assistant_only = _assistant_only_control(
+        crop_start,
+        config.crop_duration_seconds,
+        user_events,
+        assistant_turns,
+    )
+    user_only = _user_only_control(
+        crop_start,
+        config.crop_duration_seconds,
+        event_times,
+        user_floor,
+        assistant_turns,
+        max(config.speculative_eot_horizons_seconds),
+    )
+    padded = left_padding > 0.0 or right_padding > 0.0
     return TrainingCropPlan(
         crop_id=crop_id,
         variant_index=variant_index,
@@ -495,7 +557,11 @@ def _compile_crop(
         right_padding_seconds=right_padding,
         duration_seconds=config.crop_duration_seconds,
         assistant_duration_scale=assistant_scale,
+        sampling_stratum=sampling_stratum,
+        assistant_only=assistant_only,
+        user_only=user_only,
         event_light=event_light,
+        padded=padded,
         user_events=user_events,
         assistant_turns=assistant_turns,
         labels=labels,
@@ -530,6 +596,8 @@ def _resolve_variant_timeline(
                 assistant_turn_id=assistant_turn_id, delay_seconds=delay_seconds
             ):
                 resolved_start = resolve_assistant(assistant_turn_id).end_seconds + delay_seconds
+            case AfterUserUserTiming(user_event_id=user_event_id, delay_seconds=delay_seconds):
+                resolved_start = resolve_user(user_event_id).end_seconds + delay_seconds
             case DuringAssistantUserTiming(
                 assistant_turn_id=assistant_turn_id, position_fraction=position_fraction
             ):
@@ -697,36 +765,214 @@ def _semantic_timeline(
     )
 
 
-def _crop_start_for_variant(
+def _crop_start_for_stratum(
     variant_index: int,
     duration_seconds: float,
     event_times: tuple[float, ...],
-    event_light: bool,
+    user_events: tuple[ResolvedUserEvent, ...],
+    assistant_turns: tuple[ResolvedAssistantTurn, ...],
+    user_floor: tuple[tuple[float, float], ...],
+    sampling_stratum: CropSamplingStratum,
     config: ConversationCompilerConfig,
     generator: np.random.Generator,
-) -> float:
-    if event_light or not event_times:
-        return _most_event_light_start(duration_seconds, event_times, config, generator)
-    event_time = event_times[variant_index % len(event_times)]
-    event_position = float(generator.uniform(2.0, config.crop_duration_seconds - 0.8))
-    return event_time - event_position
-
-
-def _most_event_light_start(
-    duration_seconds: float,
-    event_times: tuple[float, ...],
-    config: ConversationCompilerConfig,
-    generator: np.random.Generator,
-) -> float:
-    minimum_start = min(0.0, duration_seconds - config.crop_duration_seconds)
-    maximum_start = max(0.0, duration_seconds - config.crop_duration_seconds)
-    candidates = tuple(float(generator.uniform(minimum_start, maximum_start)) for _ in range(32))
-    return min(
-        candidates,
-        key=lambda start: sum(
-            start <= event_time < start + config.crop_duration_seconds for event_time in event_times
-        ),
+) -> tuple[float, CropSamplingStratum]:
+    candidates = _candidate_crop_starts(duration_seconds, config.crop_duration_seconds)
+    fallback_order = (
+        sampling_stratum,
+        CropSamplingStratum.EVENT_FOCUSED,
+        CropSamplingStratum.EVENT_LIGHT,
     )
+    for candidate_stratum in dict.fromkeys(fallback_order):
+        valid = _valid_crop_starts(
+            candidates,
+            candidate_stratum,
+            event_times,
+            user_events,
+            assistant_turns,
+            user_floor,
+            config.crop_duration_seconds,
+            max(config.speculative_eot_horizons_seconds),
+        )
+        if valid:
+            selection = int(generator.integers(0, len(valid)))
+            return valid[(selection + variant_index) % len(valid)], candidate_stratum
+    raise ValueError("Conversation has no valid event-focused or event-light 20-second crop.")
+
+
+def _valid_crop_starts(
+    candidates: tuple[float, ...],
+    sampling_stratum: CropSamplingStratum,
+    event_times: tuple[float, ...],
+    user_events: tuple[ResolvedUserEvent, ...],
+    assistant_turns: tuple[ResolvedAssistantTurn, ...],
+    user_floor: tuple[tuple[float, float], ...],
+    crop_duration_seconds: float,
+    speculative_horizon_seconds: float,
+) -> tuple[float, ...]:
+    match sampling_stratum:
+        case CropSamplingStratum.EVENT_FOCUSED:
+            return tuple(
+                start
+                for start in candidates
+                if _contains_event_after_context(start, crop_duration_seconds, event_times)
+            )
+        case CropSamplingStratum.ASSISTANT_ONLY:
+            return tuple(
+                start
+                for start in candidates
+                if _assistant_only_control(
+                    start,
+                    crop_duration_seconds,
+                    user_events,
+                    assistant_turns,
+                )
+            )
+        case CropSamplingStratum.USER_ONLY:
+            return tuple(
+                start
+                for start in candidates
+                if _user_only_control(
+                    start,
+                    crop_duration_seconds,
+                    event_times,
+                    user_floor,
+                    assistant_turns,
+                    speculative_horizon_seconds,
+                )
+            )
+        case CropSamplingStratum.EVENT_LIGHT:
+            return tuple(
+                start
+                for start in candidates
+                if not _contains_event(
+                    start,
+                    crop_duration_seconds,
+                    event_times,
+                    speculative_horizon_seconds,
+                )
+            )
+
+
+def _sampling_stratum(
+    variant_index: int,
+    config: ConversationCompilerConfig,
+) -> CropSamplingStratum:
+    assistant_count = _fraction_count(config.crop_variant_count, config.assistant_only_fraction)
+    user_count = _fraction_count(config.crop_variant_count, config.user_only_fraction)
+    event_light_count = _fraction_count(config.crop_variant_count, config.event_light_fraction)
+    control_count = assistant_count + user_count + event_light_count
+    event_focused_count = config.crop_variant_count - control_count
+    if variant_index < event_focused_count:
+        return CropSamplingStratum.EVENT_FOCUSED
+    if variant_index < event_focused_count + assistant_count:
+        return CropSamplingStratum.ASSISTANT_ONLY
+    if variant_index < event_focused_count + assistant_count + user_count:
+        return CropSamplingStratum.USER_ONLY
+    return CropSamplingStratum.EVENT_LIGHT
+
+
+def _fraction_count(total_count: int, fraction: float) -> int:
+    if fraction == 0.0:
+        return 0
+    return max(1, round(total_count * fraction))
+
+
+def _candidate_crop_starts(
+    duration_seconds: float,
+    crop_duration_seconds: float,
+) -> tuple[float, ...]:
+    difference = duration_seconds - crop_duration_seconds
+    minimum_start = min(0.0, difference)
+    maximum_start = max(0.0, difference)
+    frame_count = int((maximum_start - minimum_start) / FRAME_SECONDS)
+    starts = tuple(minimum_start + index * FRAME_SECONDS for index in range(frame_count + 1))
+    if not np.isclose(starts[-1], maximum_start, atol=1e-9):
+        return (*starts, maximum_start)
+    return starts
+
+
+def _contains_event(
+    crop_start_seconds: float,
+    crop_duration_seconds: float,
+    event_times: tuple[float, ...],
+    future_margin_seconds: float = 0.0,
+) -> bool:
+    crop_end = crop_start_seconds + crop_duration_seconds + future_margin_seconds
+    return any(crop_start_seconds <= event_time < crop_end for event_time in event_times)
+
+
+def _contains_event_after_context(
+    crop_start_seconds: float,
+    crop_duration_seconds: float,
+    event_times: tuple[float, ...],
+) -> bool:
+    supervised_start = crop_start_seconds + min(4.0, crop_duration_seconds)
+    crop_end = crop_start_seconds + crop_duration_seconds
+    return any(supervised_start <= event_time < crop_end for event_time in event_times)
+
+
+def _assistant_only_control(
+    crop_start_seconds: float,
+    crop_duration_seconds: float,
+    user_events: tuple[ResolvedUserEvent, ...],
+    assistant_turns: tuple[ResolvedAssistantTurn, ...],
+) -> bool:
+    crop_end = crop_start_seconds + crop_duration_seconds
+    has_user_audio = any(
+        _intervals_overlap(crop_start_seconds, crop_end, event.start_seconds, event.end_seconds)
+        for event in user_events
+    )
+    assistant_seconds = sum(
+        _overlap_seconds(crop_start_seconds, crop_end, turn.start_seconds, turn.end_seconds)
+        for turn in assistant_turns
+    )
+    return not has_user_audio and assistant_seconds >= 2.0
+
+
+def _user_only_control(
+    crop_start_seconds: float,
+    crop_duration_seconds: float,
+    event_times: tuple[float, ...],
+    user_floor: tuple[tuple[float, float], ...],
+    assistant_turns: tuple[ResolvedAssistantTurn, ...],
+    speculative_horizon_seconds: float = 0.0,
+) -> bool:
+    crop_end = crop_start_seconds + crop_duration_seconds
+    has_assistant_activity = any(
+        _intervals_overlap(crop_start_seconds, crop_end, turn.start_seconds, turn.end_seconds)
+        for turn in assistant_turns
+    )
+    user_floor_seconds = sum(
+        _overlap_seconds(crop_start_seconds, crop_end, start, end) for start, end in user_floor
+    )
+    return (
+        not has_assistant_activity
+        and user_floor_seconds >= crop_duration_seconds * 0.5
+        and not _contains_event(
+            crop_start_seconds,
+            crop_duration_seconds,
+            event_times,
+            speculative_horizon_seconds,
+        )
+    )
+
+
+def _intervals_overlap(
+    first_start: float,
+    first_end: float,
+    second_start: float,
+    second_end: float,
+) -> bool:
+    return first_start < second_end and second_start < first_end
+
+
+def _overlap_seconds(
+    first_start: float,
+    first_end: float,
+    second_start: float,
+    second_end: float,
+) -> float:
+    return max(0.0, min(first_end, second_end) - max(first_start, second_start))
 
 
 def _assistant_probability_at(

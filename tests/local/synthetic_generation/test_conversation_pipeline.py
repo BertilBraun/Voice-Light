@@ -6,13 +6,18 @@ from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
+import pytest
 
 from app.local.synthetic_generation.completion_dataset import DEFAULT_SILENCE_DETECTION
 from app.local.synthetic_generation.conversation_compiler import (
     ConversationCompilerConfig,
     RenderedUserClip,
 )
-from app.local.synthetic_generation.conversation_pipeline import build_conversation_corpus
+from app.local.synthetic_generation.conversation_pipeline import (
+    CropSamplingSummary,
+    build_conversation_corpus,
+    validate_sampling_gates,
+)
 from app.local.synthetic_generation.conversation_prompts import (
     Affect,
     AssistantTurnPrompt,
@@ -25,7 +30,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     EnglishConversationPromptSet,
     HoldUserPrompt,
     InterruptionFloorClaimUserPrompt,
-    NonFloorFeedbackKind,
+    MicroBackchannel,
     NonFloorFeedbackUserPrompt,
     PerceivedAge,
     ResponseFloorClaimUserPrompt,
@@ -33,6 +38,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     SpeakingPace,
     SpeechAct,
     TopicDomain,
+    UserTurnLength,
     VocalPitch,
     VocalWeight,
 )
@@ -40,6 +46,10 @@ from app.local.synthetic_generation.conversation_tts import (
     ConversationTtsManifest,
     RenderedClauseProvenance,
     RenderedConversationUserUnit,
+    VoiceClonePromptProvenance,
+)
+from app.local.synthetic_generation.conversation_voice_references import (
+    ConversationVoiceReference,
     TtsBackendIdentity,
 )
 from app.local.training_corpus.export import MaterializedTrainingSample
@@ -60,14 +70,22 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
         model_license="test-only",
     )
     rendered_units = tuple(
-        _rendered_unit(render_directory, prompt_set.plans[0], prompt, backend)
+        _rendered_unit(
+            render_directory,
+            prompt_set.plans[0],
+            prompt,
+            backend,
+            _reference(render_directory, prompt_set.plans[0], backend),
+        )
         for prompt in prompt_set.plans[0].user_prompts
     )
     tts_manifest = ConversationTtsManifest(
         prompt_set_id=prompt_set.set_id,
         prompt_set_sha256=hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+        reference_manifest_sha256="d" * 64,
         backend=backend,
         detection=DEFAULT_SILENCE_DETECTION,
+        clone_prompts=(_clone_prompt(prompt_set.plans[0], backend),),
         rendered_units=rendered_units,
     )
     tts_path = render_directory / "render.json"
@@ -80,8 +98,10 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
         output_directory=tmp_path / "corpus",
         split_seed="test-split",
         compiler_config=ConversationCompilerConfig(
-            crop_variant_count=3,
-            event_light_fraction=0.0,
+            crop_variant_count=8,
+            assistant_only_fraction=0.125,
+            user_only_fraction=0.125,
+            event_light_fraction=0.125,
             assistant_duration_variation=0.0,
         ),
     )
@@ -90,7 +110,7 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
     shard = next((tmp_path / "corpus" / "training").rglob("*.parquet"))
     rows = pq.read_table(shard).to_pylist()
     samples = tuple(MaterializedTrainingSample.model_validate(row) for row in rows)
-    assert len(samples) == 3
+    assert len(samples) == 8
     assert all(sample.assistant_audio_path is None for sample in samples)
     assert all(sample.p_user_floor_now is not None for sample in samples)
     assert all(sample.speculative_eot_500 is not None for sample in samples)
@@ -100,6 +120,30 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
     compiled_path = tmp_path / "corpus" / manifest.conversations[0].manifest_path
     compiled_payload = compiled_path.read_text(encoding="utf-8")
     assert "assistant_audio" not in compiled_payload
+    assert manifest.sampling_summary.total_crop_count == 8
+    assert manifest.sampling_summary.padded_count == 0
+    assert manifest.sampling_summary.control_quotas_satisfied
+    assert manifest.sampling_summary.padding_limit_satisfied
+
+
+def test_invalid_crop_sampling_summary_fails_the_pilot_gate() -> None:
+    summary = CropSamplingSummary(
+        total_crop_count=20,
+        event_focused_count=18,
+        assistant_only_count=1,
+        user_only_count=1,
+        event_light_count=1,
+        padded_count=2,
+        assistant_only_fraction=0.05,
+        user_only_fraction=0.05,
+        event_light_fraction=0.05,
+        padded_fraction=0.1,
+        control_quotas_satisfied=False,
+        padding_limit_satisfied=False,
+    )
+
+    with pytest.raises(ValueError, match="10% corpus quota"):
+        validate_sampling_gates(summary)
 
 
 def _prompt_set() -> EnglishConversationPromptSet:
@@ -113,12 +157,15 @@ def _prompt_set() -> EnglishConversationPromptSet:
         seed=71,
         domain=TopicDomain.TECHNOLOGY,
         topic="Choosing notification settings for a shared calendar",
-        target_duration_seconds=24.0,
+        target_duration_seconds=75.0,
         base_user_voice=BaseUserVoice(
             perceived_age=PerceivedAge.ADULT,
             accent=EnglishAccent.GENERAL_AMERICAN,
             pitch=VocalPitch.MEDIUM,
             vocal_weight=VocalWeight.MEDIUM,
+        ),
+        voice_reference_text=(
+            "Every clear morning brings a fresh chance to notice something useful nearby."
         ),
         assistant_turns=(
             AssistantTurnPrompt(
@@ -137,6 +184,16 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 speaking_rate_words_per_minute=175,
                 punctuation_pause_seconds=0.1,
             ),
+            AssistantTurnPrompt(
+                turn_id="assistant_3",
+                sequence_index=6,
+                text=(
+                    "That distinction is clear, so urgent changes can stay audible while routine "
+                    "updates remain quiet."
+                ),
+                speaking_rate_words_per_minute=170,
+                punctuation_pause_seconds=0.2,
+            ),
         ),
         user_prompts=(
             CompletionUserPrompt(
@@ -144,6 +201,7 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=0,
                 speech_act=SpeechAct.REQUEST,
                 delivery=delivery,
+                length_band=UserTurnLength.BRIEF,
                 text="Help me choose a calmer reminder setting.",
             ),
             NonFloorFeedbackUserPrompt(
@@ -151,8 +209,7 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=2,
                 speech_act=SpeechAct.ANSWER,
                 delivery=delivery,
-                text="Right.",
-                feedback_kind=NonFloorFeedbackKind.BACKCHANNEL,
+                text=MicroBackchannel.RIGHT,
                 during_assistant_turn_id="assistant_1",
             ),
             ResponseFloorClaimUserPrompt(
@@ -160,7 +217,11 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=3,
                 speech_act=SpeechAct.OPINION,
                 delivery=delivery,
-                text="The quieter option sounds better.",
+                length_band=UserTurnLength.NORMAL,
+                text=(
+                    "The quieter option sounds better because routine updates do not need to "
+                    "interrupt everyone in the room."
+                ),
                 after_assistant_turn_id="assistant_1",
                 response_latency_seconds=0.3,
             ),
@@ -169,7 +230,14 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=5,
                 speech_act=SpeechAct.CORRECTION,
                 delivery=delivery,
-                text="Wait, urgent changes should still make a sound.",
+                length_band=UserTurnLength.EXTENDED,
+                text=(
+                    "Wait, urgent changes should still make a sound because a canceled meeting "
+                    "or a sudden room change can affect the entire team. I only want the ordinary "
+                    "reminders to stay quiet, while genuinely time-sensitive updates should be "
+                    "clear enough to catch immediately. That distinction keeps the calendar calm "
+                    "without letting important changes disappear unnoticed."
+                ),
                 during_assistant_turn_id="assistant_2",
                 assistant_yield_delay_seconds=0.2,
             ),
@@ -199,6 +267,7 @@ def _rendered_unit(
         | InterruptionFloorClaimUserPrompt
     ),
     backend: TtsBackendIdentity,
+    reference: ConversationVoiceReference,
 ) -> RenderedConversationUserUnit:
     clip_id = f"{plan.plan_id}_{prompt.unit_id}"
     relative_path = Path("audio") / f"{clip_id}.wav"
@@ -208,6 +277,20 @@ def _rendered_unit(
     match prompt:
         case NonFloorFeedbackUserPrompt():
             duration_seconds = 0.45
+        case (
+            CompletionUserPrompt(length_band=UserTurnLength.EXTENDED)
+            | HoldUserPrompt(length_band=UserTurnLength.EXTENDED)
+            | ResponseFloorClaimUserPrompt(length_band=UserTurnLength.EXTENDED)
+            | InterruptionFloorClaimUserPrompt(length_band=UserTurnLength.EXTENDED)
+        ):
+            duration_seconds = 26.0
+        case (
+            CompletionUserPrompt(length_band=UserTurnLength.NORMAL)
+            | HoldUserPrompt(length_band=UserTurnLength.NORMAL)
+            | ResponseFloorClaimUserPrompt(length_band=UserTurnLength.NORMAL)
+            | InterruptionFloorClaimUserPrompt(length_band=UserTurnLength.NORMAL)
+        ):
+            duration_seconds = 4.0
         case _:
             duration_seconds = 1.0
     times = np.arange(round(duration_seconds * sample_rate_hz)) / sample_rate_hz
@@ -243,10 +326,48 @@ def _rendered_unit(
     return RenderedConversationUserUnit(
         plan_id=plan.plan_id,
         prompt=prompt,
-        base_user_voice=plan.base_user_voice,
         backend=backend,
-        voice_instruction="Clean English test voice.",
+        reference=reference,
+        clone_prompt=_clone_prompt(plan, backend),
         prompt_sha256="c" * 64,
         clip=clip,
         clauses=(clause,),
+    )
+
+
+def _reference(
+    directory: Path,
+    plan: EnglishConversationPromptPlan,
+    backend: TtsBackendIdentity,
+) -> ConversationVoiceReference:
+    return ConversationVoiceReference(
+        plan_id=plan.plan_id,
+        reference_text=plan.voice_reference_text,
+        reference_text_sha256="e" * 64,
+        voice_instruction="Clean English test voice.",
+        audio_path=directory / "reference.wav",
+        audio_sha256="f" * 64,
+        sample_rate_hz=16_000,
+        duration_seconds=4.0,
+        trimmed_leading_seconds=0.0,
+        trimmed_trailing_seconds=0.0,
+        request_seed=1,
+        batch_seed=1,
+        generation_seconds=0.1,
+        real_time_factor=0.025,
+        backend=backend,
+    )
+
+
+def _clone_prompt(
+    plan: EnglishConversationPromptPlan,
+    backend: TtsBackendIdentity,
+) -> VoiceClonePromptProvenance:
+    return VoiceClonePromptProvenance(
+        plan_id=plan.plan_id,
+        prompt_sha256="1" * 64,
+        reference_audio_sha256="f" * 64,
+        reference_text_sha256="e" * 64,
+        x_vector_only_mode=False,
+        backend=backend,
     )

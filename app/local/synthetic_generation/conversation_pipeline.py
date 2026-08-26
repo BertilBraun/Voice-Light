@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid5
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.local.db.models import TrackSide
 from app.local.synthetic_generation.conversation_compiler import (
     AfterAssistantUserTiming,
     AfterUserAssistantTiming,
+    AfterUserUserTiming,
     AssistantProbabilityDip,
     CompiledConversation,
     CompletionPlacement,
@@ -75,6 +76,34 @@ class CompiledConversationReference(SyntheticModel):
     crop_audio_paths: tuple[str, ...]
 
 
+class CropSamplingSummary(SyntheticModel):
+    total_crop_count: int = Field(gt=0)
+    event_focused_count: int = Field(ge=0)
+    assistant_only_count: int = Field(ge=0)
+    user_only_count: int = Field(ge=0)
+    event_light_count: int = Field(ge=0)
+    padded_count: int = Field(ge=0)
+    assistant_only_fraction: float = Field(ge=0.0, le=1.0)
+    user_only_fraction: float = Field(ge=0.0, le=1.0)
+    event_light_fraction: float = Field(ge=0.0, le=1.0)
+    padded_fraction: float = Field(ge=0.0, le=1.0)
+    control_quotas_satisfied: bool
+    padding_limit_satisfied: bool
+
+    @model_validator(mode="after")
+    def validate_gate_results(self) -> CropSamplingSummary:
+        expected_controls = (
+            self.assistant_only_fraction >= 0.1
+            and self.user_only_fraction >= 0.1
+            and self.event_light_fraction >= 0.1
+        )
+        if self.control_quotas_satisfied != expected_controls:
+            raise ValueError("Control quota status does not match reported crop fractions.")
+        if self.padding_limit_satisfied != (self.padded_fraction <= 0.05):
+            raise ValueError("Padding limit status does not match the reported crop fraction.")
+        return self
+
+
 class SyntheticConversationCorpusManifest(SyntheticModel):
     schema_version: Literal["voice-light-synthetic-conversation-corpus-v1"] = (
         "voice-light-synthetic-conversation-corpus-v1"
@@ -85,6 +114,7 @@ class SyntheticConversationCorpusManifest(SyntheticModel):
     dataset_id: UUID
     split_plan: ConversationSplitPlan
     conversations: tuple[CompiledConversationReference, ...]
+    sampling_summary: CropSamplingSummary
 
 
 def build_conversation_corpus(
@@ -124,6 +154,7 @@ def build_conversation_corpus(
     }
     rendered_by_plan = _rendered_units_by_plan(prompt_set, tts_manifest, tts_manifest_path.parent)
     samples: list[MaterializedTrainingSample] = []
+    compiled_crops: list[TrainingCropPlan] = []
     references: list[CompiledConversationReference] = []
     for prompt_plan in prompt_set.plans:
         rendered_clips = rendered_by_plan[prompt_plan.plan_id]
@@ -147,6 +178,7 @@ def build_conversation_corpus(
             )
             for crop in compiled.crops
         )
+        compiled_crops.extend(compiled.crops)
         _write_json(compiled_path, compiled)
         split = split_by_sample[sample_id_by_plan[prompt_plan.plan_id]]
         samples.extend(
@@ -172,6 +204,8 @@ def build_conversation_corpus(
                 ),
             )
         )
+    sampling_summary = summarize_crop_sampling(tuple(compiled_crops))
+    validate_sampling_gates(sampling_summary)
     shards = write_training_shards(output_directory, samples)
     export_manifest = _export_manifest(
         prompt_set,
@@ -191,6 +225,7 @@ def build_conversation_corpus(
         dataset_id=dataset_id,
         split_plan=split_plan,
         conversations=tuple(references),
+        sampling_summary=sampling_summary,
     )
     (output_directory / "synthetic-corpus.json").write_text(
         manifest.model_dump_json(indent=2), encoding="utf-8"
@@ -219,7 +254,7 @@ def composition_plan_from_rendered_prompt(
     return ConversationCompositionPlan(
         conversation_id=prompt_plan.plan_id,
         seed=prompt_plan.seed,
-        duration_seconds=30.0,
+        duration_seconds=prompt_plan.target_duration_seconds,
         user_events=user_events,
         assistant_turns=assistant_turns,
     )
@@ -292,6 +327,16 @@ def _user_placement(
             key=lambda turn: turn.sequence_index,
         )
     )
+    prior_floor_users = tuple(
+        sorted(
+            (
+                user_prompt
+                for user_prompt in plan.user_prompts
+                if user_prompt.sequence_index < prompt.sequence_index and _owns_floor(user_prompt)
+            ),
+            key=lambda user_prompt: user_prompt.sequence_index,
+        )
+    )
     generator = random.Random(plan.seed + prompt.sequence_index * 15_497)
     match prompt:
         case NonFloorFeedbackUserPrompt(during_assistant_turn_id=assistant_turn_id):
@@ -329,25 +374,42 @@ def _user_placement(
                 ),
             )
         case CompletionUserPrompt():
-            timing = (
-                AfterAssistantUserTiming(
-                    assistant_turn_id=prior_assistants[-1].turn_id,
-                    delay_seconds=generator.uniform(0.12, 1.2),
-                )
-                if prior_assistants
-                else FixedUserTiming(start_seconds=generator.uniform(0.1, 0.7))
+            timing = _floor_owning_timing(
+                prior_floor_users,
+                prior_assistants,
+                generator,
             )
             return CompletionPlacement(event_id=prompt.unit_id, clip_id=clip.clip_id, timing=timing)
         case HoldUserPrompt():
-            timing = (
-                AfterAssistantUserTiming(
-                    assistant_turn_id=prior_assistants[-1].turn_id,
-                    delay_seconds=generator.uniform(0.12, 1.2),
-                )
-                if prior_assistants
-                else FixedUserTiming(start_seconds=generator.uniform(0.1, 0.7))
+            timing = _floor_owning_timing(
+                prior_floor_users,
+                prior_assistants,
+                generator,
             )
             return HoldPlacement(event_id=prompt.unit_id, clip_id=clip.clip_id, timing=timing)
+
+
+def _floor_owning_timing(
+    prior_users: tuple[UserPrompt, ...],
+    prior_assistants: tuple[AssistantTurnPrompt, ...],
+    generator: random.Random,
+) -> FixedUserTiming | AfterAssistantUserTiming | AfterUserUserTiming:
+    latest_user = prior_users[-1] if prior_users else None
+    latest_assistant = prior_assistants[-1] if prior_assistants else None
+    delay_seconds = generator.uniform(0.12, 1.2)
+    if latest_user is not None and (
+        latest_assistant is None or latest_user.sequence_index > latest_assistant.sequence_index
+    ):
+        return AfterUserUserTiming(
+            user_event_id=latest_user.unit_id,
+            delay_seconds=delay_seconds,
+        )
+    if latest_assistant is not None:
+        return AfterAssistantUserTiming(
+            assistant_turn_id=latest_assistant.turn_id,
+            delay_seconds=delay_seconds,
+        )
+    return FixedUserTiming(start_seconds=generator.uniform(0.1, 0.7))
 
 
 def _estimated_assistant_duration(prompt: AssistantTurnPrompt) -> float:
@@ -434,7 +496,11 @@ def _training_sample(
         start_seconds=0.0,
         end_seconds=INPUT_DURATION_SECONDS,
         quality_score=1.0,
-        category="synthetic_conversation",
+        category=f"synthetic_conversation:{crop.sampling_stratum.value}",
+        assistant_only_control=crop.assistant_only,
+        user_only_control=crop.user_only,
+        event_light_control=crop.event_light,
+        padded=crop.padded,
         assistant_has_floor=labels.assistant_speaking_probability,
         assistant_speaking_probability=labels.assistant_speaking_probability,
         p_user_has_floor=labels.p_user_floor_now,
@@ -498,6 +564,53 @@ def _export_manifest(
     )
 
 
+def summarize_crop_sampling(crops: tuple[TrainingCropPlan, ...]) -> CropSamplingSummary:
+    if not crops:
+        raise ValueError("Synthetic corpus requires at least one materialized crop.")
+    total = len(crops)
+    event_focused_count = sum(not crop.event_light for crop in crops)
+    assistant_only_count = sum(crop.assistant_only for crop in crops)
+    user_only_count = sum(crop.user_only for crop in crops)
+    event_light_count = sum(crop.event_light for crop in crops)
+    padded_count = sum(crop.padded for crop in crops)
+    assistant_only_fraction = assistant_only_count / total
+    user_only_fraction = user_only_count / total
+    event_light_fraction = event_light_count / total
+    padded_fraction = padded_count / total
+    return CropSamplingSummary(
+        total_crop_count=total,
+        event_focused_count=event_focused_count,
+        assistant_only_count=assistant_only_count,
+        user_only_count=user_only_count,
+        event_light_count=event_light_count,
+        padded_count=padded_count,
+        assistant_only_fraction=assistant_only_fraction,
+        user_only_fraction=user_only_fraction,
+        event_light_fraction=event_light_fraction,
+        padded_fraction=padded_fraction,
+        control_quotas_satisfied=(
+            assistant_only_fraction >= 0.1
+            and user_only_fraction >= 0.1
+            and event_light_fraction >= 0.1
+        ),
+        padding_limit_satisfied=padded_fraction <= 0.05,
+    )
+
+
+def validate_sampling_gates(summary: CropSamplingSummary) -> None:
+    if not summary.control_quotas_satisfied:
+        raise ValueError(
+            "Synthetic crop controls miss the 10% corpus quota: "
+            f"assistant_only={summary.assistant_only_fraction:.3f}, "
+            f"user_only={summary.user_only_fraction:.3f}, "
+            f"event_light={summary.event_light_fraction:.3f}."
+        )
+    if not summary.padding_limit_satisfied:
+        raise ValueError(
+            f"Synthetic padded crop fraction exceeds 5%: padded={summary.padded_fraction:.3f}."
+        )
+
+
 def _write_json(path: Path, value: SyntheticModel) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value.model_dump_json(indent=2), encoding="utf-8")
@@ -519,8 +632,10 @@ def main() -> None:
     parser.add_argument("--tts-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split-seed", default="synthetic-conversation-pilot-v1")
-    parser.add_argument("--crop-variants", type=int, default=4)
-    parser.add_argument("--event-light-fraction", type=float, default=0.15)
+    parser.add_argument("--crop-variants", type=int, default=8)
+    parser.add_argument("--assistant-only-fraction", type=float, default=0.1)
+    parser.add_argument("--user-only-fraction", type=float, default=0.1)
+    parser.add_argument("--event-light-fraction", type=float, default=0.1)
     parser.add_argument("--assistant-duration-variation", type=float, default=0.1)
     arguments = parser.parse_args()
     manifest = build_conversation_corpus(
@@ -530,6 +645,8 @@ def main() -> None:
         split_seed=arguments.split_seed,
         compiler_config=ConversationCompilerConfig(
             crop_variant_count=arguments.crop_variants,
+            assistant_only_fraction=arguments.assistant_only_fraction,
+            user_only_fraction=arguments.user_only_fraction,
             event_light_fraction=arguments.event_light_fraction,
             assistant_duration_variation=arguments.assistant_duration_variation,
         ),

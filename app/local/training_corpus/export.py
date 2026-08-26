@@ -155,6 +155,10 @@ class MaterializedTrainingSample(FrozenBaseModel):
     end_seconds: float = Field(gt=0.0)
     quality_score: float = Field(ge=0.0, le=1.0)
     category: str
+    assistant_only_control: bool | None = None
+    user_only_control: bool | None = None
+    event_light_control: bool | None = None
+    padded: bool | None = None
     assistant_has_floor: tuple[float, ...] = Field(
         min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
     )
@@ -752,6 +756,10 @@ def _training_arrow_schema() -> pa.Schema:
         pa.field("end_seconds", pa.float64()),
         pa.field("quality_score", pa.float64()),
         pa.field("category", pa.string()),
+        pa.field("assistant_only_control", pa.bool_(), nullable=True),
+        pa.field("user_only_control", pa.bool_(), nullable=True),
+        pa.field("event_light_control", pa.bool_(), nullable=True),
+        pa.field("padded", pa.bool_(), nullable=True),
         *(pa.field(name, frame_values) for name in _frame_field_names()),
         pa.field("assistant_speaking_probability", pa.list_(pa.float32()), nullable=True),
         pa.field("p_user_floor_now", pa.list_(pa.float32()), nullable=True),

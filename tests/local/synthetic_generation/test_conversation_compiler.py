@@ -13,6 +13,7 @@ from app.local.synthetic_generation.conversation_compiler import (
     CompletionPlacement,
     ConversationCompilerConfig,
     ConversationCompositionPlan,
+    CropSamplingStratum,
     DuringAssistantUserTiming,
     FixedAssistantTiming,
     FixedUserTiming,
@@ -26,6 +27,7 @@ from app.local.synthetic_generation.conversation_compiler import (
     compile_conversation,
     materialize_crop_audio,
 )
+from app.local.synthetic_generation.conversation_pipeline import summarize_crop_sampling
 
 
 def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path) -> None:
@@ -102,7 +104,9 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
     )
     config = ConversationCompilerConfig(
         crop_variant_count=5,
-        event_light_fraction=0.2,
+        assistant_only_fraction=0.0,
+        user_only_fraction=0.0,
+        event_light_fraction=0.0,
         assistant_duration_variation=0.15,
     )
 
@@ -177,7 +181,12 @@ def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path
         plan,
         (),
         tmp_path / "assistant-only.wav",
-        ConversationCompilerConfig(crop_variant_count=2, event_light_fraction=1.0),
+        ConversationCompilerConfig(
+            crop_variant_count=2,
+            assistant_only_fraction=1.0,
+            user_only_fraction=0.0,
+            event_light_fraction=0.0,
+        ),
     )
 
     assert all(crop.event_light for crop in compiled.crops)
@@ -207,7 +216,12 @@ def test_compile_conversation_is_deterministic_across_epochs(tmp_path: Path) -> 
             ),
         ),
     )
-    config = ConversationCompilerConfig(crop_variant_count=4, event_light_fraction=0.25)
+    config = ConversationCompilerConfig(
+        crop_variant_count=4,
+        assistant_only_fraction=0.0,
+        user_only_fraction=0.0,
+        event_light_fraction=0.0,
+    )
 
     first = compile_conversation(plan, (clip,), tmp_path / "first.wav", config)
     second = compile_conversation(plan, (clip,), tmp_path / "second.wav", config)
@@ -257,6 +271,8 @@ def test_assistant_duration_variation_reflows_audio_and_eot_labels(tmp_path: Pat
         tmp_path / "reflow-base.wav",
         ConversationCompilerConfig(
             crop_variant_count=6,
+            assistant_only_fraction=0.0,
+            user_only_fraction=0.0,
             event_light_fraction=0.0,
             assistant_duration_variation=0.25,
         ),
@@ -286,6 +302,116 @@ def test_assistant_duration_variation_reflows_audio_and_eot_labels(tmp_path: Pat
         )
         expected_onset = response_event.start_seconds - crop_origin + response.active_start_seconds
         assert abs(audio_onset - expected_onset) < 0.01
+
+
+def test_long_source_materializes_every_sampling_control_without_padding(tmp_path: Path) -> None:
+    extended = _clip(tmp_path, "extended", 26.0, 0.0, 26.0)
+    closing = _clip(tmp_path, "closing", 1.0, 0.0, 0.9)
+    plan = ConversationCompositionPlan(
+        conversation_id="long_controls",
+        seed=101,
+        duration_seconds=100.0,
+        user_events=(
+            CompletionPlacement(
+                event_id="extended",
+                clip_id="extended",
+                timing=FixedUserTiming(start_seconds=5.0),
+            ),
+            CompletionPlacement(
+                event_id="closing",
+                clip_id="closing",
+                timing=FixedUserTiming(start_seconds=75.0),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="long_assistant",
+                timing=FixedAssistantTiming(start_seconds=40.0),
+                duration_seconds=25.0,
+            ),
+        ),
+    )
+
+    compiled = compile_conversation(
+        plan,
+        (extended, closing),
+        tmp_path / "long-controls.wav",
+        ConversationCompilerConfig(
+            crop_variant_count=8,
+            assistant_only_fraction=0.125,
+            user_only_fraction=0.125,
+            event_light_fraction=0.125,
+            assistant_duration_variation=0.0,
+        ),
+    )
+
+    assert _wave_duration(compiled.audio_path) == 100.0
+    assert not any(crop.padded for crop in compiled.crops)
+    assert {crop.sampling_stratum for crop in compiled.crops} == set(CropSamplingStratum)
+    assistant_crop = next(
+        crop
+        for crop in compiled.crops
+        if crop.sampling_stratum is CropSamplingStratum.ASSISTANT_ONLY
+    )
+    user_crop = next(
+        crop for crop in compiled.crops if crop.sampling_stratum is CropSamplingStratum.USER_ONLY
+    )
+    event_light_crop = next(
+        crop for crop in compiled.crops if crop.sampling_stratum is CropSamplingStratum.EVENT_LIGHT
+    )
+    assert assistant_crop.assistant_only
+    assert user_crop.user_only
+    assert event_light_crop.event_light
+    assert all(
+        value != 1.0
+        for track in (
+            event_light_crop.labels.turn_completion,
+            event_light_crop.labels.continuation_pause,
+            event_light_crop.labels.non_floor_feedback,
+            event_light_crop.labels.floor_take,
+        )
+        for value in track
+    )
+    summary = summarize_crop_sampling(compiled.crops)
+    assert summary.assistant_only_fraction >= 0.1
+    assert summary.user_only_fraction >= 0.1
+    assert summary.event_light_fraction >= 0.1
+    assert summary.control_quotas_satisfied
+    assert summary.padding_limit_satisfied
+
+
+def test_short_source_reports_last_resort_padding(tmp_path: Path) -> None:
+    clip = _clip(tmp_path, "short", 2.0, 0.0, 1.8)
+    plan = ConversationCompositionPlan(
+        conversation_id="short_padding",
+        seed=19,
+        duration_seconds=12.0,
+        user_events=(
+            CompletionPlacement(
+                event_id="short",
+                clip_id="short",
+                timing=FixedUserTiming(start_seconds=5.0),
+            ),
+        ),
+    )
+
+    compiled = compile_conversation(
+        plan,
+        (clip,),
+        tmp_path / "short-padding.wav",
+        ConversationCompilerConfig(
+            crop_variant_count=1,
+            assistant_only_fraction=0.0,
+            user_only_fraction=0.0,
+            event_light_fraction=0.0,
+        ),
+    )
+
+    assert compiled.crops[0].padded
+    assert np.isclose(
+        compiled.crops[0].left_padding_seconds + compiled.crops[0].right_padding_seconds,
+        8.0,
+    )
 
 
 def _clip(

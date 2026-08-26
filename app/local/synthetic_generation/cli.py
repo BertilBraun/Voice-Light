@@ -39,6 +39,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
                     split_seed=parsed.split_seed,
                     compiler_config=ConversationCompilerConfig(
                         crop_variant_count=parsed.crop_variants,
+                        assistant_only_fraction=parsed.assistant_only_fraction,
+                        user_only_fraction=parsed.user_only_fraction,
                         event_light_fraction=parsed.event_light_fraction,
                         assistant_duration_variation=parsed.assistant_duration_variation,
                     ),
@@ -68,8 +70,10 @@ def _parser() -> argparse.ArgumentParser:
     conversation_parser.add_argument("--tts-manifest", required=True, type=Path)
     conversation_parser.add_argument("--output", required=True, type=Path)
     conversation_parser.add_argument("--split-seed", default="synthetic-conversation-pilot-v1")
-    conversation_parser.add_argument("--crop-variants", default=4, type=int)
-    conversation_parser.add_argument("--event-light-fraction", default=0.15, type=float)
+    conversation_parser.add_argument("--crop-variants", default=8, type=int)
+    conversation_parser.add_argument("--assistant-only-fraction", default=0.1, type=float)
+    conversation_parser.add_argument("--user-only-fraction", default=0.1, type=float)
+    conversation_parser.add_argument("--event-light-fraction", default=0.1, type=float)
     conversation_parser.add_argument("--assistant-duration-variation", default=0.1, type=float)
     return parser
 
