@@ -52,6 +52,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
     partial_output = parsed.output.with_suffix(f"{parsed.output.suffix}.partial")
 
     def checkpoint(prompts: tuple[SyntheticEnglishSpeechPrompt, ...]) -> None:
+        if not prompts:
+            return
         artifact = SyntheticSpeechPromptSet(
             set_id=set_id,
             provenance=provenance,
