@@ -1,5 +1,11 @@
 # Synthetic completion dataset
 
+> **Historical pilot:** this document describes the isolated-utterance completion experiment. The
+> authoritative contract for the conversational revamp is
+> [`synthetic-conversational-turn-taking-dataset.md`](synthetic-conversational-turn-taking-dataset.md).
+> Reuse the TTS, trimming, provenance, and quality-gate findings here, but do not treat this prompt,
+> label, or single-boundary window design as the target corpus contract.
+
 ## Scope
 
 This pilot trains the user-channel completion decision, not a synthetic conversation model. Each

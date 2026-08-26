@@ -1,0 +1,364 @@
+# Synthetic Conversational Turn-Taking Dataset
+
+## Status and decision
+
+This document is the authoritative design for the synthetic turn-taking dataset revamp. It
+supersedes the isolated-utterance design in `synthetic-completion-dataset.md` where the two
+documents disagree. The existing completion generator remains useful as a TTS, trimming, and
+audio-quality foundation, but its prompt and sample contracts are not the target corpus contract.
+
+The product is a causal turn-taking adapter over a continuously streaming English ASR encoder. Its
+deployed decision surface is intentionally small:
+
+- the primary output is `p_user_floor_now`, the probability that the user currently owns or is
+  actively claiming the conversational floor;
+- secondary speculative outputs estimate whether a genuine user end of turn is approaching within
+  configured horizons;
+- the only additional runtime input is the current probability that the assistant is speaking.
+
+The assistant waveform is neither a model input nor a synthetic dataset artifact. Synthetic
+assistant text exists only to make conversations coherent and to estimate realistic assistant-turn
+durations. All audible speech in this corpus is user speech.
+
+The first pilot contains 10-20 representative English conversations. It is a design and listening
+gate, not an attempt to generate a statistically complete corpus.
+
+## Product objective
+
+The adapter serves two related runtime decisions from the same causal stream:
+
+1. When the assistant is inactive, commit the user's end of turn quickly enough to begin the
+   response without an awkward wait.
+2. When the assistant is active, yield promptly to a genuine user floor claim but continue through
+   a backchannel or other non-floor feedback.
+
+Speculative response generation may begin before commitment, but it is an optimization rather than
+the primary objective. An early speculative start does not compensate for a late committed
+response.
+
+At frame time `t`, the model may use only:
+
+```text
+streaming ASR encoder state through t
++ assistant-speaking probability through t
++ causal adapter state through t
+```
+
+It must not use future audio, a future assistant state, an offline transcript, or labels derived
+from ASR output.
+
+### Primary output
+
+`p_user_floor_now(t)` has the following intended behavior:
+
+| Situation | Target behavior |
+| --- | --- |
+| User speaks while owning the floor | High |
+| User pauses and will continue the same turn | High through the pause |
+| User genuinely completes a turn | Transitions from high to low |
+| User backchannels or reacts while the assistant retains the floor | Low despite user audio |
+| User responds after the assistant yields | Transitions from low to high |
+| User interrupts while the assistant is active | Transitions from low to high promptly |
+
+The synthetic compiler provides semantic targets, normally zero or one. Soft ramps or masked frames
+are allowed only around a genuinely uncertain transition boundary. The trained output becomes a
+calibrated probability across varied examples.
+
+The current training code names the inverse concept `yield_probability`. The revamp should make the
+orientation explicit at one compatibility boundary rather than using both meanings throughout the
+new pipeline.
+
+### Secondary speculative outputs
+
+Separate heads estimate a genuine EOT within future horizons, initially 500 and 1,000 ms. These
+heads may start cancellable LLM generation. They cannot commit a response or authorize playback by
+themselves.
+
+The existing future-user-activity bins may be retained as an ablation or auxiliary task, but they do
+not replace explicit speculative EOT targets. Auxiliary event heads may predict completion, HOLD,
+non-floor feedback, and floor take for training and diagnosis. They are not required in the product
+interface.
+
+## Semantic conditions
+
+Build the corpus around five conditions rather than a large collection of loosely related event
+classes:
+
+1. **User completion:** user floor changes from high to low at genuine EOT.
+2. **User HOLD:** the user pauses and continues; user floor remains high.
+3. **Non-floor user speech:** a backchannel, short acknowledgment, reaction, or collaborative word
+   occurs while user floor remains low.
+4. **Response after assistant yield:** user floor changes from low to high after the assistant stops.
+5. **User interruption:** user floor changes from low to high while assistant-speaking probability
+   is still high, and the assistant then yields.
+
+There is no failed-interruption class. A deliberate user interruption is a floor claim to which the
+assistant should submit. Ambiguous micro-utterances belong to the non-floor or interruption
+condition according to their planned conversational intent; using the same surface forms in both
+conditions prevents a lexical shortcut.
+
+The dataset also needs ordinary negative context: assistant-active spans with no user event,
+event-light windows, and longer continuous user speech without an imminent completion. These are
+sampling contexts, not additional semantic conditions.
+
+## Conversation plan
+
+The LLM generates short, coherent conversation plans rather than isolated monologues. Plans are
+English-only and normally span 20-30 seconds after rendering. A plan may contain multiple user
+turns, virtual assistant replies, backchannels, HOLDs, and interruptions.
+
+Each plan has four typed components:
+
+### Conversation content
+
+- topic domain and concrete topic;
+- speech acts and relationship between successive turns;
+- virtual assistant reply text for coherence and duration estimation;
+- ordered interaction condition for every user unit;
+- explicit distinction between normal turns, reactions, backchannels, and interruptions.
+
+Domains, speech acts, and interaction conditions are selected through deterministic stratified
+sampling. The LLM realizes a selected plan; it does not freely choose the dataset distribution.
+Topic quotas, similarity rejection, and vocabulary checks prevent narrow clusters such as the
+farmer-heavy prompts observed in the first review batch.
+
+### Conversation speaker
+
+A conversation has one stable user identity: English accent or dialect, approximate age, pitch,
+vocal weight, and baseline conversational manner. Clean close-mic speech is invariant. The identity
+description is reused for every user TTS call in that conversation.
+
+### User units
+
+Each audible user unit has text, semantic condition, and a bounded delivery change relative to the
+base voice. Pace, energy, and affect can vary by unit to reflect conversational context, for example
+curious to frustrated or calm to urgent, without changing speaker identity. The corpus deliberately
+covers slow, moderate, fast, engaged, restrained, playful, mysterious, and other natural delivery
+styles.
+
+Most units are short enough to make the 20-second training view event-efficient:
+
+- backchannels and reactions: approximately 0.2-1.5 seconds;
+- short turns: approximately 1.5-5 seconds;
+- medium turns: approximately 5-10 seconds;
+- long turns: approximately 10-22 seconds and relatively rare.
+
+### Virtual assistant units
+
+Virtual assistant units contain text, sampled speaking rate, response latency, pause profile, and
+the interaction they enable. They are never passed to TTS. Their word count and delivery parameters
+produce an estimated duration, which is converted into an assistant-speaking probability curve
+after the user renders have known durations.
+
+## Generation and post-TTS timing
+
+Semantic relationships are planned before TTS, but exact timestamps are not. The materialization
+sequence is:
+
+1. Generate and validate a typed conversation plan.
+2. Send each user unit to Qwen independently, reusing the conversation's base voice description and
+   applying only its unit-level delivery change.
+3. Measure each rendered unit's actual active speech and silence regions.
+4. Remove terminal synthesis silence and reject noisy, empty, truncated, or artifact-heavy output.
+5. Estimate virtual assistant durations and response latencies.
+6. Place the measured user units and virtual assistant spans into a post-TTS scenario timeline.
+7. Construct the assistant-speaking input curve and semantic user-floor targets.
+8. Rasterize the scenario and materialize 20-second training views at 80 ms per frame.
+
+No symmetric pre-TTS timestamp plan is treated as ground truth. No ASR or word alignment is needed
+to recover event timing. Audio energy may locate the actual start, end, and internal silence of a
+render, but the planned interaction condition determines its semantic meaning.
+
+An internal silent interval lasting at least 500 ms is a HOLD when active speech from the same
+planned user turn resumes afterward. Genuine EOT is the final active-speech offset of a normal user
+turn after terminal generated silence is removed. A backchannel's acoustic offset is not an EOT
+because its planned semantic user-floor state remains low.
+
+## Assistant-speaking probability
+
+Assistant activity is a frame-aligned scalar input, not an audible track and not a prediction
+target. It should approximate the runtime signal produced by assistant playback control while
+remaining imperfect enough to prevent a shortcut.
+
+Curves may contain:
+
+- active plateaus sampled below and up to one;
+- near-zero inactive plateaus;
+- shallow pause or hesitation dips;
+- finite rise and fall ramps;
+- small perturbations, delayed changes, and brief dropouts.
+
+For a backchannel, assistant probability normally stays high or dips slightly and recovers. For an
+interruption, it is high at user onset and falls after a sampled assistant-yield delay. For a normal
+response, it falls before user onset and is followed by a sampled response latency.
+
+Assistant duration and contour parameters may be resampled when a conversation is rematerialized,
+provided event ordering and semantics remain valid. Later user units must be repositioned with the
+changed virtual duration, and every frame label must be regenerated from the resulting timeline.
+Future assistant-state changes must never be exposed to the model before they occur.
+
+## Twenty-second training views
+
+Every materialized view is exactly 20 seconds: 250 frames at 80 ms. The current four-second causal
+burn-in may remain, leaving 16 supervised seconds, but pilot reports must count only events in the
+supervised region.
+
+A conversation can yield different views across epochs without duplicating source audio. Use a
+deterministic seed derived from conversation identity, epoch, and view index to vary:
+
+- crop start within the post-TTS scenario;
+- virtual assistant speaking rate and duration within plan bounds;
+- response latency and assistant-yield latency;
+- assistant probability contour details;
+- approved acoustic augmentation.
+
+The same seed must reproduce the waveform recipe, probability input, labels, and crop exactly.
+Conversation and speaker identities remain in one split across all materializations.
+
+Most sampled views should contain one or more supervised events, and a view may contain several
+EOTs, HOLDs, backchannels, or floor acquisitions. Do not reduce a view to a single selected boundary
+or discard additional labels. Preserve a deliberate minority of event-light views, including:
+
+- assistant probability high with no user speech;
+- continuous user speech with no imminent EOT;
+- ordinary silence or transition-free context;
+- a single event surrounded by longer context.
+
+Crop selection must not remove audio needed by a speculative horizon label. Frames whose required
+future interval extends beyond the source scenario or crop contract are masked.
+
+## Label construction
+
+The primary label is dense across all valid supervised frames:
+
+```text
+p_user_floor_now = 1  user owns or actively claims the floor
+p_user_floor_now = 0  user does not own or claim the floor
+```
+
+The five conditions compile as follows:
+
+| Condition | User audio | Assistant probability | Primary label |
+| --- | --- | --- | --- |
+| Completion | Active, then ends | Normally low before EOT | High, then low at EOT |
+| HOLD | Active, silence, active | Normally low | High throughout |
+| Non-floor feedback | Short active unit | High or shallow dip | Low throughout |
+| Response after yield | Begins after latency | Falls before onset | Low, then high at user floor claim |
+| Interruption | Begins during assistant activity | High at onset, then falls | Low, then high at user floor claim |
+
+Auxiliary labels are derived from the same semantic plan and measured render boundaries:
+
+- genuine turn completion;
+- continuation/HOLD;
+- non-floor feedback;
+- floor take;
+- EOT within 500 and 1,000 ms.
+
+The primary and auxiliary targets are not inferred from ASR, transcripts, VAD classes, or the
+assistant probability curve. In particular, the assistant probability is context: changing it does
+not silently relabel a planned backchannel as an interruption or vice versa.
+
+## Sampling and split policy
+
+Balance unique semantic events before generating repeated crops. A useful initial scaling mixture
+after the listening pilot is:
+
+- ordinary exchanges and completions;
+- HOLD-heavy exchanges;
+- assistant-active backchannels and reactions;
+- interruptions;
+- difficult combinations containing several event types;
+- an explicit event-light allocation.
+
+Exact percentages should be selected after counting valid pilot events rather than forcing every
+small pilot to match a nominal distribution. Balance topics, voices, delivery styles, unit lengths,
+assistant durations, and event positions independently enough to avoid shortcuts.
+
+Split by conversation plan, prompt family, topic lineage, and voice identity. All renders, crops,
+timing variations, and augmentations descended from one conversation belong to the same split.
+
+## Representative pilot
+
+Generate 10-20 conversations, preferably 20 if the valid-render rate permits it. The pilot should
+cover every semantic condition, several event-light contexts, broad topics, varied voice identities,
+and varied pace and affect. It need not exhaust the combination space or present polished production
+statistics.
+
+The review surface must let a reviewer:
+
+- move between conversations directly;
+- listen to the composed user-only scenario and selected 20-second view;
+- slide the crop while preserving a valid materialization;
+- inspect the user waveform and user speech activity;
+- inspect assistant-speaking probability;
+- inspect dense `p_user_floor_now` and speculative EOT targets;
+- inspect HOLD, completion, non-floor feedback, and floor-take events;
+- see source bounds, zero padding, frame indices, prompt text, voice instructions, seeds, and
+  generation provenance.
+
+The pilot passes only when the reviewer accepts speech naturalness, speaker consistency, topic and
+style diversity, event timing, assistant-contour plausibility, and label semantics. Failed renders
+remain visible in validation reports but do not enter training views.
+
+## Evaluation
+
+Evaluate the primary policy as a risk-constrained committed-latency problem.
+
+### Risk
+
+Count at least:
+
+- premature commitment during a HOLD;
+- commitment before genuine EOT;
+- stopping assistant playback for a backchannel or non-floor reaction;
+- failure to yield to a genuine user interruption;
+- excessive interruption-yield latency.
+
+Negative EOT latency is a premature commitment and therefore risk, not a latency improvement. Tune
+the commit and interruption thresholds, hysteresis, and persistence on validation only. Compare
+systems at matched risk budgets and report the latency-risk Pareto curve.
+
+### Committed EOT latency
+
+The main latency metric is:
+
+```text
+committed response timestamp - true acoustic EOT timestamp
+```
+
+Report p50, p90, p95, missed commits, and the fraction of commitments that violate the risk
+definition. This metric determines whether the user waits after stopping.
+
+### Speculative lead
+
+The secondary metric is:
+
+```text
+true acoustic EOT timestamp - speculative generation start
+```
+
+Report it alongside candidate invalidation rate, wasted generated tokens or compute, and cases where
+speculation begins early but commitment remains late. It must not dominate model selection.
+
+### Evaluation stages
+
+Synthetic evaluation is appropriate for pipeline debugging and the first controlled learning
+experiment because the semantic labels are exact. Hold out complete synthetic conversations and
+report results by condition, duration, voice, topic, delivery, event density, and assistant contour.
+
+Synthetic accuracy is not evidence of natural-conversation readiness. After the pilot establishes
+that the task is learnable, use the existing real conversation validation/test setup and external
+causal turn-taking benchmarks to compare against the prior Voice-Light adapter and open-source
+turn-taking systems. Production selection remains based on real held-out latency-risk behavior,
+backchannel robustness, interruption response, calibration, and streaming causality.
+
+## Non-goals and invariants
+
+- English only.
+- No assistant audio encoder or assistant waveform in this corpus.
+- No ASR-, transcript-, or word-alignment-derived ground truth.
+- No failed-interruption class.
+- No minute-long synthetic stories for event training.
+- No single-boundary reduction when a view contains multiple useful events.
+- No split leakage across related plans, renders, crops, or voices.
+- No synthetic validation result replaces the later real evaluation gate.

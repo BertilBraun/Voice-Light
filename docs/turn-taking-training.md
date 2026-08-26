@@ -1,5 +1,11 @@
 # Turn-Taking Adapter Training Plan
 
+> **Synthetic revamp:**
+> [`synthetic-conversational-turn-taking-dataset.md`](synthetic-conversational-turn-taking-dataset.md)
+> is authoritative for the new synthetic conversation, primary `p_user_floor_now`, speculative EOT,
+> and assistant-probability contracts. This document still describes the current adapter and real
+> corpus interfaces; its inverse `yield_probability` naming is an implementation migration point.
+
 ## Decision
 
 Train a causal adapter on the frozen encoder states of
