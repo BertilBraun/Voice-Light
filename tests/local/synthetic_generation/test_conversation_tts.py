@@ -257,7 +257,10 @@ def _prompt_set() -> EnglishConversationPromptSet:
         domain=TopicDomain.ENTERTAINMENT,
         topic="Choosing a movie for a rainy evening",
         target_duration_seconds=75.0,
-        voice_reference_text="Tonight I am choosing a cheerful film for our quiet evening indoors.",
+        voice_reference_text=(
+            "Tonight I am choosing a cheerful film for our quiet evening indoors while the rain "
+            "continues outside."
+        ),
         base_user_voice=BaseUserVoice(
             perceived_age=PerceivedAge.ADULT,
             accent=EnglishAccent.GENERAL_AMERICAN,

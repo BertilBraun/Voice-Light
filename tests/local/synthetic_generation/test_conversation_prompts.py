@@ -236,7 +236,7 @@ def test_plan_requires_short_exact_voice_reference_text() -> None:
     values = _plan().model_dump()
     values["voice_reference_text"] = "Too short."
 
-    with pytest.raises(ValidationError, match="8 to 18 words"):
+    with pytest.raises(ValidationError, match="14 to 24 words"):
         EnglishConversationPromptPlan.model_validate(values)
 
 
@@ -297,7 +297,8 @@ def _plan() -> EnglishConversationPromptPlan:
             vocal_weight=VocalWeight.MEDIUM,
         ),
         voice_reference_text=(
-            "Every clear morning brings a fresh chance to notice something useful nearby."
+            "Every clear morning brings a fresh chance to notice something useful nearby during "
+            "an ordinary walk."
         ),
         assistant_turns=(
             AssistantTurnPrompt(
@@ -356,7 +357,8 @@ def _content_draft() -> EnglishConversationContentDraft:
     return EnglishConversationContentDraft(
         topic="Choosing a useful home automation routine",
         voice_reference_text=(
-            "Every clear morning brings a fresh chance to notice something useful nearby."
+            "Every clear morning brings a fresh chance to notice something useful nearby during "
+            "an ordinary walk."
         ),
         opening_user_turn=(
             "I started looking at simple home routines because the evening lighting is never "

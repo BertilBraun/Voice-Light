@@ -166,7 +166,8 @@ def _prompt_set() -> EnglishConversationPromptSet:
             vocal_weight=VocalWeight.MEDIUM,
         ),
         voice_reference_text=(
-            "Every clear morning brings a fresh chance to notice something useful nearby."
+            "Every clear morning brings a fresh chance to notice something useful nearby "
+            "during an ordinary walk."
         ),
         assistant_turns=(
             AssistantTurnPrompt(

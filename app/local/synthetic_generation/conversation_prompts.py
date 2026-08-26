@@ -276,8 +276,8 @@ class EnglishConversationPromptPlanData(SyntheticModel):
     def validate_voice_reference_text(cls, value: str) -> str:
         _validate_english_text(value)
         word_count = len(value.split())
-        if not 8 <= word_count <= 18:
-            raise ValueError("Voice reference text requires 8 to 18 words.")
+        if not 14 <= word_count <= 24:
+            raise ValueError("Voice reference text requires 14 to 24 words.")
         return value
 
 
@@ -312,7 +312,7 @@ class EnglishConversationContentDraft(SyntheticModel):
 
     @model_validator(mode="after")
     def validate_content_lengths(self) -> EnglishConversationContentDraft:
-        _validate_word_count("Voice reference text", self.voice_reference_text, 8, 18)
+        _validate_word_count("Voice reference text", self.voice_reference_text, 14, 24)
         _validate_word_count("Opening user turn", self.opening_user_turn, 2, 44)
         _validate_word_count("Brief user turn", self.brief_user_turn, 2, 11)
         _validate_word_count("Normal user turn", self.normal_user_turn, 12, 44)
@@ -553,7 +553,7 @@ Fixed requirements:
 - opening_user_turn contains 2-44 words. normal_user_turn contains 12-44 words. brief_user_turn
   contains 2-11 words. extended_user_turn contains 45-90 words and should sound like 20-30 seconds
   of natural speech. Each assistant turn contains 3-25 words.
-- Write voice_reference_text as one exact, neutral English sentence of 8-18 words suitable for a
+- Write voice_reference_text as one exact, neutral English sentence of 14-24 words suitable for a
   clean 3-8 second reference render. It need not mention the conversation topic.
 - All text is natural modern English with printable ASCII punctuation. Do not include stage
   directions, sound effects, copyrighted passages, real public figures, or unsafe content.
