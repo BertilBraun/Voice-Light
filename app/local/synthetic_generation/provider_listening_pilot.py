@@ -3,30 +3,34 @@ from __future__ import annotations
 import hashlib
 import html
 import wave
-from enum import StrEnum
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
-from app.local.synthetic_generation.models import SyntheticModel
+from app.shared.base_model import FrozenBaseModel
 
 
-class ListeningProvider(StrEnum):
+class ListeningModel(FrozenBaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ListeningProvider(str, Enum):
     QWEN_CUSTOM = "qwen_custom"
     COSYVOICE3 = "cosyvoice3"
     INDEXTTS25 = "indextts25"
 
 
-class ListeningPurpose(StrEnum):
+class ListeningPurpose(str, Enum):
     BACKCHANNEL = "backchannel"
     SHORT_TURN = "short_turn"
     NORMAL_TURN = "normal_turn"
     LONG_TURN = "long_turn"
 
 
-class VoiceKey(StrEnum):
+class VoiceKey(str, Enum):
     QWEN_RYAN = "qwen_ryan"
     QWEN_AIDEN = "qwen_aiden"
     QWEN_VIVIAN = "qwen_vivian"
@@ -35,7 +39,7 @@ class VoiceKey(StrEnum):
     REFERENCE_TWO = "reference_two"
 
 
-class ListeningUtterance(SyntheticModel):
+class ListeningUtterance(ListeningModel):
     utterance_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     purpose: ListeningPurpose
     voice: VoiceKey
@@ -43,18 +47,18 @@ class ListeningUtterance(SyntheticModel):
     delivery_instruction: str = Field(min_length=1)
 
 
-class ConversationTurn(SyntheticModel):
+class ConversationTurn(ListeningModel):
     utterance_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     assistant_gap_after_seconds: float = Field(ge=0.0, le=8.0)
 
 
-class ListeningConversation(SyntheticModel):
+class ListeningConversation(ListeningModel):
     conversation_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     title: str = Field(min_length=1)
     turns: tuple[ConversationTurn, ...] = Field(min_length=2)
 
 
-class ProviderListeningPlan(SyntheticModel):
+class ProviderListeningPlan(ListeningModel):
     schema_version: Literal["voice-light-provider-listening-plan-v1"] = (
         "voice-light-provider-listening-plan-v1"
     )
@@ -81,7 +85,7 @@ class ProviderListeningPlan(SyntheticModel):
         return self
 
 
-class RenderedListeningUtterance(SyntheticModel):
+class RenderedListeningUtterance(ListeningModel):
     utterance: ListeningUtterance
     speaker_label: str = Field(min_length=1)
     audio_path: Path
@@ -92,7 +96,7 @@ class RenderedListeningUtterance(SyntheticModel):
     real_time_factor: float = Field(ge=0.0)
 
 
-class RenderedConversationTurn(SyntheticModel):
+class RenderedConversationTurn(ListeningModel):
     utterance_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     speech_start_seconds: float = Field(ge=0.0)
     speech_end_seconds: float = Field(gt=0.0)
@@ -110,7 +114,7 @@ class RenderedConversationTurn(SyntheticModel):
         return self
 
 
-class RenderedListeningConversation(SyntheticModel):
+class RenderedListeningConversation(ListeningModel):
     conversation: ListeningConversation
     audio_path: Path
     audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -119,7 +123,7 @@ class RenderedListeningConversation(SyntheticModel):
     timeline: tuple[RenderedConversationTurn, ...] = Field(min_length=2)
 
 
-class ProviderListeningManifest(SyntheticModel):
+class ProviderListeningManifest(ListeningModel):
     schema_version: Literal["voice-light-provider-listening-results-v1"] = (
         "voice-light-provider-listening-results-v1"
     )
