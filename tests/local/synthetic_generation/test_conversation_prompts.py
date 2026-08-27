@@ -126,10 +126,63 @@ def test_generation_instruction_requests_only_natural_content() -> None:
     assert "assistant never initiates" in instruction
     assert "2-11" in instruction
     assert "45-90 words" in instruction
+    assert "2-4 sentences" in instruction
+    assert "no sentence longer than 35 words" in instruction
     assert "Do not output backchannels" in instruction
     assert '"opening_user_turn"' in instruction
     assert "naturally invites a hesitation" in instruction
     assert "distribution-matched ambiguity pair" in instruction
+
+
+def test_extended_turn_rotates_across_conversation_positions() -> None:
+    draft = _content_draft()
+    plans = tuple(
+        assemble_conversation_prompt_plan(draft, brief)
+        for brief in representative_conversation_briefs(count=10, seed=41)[:6]
+    )
+
+    positions = []
+    for plan in plans:
+        ordered_floor_turns = tuple(
+            prompt
+            for prompt in sorted(plan.user_prompts, key=lambda prompt: prompt.sequence_index)
+            if prompt.text
+            in {
+                draft.brief_user_turn,
+                draft.normal_user_turn,
+                draft.extended_user_turn,
+            }
+        )
+        positions.append(
+            next(
+                index
+                for index, prompt in enumerate(ordered_floor_turns)
+                if prompt.text == draft.extended_user_turn
+            )
+        )
+
+    assert set(positions) == {0, 1, 2}
+
+
+@pytest.mark.parametrize(
+    ("extended_user_turn", "expected_error"),
+    [
+        (" ".join(["single"] * 45) + ".", "2 to 4 sentences"),
+        (
+            " ".join(["overlong"] * 36) + ". " + " ".join(["shorter"] * 10) + ".",
+            "at most 35 words",
+        ),
+    ],
+)
+def test_extended_turn_requires_natural_sentence_shape(
+    extended_user_turn: str,
+    expected_error: str,
+) -> None:
+    values = _content_draft().model_dump()
+    values["extended_user_turn"] = extended_user_turn
+
+    with pytest.raises(ValidationError, match=expected_error):
+        EnglishConversationContentDraft.model_validate(values)
 
 
 def test_matched_ambiguity_branches_use_the_same_turn_band() -> None:
@@ -329,7 +382,9 @@ def test_duration_estimate_scales_with_content_and_stays_in_contract() -> None:
     brief = representative_conversation_briefs(count=5, seed=41)[0]
     short_plan = assemble_conversation_prompt_plan(_content_draft(), brief)
     values = _content_draft().model_dump()
-    values["extended_user_turn"] = " ".join(["thoughtful"] * 90)
+    values["extended_user_turn"] = " ".join(["thoughtful"] * 30) + ". "
+    values["extended_user_turn"] += " ".join(["considered"] * 30) + ". "
+    values["extended_user_turn"] += " ".join(["carefully"] * 30) + "."
     values["opening_user_turn"] = " ".join(["opening"] * 44)
     values["normal_user_turn"] = " ".join(["detail"] * 44)
     values["assistant_turns"] = tuple(" ".join(["reply"] * 25) for _ in range(3))

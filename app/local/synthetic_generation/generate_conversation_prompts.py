@@ -105,6 +105,9 @@ def generate_conversation_prompt_set(
         for prompt in plan.user_prompts
         for text in user_prompt_texts_for_uniqueness(prompt)
     }
+    normalized_reference_texts = {
+        _normalized_user_text(plan.voice_reference_text) for plan in plans
+    }
     target_hours = provenance.target_conversation_hours
     remaining_briefs = (
         ()
@@ -121,10 +124,12 @@ def generate_conversation_prompt_set(
                 brief,
                 initial_text,
                 normalized_user_texts,
+                normalized_reference_texts,
             )
             plans.append(plan)
             planned_duration_seconds += plan.target_duration_seconds
             normalized_user_texts.update(plan_texts)
+            normalized_reference_texts.add(_normalized_user_text(plan.voice_reference_text))
             on_progress(tuple(plans))
             if target_hours is not None and planned_duration_seconds >= target_hours * 3600.0:
                 break
@@ -179,6 +184,7 @@ def _validated_unique_plan(
     brief: ConversationGenerationBrief,
     initial_text: str,
     normalized_user_texts: set[str],
+    normalized_reference_texts: set[str],
 ) -> tuple[EnglishConversationPromptPlan, tuple[str, ...]]:
     final_error: ValueError | None = None
     for attempt in range(4):
@@ -200,6 +206,11 @@ def _validated_unique_plan(
             )
             if normalized_user_texts.intersection(plan_texts):
                 raise ValueError("Generated conversation repeats user text from another plan.")
+            normalized_reference_text = _normalized_user_text(plan.voice_reference_text)
+            if normalized_reference_text in normalized_reference_texts:
+                raise ValueError(
+                    "Generated conversation repeats a voice reference from another plan."
+                )
             return plan, plan_texts
         except ValueError as error:
             final_error = error
@@ -305,7 +316,8 @@ Return only a corrected complete JSON object with the same topic and conversatio
 explain the correction. Keep exactly the schema fields from the original request. Do not add IDs,
 sequence numbers, semantic labels, timing, pauses, numeric parameters, voice metadata, delivery
 metadata, or backchannels. Correct the reported word count or missing natural-language field while
-preserving coherence between the four user turns and three assistant turns.
+preserving coherence between the four user turns and three assistant turns. Keep the extended user
+turn to 2-4 natural sentences, with no sentence longer than 35 words.
 
 Validation errors:
 {error}

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -332,6 +334,7 @@ class EnglishConversationContentDraft(SyntheticModel):
         _validate_word_count("Brief user turn", self.brief_user_turn, 2, 11)
         _validate_word_count("Normal user turn", self.normal_user_turn, 12, 44)
         _validate_word_count("Extended user turn", self.extended_user_turn, 45, 90)
+        _validate_extended_turn_sentences(self.extended_user_turn)
         return self
 
 
@@ -394,9 +397,7 @@ def assemble_conversation_prompt_plan(
         pitch=generator.choice(tuple(VocalPitch)),
         vocal_weight=generator.choice(tuple(VocalWeight)),
     )
-    floor_conditions = _floor_conditions(brief)
-    floor_texts = (draft.brief_user_turn, draft.normal_user_turn, draft.extended_user_turn)
-    speech_acts = (SpeechAct.ANSWER, SpeechAct.EXPLANATION, SpeechAct.ANECDOTE)
+    floor_turns = _ordered_floor_turns(draft, brief)
     assistant_turns: list[AssistantTurnPrompt] = []
     user_prompts: list[UserPrompt] = []
     sequence_index = 0
@@ -413,8 +414,8 @@ def assemble_conversation_prompt_plan(
     sequence_index += 1
     user_index += 1
     include_feedback = "non_floor_feedback" in brief.required_conditions
-    for assistant_index, (assistant_text, user_text, condition, speech_act) in enumerate(
-        zip(draft.assistant_turns, floor_texts, floor_conditions, speech_acts, strict=True),
+    for assistant_index, (assistant_text, floor_turn) in enumerate(
+        zip(draft.assistant_turns, floor_turns, strict=True),
         start=1,
     ):
         assistant_turn_id = f"assistant_{assistant_index}"
@@ -445,10 +446,10 @@ def assemble_conversation_prompt_plan(
             _floor_prompt(
                 unit_id=f"user_{user_index}",
                 sequence_index=sequence_index,
-                text=user_text,
-                condition=condition,
+                text=floor_turn.text,
+                condition=floor_turn.condition,
                 assistant_turn_id=assistant_turn_id,
-                speech_act=speech_act,
+                speech_act=floor_turn.speech_act,
                 delivery=_delivery_for_index(brief, generator, user_index),
                 generator=generator,
             )
@@ -538,6 +539,13 @@ class ConversationGenerationBrief(SyntheticModel):
     prefix_ambiguity: PrefixAmbiguity = IndependentPrefixAmbiguity()
 
 
+@dataclass(frozen=True)
+class _FloorTurn:
+    text: str
+    condition: FloorCondition
+    speech_act: SpeechAct
+
+
 def representative_conversation_briefs(
     count: int,
     seed: int,
@@ -602,6 +610,7 @@ def validate_conversation_prompt_set_id(value: str) -> str:
 
 def conversation_generation_instruction(brief: ConversationGenerationBrief) -> str:
     brief_condition, normal_condition, extended_condition = _floor_conditions(brief)
+    ordered_fields = _ordered_floor_turn_field_names(brief)
     json_schema = json.dumps(
         EnglishConversationContentDraft.model_json_schema(),
         separators=(",", ":"),
@@ -617,7 +626,8 @@ Fixed requirements:
 - The user always opens the conversation. The assistant never initiates a conversation or starts a
   new turn without directly replying to a floor-owning user turn.
 - The fields form this chronological exchange: opening_user_turn, assistant_turns[0],
-  brief_user_turn, assistant_turns[1], normal_user_turn, assistant_turns[2], extended_user_turn.
+  {ordered_fields[0]}, assistant_turns[1], {ordered_fields[1]}, assistant_turns[2],
+  {ordered_fields[2]}.
   Make every response directly acknowledge and develop the preceding text so the exchange reads
   naturally when interleaved in that exact order.
 - The code will use brief_user_turn as {_condition_content_instruction(brief_condition)}
@@ -626,7 +636,8 @@ Fixed requirements:
 {_prefix_ambiguity_instruction(brief.prefix_ambiguity)}
 - opening_user_turn contains 2-44 words. normal_user_turn contains 12-44 words. brief_user_turn
   contains 2-11 words. extended_user_turn contains 45-90 words and should sound like 20-30 seconds
-  of natural speech. Each assistant turn contains 3-25 words.
+  of natural speech across 2-4 sentences, with no sentence longer than 35 words. Each assistant
+  turn contains 3-25 words.
 - Write voice_reference_text as one exact, neutral English sentence of 14-24 words suitable for a
   clean 3-8 second reference render. It need not mention the conversation topic.
 - All text is natural modern English with printable ASCII punctuation. Do not include stage
@@ -749,6 +760,47 @@ def _floor_conditions(brief: ConversationGenerationBrief) -> tuple[FloorConditio
             )
 
 
+def _ordered_floor_turns(
+    draft: EnglishConversationContentDraft,
+    brief: ConversationGenerationBrief,
+) -> tuple[_FloorTurn, ...]:
+    conditions = _floor_conditions(brief)
+    turns_by_field = {
+        "brief_user_turn": _FloorTurn(
+            text=draft.brief_user_turn,
+            condition=conditions[0],
+            speech_act=SpeechAct.ANSWER,
+        ),
+        "normal_user_turn": _FloorTurn(
+            text=draft.normal_user_turn,
+            condition=conditions[1],
+            speech_act=SpeechAct.EXPLANATION,
+        ),
+        "extended_user_turn": _FloorTurn(
+            text=draft.extended_user_turn,
+            condition=conditions[2],
+            speech_act=SpeechAct.ANECDOTE,
+        ),
+    }
+    return tuple(
+        turns_by_field[field_name] for field_name in _ordered_floor_turn_field_names(brief)
+    )
+
+
+def _ordered_floor_turn_field_names(
+    brief: ConversationGenerationBrief,
+) -> tuple[Literal["brief_user_turn", "normal_user_turn", "extended_user_turn"], ...]:
+    permutations = (
+        ("brief_user_turn", "normal_user_turn", "extended_user_turn"),
+        ("brief_user_turn", "extended_user_turn", "normal_user_turn"),
+        ("normal_user_turn", "brief_user_turn", "extended_user_turn"),
+        ("normal_user_turn", "extended_user_turn", "brief_user_turn"),
+        ("extended_user_turn", "brief_user_turn", "normal_user_turn"),
+        ("extended_user_turn", "normal_user_turn", "brief_user_turn"),
+    )
+    return permutations[brief.seed % len(permutations)]
+
+
 def _prefix_ambiguity_instruction(prefix_ambiguity: PrefixAmbiguity) -> str:
     match prefix_ambiguity:
         case IndependentPrefixAmbiguity():
@@ -825,6 +877,18 @@ def _validate_word_count(label: str, text: str, minimum: int, maximum: int) -> N
     word_count = len(text.split())
     if not minimum <= word_count <= maximum:
         raise ValueError(f"{label} requires {minimum} to {maximum} words; received {word_count}.")
+
+
+def _validate_extended_turn_sentences(text: str) -> None:
+    sentences = tuple(sentence for sentence in re.split(r"(?<=[.!?])\s+", text.strip()) if sentence)
+    if not 2 <= len(sentences) <= 4:
+        raise ValueError("Extended user turn requires 2 to 4 sentences.")
+    longest_sentence_words = max(len(sentence.split()) for sentence in sentences)
+    if longest_sentence_words > 35:
+        raise ValueError(
+            "Extended user turn sentences require at most 35 words; "
+            f"received {longest_sentence_words}."
+        )
 
 
 def _user_turn_length(texts: tuple[str, ...]) -> UserTurnLength:
