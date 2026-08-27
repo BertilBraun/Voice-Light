@@ -42,6 +42,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
                 f"You are a helpful assistant. {utterance.delivery_instruction}<|endofprompt|>",
                 str(references[utterance.voice]),
                 stream=False,
+                text_frontend=False,
             )
         )
         generation_seconds = time.monotonic() - started_at
