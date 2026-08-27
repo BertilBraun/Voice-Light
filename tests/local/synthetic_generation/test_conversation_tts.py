@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from app.local.synthetic_generation.build_conversation_clone_review import render_clone_review
 from app.local.synthetic_generation.conversation_prompts import (
     Affect,
     AssistantTurnPrompt,
@@ -198,6 +199,23 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
         hashlib.sha256(clip.audio_path.read_bytes()).hexdigest() == clip.audio_sha256
         for clip in loaded
     )
+
+    source_audio_path = tmp_path / "compiled" / "conversations" / "pilot_render" / "source.wav"
+    source_audio_path.parent.mkdir(parents=True)
+    source_audio_path.write_bytes(loaded[0].audio_path.read_bytes())
+    review_path = tmp_path / "review.html"
+    render_clone_review(
+        prompts_path=prompt_set_path,
+        references_path=reference_manifest_path,
+        renders_path=tmp_path / "rendered" / "render.json",
+        corpus_directory=tmp_path / "compiled",
+        output_path=review_path,
+    )
+    review = review_path.read_text(encoding="utf-8")
+    assert "Qwen VoiceDesign reference" in review
+    assert "Complete CosyVoice conversation" in review
+    assert "assistant reply" in review
+    assert "non_floor_feedback" in review
 
 
 def test_renderer_resumes_completed_units_without_tts(tmp_path: Path) -> None:
