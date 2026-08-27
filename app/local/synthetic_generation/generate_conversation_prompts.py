@@ -30,6 +30,8 @@ from app.local.synthetic_generation.conversation_prompts import (
     validate_conversation_prompt_set_id,
 )
 
+MAX_REALIZATION_ATTEMPTS = 16
+
 
 def main(arguments: Sequence[str] | None = None) -> None:
     parsed = _parser().parse_args(arguments)
@@ -187,7 +189,7 @@ def _validated_unique_plan(
     normalized_reference_texts: set[str],
 ) -> tuple[EnglishConversationPromptPlan, tuple[str, ...]]:
     final_error: ValueError | None = None
-    for attempt in range(4):
+    for attempt in range(MAX_REALIZATION_ATTEMPTS):
         try:
             plan = (
                 _plan_from_generated_text(initial_text, brief)
@@ -220,7 +222,7 @@ def _validated_unique_plan(
             )
     assert final_error is not None
     raise ValueError(
-        f"Conversation generation failed four times for {brief.plan_id}."
+        f"Conversation generation failed {MAX_REALIZATION_ATTEMPTS} times for {brief.plan_id}."
     ) from final_error
 
 
