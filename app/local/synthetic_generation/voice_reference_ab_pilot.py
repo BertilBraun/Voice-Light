@@ -13,7 +13,6 @@ import numpy as np
 from pydantic import Field
 
 from app.local.synthetic_generation.completion_dataset import (
-    DEFAULT_SILENCE_DETECTION,
     SilenceDetectionConfiguration,
 )
 from app.local.synthetic_generation.conversation_compiler import MeasuredSilence
@@ -29,6 +28,10 @@ from app.local.synthetic_generation.models import SyntheticModel
 REFERENCE_TEXT = (
     "I was running late this morning, so I grabbed my coffee and hurried to the station "
     "before the meeting."
+)
+AUDITION_SILENCE_DETECTION = SilenceDetectionConfiguration(
+    absolute_rms_threshold=0.003,
+    peak_rms_ratio=0.04,
 )
 
 
@@ -271,7 +274,7 @@ def materialize_trimmed_audition_utterance(
     sample_rate_hz: int,
     generation_seconds: float,
     output_path: Path,
-    detection: SilenceDetectionConfiguration = DEFAULT_SILENCE_DETECTION,
+    detection: SilenceDetectionConfiguration = AUDITION_SILENCE_DETECTION,
 ) -> RenderedAuditionUtterance:
     item_id = f"{candidate_id}/{utterance.utterance_id}"
     trimmed = trim_generated_speech(samples, sample_rate_hz, item_id, detection)
