@@ -20,8 +20,12 @@ The assistant waveform is neither a model input nor a synthetic dataset artifact
 assistant text exists only to make conversations coherent and to estimate realistic assistant-turn
 durations. All audible speech in this corpus is user speech.
 
-The first pilot contains 10-20 representative English conversations. It is a design and listening
+The first pilot contains 5-20 representative English conversations. It is a design and listening
 gate, not an attempt to generate a statistically complete corpus.
+
+The August 2026 clone-consistency pilot rejected Qwen Base ICL cloning for dataset generation. It
+kept speaker identity stable but made every reviewed conversation substantially more robotic than
+direct Qwen synthesis. Naturalness is the binding requirement; no scaled clone run is approved.
 
 ## Product objective
 
@@ -104,7 +108,7 @@ event-focused crop would be easier to obtain.
 ## Conversation plan
 
 The LLM generates coherent source conversations rather than isolated 20-second examples. Plans are
-English-only and normally span 60-120 seconds after rendering. A plan may contain multiple user
+English-only and contain enough events for several 20-second views. A plan may contain multiple user
 turns, virtual assistant replies, backchannels, HOLDs, and interruptions. The source is longer than
 the training view so several dense, low-padding crops can be drawn from one consistent speaker and
 topic without forcing an event into every view.
@@ -126,26 +130,15 @@ farmer-heavy prompts observed in the first review batch.
 
 ### Conversation speaker
 
-A conversation has one stable user identity: English accent or dialect, approximate age, pitch,
-vocal weight, and baseline conversational manner. Clean close-mic speech is invariant. A prose
-identity description alone is not a sufficient identity contract because VoiceDesign can realize a
-different speaker on every call.
+A conversation requests one coherent user identity: English accent or dialect, approximate age,
+pitch, vocal weight, and baseline conversational manner. Clean close-mic speech is invariant.
+Speaker consistency is desirable but must not be purchased with robotic prosody.
 
-For Qwen, speaker creation and conversation rendering are separate stages:
-
-1. Use `Qwen3-TTS-12Hz-1.7B-VoiceDesign` once to create a clean 3-8 second English reference line
-   for the planned identity.
-2. Review and quality-gate that reference render.
-3. Load `Qwen3-TTS-12Hz-1.7B-Base`, create one reusable ICL voice-clone prompt from the reference
-   audio and its exact reference text, and retain its hash and provenance.
-4. Generate every user unit in that conversation with the same reusable clone prompt.
-
-Do not use x-vector-only cloning for the primary pilot: it avoids a reference transcript but the
-official runtime documents reduced cloning quality. Do not independently run VoiceDesign for each
-unit. Unit-level delivery variation must not silently replace the cloned identity; if the Base
-checkpoint cannot preserve enough prosodic variation, prefer stable identity and obtain delivery
-variation from punctuation, wording, pace-oriented text construction, and later acoustic
-augmentation.
+The next Qwen listening pilot compares direct VoiceDesign with a high-quality preset/custom voice
+route that supports per-unit delivery instructions. Reuse the same identity description or preset
+within a conversation, batch compatible units, and measure identity drift. Reject a route if either
+naturalness or intelligibility is poor. The rejected Base ICL clone route remains available only as
+an experimental benchmark; it is not a candidate for scaled generation.
 
 ### User units
 
@@ -182,10 +175,9 @@ Semantic relationships are planned before TTS, but exact timestamps are not. The
 sequence is:
 
 1. Generate and validate a typed conversation plan.
-2. Create or select one quality-gated reference voice for the conversation and build one reusable
-   Qwen Base voice-clone prompt.
-3. Send every user unit to Qwen Base with that same clone prompt, batching compatible units from the
-   same speaker where useful.
+2. Select a quality-gated direct-synthesis voice and delivery instruction for each user unit while
+   retaining the conversation's requested identity.
+3. Send every user unit as one uninterrupted TTS request, batching compatible units where useful.
 4. Measure each rendered unit's actual active speech and silence regions.
 5. Remove terminal synthesis silence and reject noisy, empty, truncated, or artifact-heavy output.
 6. Estimate virtual assistant durations and response latencies.
@@ -194,13 +186,21 @@ sequence is:
 9. Rasterize the scenario and materialize 20-second training views at 80 ms per frame.
 
 No symmetric pre-TTS timestamp plan is treated as ground truth. No ASR or word alignment is needed
-to recover event timing. Audio energy may locate the actual start, end, and internal silence of a
-render, but the planned interaction condition determines its semantic meaning.
+to recover event timing. Audio energy locates the actual start, end, and internal silence of a
+render. A planned HOLD is only a content and delivery request: the compiler emits HOLD supervision
+only when the rendered unit actually contains an internal silence of at least 500 ms followed by
+resumed speech. It emits normal completion supervision when no such pause occurs. The pipeline must
+never split a HOLD into clauses or insert zero-valued silence manually.
 
 An internal silent interval lasting at least 500 ms is a HOLD when active speech from the same
 planned user turn resumes afterward. Genuine EOT is the final active-speech offset of a normal user
 turn after terminal generated silence is removed. A backchannel's acoustic offset is not an EOT
 because its planned semantic user-floor state remains low.
+
+Ordinary source waveform duration is the final resolved user or virtual-assistant event plus one
+second of trailing context. Estimated prompt duration is not padding. A fixed longer duration is
+legal only for an explicitly typed control source, such as an assistant-only or quiet negative
+window.
 
 ## Assistant-speaking probability
 
