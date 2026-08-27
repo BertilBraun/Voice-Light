@@ -14,7 +14,6 @@ from app.local.synthetic_generation.conversation_tts import cosyvoice3_reference
 from app.local.synthetic_generation.conversation_voice_references import (
     TtsBackendIdentity,
     file_sha256,
-    write_pcm16_wave,
 )
 from app.local.synthetic_generation.voice_reference_ab_pilot import (
     AuditionUtterance,
@@ -23,6 +22,7 @@ from app.local.synthetic_generation.voice_reference_ab_pilot import (
     audition_utterances,
     compose_candidate_conversation,
     load_reference_manifest,
+    materialize_trimmed_audition_utterance,
 )
 
 
@@ -124,15 +124,13 @@ def _render_utterance(
     )
     sample_rate_hz = int(model.sample_rate)
     audio_path = audio_directory / f"{candidate_id}_{utterance.utterance_id}.wav"
-    write_pcm16_wave(audio_path, samples, sample_rate_hz)
-    return RenderedAuditionUtterance(
+    return materialize_trimmed_audition_utterance(
         candidate_id=candidate_id,
         utterance=utterance,
-        audio_path=audio_path,
-        audio_sha256=file_sha256(audio_path),
+        samples=samples,
         sample_rate_hz=sample_rate_hz,
-        duration_seconds=samples.size / sample_rate_hz,
         generation_seconds=generation_seconds,
+        output_path=audio_path,
     )
 
 

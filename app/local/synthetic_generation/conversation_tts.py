@@ -367,7 +367,7 @@ def _trim_to_speech(
         result.clause_id,
         detection,
     )
-    internal_silences = _internal_silences(
+    internal_silences = measure_internal_silences(
         trimmed.active_frames,
         trimmed.frame_seconds,
         detection.minimum_silence_milliseconds / 1000.0,
@@ -385,7 +385,7 @@ def _trim_to_speech(
     )
 
 
-def _internal_silences(
+def measure_internal_silences(
     active: np.ndarray,
     frame_seconds: float,
     minimum_silence_seconds: float,

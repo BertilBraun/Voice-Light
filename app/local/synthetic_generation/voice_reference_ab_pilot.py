@@ -12,9 +12,16 @@ from typing import Literal
 import numpy as np
 from pydantic import Field
 
+from app.local.synthetic_generation.completion_dataset import (
+    DEFAULT_SILENCE_DETECTION,
+    SilenceDetectionConfiguration,
+)
+from app.local.synthetic_generation.conversation_compiler import MeasuredSilence
+from app.local.synthetic_generation.conversation_tts import measure_internal_silences
 from app.local.synthetic_generation.conversation_voice_references import (
     TtsBackendIdentity,
     file_sha256,
+    trim_generated_speech,
     write_pcm16_wave,
 )
 from app.local.synthetic_generation.models import SyntheticModel
@@ -77,7 +84,11 @@ class RenderedAuditionUtterance(SyntheticModel):
     audio_path: Path
     audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sample_rate_hz: int = Field(gt=0)
+    original_duration_seconds: float = Field(gt=0.0)
     duration_seconds: float = Field(gt=0.0)
+    trimmed_leading_seconds: float = Field(ge=0.0)
+    trimmed_trailing_seconds: float = Field(ge=0.0)
+    continuation_silences: tuple[MeasuredSilence, ...] = ()
     generation_seconds: float = Field(ge=0.0)
 
 
@@ -250,6 +261,39 @@ def compose_candidate_conversation(
         sample_rate_hz=sample_rate_hz,
         duration_seconds=conversation.size / sample_rate_hz,
         timeline=tuple(timeline),
+    )
+
+
+def materialize_trimmed_audition_utterance(
+    candidate_id: str,
+    utterance: AuditionUtterance,
+    samples: np.ndarray,
+    sample_rate_hz: int,
+    generation_seconds: float,
+    output_path: Path,
+    detection: SilenceDetectionConfiguration = DEFAULT_SILENCE_DETECTION,
+) -> RenderedAuditionUtterance:
+    item_id = f"{candidate_id}/{utterance.utterance_id}"
+    trimmed = trim_generated_speech(samples, sample_rate_hz, item_id, detection)
+    continuation_silences = measure_internal_silences(
+        trimmed.active_frames,
+        trimmed.frame_seconds,
+        detection.minimum_silence_milliseconds / 1000.0,
+        trimmed.samples.size / sample_rate_hz,
+    )
+    write_pcm16_wave(output_path, trimmed.samples, sample_rate_hz)
+    return RenderedAuditionUtterance(
+        candidate_id=candidate_id,
+        utterance=utterance,
+        audio_path=output_path,
+        audio_sha256=file_sha256(output_path),
+        sample_rate_hz=sample_rate_hz,
+        original_duration_seconds=trimmed.original_duration_seconds,
+        duration_seconds=trimmed.samples.size / sample_rate_hz,
+        trimmed_leading_seconds=trimmed.leading_seconds,
+        trimmed_trailing_seconds=trimmed.trailing_seconds,
+        continuation_silences=continuation_silences,
+        generation_seconds=generation_seconds,
     )
 
 

@@ -18,6 +18,7 @@ from app.local.synthetic_generation.voice_reference_ab_pilot import (
     VoiceReferenceCandidate,
     audition_utterances,
     compose_candidate_conversation,
+    materialize_trimmed_audition_utterance,
     minimal_voice_design_candidates,
     render_voice_reference_ab_review,
 )
@@ -78,7 +79,10 @@ def test_composes_and_renders_complete_reference_ab_review(tmp_path: Path) -> No
         audio_path=utterance_audio_path,
         audio_sha256=file_sha256(utterance_audio_path),
         sample_rate_hz=sample_rate_hz,
+        original_duration_seconds=1.0,
         duration_seconds=1.0,
+        trimmed_leading_seconds=0.0,
+        trimmed_trailing_seconds=0.0,
         generation_seconds=0.1,
     )
     conversation_absolute = compose_candidate_conversation(
@@ -113,3 +117,32 @@ def test_composes_and_renders_complete_reference_ab_review(tmp_path: Path) -> No
     assert "Identical complete CosyVoice conversation" in review
     assert "../references/audio/woman_easy_1.wav" in review
     assert "../cosyvoice/conversations/woman_easy_1.wav" in review
+
+
+def test_materializes_trimmed_audition_audio_before_timeline_composition(
+    tmp_path: Path,
+) -> None:
+    sample_rate_hz = 8_000
+    leading = np.zeros(round(0.2 * sample_rate_hz), dtype=np.float32)
+    first_phrase = np.full(round(0.4 * sample_rate_hz), 0.1, dtype=np.float32)
+    internal_pause = np.zeros(round(0.6 * sample_rate_hz), dtype=np.float32)
+    second_phrase = np.full(round(0.4 * sample_rate_hz), 0.1, dtype=np.float32)
+    trailing = np.zeros(round(0.3 * sample_rate_hz), dtype=np.float32)
+    samples = np.concatenate((leading, first_phrase, internal_pause, second_phrase, trailing))
+
+    rendered = materialize_trimmed_audition_utterance(
+        candidate_id="woman_easy_1",
+        utterance=audition_utterances()[1],
+        samples=samples,
+        sample_rate_hz=sample_rate_hz,
+        generation_seconds=0.2,
+        output_path=tmp_path / "trimmed.wav",
+    )
+
+    assert rendered.original_duration_seconds == 1.9
+    assert rendered.trimmed_leading_seconds == 0.2
+    assert rendered.trimmed_trailing_seconds == 0.3
+    assert rendered.duration_seconds == 1.4
+    assert len(rendered.continuation_silences) == 1
+    assert rendered.continuation_silences[0].start_seconds == 0.4
+    assert rendered.continuation_silences[0].end_seconds == 1.0
