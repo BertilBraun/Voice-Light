@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -175,7 +176,7 @@ def _timeline_card(
 def _relative_url(path: Path, review_directory: Path) -> str:
     if not path.exists():
         raise ValueError(f"Review audio is missing: {path}")
-    return path.resolve().relative_to(review_directory.resolve()).as_posix()
+    return Path(os.path.relpath(path.resolve(), review_directory.resolve())).as_posix()
 
 
 def _parser() -> argparse.ArgumentParser:

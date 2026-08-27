@@ -203,7 +203,7 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     source_audio_path = tmp_path / "compiled" / "conversations" / "pilot_render" / "source.wav"
     source_audio_path.parent.mkdir(parents=True)
     source_audio_path.write_bytes(loaded[0].audio_path.read_bytes())
-    review_path = tmp_path / "review.html"
+    review_path = tmp_path / "review" / "index.html"
     render_clone_review(
         prompts_path=prompt_set_path,
         references_path=reference_manifest_path,
@@ -216,6 +216,7 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     assert "Complete CosyVoice conversation" in review
     assert "assistant reply" in review
     assert "non_floor_feedback" in review
+    assert "../references/audio/pilot_render.wav" in review
 
 
 def test_renderer_resumes_completed_units_without_tts(tmp_path: Path) -> None:
