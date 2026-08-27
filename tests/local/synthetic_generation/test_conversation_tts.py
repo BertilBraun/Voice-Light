@@ -151,9 +151,12 @@ def test_reference_stage_uses_exact_plan_text_once(tmp_path: Path) -> None:
     assert soundfile.info(loaded.references[0].audio_path).format == "FLAC"
 
     invalid_values = manifest.references[0].model_dump()
-    invalid_values["duration_seconds"] = 2.9
-    with pytest.raises(ValidationError, match="greater than or equal to 3"):
+    invalid_values["duration_seconds"] = 0.0
+    with pytest.raises(ValidationError, match="greater than 0"):
         ConversationVoiceReference.model_validate(invalid_values)
+    short_values = manifest.references[0].model_dump()
+    short_values["duration_seconds"] = 2.9
+    assert ConversationVoiceReference.model_validate(short_values).duration_seconds == 2.9
     longer_values = manifest.references[0].model_dump()
     longer_values["duration_seconds"] = 8.6
     assert ConversationVoiceReference.model_validate(longer_values).duration_seconds == 8.6

@@ -85,7 +85,7 @@ def audit_conversation_corpus(
         generation_seconds = 0.0
         references_by_plan = {unit.plan_id: unit.reference for unit in tts_manifest.rendered_units}
         for plan_id, reference in references_by_plan.items():
-            if reference.duration_seconds > 8.0:
+            if reference.duration_seconds < 3.0 or reference.duration_seconds > 8.0:
                 flags.append(
                     CorpusQualityFlag(
                         plan_id=plan_id,
