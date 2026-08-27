@@ -110,6 +110,7 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
     )
 
     assert len(manifest.conversations) == 1
+    assert manifest.conversations[0].source_duration_seconds == 75.0
     shard = next((tmp_path / "corpus" / "training").rglob("*.parquet"))
     rows = pq.read_table(shard).to_pylist()
     samples = tuple(MaterializedTrainingSample.model_validate(row) for row in rows)

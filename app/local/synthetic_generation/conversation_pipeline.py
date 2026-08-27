@@ -71,6 +71,7 @@ MASKED_TARGET = -1.0
 class CompiledConversationReference(SyntheticModel):
     conversation_id: str
     split: TrainingCorpusSplit
+    source_duration_seconds: float = Field(gt=0.0)
     plan_path: str
     manifest_path: str
     crop_audio_paths: tuple[str, ...]
@@ -168,7 +169,7 @@ def build_conversation_corpus(
         )
         plan_path = conversation_directory / "composition.json"
         compiled_path = conversation_directory / "compiled.json"
-        _write_json(plan_path, composition_plan)
+        _write_json(plan_path, compiled.plan)
         crop_paths = tuple(
             _materialize_crop(
                 output_directory,
@@ -197,6 +198,7 @@ def build_conversation_corpus(
             CompiledConversationReference(
                 conversation_id=prompt_plan.plan_id,
                 split=split,
+                source_duration_seconds=compiled.plan.duration_seconds,
                 plan_path=plan_path.relative_to(output_directory).as_posix(),
                 manifest_path=compiled_path.relative_to(output_directory).as_posix(),
                 crop_audio_paths=tuple(
@@ -209,11 +211,11 @@ def build_conversation_corpus(
     shards = write_training_shards(output_directory, samples)
     export_manifest = _export_manifest(
         prompt_set,
-        dataset_id,
         split_plan,
         tuple(samples),
         shards,
         compiler_config,
+        tuple(references),
     )
     (output_directory / "corpus.json").write_text(
         export_manifest.model_dump_json(indent=2), encoding="utf-8"
@@ -532,15 +534,12 @@ def _training_sample(
 
 def _export_manifest(
     prompt_set: EnglishConversationPromptSet,
-    dataset_id: UUID,
     split_plan: ConversationSplitPlan,
     samples: tuple[MaterializedTrainingSample, ...],
     shards: tuple[ExportShard, ...],
     config: ConversationCompilerConfig,
+    conversations: tuple[CompiledConversationReference, ...],
 ) -> ExportManifest:
-    split_by_sample = {
-        assignment.sample_id: assignment.split for assignment in split_plan.assignments
-    }
     return ExportManifest(
         schema_version=SYNTHETIC_SCHEMA_VERSION,
         generated_at=datetime.now(UTC),
@@ -552,17 +551,17 @@ def _export_manifest(
         frame_seconds=FRAME_SECONDS,
         review_set_name=prompt_set.set_id,
         split_plan=split_plan,
-        recording_count=len(prompt_set.plans),
+        recording_count=len(conversations),
         training_sample_count=len(samples),
         splits=tuple(
             ExportSplitSummary(
                 split=split,
-                recording_count=sum(value is split for value in split_by_sample.values()),
+                recording_count=sum(conversation.split is split for conversation in conversations),
                 training_sample_count=sum(sample.split is split for sample in samples),
                 source_duration_seconds=sum(
-                    plan.target_duration_seconds
-                    for plan in prompt_set.plans
-                    if split_by_sample[uuid5(dataset_id, plan.plan_id)] is split
+                    conversation.source_duration_seconds
+                    for conversation in conversations
+                    if conversation.split is split
                 ),
             )
             for split in TrainingCorpusSplit
