@@ -40,32 +40,28 @@ run_prompt_stage() {
 
 run_reference_stage() {
   local stage_output="$1"
-  if [[ ! -f "$stage_output/references/voice-references.json" ]]; then
-    export PYTHONPATH="$repository"
-    "$qwen_environment/bin/python" \
-      -m app.local.synthetic_generation.generate_conversation_qwen_references \
-      --prompts "$stage_output/prompts.json" \
-      --output "$stage_output/references" \
-      --model-revision "$qwen_model_revision" \
-      --batch-size 2
-  fi
+  export PYTHONPATH="$repository"
+  "$qwen_environment/bin/python" \
+    -m app.local.synthetic_generation.generate_conversation_qwen_references \
+    --prompts "$stage_output/prompts.json" \
+    --output "$stage_output/references" \
+    --model-revision "$qwen_model_revision" \
+    --batch-size 2
 }
 
 run_render_stage() {
   local stage_output="$1"
-  if [[ ! -f "$stage_output/cosyvoice/render.json" ]]; then
-    export PYTHONPATH="$cosy_repository:$cosy_repository/third_party/Matcha-TTS:$repository"
-    "$cosy_environment/bin/python" \
-      -m app.local.synthetic_generation.generate_conversation_cosyvoice \
-      --prompts "$stage_output/prompts.json" \
-      --references "$stage_output/references/voice-references.json" \
-      --output "$stage_output/cosyvoice" \
-      --model-directory "$cosy_repository/pretrained_models/Fun-CosyVoice3-0.5B" \
-      --model-id FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-      --model-revision "$cosy_model_revision" \
-      --runtime-revision "$cosy_runtime_revision" \
-      --batch-size 1
-  fi
+  export PYTHONPATH="$cosy_repository:$cosy_repository/third_party/Matcha-TTS:$repository"
+  "$cosy_environment/bin/python" \
+    -m app.local.synthetic_generation.generate_conversation_cosyvoice \
+    --prompts "$stage_output/prompts.json" \
+    --references "$stage_output/references/voice-references.json" \
+    --output "$stage_output/cosyvoice" \
+    --model-directory "$cosy_repository/pretrained_models/Fun-CosyVoice3-0.5B" \
+    --model-id FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+    --model-revision "$cosy_model_revision" \
+    --runtime-revision "$cosy_runtime_revision" \
+    --batch-size 1
 }
 
 run_compile_stage() {
