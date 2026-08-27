@@ -42,15 +42,41 @@ def main(arguments: Sequence[str] | None = None) -> None:
         torch_dtype=torch.bfloat16,
         device_map="cuda:0",
     )
-    provenance = ConversationPromptGeneratorProvenance(
+    run_conversation_prompt_generation(
+        output_path=parsed.output,
+        set_id=set_id,
+        count=parsed.count,
+        target_conversation_hours=parsed.target_conversation_hours,
+        seed=parsed.seed,
         model_id=parsed.model,
         model_revision=revision,
         runtime_version=transformers.__version__,
-        seed=parsed.seed,
-        requested_plan_count=parsed.count,
-        target_conversation_hours=parsed.target_conversation_hours,
+        generation_batch_size=parsed.generation_batch_size,
+        generate_batch=lambda briefs: _generate_initial_batch(model, tokenizer, briefs),
     )
-    partial_path = parsed.output.with_suffix(f"{parsed.output.suffix}.partial")
+
+
+def run_conversation_prompt_generation(
+    output_path: Path,
+    set_id: str,
+    count: int,
+    target_conversation_hours: float | None,
+    seed: int,
+    model_id: str,
+    model_revision: str,
+    runtime_version: str,
+    generation_batch_size: int,
+    generate_batch: Callable[[tuple[ConversationGenerationBrief, ...]], tuple[str, ...]],
+) -> EnglishConversationPromptSet:
+    provenance = ConversationPromptGeneratorProvenance(
+        model_id=model_id,
+        model_revision=model_revision,
+        runtime_version=runtime_version,
+        seed=seed,
+        requested_plan_count=count,
+        target_conversation_hours=target_conversation_hours,
+    )
+    partial_path = output_path.with_suffix(f"{output_path.suffix}.partial")
     initial_plans = _load_partial_plans(partial_path, set_id, provenance)
 
     def checkpoint(plans: tuple[EnglishConversationPromptPlan, ...]) -> None:
@@ -62,29 +88,28 @@ def main(arguments: Sequence[str] | None = None) -> None:
             plans=plans,
         )
         _write_atomically(partial_path, prompt_set)
-        print(f"Checkpointed {len(plans)}/{parsed.count} conversation plans", flush=True)
+        print(f"Checkpointed {len(plans)}/{count} conversation plans", flush=True)
 
     prompt_set = generate_conversation_prompt_set(
-        model=model,
-        tokenizer=tokenizer,
         set_id=set_id,
         provenance=provenance,
         on_progress=checkpoint,
         initial_plans=initial_plans,
-        generation_batch_size=parsed.generation_batch_size,
+        generation_batch_size=generation_batch_size,
+        generate_batch=generate_batch,
     )
-    parsed.output.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomically(parsed.output, prompt_set)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomically(output_path, prompt_set)
     partial_path.unlink(missing_ok=True)
-    print(f"Wrote {len(prompt_set.plans)} conversation plans to {parsed.output}", flush=True)
+    print(f"Wrote {len(prompt_set.plans)} conversation plans to {output_path}", flush=True)
+    return prompt_set
 
 
 def generate_conversation_prompt_set(
-    model: PreTrainedModel,
-    tokenizer: PreTrainedTokenizerBase,
     set_id: str,
     provenance: ConversationPromptGeneratorProvenance,
     on_progress: Callable[[tuple[EnglishConversationPromptPlan, ...]], None],
+    generate_batch: Callable[[tuple[ConversationGenerationBrief, ...]], tuple[str, ...]],
     initial_plans: tuple[EnglishConversationPromptPlan, ...] = (),
     generation_batch_size: int = 1,
 ) -> EnglishConversationPromptSet:
@@ -105,7 +130,7 @@ def generate_conversation_prompt_set(
     )
     remaining_iterator = iter(remaining_briefs)
     while brief_batch := tuple(islice(remaining_iterator, generation_batch_size)):
-        initial_texts = _generate_initial_batch(model, tokenizer, brief_batch)
+        initial_texts = generate_batch(brief_batch)
         for brief, initial_text in zip(brief_batch, initial_texts, strict=True):
             plan = _plan_from_generated_text(initial_text, brief)
             plans.append(plan)

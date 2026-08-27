@@ -6,6 +6,7 @@ source /opt/supervisor-scripts/utils/environment.sh
 repository="${VOICE_LIGHT_CORPUS_REPOSITORY:?VOICE_LIGHT_CORPUS_REPOSITORY is required}"
 output="${VOICE_LIGHT_CORPUS_OUTPUT:?VOICE_LIGHT_CORPUS_OUTPUT is required}"
 qwen_environment="${VOICE_LIGHT_QWEN_ENVIRONMENT:?VOICE_LIGHT_QWEN_ENVIRONMENT is required}"
+vllm_environment="${VOICE_LIGHT_VLLM_ENVIRONMENT:?VOICE_LIGHT_VLLM_ENVIRONMENT is required}"
 cosy_environment="${VOICE_LIGHT_COSY_ENVIRONMENT:?VOICE_LIGHT_COSY_ENVIRONMENT is required}"
 cosy_repository="${VOICE_LIGHT_COSY_REPOSITORY:?VOICE_LIGHT_COSY_REPOSITORY is required}"
 target_planned_hours="${VOICE_LIGHT_TARGET_PLANNED_HOURS:-27.0}"
@@ -24,11 +25,12 @@ run_prompt_stage() {
   shift 2
   if [[ ! -f "$stage_output/prompts.json" ]]; then
     export PYTHONPATH="$repository"
-    "$qwen_environment/bin/python" \
-      -m app.local.synthetic_generation.generate_conversation_prompts \
+    "$vllm_environment/bin/python" \
+      -m app.local.synthetic_generation.generate_conversation_prompts_vllm \
       --set-id "$set_id" \
       --seed 260830 \
       --output "$stage_output/prompts.json" \
+      --generation-batch-size 64 \
       "$@"
   fi
   export PYTHONPATH="$repository"

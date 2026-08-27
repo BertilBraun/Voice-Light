@@ -11,6 +11,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     AssistantTurnPrompt,
     BaseUserVoice,
     CompletionUserPrompt,
+    ConversationGenerationBrief,
     ConversationPromptGeneratorProvenance,
     Energy,
     EnglishAccent,
@@ -33,6 +34,9 @@ from app.local.synthetic_generation.conversation_prompts import (
     qwen_voice_instruction,
     representative_conversation_briefs,
     validate_conversation_prompt_set_id,
+)
+from app.local.synthetic_generation.generate_conversation_prompts import (
+    generate_conversation_prompt_set,
 )
 
 
@@ -61,6 +65,27 @@ def test_representative_briefs_are_deterministic_and_cover_dimensions() -> None:
     assert briefs[0].pace is briefs[1].pace
     assert briefs[0].affect is briefs[1].affect
     assert briefs[0].domain is not briefs[1].domain
+
+
+def test_prompt_generation_uses_configured_batches_without_content_retries() -> None:
+    generated_batch_sizes: list[int] = []
+    progress_counts: list[int] = []
+
+    def generate_batch(briefs: tuple[ConversationGenerationBrief, ...]) -> tuple[str, ...]:
+        generated_batch_sizes.append(len(briefs))
+        return tuple(_content_draft().model_dump_json() for _ in briefs)
+
+    prompt_set = generate_conversation_prompt_set(
+        set_id="batched_test",
+        provenance=_provenance().model_copy(update={"requested_plan_count": 5}),
+        on_progress=lambda plans: progress_counts.append(len(plans)),
+        generate_batch=generate_batch,
+        generation_batch_size=4,
+    )
+
+    assert len(prompt_set.plans) == 5
+    assert generated_batch_sizes == [4, 1]
+    assert progress_counts == [1, 2, 3, 4, 5]
 
 
 @pytest.mark.parametrize("count", [4, 2_001])
