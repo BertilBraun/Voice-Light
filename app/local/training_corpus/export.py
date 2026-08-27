@@ -174,10 +174,16 @@ class MaterializedTrainingSample(FrozenBaseModel):
     p_user_floor_now: tuple[float, ...] | None = Field(
         default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
     )
+    speculative_eot_250: tuple[float, ...] | None = Field(
+        default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
     speculative_eot_500: tuple[float, ...] | None = Field(
         default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
     )
     speculative_eot_1000: tuple[float, ...] | None = Field(
+        default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
+    )
+    speculative_eot_2000: tuple[float, ...] | None = Field(
         default=None, min_length=FRAMES_PER_SAMPLE, max_length=FRAMES_PER_SAMPLE
     )
     p_assistant_backchannel: tuple[float, ...] = Field(
@@ -241,7 +247,12 @@ class MaterializedTrainingSample(FrozenBaseModel):
             *(track for track in (self.p_user_floor_now,) if track is not None),
             *(
                 track
-                for track in (self.speculative_eot_500, self.speculative_eot_1000)
+                for track in (
+                    self.speculative_eot_250,
+                    self.speculative_eot_500,
+                    self.speculative_eot_1000,
+                    self.speculative_eot_2000,
+                )
                 if track is not None
             ),
         )
@@ -763,8 +774,10 @@ def _training_arrow_schema() -> pa.Schema:
         *(pa.field(name, frame_values) for name in _frame_field_names()),
         pa.field("assistant_speaking_probability", pa.list_(pa.float32()), nullable=True),
         pa.field("p_user_floor_now", pa.list_(pa.float32()), nullable=True),
+        pa.field("speculative_eot_250", pa.list_(pa.float32()), nullable=True),
         pa.field("speculative_eot_500", pa.list_(pa.float32()), nullable=True),
         pa.field("speculative_eot_1000", pa.list_(pa.float32()), nullable=True),
+        pa.field("speculative_eot_2000", pa.list_(pa.float32()), nullable=True),
     )
     return pa.schema(fields)
 

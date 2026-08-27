@@ -117,7 +117,13 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
     assert compiled.plan.duration_seconds == 25.0
     assert len(compiled.crops) == 5
     assert all(len(crop.labels.p_user_floor_now) == 250 for crop in compiled.crops)
-    assert all(len(crop.labels.speculative_eot) == 2 for crop in compiled.crops)
+    assert all(len(crop.labels.speculative_eot) == 4 for crop in compiled.crops)
+    for crop in compiled.crops:
+        for frame_values in zip(
+            *(track.probabilities for track in crop.labels.speculative_eot), strict=True
+        ):
+            visible = tuple(value for value in frame_values if value != -1.0)
+            assert visible == tuple(sorted(visible))
     crop_audio_path = materialize_crop_audio(compiled, compiled.crops[0], tmp_path / "crop.wav")
     assert _wave_duration(crop_audio_path) == 20.0
     assert (

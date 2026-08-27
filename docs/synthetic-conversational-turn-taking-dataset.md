@@ -83,7 +83,9 @@ new pipeline.
 
 ### Secondary speculative outputs
 
-Separate heads estimate a genuine EOT within future horizons, initially 500 and 1,000 ms. These
+Separate cumulative heads estimate a genuine EOT within 250, 500, 1,000, and 2,000 ms. Targets are
+hard outcomes derived from the future semantic timeline and are monotonic across horizons. The
+model outputs become calibrated probabilities across examples with similar causal prefixes. These
 heads may start cancellable LLM generation. They cannot commit a response or authorize playback by
 themselves.
 

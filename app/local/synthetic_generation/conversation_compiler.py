@@ -214,7 +214,7 @@ class ConversationCompilerConfig(SyntheticModel):
     event_light_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
     assistant_duration_variation: float = Field(default=0.1, ge=0.0, le=0.4)
     source_duration: SourceDurationPolicy = FitRenderedTimeline()
-    speculative_eot_horizons_seconds: tuple[float, ...] = (0.5, 1.0)
+    speculative_eot_horizons_seconds: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0)
 
     @model_validator(mode="after")
     def validate_frame_contract(self) -> ConversationCompilerConfig:
@@ -225,6 +225,10 @@ class ConversationCompilerConfig(SyntheticModel):
             raise ValueError("At least one speculative EOT horizon is required.")
         if any(horizon <= 0.0 for horizon in self.speculative_eot_horizons_seconds):
             raise ValueError("Speculative EOT horizons must be positive.")
+        if tuple(sorted(set(self.speculative_eot_horizons_seconds))) != (
+            self.speculative_eot_horizons_seconds
+        ):
+            raise ValueError("Speculative EOT horizons must be strictly increasing and unique.")
         requested_control_count = sum(
             _fraction_count(self.crop_variant_count, fraction)
             for fraction in (
@@ -306,6 +310,21 @@ class ConversationFrameTracks(SyntheticModel):
             for value in track
         ):
             raise ValueError("Training targets must be probabilities or the mask sentinel.")
+        horizons = tuple(track.horizon_seconds for track in self.speculative_eot)
+        if tuple(sorted(set(horizons))) != horizons:
+            raise ValueError("Speculative EOT tracks must use increasing unique horizons.")
+        for earlier, later in zip(self.speculative_eot, self.speculative_eot[1:], strict=False):
+            if any(
+                earlier_value != MASKED_TARGET
+                and later_value != MASKED_TARGET
+                and earlier_value > later_value
+                for earlier_value, later_value in zip(
+                    earlier.probabilities,
+                    later.probabilities,
+                    strict=True,
+                )
+            ):
+                raise ValueError("Cumulative EOT targets must be monotonic across horizons.")
         return self
 
 

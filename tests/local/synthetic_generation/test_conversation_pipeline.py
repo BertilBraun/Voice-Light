@@ -85,7 +85,10 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
     assert len(samples) == 8
     assert all(sample.assistant_audio_path is None for sample in samples)
     assert all(sample.p_user_floor_now is not None for sample in samples)
+    assert all(sample.speculative_eot_250 is not None for sample in samples)
     assert all(sample.speculative_eot_500 is not None for sample in samples)
+    assert all(sample.speculative_eot_1000 is not None for sample in samples)
+    assert all(sample.speculative_eot_2000 is not None for sample in samples)
     assert all(sample.p_user_yield == sample.yield_oriented_primary_targets() for sample in samples)
     assert any(value == 1.0 for sample in samples for value in sample.non_floor_feedback)
     assert any(value == 1.0 for sample in samples for value in sample.floor_take)

@@ -529,8 +529,10 @@ def _training_sample(
         continuation_pause=labels.continuation_pause,
         non_floor_feedback=labels.non_floor_feedback,
         floor_take=labels.floor_take,
+        speculative_eot_250=speculative_by_horizon.get(250),
         speculative_eot_500=speculative_by_horizon.get(500),
         speculative_eot_1000=speculative_by_horizon.get(1000),
+        speculative_eot_2000=speculative_by_horizon.get(2000),
     )
 
 
