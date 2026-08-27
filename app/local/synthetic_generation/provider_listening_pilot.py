@@ -14,7 +14,7 @@ from app.shared.base_model import FrozenBaseModel
 
 
 class ListeningModel(FrozenBaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", protected_namespaces=())
 
 
 class ListeningProvider(str, Enum):
