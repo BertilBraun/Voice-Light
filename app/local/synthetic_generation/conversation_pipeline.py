@@ -165,7 +165,7 @@ def build_conversation_corpus(
         compiled = compile_conversation(
             composition_plan,
             rendered_clips,
-            conversation_directory / "source.wav",
+            conversation_directory / "source.flac",
             compiler_config,
         )
         plan_path = conversation_directory / "composition.json"
@@ -472,7 +472,7 @@ def _materialize_crop(
     compiled: CompiledConversation,
     crop: TrainingCropPlan,
 ) -> Path:
-    path = conversation_directory / "crops" / f"{crop.variant_index:03d}.wav"
+    path = conversation_directory / "crops" / f"{crop.variant_index:03d}.flac"
     materialize_crop_audio(compiled, crop, path)
     return path
 

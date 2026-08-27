@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -9,6 +8,7 @@ from typing import Literal, Protocol
 import numpy as np
 from pydantic import Field
 
+from app.local.synthetic_generation.audio_files import write_mono_pcm16_audio
 from app.local.synthetic_generation.completion_dataset import (
     DEFAULT_SILENCE_DETECTION,
     SilenceDetectionConfiguration,
@@ -237,13 +237,9 @@ def file_sha256(path: Path) -> str:
 
 
 def write_pcm16_wave(path: Path, samples: np.ndarray, sample_rate_hz: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
-    with wave.open(str(path), "wb") as audio_file:
-        audio_file.setnchannels(1)
-        audio_file.setsampwidth(2)
-        audio_file.setframerate(sample_rate_hz)
-        audio_file.writeframes(encoded.tobytes())
+    if path.suffix.lower() != ".wav":
+        raise ValueError(f"Wave output path must end in .wav: {path}")
+    write_mono_pcm16_audio(path, samples, sample_rate_hz)
 
 
 def _reference_request(plan: EnglishConversationPromptPlan) -> ReferenceSynthesisRequest:
@@ -273,9 +269,9 @@ def _materialize_reference(
         request.plan_id,
         detection,
     )
-    relative_audio_path = Path("audio") / f"{request.plan_id}.wav"
+    relative_audio_path = Path("audio") / f"{request.plan_id}.flac"
     audio_path = output_directory / relative_audio_path
-    write_pcm16_wave(audio_path, trimmed.samples, trimmed.sample_rate_hz)
+    write_mono_pcm16_audio(audio_path, trimmed.samples, trimmed.sample_rate_hz)
     duration_seconds = trimmed.samples.size / trimmed.sample_rate_hz
     return ConversationVoiceReference(
         plan_id=request.plan_id,

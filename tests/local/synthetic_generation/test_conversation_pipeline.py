@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 import pytest
+import soundfile
 
 from app.local.synthetic_generation.completion_dataset import DEFAULT_SILENCE_DETECTION
 from app.local.synthetic_generation.conversation_compiler import (
@@ -99,6 +100,11 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
     assert manifest.sampling_summary.padded_count == 0
     assert manifest.sampling_summary.control_quotas_satisfied
     assert manifest.sampling_summary.padding_limit_satisfied
+    conversation_directory = compiled_path.parent
+    assert soundfile.info(conversation_directory / "source.flac").format == "FLAC"
+    crop_paths = tuple((conversation_directory / "crops").glob("*.flac"))
+    assert len(crop_paths) == 8
+    assert all(soundfile.info(path).subtype == "PCM_16" for path in crop_paths)
 
 
 def test_invalid_crop_sampling_summary_fails_the_pilot_gate() -> None:

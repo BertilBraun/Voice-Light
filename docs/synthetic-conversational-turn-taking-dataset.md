@@ -287,6 +287,32 @@ the report must show each count independently.
 Crop selection must not remove audio needed by a speculative horizon label. Frames whose required
 future interval extends beyond the source scenario or crop contract are masked.
 
+## Audio storage and transfer
+
+Store every trimmed user TTS unit once as mono, native-rate, 16-bit lossless FLAC. The durable
+corpus also contains the typed prompt plan, voice and backend provenance, trim measurements,
+semantic timeline, deterministic composition and crop seeds, split assignment, and checksums.
+These artifacts are sufficient to reproduce both the composed conversation and every training
+view without retaining duplicate waveforms.
+
+Composed conversation FLACs and 20-second crop FLACs are derived caches, not canonical source
+artifacts. They may be materialized for review, training throughput, or transfer and then rebuilt
+from the unit FLACs and typed recipes. Dense frame targets belong in compressed Parquet exports;
+do not persist them as large JSON float arrays.
+
+The accepted 3090 pilot measured a CosyVoice synthesis real-time factor of 0.823 and a rendered
+conversation-to-user-speech duration ratio of 1.329. Lossless FLAC used 56.7% of the equivalent
+24 kHz mono PCM bytes for isolated speech, 40.6% for silence-bearing composed conversations, and
+33.4% for representative 16 kHz crops. Based on those measurements, 20 hours of audible user
+speech needs about 2 GB for canonical unit FLACs or roughly 5-8 GB when composed audio and a normal
+crop cache are also retained. If 20 hours denotes complete conversation timeline instead, the
+canonical audio is about 1.5 GB and a retained derived set is roughly 4-5 GB. Manifests, checksums,
+and compressed labels are small compared with audio and model caches.
+
+Generation workers must finalize bounded batches, copy the canonical FLACs and manifests off the
+GPU node, verify checksums, and only then clear that batch's scratch artifacts. A corpus-scale run
+must not depend on a single end-of-run transfer.
+
 ## Label construction
 
 The primary label is dense across all valid supervised frames:

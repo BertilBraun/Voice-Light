@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import soundfile
 from pydantic import ValidationError
 
 from app.local.synthetic_generation.build_conversation_clone_review import render_clone_review
@@ -146,6 +147,8 @@ def test_reference_stage_uses_exact_plan_text_once(tmp_path: Path) -> None:
     assert manifest.references[0].reference_text == prompt_set.plans[0].voice_reference_text
     loaded = load_voice_reference_manifest(tmp_path / "references" / "voice-references.json")
     assert loaded.references[0].audio_path.is_absolute()
+    assert loaded.references[0].audio_path.suffix == ".flac"
+    assert soundfile.info(loaded.references[0].audio_path).format == "FLAC"
 
     invalid_values = manifest.references[0].model_dump()
     invalid_values["duration_seconds"] = 2.9
@@ -205,15 +208,16 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     assert len(hold.clip.continuation_silences) == 1
     measured_pause = hold.clip.continuation_silences[0]
     assert np.isclose(measured_pause.end_seconds - measured_pause.start_seconds, 0.6)
-    assert hold.clip.audio_path == Path("audio/pilot_render_user_4.wav")
+    assert hold.clip.audio_path == Path("audio/pilot_render_user_4.flac")
     loaded = load_rendered_user_clips(tmp_path / "rendered" / "render.json")
+    assert soundfile.info(loaded[0].audio_path).format == "FLAC"
     assert all(clip.audio_path.is_absolute() for clip in loaded)
     assert all(
         hashlib.sha256(clip.audio_path.read_bytes()).hexdigest() == clip.audio_sha256
         for clip in loaded
     )
 
-    source_audio_path = tmp_path / "compiled" / "conversations" / "pilot_render" / "source.wav"
+    source_audio_path = tmp_path / "compiled" / "conversations" / "pilot_render" / "source.flac"
     source_audio_path.parent.mkdir(parents=True)
     source_audio_path.write_bytes(loaded[0].audio_path.read_bytes())
     review_path = tmp_path / "review" / "index.html"
@@ -229,7 +233,7 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     assert "Complete CosyVoice conversation" in review
     assert "assistant reply" in review
     assert "non_floor_feedback" in review
-    assert "../references/audio/pilot_render.wav" in review
+    assert "../references/audio/pilot_render.flac" in review
 
 
 def test_renderer_resumes_completed_units_without_tts(tmp_path: Path) -> None:

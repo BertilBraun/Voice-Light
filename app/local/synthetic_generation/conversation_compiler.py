@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import wave
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
@@ -9,6 +8,10 @@ from typing import Annotated, Literal
 import numpy as np
 from pydantic import Field, model_validator
 
+from app.local.synthetic_generation.audio_files import (
+    read_mono_pcm16_audio,
+    write_mono_pcm16_audio,
+)
 from app.local.synthetic_generation.models import SyntheticModel
 from app.local.training_samples.constants import FRAME_SECONDS, INPUT_DURATION_SECONDS
 
@@ -413,7 +416,7 @@ def compile_conversation(
         fitted_plan.duration_seconds, base_user_events, clips_by_id, config.sample_rate_hz
     )
     output_audio_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_pcm16_wave(output_audio_path, samples, config.sample_rate_hz)
+    write_mono_pcm16_audio(output_audio_path, samples, config.sample_rate_hz)
     crops = tuple(
         _compile_crop(fitted_plan, clips_by_id, variant_index, config)
         for variant_index in range(config.crop_variant_count)
@@ -450,7 +453,7 @@ def materialize_crop_audio(
     selected = source_samples[source_start:source_end]
     output[output_start : output_start + selected.size] = selected
     output_audio_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_pcm16_wave(output_audio_path, output, conversation.sample_rate_hz)
+    write_mono_pcm16_audio(output_audio_path, output, conversation.sample_rate_hz)
     return output_audio_path
 
 
@@ -468,7 +471,7 @@ def _validated_clips(
         clip = clips_by_id[event.clip_id]
         if _file_sha256(clip.audio_path) != clip.audio_sha256:
             raise ValueError(f"Rendered clip hash changed for {clip.clip_id}.")
-        clip_samples, sample_rate_hz = _read_pcm16_wave(clip.audio_path)
+        clip_samples, sample_rate_hz = read_mono_pcm16_audio(clip.audio_path)
         actual_duration_seconds = clip_samples.size / sample_rate_hz
         if not np.isclose(actual_duration_seconds, clip.duration_seconds, atol=1 / sample_rate_hz):
             raise ValueError(f"Measured duration changed for rendered clip {clip.clip_id}.")
@@ -484,7 +487,9 @@ def _compose_user_waveform(
 ) -> np.ndarray:
     output = np.zeros(round(duration_seconds * sample_rate_hz), dtype=np.float32)
     for event in user_events:
-        clip_samples, clip_sample_rate_hz = _read_pcm16_wave(clips_by_id[event.clip_id].audio_path)
+        clip_samples, clip_sample_rate_hz = read_mono_pcm16_audio(
+            clips_by_id[event.clip_id].audio_path
+        )
         resampled = _resample(clip_samples, clip_sample_rate_hz, sample_rate_hz)
         start_index = round(event.start_seconds * sample_rate_hz)
         output[start_index : start_index + resampled.size] += resampled
@@ -1107,28 +1112,6 @@ def _resample(samples: np.ndarray, source_rate_hz: int, output_rate_hz: int) -> 
     source_positions = np.arange(samples.size, dtype=np.float64) / source_rate_hz
     output_positions = np.arange(output_count, dtype=np.float64) / output_rate_hz
     return np.interp(output_positions, source_positions, samples).astype(np.float32)
-
-
-def _read_pcm16_wave(path: Path) -> tuple[np.ndarray, int]:
-    with wave.open(str(path), "rb") as audio_file:
-        if audio_file.getsampwidth() != 2:
-            raise ValueError(f"Rendered user clip must use 16-bit PCM: {path}")
-        channel_count = audio_file.getnchannels()
-        sample_rate_hz = audio_file.getframerate()
-        frames = audio_file.readframes(audio_file.getnframes())
-    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
-    if channel_count > 1:
-        samples = samples.reshape(-1, channel_count).mean(axis=1)
-    return samples, sample_rate_hz
-
-
-def _write_pcm16_wave(path: Path, samples: np.ndarray, sample_rate_hz: int) -> None:
-    encoded = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
-    with wave.open(str(path), "wb") as audio_file:
-        audio_file.setnchannels(1)
-        audio_file.setsampwidth(2)
-        audio_file.setframerate(sample_rate_hz)
-        audio_file.writeframes(encoded.tobytes())
 
 
 def _file_sha256(path: Path) -> str:

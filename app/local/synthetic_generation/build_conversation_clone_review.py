@@ -105,7 +105,7 @@ def _conversation_section(
     units_by_id = {unit.prompt.unit_id: unit for unit in rendered_units}
     if len(units_by_id) != len(rendered_units):
         raise ValueError(f"Conversation {plan.plan_id} repeats a rendered unit ID.")
-    source_audio_path = corpus_directory / "conversations" / plan.plan_id / "source.wav"
+    source_audio_path = corpus_directory / "conversations" / plan.plan_id / "source.flac"
     if not source_audio_path.exists():
         raise ValueError(f"Compiled conversation audio is missing for {plan.plan_id}.")
     reference_url = _relative_url(reference.audio_path, review_directory)

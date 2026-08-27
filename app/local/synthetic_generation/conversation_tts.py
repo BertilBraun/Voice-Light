@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 import numpy as np
 from pydantic import Field, model_validator
 
+from app.local.synthetic_generation.audio_files import write_mono_pcm16_audio
 from app.local.synthetic_generation.completion_dataset import (
     DEFAULT_SILENCE_DETECTION,
     SilenceDetectionConfiguration,
@@ -34,7 +35,6 @@ from app.local.synthetic_generation.conversation_voice_references import (
     TtsBackendIdentity,
     file_sha256,
     trim_generated_speech,
-    write_pcm16_wave,
 )
 from app.local.synthetic_generation.models import SyntheticModel
 
@@ -316,9 +316,9 @@ def _materialize_unit(
     activity = activities[0][0]
     samples = activity.samples
     continuation_silences = activity.internal_silences
-    relative_audio_path = Path("audio") / f"{prepared.plan.plan_id}_{prepared.prompt.unit_id}.wav"
+    relative_audio_path = Path("audio") / f"{prepared.plan.plan_id}_{prepared.prompt.unit_id}.flac"
     audio_path = output_directory / relative_audio_path
-    write_pcm16_wave(audio_path, samples, sample_rate_hz)
+    write_mono_pcm16_audio(audio_path, samples, sample_rate_hz)
     duration_seconds = samples.size / sample_rate_hz
     clip = RenderedUserClip(
         clip_id=f"{prepared.plan.plan_id}_{prepared.prompt.unit_id}",
