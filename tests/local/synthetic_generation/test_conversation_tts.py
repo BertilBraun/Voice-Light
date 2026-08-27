@@ -154,6 +154,9 @@ def test_reference_stage_uses_exact_plan_text_once(tmp_path: Path) -> None:
     invalid_values["duration_seconds"] = 2.9
     with pytest.raises(ValidationError, match="greater than or equal to 3"):
         ConversationVoiceReference.model_validate(invalid_values)
+    longer_values = manifest.references[0].model_dump()
+    longer_values["duration_seconds"] = 8.6
+    assert ConversationVoiceReference.model_validate(longer_values).duration_seconds == 8.6
 
 
 def test_renderer_rejects_missing_plan_reference(tmp_path: Path) -> None:

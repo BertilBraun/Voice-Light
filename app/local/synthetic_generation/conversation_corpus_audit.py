@@ -32,6 +32,7 @@ class CorpusQualityFlag(SyntheticModel):
         "similar_topic",
         "missing_audio",
         "audio_hash_mismatch",
+        "reference_duration_outlier",
         "extended_duration_outlier",
     ]
     detail: str
@@ -82,6 +83,18 @@ def audit_conversation_corpus(
     if tts_manifest is not None:
         rendered_user_seconds = 0.0
         generation_seconds = 0.0
+        references_by_plan = {unit.plan_id: unit.reference for unit in tts_manifest.rendered_units}
+        for plan_id, reference in references_by_plan.items():
+            if reference.duration_seconds > 8.0:
+                flags.append(
+                    CorpusQualityFlag(
+                        plan_id=plan_id,
+                        code="reference_duration_outlier",
+                        detail=(
+                            f"Voice reference rendered as {reference.duration_seconds:.3f} seconds."
+                        ),
+                    )
+                )
         for unit in tts_manifest.rendered_units:
             audio_path = tts_manifest_path.parent / unit.clip.audio_path
             if not audio_path.is_file():

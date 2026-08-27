@@ -72,7 +72,7 @@ class ConversationVoiceReference(SyntheticModel):
     audio_path: Path
     audio_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sample_rate_hz: int = Field(gt=0)
-    duration_seconds: float = Field(ge=3.0, le=8.0)
+    duration_seconds: float = Field(ge=3.0, le=12.0)
     trimmed_leading_seconds: float = Field(ge=0.0)
     trimmed_trailing_seconds: float = Field(ge=0.0)
     request_seed: int = Field(ge=0)
