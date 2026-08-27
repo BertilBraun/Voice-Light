@@ -331,6 +331,20 @@ class EnglishConversationPromptPlan(EnglishConversationPromptPlanData):
         )
         if len(sequence_indices) != len(set(sequence_indices)):
             raise ValueError("Conversation sequence indices must be unique.")
+        ordered_elements = sorted(
+            (*self.assistant_turns, *self.user_prompts),
+            key=lambda element: element.sequence_index,
+        )
+        if not ordered_elements or not _owns_user_floor(ordered_elements[0]):
+            raise ValueError("A conversation must begin with a floor-owning user turn.")
+        for element_index, element in enumerate(ordered_elements):
+            match element:
+                case AssistantTurnPrompt() if not _owns_user_floor(
+                    ordered_elements[element_index - 1]
+                ):
+                    raise ValueError("Every assistant turn must directly reply to a user turn.")
+                case _:
+                    pass
         assistant_ids = {turn.turn_id for turn in self.assistant_turns}
         realized_length_bands = {
             length_band
@@ -435,6 +449,14 @@ def assemble_conversation_prompt_plan(
         assistant_turns=tuple(assistant_turns),
         user_prompts=tuple(user_prompts),
     )
+
+
+def _owns_user_floor(element: AssistantTurnPrompt | UserPrompt) -> bool:
+    match element:
+        case FloorOwningUserPromptBase():
+            return True
+        case AssistantTurnPrompt() | NonFloorFeedbackUserPrompt():
+            return False
 
 
 def _clone_ready_reference_text(reference_text: str) -> str:
@@ -547,6 +569,8 @@ Do not add any of those structural fields.
 Fixed requirements:
 - The domain is {brief.domain.value!r}; invent a specific topic unlike generic rural or farming
   stories.
+- The user always opens the conversation. The assistant never initiates a conversation or starts a
+  new turn without directly replying to a floor-owning user turn.
 - The fields form this chronological exchange: opening_user_turn, assistant_turns[0],
   brief_user_turn, assistant_turns[1], normal_user_turn, assistant_turns[2], extended_user_turn.
   Make every response directly acknowledge and develop the preceding text so the exchange reads

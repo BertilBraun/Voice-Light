@@ -20,12 +20,21 @@ The assistant waveform is neither a model input nor a synthetic dataset artifact
 assistant text exists only to make conversations coherent and to estimate realistic assistant-turn
 durations. All audible speech in this corpus is user speech.
 
+The current product never initiates a conversation or an unsolicited assistant turn. Every source
+conversation therefore begins with a floor-owning user turn, and every virtual assistant turn
+directly replies to a user turn. Assistant-first and proactive-assistant scenarios are out of
+distribution and invalid at the typed plan boundary.
+
 The first pilot contains 5-20 representative English conversations. It is a design and listening
 gate, not an attempt to generate a statistically complete corpus.
 
 The August 2026 clone-consistency pilot rejected Qwen Base ICL cloning for dataset generation. It
 kept speaker identity stable but made every reviewed conversation substantially more robotic than
-direct Qwen synthesis. Naturalness is the binding requirement; no scaled clone run is approved.
+direct Qwen synthesis. A later provider pilot accepted CosyVoice 3 zero-shot cloning as a promising
+conversation renderer: isolated micro-utterances were occasionally odd, but complete conversations
+were coherent and natural enough to continue testing. IndexTTS 2.5, Chatterbox, and VoXtream were
+rejected on listening quality. No scaled generation run is approved before the focused
+Qwen-reference-to-CosyVoice pilot passes review.
 
 ## Product objective
 
@@ -134,11 +143,16 @@ A conversation requests one coherent user identity: English accent or dialect, a
 pitch, vocal weight, and baseline conversational manner. Clean close-mic speech is invariant.
 Speaker consistency is desirable but must not be purchased with robotic prosody.
 
-The next Qwen listening pilot compares direct VoiceDesign with a high-quality preset/custom voice
-route that supports per-unit delivery instructions. Reuse the same identity description or preset
-within a conversation, batch compatible units, and measure identity drift. Reject a route if either
-naturalness or intelligibility is poor. The rejected Base ICL clone route remains available only as
-an experimental benchmark; it is not a candidate for scaled generation.
+The focused listening pilot creates five Qwen VoiceDesign references and uses each exact reference
+to condition one complete CosyVoice conversation. Qwen reference audio is conditioning material,
+not training audio: all audible units within a CosyVoice conversation come from CosyVoice and use
+the same frozen reference. The rejected Qwen Base ICL route remains only an experimental benchmark.
+
+The provisional scaled provider mix is conversation-heavy and should be revised from measured pilot
+quality rather than treated as a quota. CosyVoice cloned identities are expected to provide most
+speaker diversity. Direct Qwen CustomVoice Ryan and Aiden should remain in the low twenties percent
+or below, and accented Vivian and Sohee material should be about five percent combined. Provider,
+reference identity, and descendants remain recorded so provider-specific shortcuts can be measured.
 
 ### User units
 
@@ -179,7 +193,7 @@ sequence is:
    retaining the conversation's requested identity.
 3. Send every user unit as one uninterrupted TTS request, batching compatible units where useful.
 4. Measure each rendered unit's actual active speech and silence regions.
-5. Remove terminal synthesis silence and reject noisy, empty, truncated, or artifact-heavy output.
+5. Remove terminal synthesis silence and report noisy, empty, truncated, or artifact-heavy output.
 6. Estimate virtual assistant durations and response latencies.
 7. Place the measured user units and virtual assistant spans into a post-TTS scenario timeline.
 8. Construct the assistant-speaking input curve and semantic user-floor targets.
@@ -314,11 +328,15 @@ timing variations, and augmentations descended from one conversation belong to t
 
 ## Representative pilot
 
-Generate 10-20 source conversations, preferably 20 if the valid-render rate permits it. Each source
-should normally yield 6-8 distinct 20-second views. The pilot should
-cover every semantic condition, several event-light contexts, broad topics, varied voice identities,
-and varied pace and affect. It need not exhaust the combination space or present polished production
-statistics.
+The focused provider gate contains five source conversations: five distinct Qwen VoiceDesign
+references and one complete CosyVoice conversation conditioned on each exact reference. It covers
+every semantic condition across the set, including explicit one-word backchannels and user
+interruptions. This gate assesses reference quality, clone naturalness, and within-conversation
+identity consistency; it does not need production-scale crop counts or polished statistics.
+
+After that listening gate passes, a larger materialization pilot may produce multiple 20-second
+views per accepted source while covering event-light contexts, broad topics, varied identities,
+pace, and affect.
 
 The review surface must let a reviewer:
 
@@ -333,8 +351,9 @@ The review surface must let a reviewer:
   generation provenance.
 
 The pilot passes only when the reviewer accepts speech naturalness, speaker consistency, topic and
-style diversity, event timing, assistant-contour plausibility, and label semantics. Failed renders
-remain visible in validation reports but do not enter training views.
+style diversity, event timing, assistant-contour plausibility, and label semantics. Validation may
+flag or quarantine a render, but it must not silently discard it. The review surface shows every
+flagged item and the exact reason before any exclusion from training is approved.
 
 ## Evaluation
 
@@ -391,6 +410,7 @@ backchannel robustness, interruption response, calibration, and streaming causal
 ## Non-goals and invariants
 
 - English only.
+- No assistant-initiated conversation or unsolicited assistant turn.
 - No assistant audio encoder or assistant waveform in this corpus.
 - No ASR-, transcript-, or word-alignment-derived ground truth.
 - No failed-interruption class.

@@ -42,6 +42,7 @@ from app.local.synthetic_generation.models import SyntheticModel
 class SpeechSynthesisRequest:
     clause_id: str
     text: str
+    delivery_instruction: str
     seed: int
 
 
@@ -255,6 +256,7 @@ def _prepared_units(prompt_set: EnglishConversationPromptSet) -> tuple[_Prepared
                 SpeechSynthesisRequest(
                     clause_id=_clause_id(plan.plan_id, prompt.unit_id, clause_index),
                     text=text,
+                    delivery_instruction=_delivery_instruction(prompt),
                     seed=_clause_seed(plan.seed, plan.plan_id, prompt.unit_id, clause_index),
                 )
                 for clause_index, text in enumerate(texts)
@@ -267,6 +269,14 @@ def _prepared_units(prompt_set: EnglishConversationPromptSet) -> tuple[_Prepared
                 )
             )
     return tuple(prepared)
+
+
+def _delivery_instruction(prompt: UserPrompt) -> str:
+    delivery = prompt.delivery
+    return (
+        f"Speak in English at a {delivery.pace.value} pace with {delivery.energy.value} energy "
+        f"and a {delivery.affect.value} conversational affect."
+    )
 
 
 def _materialize_unit(

@@ -68,6 +68,7 @@ def test_generation_instruction_requests_only_natural_content() -> None:
     assert brief.domain.value in instruction
     assert "natural English content" in instruction
     assert "will add all IDs" in instruction
+    assert "assistant never initiates" in instruction
     assert "2-11" in instruction
     assert "45-90 words" in instruction
     assert "Do not output backchannels" in instruction
@@ -115,6 +116,24 @@ def test_plan_rejects_unknown_assistant_reference() -> None:
     values["user_prompts"][1]["during_assistant_turn_id"] = "assistant_9"
 
     with pytest.raises(ValidationError, match="unknown assistant turn"):
+        EnglishConversationPromptPlan.model_validate(values)
+
+
+def test_plan_rejects_assistant_initiated_conversation() -> None:
+    values = _plan().model_dump()
+    values["assistant_turns"][0]["sequence_index"] = 0
+    values["user_prompts"][0]["sequence_index"] = 1
+
+    with pytest.raises(ValidationError, match="begin with a floor-owning user turn"):
+        EnglishConversationPromptPlan.model_validate(values)
+
+
+def test_plan_rejects_assistant_turn_after_backchannel() -> None:
+    values = _plan().model_dump()
+    values["assistant_turns"][0]["sequence_index"] = 3
+    values["user_prompts"][3]["sequence_index"] = 1
+
+    with pytest.raises(ValidationError, match="directly reply to a user turn"):
         EnglishConversationPromptPlan.model_validate(values)
 
 
