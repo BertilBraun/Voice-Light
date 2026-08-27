@@ -9,7 +9,6 @@ from pathlib import Path
 import torch
 import transformers
 from huggingface_hub import model_info
-from pydantic import ValidationError
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -26,7 +25,6 @@ from app.local.synthetic_generation.conversation_prompts import (
     assemble_conversation_prompt_plan,
     conversation_generation_instruction,
     representative_conversation_briefs,
-    user_prompt_texts_for_uniqueness,
     validate_conversation_prompt_set_id,
 )
 
@@ -99,15 +97,6 @@ def generate_conversation_prompt_set(
     _validate_initial_plans(initial_plans, briefs)
     plans = list(initial_plans)
     planned_duration_seconds = sum(plan.target_duration_seconds for plan in plans)
-    normalized_user_texts = {
-        _normalized_user_text(text)
-        for plan in plans
-        for prompt in plan.user_prompts
-        for text in user_prompt_texts_for_uniqueness(prompt)
-    }
-    normalized_reference_texts = {
-        _normalized_user_text(plan.voice_reference_text) for plan in plans
-    }
     target_hours = provenance.target_conversation_hours
     remaining_briefs = (
         ()
@@ -118,18 +107,9 @@ def generate_conversation_prompt_set(
     while brief_batch := tuple(islice(remaining_iterator, generation_batch_size)):
         initial_texts = _generate_initial_batch(model, tokenizer, brief_batch)
         for brief, initial_text in zip(brief_batch, initial_texts, strict=True):
-            plan, plan_texts = _validated_unique_plan(
-                model,
-                tokenizer,
-                brief,
-                initial_text,
-                normalized_user_texts,
-                normalized_reference_texts,
-            )
+            plan = _plan_from_generated_text(initial_text, brief)
             plans.append(plan)
             planned_duration_seconds += plan.target_duration_seconds
-            normalized_user_texts.update(plan_texts)
-            normalized_reference_texts.add(_normalized_user_text(plan.voice_reference_text))
             on_progress(tuple(plans))
             if target_hours is not None and planned_duration_seconds >= target_hours * 3600.0:
                 break
@@ -178,52 +158,6 @@ def _generate_initial_batch(
     return tuple(tokenizer.decode(row[prompt_length:], skip_special_tokens=True) for row in output)
 
 
-def _validated_unique_plan(
-    model: PreTrainedModel,
-    tokenizer: PreTrainedTokenizerBase,
-    brief: ConversationGenerationBrief,
-    initial_text: str,
-    normalized_user_texts: set[str],
-    normalized_reference_texts: set[str],
-) -> tuple[EnglishConversationPromptPlan, tuple[str, ...]]:
-    final_error: ValueError | None = None
-    for attempt in range(4):
-        try:
-            plan = (
-                _plan_from_generated_text(initial_text, brief)
-                if attempt == 0
-                else _generate_conversation_plan(
-                    model=model,
-                    tokenizer=tokenizer,
-                    brief=brief,
-                    seed=brief.seed + attempt,
-                )
-            )
-            plan_texts = tuple(
-                _normalized_user_text(text)
-                for prompt in plan.user_prompts
-                for text in user_prompt_texts_for_uniqueness(prompt)
-            )
-            if normalized_user_texts.intersection(plan_texts):
-                raise ValueError("Generated conversation repeats user text from another plan.")
-            normalized_reference_text = _normalized_user_text(plan.voice_reference_text)
-            if normalized_reference_text in normalized_reference_texts:
-                raise ValueError(
-                    "Generated conversation repeats a voice reference from another plan."
-                )
-            return plan, plan_texts
-        except ValueError as error:
-            final_error = error
-            print(
-                f"Discarding invalid realization for {brief.plan_id}: {error}",
-                flush=True,
-            )
-    assert final_error is not None
-    raise ValueError(
-        f"Conversation generation failed four times for {brief.plan_id}."
-    ) from final_error
-
-
 def _batch_seed(briefs: tuple[ConversationGenerationBrief, ...]) -> int:
     content = ":".join(f"{brief.plan_id}:{brief.seed}" for brief in briefs)
     return int.from_bytes(hashlib.sha256(content.encode()).digest()[:4], "big")
@@ -258,48 +192,6 @@ def _validate_initial_plans(
             raise ValueError("Partial prompt checkpoint does not match its deterministic brief.")
 
 
-def _generate_conversation_plan(
-    model: PreTrainedModel,
-    tokenizer: PreTrainedTokenizerBase,
-    brief: ConversationGenerationBrief,
-    seed: int,
-) -> EnglishConversationPromptPlan:
-    messages = [{"role": "user", "content": conversation_generation_instruction(brief)}]
-    final_error: ValidationError | ValueError | None = None
-    for repair_index in range(3):
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        ).to(model.device)
-        torch.manual_seed(seed + repair_index)
-        output = model.generate(
-            **inputs,
-            max_new_tokens=1100,
-            do_sample=True,
-            temperature=0.8 if repair_index == 0 else 0.4,
-            top_p=0.92,
-        )
-        generated = tokenizer.decode(
-            output[0][inputs["input_ids"].shape[-1] :],
-            skip_special_tokens=True,
-        )
-        try:
-            return _plan_from_generated_text(generated, brief)
-        except (ValidationError, ValueError) as error:
-            final_error = error
-            messages.extend(
-                (
-                    {"role": "assistant", "content": generated},
-                    {"role": "user", "content": _repair_instruction(error)},
-                )
-            )
-    assert final_error is not None
-    raise ValueError(f"Prompt model returned an invalid conversation plan: {final_error}")
-
-
 def _plan_from_generated_text(
     generated: str,
     brief: ConversationGenerationBrief,
@@ -308,20 +200,6 @@ def _plan_from_generated_text(
     plan = assemble_conversation_prompt_plan(draft, brief)
     _validate_plan_against_brief(plan, brief)
     return plan
-
-
-def _repair_instruction(error: ValidationError | ValueError) -> str:
-    return f"""The compact conversation-content JSON failed typed validation.
-Return only a corrected complete JSON object with the same topic and conversation meaning. Do not
-explain the correction. Keep exactly the schema fields from the original request. Do not add IDs,
-sequence numbers, semantic labels, timing, pauses, numeric parameters, voice metadata, delivery
-metadata, or backchannels. Correct the reported word count or missing natural-language field while
-preserving coherence between the four user turns and three assistant turns. Keep the extended user
-turn to 2-4 natural sentences, with no sentence longer than 35 words.
-
-Validation errors:
-{error}
-"""
 
 
 def _validate_plan_against_brief(
@@ -343,10 +221,6 @@ def _validate_plan_against_brief(
         for prompt in plan.user_prompts
     ):
         raise ValueError("Generated conversation omitted its anchor pace and affect.")
-
-
-def _normalized_user_text(text: str) -> str:
-    return " ".join(text.casefold().split())
 
 
 def _write_atomically(path: Path, prompt_set: EnglishConversationPromptSet) -> None:

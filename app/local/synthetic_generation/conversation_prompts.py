@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -188,11 +187,6 @@ class CompletionUserPrompt(FloorOwningUserPromptBase):
     def validate_english_text(cls, value: str) -> str:
         return _validate_english_text(value)
 
-    @model_validator(mode="after")
-    def validate_turn_length(self) -> CompletionUserPrompt:
-        _user_turn_length((self.text,))
-        return self
-
 
 class HoldUserPrompt(FloorOwningUserPromptBase):
     condition: Literal["hold"] = "hold"
@@ -202,11 +196,6 @@ class HoldUserPrompt(FloorOwningUserPromptBase):
     @classmethod
     def validate_english_text(cls, value: str) -> str:
         return _validate_english_text(value)
-
-    @model_validator(mode="after")
-    def validate_turn_length(self) -> HoldUserPrompt:
-        _user_turn_length((self.text,))
-        return self
 
 
 class NonFloorFeedbackUserPrompt(SyntheticModel):
@@ -229,11 +218,6 @@ class ResponseFloorClaimUserPrompt(FloorOwningUserPromptBase):
     def validate_english_text(cls, value: str) -> str:
         return _validate_english_text(value)
 
-    @model_validator(mode="after")
-    def validate_turn_length(self) -> ResponseFloorClaimUserPrompt:
-        _user_turn_length((self.text,))
-        return self
-
 
 class InterruptionFloorClaimUserPrompt(FloorOwningUserPromptBase):
     condition: Literal["interruption_floor_claim"] = "interruption_floor_claim"
@@ -245,11 +229,6 @@ class InterruptionFloorClaimUserPrompt(FloorOwningUserPromptBase):
     @classmethod
     def validate_english_text(cls, value: str) -> str:
         return _validate_english_text(value)
-
-    @model_validator(mode="after")
-    def validate_turn_length(self) -> InterruptionFloorClaimUserPrompt:
-        _user_turn_length((self.text,))
-        return self
 
 
 FloorOwningUserPrompt = (
@@ -291,11 +270,7 @@ class EnglishConversationPromptPlanData(SyntheticModel):
     @field_validator("voice_reference_text")
     @classmethod
     def validate_voice_reference_text(cls, value: str) -> str:
-        _validate_english_text(value)
-        word_count = len(value.split())
-        if not 14 <= word_count <= 24:
-            raise ValueError("Voice reference text requires 14 to 24 words.")
-        return value
+        return _validate_english_text(value)
 
 
 class EnglishConversationContentDraft(SyntheticModel):
@@ -324,18 +299,7 @@ class EnglishConversationContentDraft(SyntheticModel):
     def validate_assistant_turns(cls, values: tuple[str, str, str]) -> tuple[str, str, str]:
         for value in values:
             _validate_english_text(value)
-            _validate_word_count("Assistant turn", value, 3, 25)
         return values
-
-    @model_validator(mode="after")
-    def validate_content_lengths(self) -> EnglishConversationContentDraft:
-        _validate_word_count("Voice reference text", self.voice_reference_text, 8, 24)
-        _validate_word_count("Opening user turn", self.opening_user_turn, 2, 44)
-        _validate_word_count("Brief user turn", self.brief_user_turn, 2, 11)
-        _validate_word_count("Normal user turn", self.normal_user_turn, 12, 44)
-        _validate_word_count("Extended user turn", self.extended_user_turn, 45, 90)
-        _validate_extended_turn_sentences(self.extended_user_turn)
-        return self
 
 
 class EnglishConversationPromptPlan(EnglishConversationPromptPlanData):
@@ -366,13 +330,6 @@ class EnglishConversationPromptPlan(EnglishConversationPromptPlanData):
                 case _:
                     pass
         assistant_ids = {turn.turn_id for turn in self.assistant_turns}
-        realized_length_bands = {
-            length_band
-            for prompt in self.user_prompts
-            if (length_band := floor_user_turn_length(prompt)) is not None
-        }
-        if realized_length_bands != set(UserTurnLength):
-            raise ValueError("A conversation requires brief, normal, and extended user turns.")
         for prompt in self.user_prompts:
             match prompt:
                 case NonFloorFeedbackUserPrompt(during_assistant_turn_id=turn_id):
@@ -479,9 +436,7 @@ def _owns_user_floor(element: AssistantTurnPrompt | UserPrompt) -> bool:
 
 
 def _clone_ready_reference_text(reference_text: str) -> str:
-    if len(reference_text.split()) >= 14:
-        return reference_text
-    return f"{reference_text.rstrip('.!?')}, spoken clearly and steadily for this short recording."
+    return reference_text
 
 
 class ConversationPromptGeneratorProvenance(SyntheticModel):
@@ -513,19 +468,6 @@ class EnglishConversationPromptSet(SyntheticModel):
             planned_hours = sum(plan.target_duration_seconds for plan in self.plans) / 3600.0
             if planned_hours < target_hours:
                 raise ValueError("Prompt set exhausted its plan limit before its duration target.")
-        reference_texts = tuple(
-            " ".join(plan.voice_reference_text.casefold().split()) for plan in self.plans
-        )
-        if len(reference_texts) != len(set(reference_texts)):
-            raise ValueError("Voice reference texts must be unique across a prompt set.")
-        normalized_texts = tuple(
-            " ".join(text.casefold().split())
-            for plan in self.plans
-            for prompt in plan.user_prompts
-            for text in user_prompt_texts_for_uniqueness(prompt)
-        )
-        if len(normalized_texts) != len(set(normalized_texts)):
-            raise ValueError("User prompt texts must be unique across a prompt set.")
         return self
 
 
@@ -623,6 +565,7 @@ Do not add any of those structural fields.
 Fixed requirements:
 - The domain is {brief.domain.value!r}; invent a specific topic unlike generic rural or farming
   stories.
+- Use this initial conversational direction: {_creative_direction(brief)}
 - The user always opens the conversation. The assistant never initiates a conversation or starts a
   new turn without directly replying to a floor-owning user turn.
 - The fields form this chronological exchange: opening_user_turn, assistant_turns[0],
@@ -634,13 +577,14 @@ Fixed requirements:
 - The code will use normal_user_turn as {_condition_content_instruction(normal_condition)}
 - The code will use extended_user_turn as {_condition_content_instruction(extended_condition)}
 {_prefix_ambiguity_instruction(brief.prefix_ambiguity)}
-- opening_user_turn contains 2-44 words. normal_user_turn contains 12-44 words. brief_user_turn
-  contains 2-11 words. extended_user_turn contains 45-90 words and should sound like 20-30 seconds
-  of natural speech across 2-4 sentences, with no sentence longer than 35 words. Each assistant
-  turn contains 3-25 words.
-- Write voice_reference_text as one exact, neutral English sentence of 14-24 words suitable for a
-  clean 3-8 second reference render. It need not mention the conversation topic.
-- All text is natural modern English with printable ASCII punctuation. Do not include stage
+- Vary the turn lengths naturally. Aim for brief_user_turn to be a word or a short sentence,
+  normal_user_turn to be a typical conversational response, and extended_user_turn to contain a
+  longer train of thought that could occupy roughly 15-30 seconds. These are creative directions,
+  not exact word-count requirements. Keep assistant replies conversational rather than uniformly
+  terse.
+- Write voice_reference_text as one neutral English sentence suitable for a clean, short reference
+  render. It need not mention the conversation topic.
+- All text is natural modern English. Do not include stage
   directions, sound effects, copyrighted passages, real public figures, or unsafe content.
 - Do not output backchannels. Code inserts a strict one-token acknowledgement when required.
 - Do not output plans, IDs, sequence numbers, semantic labels, durations, pauses, numeric
@@ -649,6 +593,24 @@ Fixed requirements:
 JSON schema:
 {json_schema}
 """
+
+
+def _creative_direction(brief: ConversationGenerationBrief) -> str:
+    directions = (
+        "make a practical decision after weighing imperfect options",
+        "work through a minor disagreement without sounding theatrical",
+        "recount a recent experience and revise an initial assumption",
+        "ask for clarification while already knowing part of the answer",
+        "coordinate concrete next steps under mild time pressure",
+        "compare two plausible approaches using personal observations",
+        "explain an unexpected result and explore what caused it",
+        "seek advice about an ordinary situation with a subtle complication",
+        "troubleshoot a problem through a natural back-and-forth",
+        "share an opinion that becomes more nuanced during the exchange",
+        "plan something enjoyable while negotiating preferences",
+        "reflect on a small change that had an unintended consequence",
+    )
+    return directions[brief.seed % len(directions)]
 
 
 def qwen_voice_instruction(
@@ -865,43 +827,18 @@ def _target_duration_seconds(
 def _validate_english_text(value: str) -> str:
     if any(not character.isprintable() for character in value):
         raise ValueError("English prompt text must use printable text.")
-    alphabetic_characters = tuple(character for character in value if character.isalpha())
-    if not alphabetic_characters or any(
-        not character.isascii() for character in alphabetic_characters
-    ):
-        raise ValueError("English prompt text must use unaccented Latin letters.")
+    if not any(character.isalpha() for character in value):
+        raise ValueError("English prompt text must contain alphabetic text.")
     return value
-
-
-def _validate_word_count(label: str, text: str, minimum: int, maximum: int) -> None:
-    word_count = len(text.split())
-    if not minimum <= word_count <= maximum:
-        raise ValueError(f"{label} requires {minimum} to {maximum} words; received {word_count}.")
-
-
-def _validate_extended_turn_sentences(text: str) -> None:
-    sentences = tuple(sentence for sentence in re.split(r"(?<=[.!?])\s+", text.strip()) if sentence)
-    if not 2 <= len(sentences) <= 4:
-        raise ValueError("Extended user turn requires 2 to 4 sentences.")
-    longest_sentence_words = max(len(sentence.split()) for sentence in sentences)
-    if longest_sentence_words > 35:
-        raise ValueError(
-            "Extended user turn sentences require at most 35 words; "
-            f"received {longest_sentence_words}."
-        )
 
 
 def _user_turn_length(texts: tuple[str, ...]) -> UserTurnLength:
     word_count = sum(len(text.split()) for text in texts)
-    if 2 <= word_count <= 11:
+    if word_count <= 11:
         return UserTurnLength.BRIEF
-    if 12 <= word_count <= 44:
+    if word_count <= 44:
         return UserTurnLength.NORMAL
-    if 45 <= word_count <= 90:
-        return UserTurnLength.EXTENDED
-    raise ValueError(
-        f"Floor-owning user turns require 2-11, 12-44, or 45-90 words; received {word_count}."
-    )
+    return UserTurnLength.EXTENDED
 
 
 def _require_assistant_reference(
@@ -924,19 +861,6 @@ def floor_user_turn_length(prompt: UserPrompt) -> UserTurnLength | None:
             return _user_turn_length(_user_prompt_texts(prompt))
         case NonFloorFeedbackUserPrompt():
             return None
-
-
-def user_prompt_texts_for_uniqueness(prompt: UserPrompt) -> tuple[str, ...]:
-    match prompt:
-        case NonFloorFeedbackUserPrompt():
-            return ()
-        case (
-            CompletionUserPrompt()
-            | HoldUserPrompt()
-            | ResponseFloorClaimUserPrompt()
-            | InterruptionFloorClaimUserPrompt()
-        ):
-            return _user_prompt_texts(prompt)
 
 
 def _user_prompt_texts(prompt: UserPrompt) -> tuple[str, ...]:

@@ -34,7 +34,6 @@ from app.local.synthetic_generation.conversation_prompts import (
     representative_conversation_briefs,
     validate_conversation_prompt_set_id,
 )
-from app.local.synthetic_generation.generate_conversation_prompts import _repair_instruction
 
 
 def test_representative_briefs_are_deterministic_and_cover_dimensions() -> None:
@@ -124,10 +123,8 @@ def test_generation_instruction_requests_only_natural_content() -> None:
     assert "natural English content" in instruction
     assert "will add all IDs" in instruction
     assert "assistant never initiates" in instruction
-    assert "2-11" in instruction
-    assert "45-90 words" in instruction
-    assert "2-4 sentences" in instruction
-    assert "no sentence longer than 35 words" in instruction
+    assert "initial conversational direction" in instruction
+    assert "not exact word-count requirements" in instruction
     assert "Do not output backchannels" in instruction
     assert '"opening_user_turn"' in instruction
     assert "naturally invites a hesitation" in instruction
@@ -165,24 +162,20 @@ def test_extended_turn_rotates_across_conversation_positions() -> None:
 
 
 @pytest.mark.parametrize(
-    ("extended_user_turn", "expected_error"),
+    "extended_user_turn",
     [
-        (" ".join(["single"] * 45) + ".", "2 to 4 sentences"),
-        (
-            " ".join(["overlong"] * 36) + ". " + " ".join(["shorter"] * 10) + ".",
-            "at most 35 words",
-        ),
+        " ".join(["single"] * 45) + ".",
+        " ".join(["long"] * 100) + ".",
+        "A concise answer can still be useful.",
     ],
 )
-def test_extended_turn_requires_natural_sentence_shape(
-    extended_user_turn: str,
-    expected_error: str,
-) -> None:
+def test_extended_turn_length_is_guidance(extended_user_turn: str) -> None:
     values = _content_draft().model_dump()
     values["extended_user_turn"] = extended_user_turn
 
-    with pytest.raises(ValidationError, match=expected_error):
-        EnglishConversationContentDraft.model_validate(values)
+    draft = EnglishConversationContentDraft.model_validate(values)
+
+    assert draft.extended_user_turn == extended_user_turn
 
 
 def test_matched_ambiguity_branches_use_the_same_turn_band() -> None:
@@ -204,30 +197,6 @@ def test_matched_ambiguity_branches_use_the_same_turn_band() -> None:
     assert completion_prompt.condition == "completion"
     assert continuation_prompt.condition == "hold"
     assert completion_prompt.speech_act is continuation_prompt.speech_act
-
-
-def test_repair_instruction_returns_validation_errors_to_the_model() -> None:
-    values = _content_draft().model_dump()
-    values["brief_user_turn"] = "word"
-    with pytest.raises(ValidationError) as captured:
-        EnglishConversationContentDraft.model_validate(values)
-
-    instruction = _repair_instruction(captured.value)
-
-    assert "failed typed validation" in instruction
-    assert "Brief user turn" in instruction
-    assert "corrected complete JSON object" in instruction
-
-
-def test_repair_instruction_returns_semantic_errors_to_the_model() -> None:
-    instruction = _repair_instruction(
-        ValueError("Generated conversation omitted conditions: hold.")
-    )
-
-    assert "omitted conditions: hold" in instruction
-    assert "corrected complete JSON object" in instruction
-    assert "word count" in instruction
-    assert "Do not add IDs" in instruction
 
 
 @pytest.mark.parametrize("target_duration_seconds", [59.9, 120.1])
@@ -267,15 +236,10 @@ def test_plan_rejects_assistant_turn_after_backchannel() -> None:
         EnglishConversationPromptPlan.model_validate(values)
 
 
-def test_plan_is_english_only_by_schema_and_validation() -> None:
+def test_plan_has_no_model_generated_language_field() -> None:
     values = _plan().model_dump()
     values["language"] = "es"
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        EnglishConversationPromptPlan.model_validate(values)
-
-    values = _plan().model_dump()
-    values["user_prompts"][0]["text"] = "Todav\u00eda no est\u00e1 listo."
-    with pytest.raises(ValidationError, match="unaccented Latin letters"):
         EnglishConversationPromptPlan.model_validate(values)
 
 
@@ -287,14 +251,14 @@ def test_backchannel_rejects_propositional_phrase() -> None:
         EnglishConversationPromptPlan.model_validate(values)
 
 
-def test_plan_requires_every_user_turn_length_band() -> None:
+def test_plan_accepts_natural_turn_lengths_outside_target_bands() -> None:
     values = _plan().model_dump()
-    values["user_prompts"] = tuple(
-        prompt for index, prompt in enumerate(values["user_prompts"]) if index != 2
-    )
+    values["user_prompts"][0]["text"] = "No."
+    values["user_prompts"][2]["text"] = " ".join(["detail"] * 120) + "."
 
-    with pytest.raises(ValidationError, match="brief, normal, and extended"):
-        EnglishConversationPromptPlan.model_validate(values)
+    plan = EnglishConversationPromptPlan.model_validate(values)
+
+    assert plan.user_prompts[0].text == "No."
 
 
 def test_llm_content_schema_excludes_structural_plan_fields() -> None:
@@ -339,7 +303,7 @@ def test_deterministic_assembly_produces_complete_valid_plan() -> None:
     assert plan.plan_id == brief.plan_id
 
 
-def test_deterministic_assembly_extends_short_voice_reference_text() -> None:
+def test_deterministic_assembly_preserves_short_voice_reference_text() -> None:
     brief = representative_conversation_briefs(count=10, seed=41)[0]
     values = _content_draft().model_dump()
     values["voice_reference_text"] = "This neutral sentence provides a short reference for cloning."
@@ -348,8 +312,7 @@ def test_deterministic_assembly_extends_short_voice_reference_text() -> None:
         EnglishConversationContentDraft.model_validate(values), brief
     )
 
-    assert 14 <= len(plan.voice_reference_text.split()) <= 24
-    assert plan.voice_reference_text.startswith("This neutral sentence")
+    assert plan.voice_reference_text == values["voice_reference_text"]
     assert plan.seed == brief.seed
     assert plan.domain is brief.domain
     assert 60.0 <= plan.target_duration_seconds <= 120.0
@@ -396,12 +359,13 @@ def test_duration_estimate_scales_with_content_and_stays_in_contract() -> None:
     assert long_plan.target_duration_seconds <= 120.0
 
 
-def test_plan_requires_short_exact_voice_reference_text() -> None:
+def test_plan_accepts_short_voice_reference_text() -> None:
     values = _plan().model_dump()
     values["voice_reference_text"] = "Too short."
 
-    with pytest.raises(ValidationError, match="14 to 24 words"):
-        EnglishConversationPromptPlan.model_validate(values)
+    plan = EnglishConversationPromptPlan.model_validate(values)
+
+    assert plan.voice_reference_text == "Too short."
 
 
 def test_plan_accepts_english_typographic_punctuation() -> None:
@@ -416,16 +380,17 @@ def test_plan_accepts_english_typographic_punctuation() -> None:
     assert "\u2014" in plan.user_prompts[0].text
 
 
-def test_prompt_set_rejects_duplicate_spoken_text() -> None:
+def test_prompt_set_accepts_repeated_everyday_phrases() -> None:
     first = _plan()
     second = first.model_copy(update={"plan_id": "pilot_second"})
 
-    with pytest.raises(ValidationError, match="texts must be unique"):
-        EnglishConversationPromptSet(
-            set_id="pilot",
-            provenance=_provenance(),
-            plans=(first, second),
-        )
+    prompt_set = EnglishConversationPromptSet(
+        set_id="pilot",
+        provenance=_provenance(),
+        plans=(first, second),
+    )
+
+    assert len(prompt_set.plans) == 2
 
 
 def test_qwen_instruction_combines_stable_voice_and_segment_delivery() -> None:
