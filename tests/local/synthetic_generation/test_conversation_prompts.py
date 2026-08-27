@@ -15,6 +15,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     EnglishConversationPromptPlan,
     EnglishConversationPromptSet,
     HoldUserPrompt,
+    MatchedPrefixAmbiguity,
     MicroBackchannel,
     NonFloorFeedbackUserPrompt,
     PerceivedAge,
@@ -47,12 +48,29 @@ def test_representative_briefs_are_deterministic_and_cover_dimensions() -> None:
         "response_floor_claim",
         "interruption_floor_claim",
     }
+    matched = tuple(
+        brief.prefix_ambiguity
+        for brief in briefs
+        if isinstance(brief.prefix_ambiguity, MatchedPrefixAmbiguity)
+    )
+    assert len(matched) == 2
+    assert matched[0].pair_id == matched[1].pair_id
+    assert {item.outcome for item in matched} == {"completion", "continuation"}
+    assert briefs[0].pace is briefs[1].pace
+    assert briefs[0].affect is briefs[1].affect
+    assert briefs[0].domain is not briefs[1].domain
 
 
 @pytest.mark.parametrize("count", [4, 11])
 def test_representative_briefs_reject_non_pilot_size(count: int) -> None:
     with pytest.raises(ValueError, match="5 to 10"):
         representative_conversation_briefs(count=count, seed=41)
+
+
+def test_small_pilot_does_not_overrepresent_matched_ambiguity() -> None:
+    briefs = representative_conversation_briefs(count=5, seed=41)
+
+    assert all(brief.prefix_ambiguity.kind == "independent" for brief in briefs)
 
 
 def test_set_id_is_validated_before_model_generation() -> None:
@@ -74,6 +92,28 @@ def test_generation_instruction_requests_only_natural_content() -> None:
     assert "Do not output backchannels" in instruction
     assert '"opening_user_turn"' in instruction
     assert "naturally invites a hesitation" in instruction
+    assert "distribution-matched ambiguity pair" in instruction
+
+
+def test_matched_ambiguity_branches_use_the_same_turn_band() -> None:
+    completion_brief, continuation_brief = representative_conversation_briefs(count=10, seed=41)[:2]
+
+    completion_plan = assemble_conversation_prompt_plan(_content_draft(), completion_brief)
+    continuation_plan = assemble_conversation_prompt_plan(_content_draft(), continuation_brief)
+    completion_prompt = next(
+        prompt
+        for prompt in completion_plan.user_prompts
+        if prompt.text == _content_draft().normal_user_turn
+    )
+    continuation_prompt = next(
+        prompt
+        for prompt in continuation_plan.user_prompts
+        if prompt.text == _content_draft().normal_user_turn
+    )
+
+    assert completion_prompt.condition == "completion"
+    assert continuation_prompt.condition == "hold"
+    assert completion_prompt.speech_act is continuation_prompt.speech_act
 
 
 def test_repair_instruction_returns_validation_errors_to_the_model() -> None:

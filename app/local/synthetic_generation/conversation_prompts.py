@@ -27,6 +27,22 @@ FloorCondition = Literal[
 ]
 
 
+class IndependentPrefixAmbiguity(SyntheticModel):
+    kind: Literal["independent"] = "independent"
+
+
+class MatchedPrefixAmbiguity(SyntheticModel):
+    kind: Literal["matched"] = "matched"
+    pair_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    outcome: Literal["completion", "continuation"]
+
+
+PrefixAmbiguity = Annotated[
+    IndependentPrefixAmbiguity | MatchedPrefixAmbiguity,
+    Field(discriminator="kind"),
+]
+
+
 class TopicDomain(StrEnum):
     DAILY_LIFE = "daily_life"
     TECHNOLOGY = "technology"
@@ -261,6 +277,7 @@ class EnglishConversationPromptPlanData(SyntheticModel):
     target_duration_seconds: float = Field(ge=60.0, le=120.0)
     base_user_voice: BaseUserVoice
     voice_reference_text: str = Field(min_length=1, max_length=180)
+    prefix_ambiguity: PrefixAmbiguity = IndependentPrefixAmbiguity()
     assistant_turns: tuple[AssistantTurnPrompt, ...]
     user_prompts: tuple[UserPrompt, ...] = Field(min_length=3, max_length=12)
 
@@ -446,6 +463,7 @@ def assemble_conversation_prompt_plan(
         target_duration_seconds=_target_duration_seconds(draft, brief.pace),
         base_user_voice=base_voice,
         voice_reference_text=_clone_ready_reference_text(draft.voice_reference_text),
+        prefix_ambiguity=brief.prefix_ambiguity,
         assistant_turns=tuple(assistant_turns),
         user_prompts=tuple(user_prompts),
     )
@@ -511,6 +529,7 @@ class ConversationGenerationBrief(SyntheticModel):
     pace: SpeakingPace
     affect: Affect
     required_conditions: tuple[SemanticCondition, ...] = Field(min_length=2)
+    prefix_ambiguity: PrefixAmbiguity = IndependentPrefixAmbiguity()
 
 
 def representative_conversation_briefs(
@@ -533,6 +552,8 @@ def representative_conversation_briefs(
     domain_offset = generator.randrange(len(domains))
     pace_offset = generator.randrange(len(paces))
     affect_offset = generator.randrange(len(affects))
+    ambiguity_pair_id = f"ambiguity_{hashlib.sha256(f'{seed}:matched'.encode()).hexdigest()[:10]}"
+    include_matched_pair = count == 10
     briefs = []
     for plan_index in range(count):
         first_condition = conditions[plan_index % len(conditions)]
@@ -543,9 +564,27 @@ def representative_conversation_briefs(
                 plan_id=f"pilot_{plan_index + 1:02d}_{digest}",
                 seed=seed + plan_index,
                 domain=domains[(domain_offset + plan_index) % len(domains)],
-                pace=paces[(pace_offset + plan_index) % len(paces)],
-                affect=affects[(affect_offset + plan_index) % len(affects)],
+                pace=paces[
+                    (pace_offset + max(0, plan_index - 1) if include_matched_pair else plan_index)
+                    % len(paces)
+                ],
+                affect=affects[
+                    (
+                        affect_offset + max(0, plan_index - 1)
+                        if include_matched_pair
+                        else affect_offset + plan_index
+                    )
+                    % len(affects)
+                ],
                 required_conditions=(first_condition, second_condition),
+                prefix_ambiguity=(
+                    MatchedPrefixAmbiguity(
+                        pair_id=ambiguity_pair_id,
+                        outcome="completion" if plan_index == 0 else "continuation",
+                    )
+                    if include_matched_pair and plan_index < 2
+                    else IndependentPrefixAmbiguity()
+                ),
             )
         )
     return tuple(briefs)
@@ -578,6 +617,7 @@ Fixed requirements:
 - The code will use brief_user_turn as {_condition_content_instruction(brief_condition)}
 - The code will use normal_user_turn as {_condition_content_instruction(normal_condition)}
 - The code will use extended_user_turn as {_condition_content_instruction(extended_condition)}
+{_prefix_ambiguity_instruction(brief.prefix_ambiguity)}
 - opening_user_turn contains 2-44 words. normal_user_turn contains 12-44 words. brief_user_turn
   contains 2-11 words. extended_user_turn contains 45-90 words and should sound like 20-30 seconds
   of natural speech. Each assistant turn contains 3-25 words.
@@ -682,7 +722,45 @@ def _floor_conditions(brief: ConversationGenerationBrief) -> tuple[FloorConditio
         for condition in brief.required_conditions
         if condition not in {"completion", "non_floor_feedback"}
     )
-    return required_floor_conditions + ("completion",) * (3 - len(required_floor_conditions))
+    match brief.prefix_ambiguity:
+        case IndependentPrefixAmbiguity():
+            return required_floor_conditions + ("completion",) * (
+                3 - len(required_floor_conditions)
+            )
+        case MatchedPrefixAmbiguity(outcome=outcome):
+            matched_condition: FloorCondition = (
+                "hold" if outcome == "continuation" else "completion"
+            )
+            remaining = tuple(
+                condition
+                for condition in required_floor_conditions
+                if condition != matched_condition
+            )
+            return (
+                remaining[0] if remaining else "completion",
+                matched_condition,
+                remaining[1] if len(remaining) > 1 else "completion",
+            )
+
+
+def _prefix_ambiguity_instruction(prefix_ambiguity: PrefixAmbiguity) -> str:
+    match prefix_ambiguity:
+        case IndependentPrefixAmbiguity():
+            return ""
+        case MatchedPrefixAmbiguity(outcome="completion"):
+            return (
+                "- normal_user_turn is the completion member of a distribution-matched ambiguity "
+                "pair. Give it a natural 5-12 word opening clause that could plausibly continue, "
+                "then let the turn reach a genuine stopping point. Do not use stock phrases or "
+                "mention the pairing."
+            )
+        case MatchedPrefixAmbiguity(outcome="continuation"):
+            return (
+                "- normal_user_turn is the continuation member of a distribution-matched "
+                "ambiguity pair. Give it a natural 5-12 word opening clause that could plausibly "
+                "stop, then continue the same thought without a written pause marker. Do not use "
+                "stock phrases or mention the pairing."
+            )
 
 
 def _condition_content_instruction(condition: FloorCondition) -> str:

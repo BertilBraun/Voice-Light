@@ -139,6 +139,15 @@ sampling. The LLM realizes a selected plan; it does not freely choose the datase
 Topic quotas, similarity rejection, and vocabulary checks prevent narrow clusters such as the
 farmer-heavy prompts observed in the first review batch.
 
+Ten to twenty percent of source conversations form distribution-matched ambiguity pairs. A pair
+uses different topics and unique sentences but matches the designated user turn's length band,
+speech act, pace, and affect. One member reaches a genuine completion after a locally plausible
+prefix; the other continues after a similarly plausible prefix. Exact sentences are never copied
+between members, and the LLM is not given a reusable phrase template. This supplies completion
+versus continuation counterexamples without flooding the corpus with duplicated or conspicuously
+formulaic text. Pair identity and branch outcome remain typed provenance so pair-specific quality,
+calibration, and leakage can be audited.
+
 ### Conversation speaker
 
 A conversation requests one coherent user identity: English accent or dialect, approximate age,
