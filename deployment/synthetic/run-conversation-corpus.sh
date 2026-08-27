@@ -75,9 +75,9 @@ run_compile_stage() {
       --output "$stage_output/compiled" \
       --split-seed voice-light-synthetic-conversations-20h-v1 \
       --crop-variants 1 \
-      --assistant-only-fraction 0.1 \
-      --user-only-fraction 0.1 \
-      --event-light-fraction 0.1 \
+      --assistant-only-fraction 0.0 \
+      --user-only-fraction 0.0 \
+      --event-light-fraction 0.0 \
       --assistant-duration-variation 0.1 \
       --allow-incomplete-sampling-controls
   fi
