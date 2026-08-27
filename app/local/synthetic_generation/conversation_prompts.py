@@ -488,7 +488,8 @@ class ConversationPromptGeneratorProvenance(SyntheticModel):
     model_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     runtime_version: str = Field(min_length=1)
     seed: int = Field(ge=0)
-    requested_plan_count: int = Field(ge=5, le=10)
+    requested_plan_count: int = Field(ge=5, le=2_000)
+    target_conversation_hours: float | None = Field(default=None, gt=0.0, le=48.0)
 
 
 class EnglishConversationPromptSet(SyntheticModel):
@@ -497,7 +498,7 @@ class EnglishConversationPromptSet(SyntheticModel):
     )
     set_id: ConversationPromptSetId
     provenance: ConversationPromptGeneratorProvenance
-    plans: tuple[EnglishConversationPromptPlan, ...] = Field(min_length=1, max_length=10)
+    plans: tuple[EnglishConversationPromptPlan, ...] = Field(min_length=1, max_length=2_000)
 
     @model_validator(mode="after")
     def validate_representative_set(self) -> EnglishConversationPromptSet:
@@ -506,6 +507,11 @@ class EnglishConversationPromptSet(SyntheticModel):
             raise ValueError("Conversation plan IDs must be unique.")
         if len(self.plans) > self.provenance.requested_plan_count:
             raise ValueError("Prompt set contains more plans than its requested plan count.")
+        target_hours = self.provenance.target_conversation_hours
+        if target_hours is not None and len(self.plans) == self.provenance.requested_plan_count:
+            planned_hours = sum(plan.target_duration_seconds for plan in self.plans) / 3600.0
+            if planned_hours < target_hours:
+                raise ValueError("Prompt set exhausted its plan limit before its duration target.")
         reference_texts = tuple(
             " ".join(plan.voice_reference_text.casefold().split()) for plan in self.plans
         )
@@ -536,8 +542,8 @@ def representative_conversation_briefs(
     count: int,
     seed: int,
 ) -> tuple[ConversationGenerationBrief, ...]:
-    if not 5 <= count <= 10:
-        raise ValueError("A representative pilot requires 5 to 10 conversations.")
+    if not 5 <= count <= 2_000:
+        raise ValueError("Conversation generation requires 5 to 2,000 conversations.")
     domains = tuple(TopicDomain)
     paces = tuple(SpeakingPace)
     affects = tuple(Affect)
@@ -552,10 +558,20 @@ def representative_conversation_briefs(
     domain_offset = generator.randrange(len(domains))
     pace_offset = generator.randrange(len(paces))
     affect_offset = generator.randrange(len(affects))
-    ambiguity_pair_id = f"ambiguity_{hashlib.sha256(f'{seed}:matched'.encode()).hexdigest()[:10]}"
-    include_matched_pair = count == 10
     briefs = []
     for plan_index in range(count):
+        ambiguity_group_index = plan_index // 10
+        ambiguity_group_offset = plan_index % 10
+        include_matched_pair = count >= 10 and ambiguity_group_offset < 2
+        ambiguity_digest = hashlib.sha256(
+            f"{seed}:matched:{ambiguity_group_index}".encode()
+        ).hexdigest()[:10]
+        ambiguity_pair_id = f"ambiguity_{ambiguity_digest}"
+        dimension_index = (
+            ambiguity_group_index * 9 + max(0, ambiguity_group_offset - 1)
+            if count >= 10
+            else plan_index
+        )
         first_condition = conditions[plan_index % len(conditions)]
         second_condition = conditions[(plan_index + 1) % len(conditions)]
         digest = hashlib.sha256(f"{seed}:{plan_index}".encode()).hexdigest()[:10]
@@ -564,25 +580,15 @@ def representative_conversation_briefs(
                 plan_id=f"pilot_{plan_index + 1:02d}_{digest}",
                 seed=seed + plan_index,
                 domain=domains[(domain_offset + plan_index) % len(domains)],
-                pace=paces[
-                    (pace_offset + max(0, plan_index - 1) if include_matched_pair else plan_index)
-                    % len(paces)
-                ],
-                affect=affects[
-                    (
-                        affect_offset + max(0, plan_index - 1)
-                        if include_matched_pair
-                        else affect_offset + plan_index
-                    )
-                    % len(affects)
-                ],
+                pace=paces[(pace_offset + dimension_index) % len(paces)],
+                affect=affects[(affect_offset + dimension_index) % len(affects)],
                 required_conditions=(first_condition, second_condition),
                 prefix_ambiguity=(
                     MatchedPrefixAmbiguity(
                         pair_id=ambiguity_pair_id,
                         outcome="completion" if plan_index == 0 else "continuation",
                     )
-                    if include_matched_pair and plan_index < 2
+                    if include_matched_pair
                     else IndependentPrefixAmbiguity()
                 ),
             )

@@ -48,7 +48,10 @@ def main(arguments: Sequence[str] | None = None) -> None:
         runtime_version=transformers.__version__,
         seed=parsed.seed,
         requested_plan_count=parsed.count,
+        target_conversation_hours=parsed.target_conversation_hours,
     )
+    partial_path = parsed.output.with_suffix(f"{parsed.output.suffix}.partial")
+    initial_plans = _load_partial_plans(partial_path, set_id, provenance)
 
     def checkpoint(plans: tuple[EnglishConversationPromptPlan, ...]) -> None:
         if not plans:
@@ -58,7 +61,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
             provenance=provenance,
             plans=plans,
         )
-        _write_atomically(parsed.output.with_suffix(f"{parsed.output.suffix}.partial"), prompt_set)
+        _write_atomically(partial_path, prompt_set)
         print(f"Checkpointed {len(plans)}/{parsed.count} conversation plans", flush=True)
 
     prompt_set = generate_conversation_prompt_set(
@@ -67,10 +70,11 @@ def main(arguments: Sequence[str] | None = None) -> None:
         set_id=set_id,
         provenance=provenance,
         on_progress=checkpoint,
+        initial_plans=initial_plans,
     )
     parsed.output.parent.mkdir(parents=True, exist_ok=True)
     _write_atomically(parsed.output, prompt_set)
-    parsed.output.with_suffix(f"{parsed.output.suffix}.partial").unlink(missing_ok=True)
+    partial_path.unlink(missing_ok=True)
     print(f"Wrote {len(prompt_set.plans)} conversation plans to {parsed.output}", flush=True)
 
 
@@ -80,14 +84,28 @@ def generate_conversation_prompt_set(
     set_id: str,
     provenance: ConversationPromptGeneratorProvenance,
     on_progress: Callable[[tuple[EnglishConversationPromptPlan, ...]], None],
+    initial_plans: tuple[EnglishConversationPromptPlan, ...] = (),
 ) -> EnglishConversationPromptSet:
     briefs = representative_conversation_briefs(
         count=provenance.requested_plan_count,
         seed=provenance.seed,
     )
-    plans = []
-    normalized_user_texts: set[str] = set()
-    for brief in briefs:
+    _validate_initial_plans(initial_plans, briefs)
+    plans = list(initial_plans)
+    planned_duration_seconds = sum(plan.target_duration_seconds for plan in plans)
+    normalized_user_texts = {
+        _normalized_user_text(text)
+        for plan in plans
+        for prompt in plan.user_prompts
+        for text in user_prompt_texts_for_uniqueness(prompt)
+    }
+    target_hours = provenance.target_conversation_hours
+    remaining_briefs = (
+        ()
+        if target_hours is not None and planned_duration_seconds >= target_hours * 3600.0
+        else briefs[len(initial_plans) :]
+    )
+    for brief in remaining_briefs:
         final_error: ValueError | None = None
         for attempt in range(4):
             try:
@@ -112,6 +130,7 @@ def generate_conversation_prompt_set(
                 )
                 continue
             plans.append(plan)
+            planned_duration_seconds += plan.target_duration_seconds
             normalized_user_texts.update(plan_texts)
             on_progress(tuple(plans))
             break
@@ -120,11 +139,48 @@ def generate_conversation_prompt_set(
             raise ValueError(
                 f"Conversation generation failed four times for {brief.plan_id}."
             ) from final_error
-    return EnglishConversationPromptSet(
+        if target_hours is not None and planned_duration_seconds >= target_hours * 3600.0:
+            break
+    prompt_set = EnglishConversationPromptSet(
         set_id=set_id,
         provenance=provenance,
         plans=tuple(plans),
     )
+    if (
+        provenance.target_conversation_hours is None
+        and len(plans) != provenance.requested_plan_count
+    ):
+        raise ValueError("Prompt generation did not produce its requested conversation count.")
+    return prompt_set
+
+
+def _load_partial_plans(
+    path: Path,
+    set_id: str,
+    provenance: ConversationPromptGeneratorProvenance,
+) -> tuple[EnglishConversationPromptPlan, ...]:
+    if not path.exists():
+        return ()
+    prompt_set = EnglishConversationPromptSet.model_validate_json(path.read_text(encoding="utf-8"))
+    if prompt_set.set_id != set_id or prompt_set.provenance != provenance:
+        raise ValueError("Partial prompt checkpoint does not match the requested corpus.")
+    print(f"Resuming {len(prompt_set.plans)} checkpointed conversation plans", flush=True)
+    return prompt_set.plans
+
+
+def _validate_initial_plans(
+    plans: tuple[EnglishConversationPromptPlan, ...],
+    briefs: tuple[ConversationGenerationBrief, ...],
+) -> None:
+    if len(plans) > len(briefs):
+        raise ValueError("Partial prompt checkpoint exceeds the requested plan count.")
+    for plan, brief in zip(plans, briefs, strict=False):
+        if (
+            plan.plan_id != brief.plan_id
+            or plan.seed != brief.seed
+            or plan.domain is not brief.domain
+        ):
+            raise ValueError("Partial prompt checkpoint does not match its deterministic brief.")
 
 
 def _generate_conversation_plan(
@@ -231,7 +287,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--set-id", required=True)
-    parser.add_argument("--count", type=int, choices=range(5, 11), default=10)
+    parser.add_argument("--count", type=int, choices=range(5, 2_001), default=10)
+    parser.add_argument("--target-conversation-hours", type=float)
     parser.add_argument("--seed", type=int, default=260826)
     parser.add_argument("--output", required=True, type=Path)
     return parser

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
+from app.local.synthetic_generation.conversation_corpus_audit import audit_conversation_corpus
 from app.local.synthetic_generation.conversation_prompts import (
     Affect,
     AssistantTurnPrompt,
@@ -61,9 +64,9 @@ def test_representative_briefs_are_deterministic_and_cover_dimensions() -> None:
     assert briefs[0].domain is not briefs[1].domain
 
 
-@pytest.mark.parametrize("count", [4, 11])
+@pytest.mark.parametrize("count", [4, 2_001])
 def test_representative_briefs_reject_non_pilot_size(count: int) -> None:
-    with pytest.raises(ValueError, match="5 to 10"):
+    with pytest.raises(ValueError, match="5 to 2,000"):
         representative_conversation_briefs(count=count, seed=41)
 
 
@@ -71,6 +74,40 @@ def test_small_pilot_does_not_overrepresent_matched_ambiguity() -> None:
     briefs = representative_conversation_briefs(count=5, seed=41)
 
     assert all(brief.prefix_ambiguity.kind == "independent" for brief in briefs)
+
+
+def test_corpus_briefs_allocate_twenty_percent_matched_ambiguity() -> None:
+    briefs = representative_conversation_briefs(count=100, seed=41)
+
+    matched = tuple(brief for brief in briefs if brief.prefix_ambiguity.kind == "matched")
+    assert len(matched) == 20
+    assert len({brief.prefix_ambiguity.pair_id for brief in matched}) == 10
+    for offset in range(0, len(matched), 2):
+        first, second = matched[offset : offset + 2]
+        assert first.prefix_ambiguity.pair_id == second.prefix_ambiguity.pair_id
+        assert first.pace is second.pace
+        assert first.affect is second.affect
+
+
+def test_prompt_only_corpus_audit_reports_duration_and_dimensions(tmp_path: Path) -> None:
+    brief = representative_conversation_briefs(count=5, seed=41)[0]
+    plan = assemble_conversation_prompt_plan(_content_draft(), brief)
+    prompt_set = EnglishConversationPromptSet(
+        set_id="audit_test",
+        provenance=_provenance().model_copy(update={"requested_plan_count": 5}),
+        plans=(plan,),
+    )
+    path = tmp_path / "prompts.json"
+    path.write_text(prompt_set.model_dump_json(indent=2), encoding="utf-8")
+
+    audit = audit_conversation_corpus(path)
+
+    assert audit.plan_count == 1
+    assert audit.planned_conversation_hours == plan.target_duration_seconds / 3600.0
+    assert sum(item.count for item in audit.turn_lengths) == 4
+    assert {item.value for item in audit.turn_lengths} == {"brief", "normal", "extended"}
+    assert audit.measured_conversation_hours is None
+    assert audit.quality_flags == ()
 
 
 def test_set_id_is_validated_before_model_generation() -> None:
