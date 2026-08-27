@@ -66,15 +66,13 @@ class CosyVoiceConversationSynthesizer:
             chunks = tuple(
                 cast(
                     Iterable[CosyVoiceChunk],
-                    self._model.inference_instruct2(
+                    self._model.inference_zero_shot(
                         request.text,
-                        (
-                            "You are a helpful conversational speaker. "
-                            f"{request.delivery_instruction}<|endofprompt|>"
-                        ),
+                        reference.reference_text,
                         str(reference.audio_path),
                         stream=False,
-                        text_frontend=False,
+                        speed=request.speed,
+                        text_frontend=True,
                     ),
                 )
             )
@@ -130,7 +128,7 @@ def _clone_prompt_provenance(
     backend: TtsBackendIdentity,
 ) -> VoiceClonePromptProvenance:
     prompt_content = (
-        f"cosyvoice3:inference_instruct2:{reference.audio_sha256}:{reference.reference_text_sha256}"
+        f"cosyvoice3:inference_zero_shot:{reference.audio_sha256}:{reference.reference_text_sha256}"
     )
     return VoiceClonePromptProvenance(
         plan_id=reference.plan_id,

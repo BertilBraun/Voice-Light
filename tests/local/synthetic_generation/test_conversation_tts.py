@@ -185,6 +185,7 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     )
     assert all("Speak in English" in request.delivery_instruction for request in requests)
     assert all("conversational affect" in request.delivery_instruction for request in requests)
+    assert {request.speed for request in requests} <= {0.96, 1.06, 1.16}
     assert len(manifest.rendered_units) == 4
     assert all(unit.reference == reference for unit in manifest.rendered_units)
     hold = next(unit for unit in manifest.rendered_units if unit.prompt.condition == "hold")

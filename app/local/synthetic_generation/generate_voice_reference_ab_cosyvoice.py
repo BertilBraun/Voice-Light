@@ -48,6 +48,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
                     model=model,
                     candidate_id=candidate.candidate_id,
                     reference_path=reference_path,
+                    reference_text=candidate.reference_text,
                     utterance=utterance,
                     audio_directory=audio_directory,
                 )
@@ -75,7 +76,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
     manifest = VoiceReferenceAbRenderManifest(
         references_sha256=file_sha256(parsed.references),
         backend=TtsBackendIdentity(
-            backend_id="cosyvoice3_instruct2_clone",
+            backend_id="cosyvoice3_zero_shot_clone",
             model_id=parsed.model_id,
             model_revision=parsed.model_revision,
             runtime_version=(f"CosyVoice repository {parsed.runtime_revision}"),
@@ -94,17 +95,19 @@ def _render_utterance(
     model: AutoModel,
     candidate_id: str,
     reference_path: Path,
+    reference_text: str,
     utterance: AuditionUtterance,
     audio_directory: Path,
 ) -> RenderedAuditionUtterance:
     started_at = time.monotonic()
     chunks: tuple[CosyVoiceChunk, ...] = tuple(
-        model.inference_instruct2(
+        model.inference_zero_shot(
             utterance.text,
-            f"You are speaking English. {utterance.delivery_instruction}<|endofprompt|>",
+            reference_text,
             str(reference_path),
             stream=False,
-            text_frontend=False,
+            speed=1.08,
+            text_frontend=True,
         )
     )
     generation_seconds = time.monotonic() - started_at

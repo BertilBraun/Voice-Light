@@ -25,6 +25,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     InterruptionFloorClaimUserPrompt,
     NonFloorFeedbackUserPrompt,
     ResponseFloorClaimUserPrompt,
+    SpeakingPace,
     UserPrompt,
 )
 from app.local.synthetic_generation.conversation_voice_references import (
@@ -43,6 +44,7 @@ class SpeechSynthesisRequest:
     clause_id: str
     text: str
     delivery_instruction: str
+    speed: float
     seed: int
 
 
@@ -257,6 +259,7 @@ def _prepared_units(prompt_set: EnglishConversationPromptSet) -> tuple[_Prepared
                     clause_id=_clause_id(plan.plan_id, prompt.unit_id, clause_index),
                     text=text,
                     delivery_instruction=_delivery_instruction(prompt),
+                    speed=_speech_speed(prompt.delivery.pace),
                     seed=_clause_seed(plan.seed, plan.plan_id, prompt.unit_id, clause_index),
                 )
                 for clause_index, text in enumerate(texts)
@@ -277,6 +280,16 @@ def _delivery_instruction(prompt: UserPrompt) -> str:
         f"Speak in English at a {delivery.pace.value} pace with {delivery.energy.value} energy "
         f"and a {delivery.affect.value} conversational affect."
     )
+
+
+def _speech_speed(pace: SpeakingPace) -> float:
+    match pace:
+        case SpeakingPace.SLOW:
+            return 0.96
+        case SpeakingPace.MODERATE:
+            return 1.06
+        case SpeakingPace.FAST:
+            return 1.16
 
 
 def _materialize_unit(
