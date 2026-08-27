@@ -16,6 +16,7 @@ from app.local.synthetic_generation.conversation_tts import (
     SpeechSynthesisRequest,
     SpeechSynthesisResult,
     VoiceClonePromptProvenance,
+    cosyvoice3_reference_prompt,
     render_conversation_user_audio,
 )
 from app.local.synthetic_generation.conversation_voice_references import (
@@ -68,7 +69,7 @@ class CosyVoiceConversationSynthesizer:
                     Iterable[CosyVoiceChunk],
                     self._model.inference_zero_shot(
                         request.text,
-                        reference.reference_text,
+                        cosyvoice3_reference_prompt(reference.reference_text),
                         str(reference.audio_path),
                         stream=False,
                         speed=request.speed,

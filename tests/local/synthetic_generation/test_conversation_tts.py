@@ -33,6 +33,7 @@ from app.local.synthetic_generation.conversation_tts import (
     SpeechSynthesisRequest,
     SpeechSynthesisResult,
     VoiceClonePromptProvenance,
+    cosyvoice3_reference_prompt,
     load_rendered_user_clips,
     render_conversation_user_audio,
 )
@@ -112,6 +113,17 @@ class RecordingReferenceSynthesizer:
             )
             for request in requests
         )
+
+
+def test_cosyvoice3_reference_prompt_separates_control_from_transcript() -> None:
+    prompt = cosyvoice3_reference_prompt("This is the exact reference transcript.")
+
+    assert prompt == (
+        "You are a helpful assistant.<|endofprompt|>This is the exact reference transcript."
+    )
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        cosyvoice3_reference_prompt(" ")
 
 
 def test_reference_stage_uses_exact_plan_text_once(tmp_path: Path) -> None:

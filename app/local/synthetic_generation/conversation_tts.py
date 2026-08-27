@@ -58,6 +58,12 @@ class SpeechSynthesisResult:
     clone_prompt: VoiceClonePromptProvenance
 
 
+def cosyvoice3_reference_prompt(reference_text: str) -> str:
+    if not reference_text.strip():
+        raise ValueError("CosyVoice reference transcript must not be empty.")
+    return f"You are a helpful assistant.<|endofprompt|>{reference_text}"
+
+
 class VoiceClonePromptProvenance(SyntheticModel):
     plan_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

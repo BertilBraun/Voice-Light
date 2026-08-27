@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from cosyvoice.cli.cosyvoice import AutoModel
 
+from app.local.synthetic_generation.conversation_tts import cosyvoice3_reference_prompt
 from app.local.synthetic_generation.conversation_voice_references import (
     TtsBackendIdentity,
     file_sha256,
@@ -103,7 +104,7 @@ def _render_utterance(
     chunks: tuple[CosyVoiceChunk, ...] = tuple(
         model.inference_zero_shot(
             utterance.text,
-            reference_text,
+            cosyvoice3_reference_prompt(reference_text),
             str(reference_path),
             stream=False,
             speed=1.08,
