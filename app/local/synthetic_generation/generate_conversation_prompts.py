@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from collections.abc import Callable, Sequence
+from itertools import islice
 from pathlib import Path
 
 import torch
@@ -71,6 +73,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         provenance=provenance,
         on_progress=checkpoint,
         initial_plans=initial_plans,
+        generation_batch_size=parsed.generation_batch_size,
     )
     parsed.output.parent.mkdir(parents=True, exist_ok=True)
     _write_atomically(parsed.output, prompt_set)
@@ -85,7 +88,10 @@ def generate_conversation_prompt_set(
     provenance: ConversationPromptGeneratorProvenance,
     on_progress: Callable[[tuple[EnglishConversationPromptPlan, ...]], None],
     initial_plans: tuple[EnglishConversationPromptPlan, ...] = (),
+    generation_batch_size: int = 1,
 ) -> EnglishConversationPromptSet:
+    if generation_batch_size <= 0:
+        raise ValueError("Conversation generation batch size must be positive.")
     briefs = representative_conversation_briefs(
         count=provenance.requested_plan_count,
         seed=provenance.seed,
@@ -105,40 +111,23 @@ def generate_conversation_prompt_set(
         if target_hours is not None and planned_duration_seconds >= target_hours * 3600.0
         else briefs[len(initial_plans) :]
     )
-    for brief in remaining_briefs:
-        final_error: ValueError | None = None
-        for attempt in range(4):
-            try:
-                plan = _generate_conversation_plan(
-                    model=model,
-                    tokenizer=tokenizer,
-                    brief=brief,
-                    seed=brief.seed + attempt,
-                )
-                plan_texts = tuple(
-                    _normalized_user_text(text)
-                    for prompt in plan.user_prompts
-                    for text in user_prompt_texts_for_uniqueness(prompt)
-                )
-                if normalized_user_texts.intersection(plan_texts):
-                    raise ValueError("Generated conversation repeats user text from another plan.")
-            except ValueError as error:
-                final_error = error
-                print(
-                    f"Discarding invalid realization for {brief.plan_id}: {error}",
-                    flush=True,
-                )
-                continue
+    remaining_iterator = iter(remaining_briefs)
+    while brief_batch := tuple(islice(remaining_iterator, generation_batch_size)):
+        initial_texts = _generate_initial_batch(model, tokenizer, brief_batch)
+        for brief, initial_text in zip(brief_batch, initial_texts, strict=True):
+            plan, plan_texts = _validated_unique_plan(
+                model,
+                tokenizer,
+                brief,
+                initial_text,
+                normalized_user_texts,
+            )
             plans.append(plan)
             planned_duration_seconds += plan.target_duration_seconds
             normalized_user_texts.update(plan_texts)
             on_progress(tuple(plans))
-            break
-        else:
-            assert final_error is not None
-            raise ValueError(
-                f"Conversation generation failed four times for {brief.plan_id}."
-            ) from final_error
+            if target_hours is not None and planned_duration_seconds >= target_hours * 3600.0:
+                break
         if target_hours is not None and planned_duration_seconds >= target_hours * 3600.0:
             break
     prompt_set = EnglishConversationPromptSet(
@@ -152,6 +141,81 @@ def generate_conversation_prompt_set(
     ):
         raise ValueError("Prompt generation did not produce its requested conversation count.")
     return prompt_set
+
+
+def _generate_initial_batch(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    briefs: tuple[ConversationGenerationBrief, ...],
+) -> tuple[str, ...]:
+    conversations = [
+        [{"role": "user", "content": conversation_generation_instruction(brief)}]
+        for brief in briefs
+    ]
+    tokenizer.padding_side = "left"
+    inputs = tokenizer.apply_chat_template(
+        conversations,
+        add_generation_prompt=True,
+        tokenize=True,
+        padding=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(model.device)
+    torch.manual_seed(_batch_seed(briefs))
+    output = model.generate(
+        **inputs,
+        max_new_tokens=1100,
+        do_sample=True,
+        temperature=0.8,
+        top_p=0.92,
+    )
+    prompt_length = inputs["input_ids"].shape[-1]
+    return tuple(tokenizer.decode(row[prompt_length:], skip_special_tokens=True) for row in output)
+
+
+def _validated_unique_plan(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    brief: ConversationGenerationBrief,
+    initial_text: str,
+    normalized_user_texts: set[str],
+) -> tuple[EnglishConversationPromptPlan, tuple[str, ...]]:
+    final_error: ValueError | None = None
+    for attempt in range(4):
+        try:
+            plan = (
+                _plan_from_generated_text(initial_text, brief)
+                if attempt == 0
+                else _generate_conversation_plan(
+                    model=model,
+                    tokenizer=tokenizer,
+                    brief=brief,
+                    seed=brief.seed + attempt,
+                )
+            )
+            plan_texts = tuple(
+                _normalized_user_text(text)
+                for prompt in plan.user_prompts
+                for text in user_prompt_texts_for_uniqueness(prompt)
+            )
+            if normalized_user_texts.intersection(plan_texts):
+                raise ValueError("Generated conversation repeats user text from another plan.")
+            return plan, plan_texts
+        except ValueError as error:
+            final_error = error
+            print(
+                f"Discarding invalid realization for {brief.plan_id}: {error}",
+                flush=True,
+            )
+    assert final_error is not None
+    raise ValueError(
+        f"Conversation generation failed four times for {brief.plan_id}."
+    ) from final_error
+
+
+def _batch_seed(briefs: tuple[ConversationGenerationBrief, ...]) -> int:
+    content = ":".join(f"{brief.plan_id}:{brief.seed}" for brief in briefs)
+    return int.from_bytes(hashlib.sha256(content.encode()).digest()[:4], "big")
 
 
 def _load_partial_plans(
@@ -212,10 +276,7 @@ def _generate_conversation_plan(
             skip_special_tokens=True,
         )
         try:
-            draft = EnglishConversationContentDraft.model_validate_json(_json_object(generated))
-            plan = assemble_conversation_prompt_plan(draft, brief)
-            _validate_plan_against_brief(plan, brief)
-            return plan
+            return _plan_from_generated_text(generated, brief)
         except (ValidationError, ValueError) as error:
             final_error = error
             messages.extend(
@@ -226,6 +287,16 @@ def _generate_conversation_plan(
             )
     assert final_error is not None
     raise ValueError(f"Prompt model returned an invalid conversation plan: {final_error}")
+
+
+def _plan_from_generated_text(
+    generated: str,
+    brief: ConversationGenerationBrief,
+) -> EnglishConversationPromptPlan:
+    draft = EnglishConversationContentDraft.model_validate_json(_json_object(generated))
+    plan = assemble_conversation_prompt_plan(draft, brief)
+    _validate_plan_against_brief(plan, brief)
+    return plan
 
 
 def _repair_instruction(error: ValidationError | ValueError) -> str:
@@ -289,6 +360,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--set-id", required=True)
     parser.add_argument("--count", type=int, choices=range(5, 2_001), default=10)
     parser.add_argument("--target-conversation-hours", type=float)
+    parser.add_argument("--generation-batch-size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=260826)
     parser.add_argument("--output", required=True, type=Path)
     return parser
