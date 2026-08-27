@@ -409,6 +409,8 @@ def compile_conversation(
             fitted_duration_seconds = timeline_end_seconds + trailing_context_seconds
         case PreservePlannedDuration():
             fitted_duration_seconds = plan.duration_seconds
+            if timeline_end_seconds > fitted_duration_seconds:
+                raise ValueError("Nominal timeline exceeds preserved conversation duration.")
     if fitted_duration_seconds > 120.0:
         raise ValueError("Rendered conversation exceeds the 120-second source limit.")
     fitted_plan = plan.model_copy(update={"duration_seconds": fitted_duration_seconds})
@@ -722,13 +724,6 @@ def _resolve_variant_timeline(
     for first, second in zip(ordered_users, ordered_users[1:], strict=False):
         if first.end_seconds > second.start_seconds:
             raise ValueError(f"User events {first.event_id} and {second.event_id} overlap.")
-    nominal_end = max(
-        0.0,
-        *(event.end_seconds for event in users),
-        *(turn.end_seconds for turn in assistants),
-    )
-    if assistant_duration_scale == 1.0 and nominal_end > plan.duration_seconds:
-        raise ValueError("Nominal timeline exceeds conversation duration.")
     return users, assistants
 
 

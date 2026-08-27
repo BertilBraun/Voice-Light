@@ -143,6 +143,7 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
         )
         >= 4
     )
+
     assert any(value == 1.0 for crop in compiled.crops for value in crop.labels.floor_take)
     assert any(
         0.0 < value < 0.9
@@ -168,6 +169,38 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
     crop_origin = interruption_crop.source_start_seconds - interruption_crop.left_padding_seconds
     interruption_frame = round((interruption_event.start_seconds - crop_origin) / 0.08 - 0.5)
     assert interruption_crop.labels.assistant_speaking_probability[interruption_frame] > 0.8
+
+
+def test_fitted_source_duration_accepts_rendered_timeline_longer_than_estimate(
+    tmp_path: Path,
+) -> None:
+    clip = _clip(tmp_path, "longer_than_estimate", 12.0, 0.0, 12.0)
+    plan = ConversationCompositionPlan(
+        conversation_id="longer_than_estimate",
+        seed=21,
+        duration_seconds=8.0,
+        user_events=(
+            CompletionPlacement(
+                event_id="longer_than_estimate",
+                clip_id="longer_than_estimate",
+                timing=FixedUserTiming(start_seconds=0.0),
+            ),
+        ),
+    )
+
+    compiled = compile_conversation(
+        plan,
+        (clip,),
+        tmp_path / "longer-than-estimate.wav",
+        ConversationCompilerConfig(
+            crop_variant_count=1,
+            assistant_only_fraction=0.0,
+            user_only_fraction=0.0,
+            event_light_fraction=0.0,
+        ),
+    )
+
+    assert compiled.plan.duration_seconds == 13.0
 
 
 def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path: Path) -> None:
