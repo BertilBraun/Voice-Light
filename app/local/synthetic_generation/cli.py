@@ -44,6 +44,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
                         event_light_fraction=parsed.event_light_fraction,
                         assistant_duration_variation=parsed.assistant_duration_variation,
                     ),
+                    enforce_sampling_gates=not parsed.allow_incomplete_sampling_controls,
                 )
                 print(manifest.model_dump_json(indent=2), flush=True)
             case _:
@@ -75,6 +76,11 @@ def _parser() -> argparse.ArgumentParser:
     conversation_parser.add_argument("--user-only-fraction", default=0.1, type=float)
     conversation_parser.add_argument("--event-light-fraction", default=0.1, type=float)
     conversation_parser.add_argument("--assistant-duration-variation", default=0.1, type=float)
+    conversation_parser.add_argument(
+        "--allow-incomplete-sampling-controls",
+        action="store_true",
+        help="Allow small review pilots that cannot meet corpus-scale control quotas.",
+    )
     return parser
 
 

@@ -124,6 +124,7 @@ def build_conversation_corpus(
     output_directory: Path,
     split_seed: str,
     compiler_config: ConversationCompilerConfig,
+    enforce_sampling_gates: bool = True,
 ) -> SyntheticConversationCorpusManifest:
     if not split_seed:
         raise ValueError("Synthetic split seed must not be empty.")
@@ -207,7 +208,8 @@ def build_conversation_corpus(
             )
         )
     sampling_summary = summarize_crop_sampling(tuple(compiled_crops))
-    validate_sampling_gates(sampling_summary)
+    if enforce_sampling_gates:
+        validate_sampling_gates(sampling_summary)
     shards = write_training_shards(output_directory, samples)
     export_manifest = _export_manifest(
         prompt_set,
@@ -643,6 +645,7 @@ def main() -> None:
     parser.add_argument("--user-only-fraction", type=float, default=0.1)
     parser.add_argument("--event-light-fraction", type=float, default=0.1)
     parser.add_argument("--assistant-duration-variation", type=float, default=0.1)
+    parser.add_argument("--allow-incomplete-sampling-controls", action="store_true")
     arguments = parser.parse_args()
     manifest = build_conversation_corpus(
         prompt_set_path=arguments.prompt_set,
@@ -656,6 +659,7 @@ def main() -> None:
             event_light_fraction=arguments.event_light_fraction,
             assistant_duration_variation=arguments.assistant_duration_variation,
         ),
+        enforce_sampling_gates=not arguments.allow_incomplete_sampling_controls,
     )
     print(json.dumps(manifest.model_dump(mode="json"), indent=2))
 

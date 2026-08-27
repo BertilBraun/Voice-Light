@@ -60,39 +60,7 @@ from app.local.training_corpus.export import MaterializedTrainingSample
 def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
     tmp_path: Path,
 ) -> None:
-    prompt_set = _prompt_set()
-    prompt_path = tmp_path / "prompts.json"
-    prompt_path.write_text(prompt_set.model_dump_json(indent=2), encoding="utf-8")
-    render_directory = tmp_path / "render"
-    backend = TtsBackendIdentity(
-        backend_id="fake",
-        model_id="fake/tts",
-        model_revision="test",
-        runtime_version="1",
-        model_license="test-only",
-    )
-    rendered_units = tuple(
-        _rendered_unit(
-            render_directory,
-            prompt_set.plans[0],
-            prompt,
-            backend,
-            _reference(render_directory, prompt_set.plans[0], backend),
-        )
-        for prompt in prompt_set.plans[0].user_prompts
-    )
-    tts_manifest = ConversationTtsManifest(
-        prompt_set_id=prompt_set.set_id,
-        prompt_set_sha256=hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
-        reference_manifest_sha256="d" * 64,
-        backend=backend,
-        detection=DEFAULT_SILENCE_DETECTION,
-        clone_prompts=(_clone_prompt(prompt_set.plans[0], backend),),
-        rendered_units=rendered_units,
-    )
-    tts_path = render_directory / "render.json"
-    tts_path.parent.mkdir(parents=True, exist_ok=True)
-    tts_path.write_text(tts_manifest.model_dump_json(indent=2), encoding="utf-8")
+    prompt_path, tts_path = _write_pipeline_inputs(tmp_path)
 
     manifest = build_conversation_corpus(
         prompt_set_path=prompt_path,
@@ -148,6 +116,59 @@ def test_invalid_crop_sampling_summary_fails_the_pilot_gate() -> None:
 
     with pytest.raises(ValueError, match="10% corpus quota"):
         validate_sampling_gates(summary)
+
+
+def test_review_pilot_can_preserve_incomplete_sampling_controls(tmp_path: Path) -> None:
+    prompt_set_path, tts_manifest_path = _write_pipeline_inputs(tmp_path)
+
+    manifest = build_conversation_corpus(
+        prompt_set_path=prompt_set_path,
+        tts_manifest_path=tts_manifest_path,
+        output_directory=tmp_path / "review-corpus",
+        split_seed="review-pilot",
+        compiler_config=ConversationCompilerConfig(
+            crop_variant_count=1,
+            assistant_only_fraction=0.0,
+            user_only_fraction=0.0,
+            event_light_fraction=0.0,
+        ),
+        enforce_sampling_gates=False,
+    )
+
+    assert manifest.sampling_summary.total_crop_count == 1
+    assert not manifest.sampling_summary.control_quotas_satisfied
+
+
+def _write_pipeline_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    prompt_set = _prompt_set()
+    prompt_path = tmp_path / "prompts.json"
+    prompt_path.write_text(prompt_set.model_dump_json(indent=2), encoding="utf-8")
+    render_directory = tmp_path / "render"
+    backend = TtsBackendIdentity(
+        backend_id="fake",
+        model_id="fake/tts",
+        model_revision="test",
+        runtime_version="1",
+        model_license="test-only",
+    )
+    reference = _reference(render_directory, prompt_set.plans[0], backend)
+    rendered_units = tuple(
+        _rendered_unit(render_directory, prompt_set.plans[0], prompt, backend, reference)
+        for prompt in prompt_set.plans[0].user_prompts
+    )
+    tts_manifest = ConversationTtsManifest(
+        prompt_set_id=prompt_set.set_id,
+        prompt_set_sha256=hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+        reference_manifest_sha256="d" * 64,
+        backend=backend,
+        detection=DEFAULT_SILENCE_DETECTION,
+        clone_prompts=(_clone_prompt(prompt_set.plans[0], backend),),
+        rendered_units=rendered_units,
+    )
+    tts_path = render_directory / "render.json"
+    tts_path.parent.mkdir(parents=True, exist_ok=True)
+    tts_path.write_text(tts_manifest.model_dump_json(indent=2), encoding="utf-8")
+    return prompt_path, tts_path
 
 
 def _prompt_set() -> EnglishConversationPromptSet:
