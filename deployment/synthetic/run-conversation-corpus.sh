@@ -73,7 +73,7 @@ run_compile_stage() {
       --prompt-set "$stage_output/prompts.json" \
       --tts-manifest "$stage_output/cosyvoice/render.json" \
       --output "$stage_output/compiled" \
-      --split-seed voice-light-synthetic-conversations-20h-v2 \
+      --split-seed voice-light-synthetic-conversations-20h-v3 \
       --crop-variants 1 \
       --assistant-only-fraction 0.0 \
       --user-only-fraction 0.0 \
@@ -105,7 +105,7 @@ mkdir -p "$output"
 cd "$repository"
 
 preflight="$output/preflight"
-run_prompt_stage "$preflight" voice_light_conversation_preflight_v2 --count 10
+run_prompt_stage "$preflight" voice_light_conversation_preflight_v3 --count 10
 run_reference_stage "$preflight"
 run_render_stage "$preflight"
 run_compile_stage "$preflight"
@@ -116,7 +116,7 @@ echo "PREFLIGHT_COMPLETE"
 corpus="$output/corpus"
 run_prompt_stage \
   "$corpus" \
-  voice_light_synthetic_conversations_20h_v2 \
+  voice_light_synthetic_conversations_20h_v3 \
   --count 2000 \
   --target-conversation-hours "$target_planned_hours"
 run_reference_stage "$corpus"
