@@ -11,6 +11,7 @@ import pytest
 from app.local.synthetic_generation.completion_dataset import DEFAULT_SILENCE_DETECTION
 from app.local.synthetic_generation.conversation_compiler import (
     ConversationCompilerConfig,
+    PreservePlannedDuration,
     RenderedUserClip,
 )
 from app.local.synthetic_generation.conversation_pipeline import (
@@ -104,6 +105,7 @@ def test_build_conversation_corpus_exports_user_only_multievent_training_rows(
             user_only_fraction=0.125,
             event_light_fraction=0.125,
             assistant_duration_variation=0.0,
+            source_duration=PreservePlannedDuration(),
         ),
     )
 

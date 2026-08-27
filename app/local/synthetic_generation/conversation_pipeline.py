@@ -380,13 +380,20 @@ def _user_placement(
                 generator,
             )
             return CompletionPlacement(event_id=prompt.unit_id, clip_id=clip.clip_id, timing=timing)
-        case HoldUserPrompt():
+        case HoldUserPrompt() if clip.continuation_silences:
             timing = _floor_owning_timing(
                 prior_floor_users,
                 prior_assistants,
                 generator,
             )
             return HoldPlacement(event_id=prompt.unit_id, clip_id=clip.clip_id, timing=timing)
+        case HoldUserPrompt():
+            timing = _floor_owning_timing(
+                prior_floor_users,
+                prior_assistants,
+                generator,
+            )
+            return CompletionPlacement(event_id=prompt.unit_id, clip_id=clip.clip_id, timing=timing)
 
 
 def _floor_owning_timing(

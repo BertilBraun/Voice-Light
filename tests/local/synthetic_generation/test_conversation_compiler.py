@@ -21,6 +21,7 @@ from app.local.synthetic_generation.conversation_compiler import (
     InterruptionFloorClaimPlacement,
     MeasuredSilence,
     NonFloorFeedbackPlacement,
+    PreservePlannedDuration,
     RenderedUserClip,
     ResponseFloorClaimPlacement,
     VirtualAssistantTurn,
@@ -48,7 +49,7 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
     plan = ConversationCompositionPlan(
         conversation_id="multi_event",
         seed=17,
-        duration_seconds=25.0,
+        duration_seconds=40.0,
         user_events=(
             CompletionPlacement(
                 event_id="opening",
@@ -113,6 +114,7 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
     compiled = compile_conversation(plan, clips, tmp_path / "conversation.wav", config)
 
     assert _wave_duration(compiled.audio_path) == 25.0
+    assert compiled.plan.duration_seconds == 25.0
     assert len(compiled.crops) == 5
     assert all(len(crop.labels.p_user_floor_now) == 250 for crop in compiled.crops)
     assert all(len(crop.labels.speculative_eot) == 2 for crop in compiled.crops)
@@ -342,6 +344,7 @@ def test_long_source_materializes_every_sampling_control_without_padding(tmp_pat
             user_only_fraction=0.125,
             event_light_fraction=0.125,
             assistant_duration_variation=0.0,
+            source_duration=PreservePlannedDuration(),
         ),
     )
 
@@ -404,6 +407,7 @@ def test_short_source_reports_last_resort_padding(tmp_path: Path) -> None:
             assistant_only_fraction=0.0,
             user_only_fraction=0.0,
             event_light_fraction=0.0,
+            source_duration=PreservePlannedDuration(),
         ),
     )
 

@@ -178,18 +178,16 @@ class CompletionUserPrompt(FloorOwningUserPromptBase):
 
 class HoldUserPrompt(FloorOwningUserPromptBase):
     condition: Literal["hold"] = "hold"
-    text_before_pause: str = Field(min_length=1, max_length=350)
-    text_after_pause: str = Field(min_length=1, max_length=350)
-    pause_duration_seconds: float = Field(ge=0.5, le=2.5)
+    text: str = Field(min_length=1, max_length=1200)
 
-    @field_validator("text_before_pause", "text_after_pause")
+    @field_validator("text")
     @classmethod
     def validate_english_text(cls, value: str) -> str:
         return _validate_english_text(value)
 
     @model_validator(mode="after")
     def validate_turn_length(self) -> HoldUserPrompt:
-        _user_turn_length((self.text_before_pause, self.text_after_pause))
+        _user_turn_length((self.text,))
         return self
 
 
@@ -623,15 +621,12 @@ def _floor_prompt(
                 text=text,
             )
         case "hold":
-            before, after = _split_hold_text(text)
             return HoldUserPrompt(
                 unit_id=unit_id,
                 sequence_index=sequence_index,
                 speech_act=speech_act,
                 delivery=delivery,
-                text_before_pause=before,
-                text_after_pause=after,
-                pause_duration_seconds=round(generator.uniform(0.5, 2.5), 3),
+                text=text,
             )
         case "response_floor_claim":
             return ResponseFloorClaimUserPrompt(
@@ -672,8 +667,8 @@ def _condition_content_instruction(condition: FloorCondition) -> str:
             return "a complete floor-owning turn that reaches a natural stopping point."
         case "hold":
             return (
-                "one continuous floor-owning thought that remains grammatical and coherent when "
-                "code inserts a hesitation pause near its midpoint; do not add a written pause."
+                "one continuous floor-owning thought that naturally invites a hesitation in its "
+                "spoken delivery; do not add a written pause or split the sentence."
             )
         case "response_floor_claim":
             return "a direct floor-owning answer to the immediately preceding assistant turn."
@@ -705,12 +700,6 @@ def _target_duration_seconds(
     }[pace]
     estimated_seconds = user_words * 60 / user_words_per_minute + assistant_words * 60 / 175 + 15
     return round(min(120.0, max(60.0, estimated_seconds)), 3)
-
-
-def _split_hold_text(text: str) -> tuple[str, str]:
-    words = text.split()
-    split_index = len(words) // 2
-    return " ".join(words[:split_index]), " ".join(words[split_index:])
 
 
 def _validate_english_text(value: str) -> str:
@@ -780,10 +769,9 @@ def user_prompt_texts_for_uniqueness(prompt: UserPrompt) -> tuple[str, ...]:
 
 def _user_prompt_texts(prompt: UserPrompt) -> tuple[str, ...]:
     match prompt:
-        case HoldUserPrompt(text_before_pause=before, text_after_pause=after):
-            return (before, after)
         case (
             CompletionUserPrompt(text=text)
+            | HoldUserPrompt(text=text)
             | NonFloorFeedbackUserPrompt(text=text)
             | ResponseFloorClaimUserPrompt(text=text)
             | InterruptionFloorClaimUserPrompt(text=text)

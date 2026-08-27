@@ -283,17 +283,10 @@ def _materialize_unit(
     )
     sample_rate_hz = activities[0][1]
     if any(activity_sample_rate != sample_rate_hz for _, activity_sample_rate in activities):
-        raise ValueError(f"HOLD clauses for {prepared.prompt.unit_id} use different sample rates.")
-    if isinstance(prepared.prompt, HoldUserPrompt):
-        samples, continuation_silences = _compose_hold(
-            tuple(activity for activity, _ in activities),
-            sample_rate_hz,
-            prepared.prompt.pause_duration_seconds,
-        )
-    else:
-        activity = activities[0][0]
-        samples = activity.samples
-        continuation_silences = activity.internal_silences
+        raise ValueError(f"TTS clauses for {prepared.prompt.unit_id} use different sample rates.")
+    activity = activities[0][0]
+    samples = activity.samples
+    continuation_silences = activity.internal_silences
     relative_audio_path = Path("audio") / f"{prepared.plan.plan_id}_{prepared.prompt.unit_id}.wav"
     audio_path = output_directory / relative_audio_path
     write_pcm16_wave(audio_path, samples, sample_rate_hz)
@@ -363,38 +356,6 @@ def _trim_to_speech(
     )
 
 
-def _compose_hold(
-    activities: tuple[_SpeechActivity, ...],
-    sample_rate_hz: int,
-    pause_duration_seconds: float,
-) -> tuple[np.ndarray, tuple[MeasuredSilence, ...]]:
-    if len(activities) != 2:
-        raise ValueError("A HOLD prompt requires exactly two rendered clauses.")
-    first, second = activities
-    pause_sample_count = round(pause_duration_seconds * sample_rate_hz)
-    pause_start_seconds = first.samples.size / sample_rate_hz
-    exact_pause_seconds = pause_sample_count / sample_rate_hz
-    samples = np.concatenate(
-        (first.samples, np.zeros(pause_sample_count, dtype=np.float32), second.samples)
-    )
-    second_offset = pause_start_seconds + exact_pause_seconds
-    silences = (
-        *first.internal_silences,
-        MeasuredSilence(
-            start_seconds=pause_start_seconds,
-            end_seconds=second_offset,
-        ),
-        *tuple(
-            MeasuredSilence(
-                start_seconds=second_offset + silence.start_seconds,
-                end_seconds=second_offset + silence.end_seconds,
-            )
-            for silence in second.internal_silences
-        ),
-    )
-    return samples, silences
-
-
 def _internal_silences(
     active: np.ndarray,
     frame_seconds: float,
@@ -421,12 +382,11 @@ def _internal_silences(
 
 def _prompt_clauses(prompt: UserPrompt) -> tuple[str, ...]:
     match prompt:
-        case HoldUserPrompt(text_before_pause=before, text_after_pause=after):
-            return (before, after)
         case NonFloorFeedbackUserPrompt(text=text):
             return (text.value,)
         case (
             CompletionUserPrompt(text=text)
+            | HoldUserPrompt(text=text)
             | ResponseFloorClaimUserPrompt(text=text)
             | InterruptionFloorClaimUserPrompt(text=text)
         ):

@@ -158,7 +158,7 @@ def test_renderer_rejects_missing_plan_reference(tmp_path: Path) -> None:
         )
 
 
-def test_renderer_batches_user_only_audio_and_composes_exact_hold(tmp_path: Path) -> None:
+def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: Path) -> None:
     prompt_set, prompt_set_path = _write_prompt_set(tmp_path)
     reference_manifest, reference_manifest_path = _reference_manifest(
         prompt_set, prompt_set_path, tmp_path
@@ -178,17 +178,17 @@ def test_renderer_batches_user_only_audio_and_composes_exact_hold(tmp_path: Path
     assert len(synthesizer.requests) == 1
     reference, requests = synthesizer.requests[0]
     assert reference.plan_id == "pilot_render"
-    assert len(requests) == 5
+    assert len(requests) == 4
     assert all(
         request.text != "Would you prefer the comedy or the mystery?" for request in requests
     )
     assert len(manifest.rendered_units) == 4
     assert all(unit.reference == reference for unit in manifest.rendered_units)
     hold = next(unit for unit in manifest.rendered_units if unit.prompt.condition == "hold")
-    assert len(hold.clauses) == 2
+    assert len(hold.clauses) == 1
     assert len(hold.clip.continuation_silences) == 1
-    inserted_pause = hold.clip.continuation_silences[0]
-    assert np.isclose(inserted_pause.end_seconds - inserted_pause.start_seconds, 0.8)
+    measured_pause = hold.clip.continuation_silences[0]
+    assert np.isclose(measured_pause.end_seconds - measured_pause.start_seconds, 0.6)
     assert hold.clip.audio_path == Path("audio/pilot_render_user_4.wav")
     loaded = load_rendered_user_clips(tmp_path / "rendered" / "render.json")
     assert all(clip.audio_path.is_absolute() for clip in loaded)
@@ -237,7 +237,7 @@ def _result(
 ) -> SpeechSynthesisResult:
     return SpeechSynthesisResult(
         clause_id=request.clause_id,
-        samples=_speech_samples(),
+        samples=_speech_samples(include_internal_silence="_user_4_" in request.clause_id),
         sample_rate_hz=16_000,
         generation_seconds=0.25,
         batch_seed=batch_seed,
@@ -306,16 +306,13 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 sequence_index=4,
                 speech_act=SpeechAct.EXPLANATION,
                 delivery=delivery,
-                text_before_pause=(
+                text=(
                     "The mystery sounds interesting because I usually enjoy following small "
-                    "clues and comparing theories before the final reveal arrives"
-                ),
-                text_after_pause=(
+                    "clues and comparing theories before the final reveal arrives, "
                     "but tonight I would rather relax with familiar jokes, warm characters, and "
                     "a story that does not demand too much concentration from either of us."
                     " tonight"
                 ),
-                pause_duration_seconds=0.8,
             ),
         ),
     )
@@ -355,11 +352,21 @@ def _reference_manifest(
     return load_voice_reference_manifest(reference_manifest_path), reference_manifest_path
 
 
-def _speech_samples() -> np.ndarray:
+def _speech_samples(include_internal_silence: bool = False) -> np.ndarray:
     sample_rate_hz = 16_000
     leading = np.zeros(round(0.12 * sample_rate_hz), dtype=np.float32)
-    time_points = np.arange(round(0.5 * sample_rate_hz)) / sample_rate_hz
+    speech_seconds = 0.6 if include_internal_silence else 0.5
+    time_points = np.arange(round(speech_seconds * sample_rate_hz)) / sample_rate_hz
     speech = (0.2 * np.sin(2.0 * np.pi * 220.0 * time_points)).astype(np.float32)
+    if include_internal_silence:
+        midpoint = speech.size // 2
+        speech = np.concatenate(
+            (
+                speech[:midpoint],
+                np.zeros(round(0.6 * sample_rate_hz), dtype=np.float32),
+                speech[midpoint:],
+            )
+        )
     trailing = np.zeros(round(0.18 * sample_rate_hz), dtype=np.float32)
     return np.concatenate((leading, speech, trailing))
 

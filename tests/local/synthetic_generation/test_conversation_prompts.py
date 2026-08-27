@@ -72,7 +72,7 @@ def test_generation_instruction_requests_only_natural_content() -> None:
     assert "45-90 words" in instruction
     assert "Do not output backchannels" in instruction
     assert '"opening_user_turn"' in instruction
-    assert "hesitation pause near its midpoint" in instruction
+    assert "naturally invites a hesitation" in instruction
 
 
 def test_repair_instruction_returns_validation_errors_to_the_model() -> None:
@@ -345,15 +345,12 @@ def _plan() -> EnglishConversationPromptPlan:
                 sequence_index=4,
                 speech_act=SpeechAct.EXPLANATION,
                 delivery=delivery,
-                text_before_pause=(
+                text=(
                     "The morning routine could also help because the hallway gets surprisingly "
-                    "dark before sunrise, and finding the switch while carrying coffee is awkward"
-                ),
-                text_after_pause=(
+                    "dark before sunrise, and finding the switch while carrying coffee is awkward, "
                     "but I would want to test several schedules, keep the weekends flexible, and "
                     "make sure the lights never wake anyone who decided to sleep late."
                 ),
-                pause_duration_seconds=0.8,
             ),
             CompletionUserPrompt(
                 unit_id="user_4",

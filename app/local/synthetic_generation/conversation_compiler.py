@@ -190,6 +190,21 @@ class ConversationCompositionPlan(SyntheticModel):
         return self
 
 
+class FitRenderedTimeline(SyntheticModel):
+    kind: Literal["fit_rendered_timeline"] = "fit_rendered_timeline"
+    trailing_context_seconds: float = Field(default=1.0, ge=0.0, le=3.0)
+
+
+class PreservePlannedDuration(SyntheticModel):
+    kind: Literal["preserve_planned_duration"] = "preserve_planned_duration"
+
+
+SourceDurationPolicy = Annotated[
+    FitRenderedTimeline | PreservePlannedDuration,
+    Field(discriminator="kind"),
+]
+
+
 class ConversationCompilerConfig(SyntheticModel):
     sample_rate_hz: int = Field(default=16_000, gt=0)
     crop_duration_seconds: float = Field(default=INPUT_DURATION_SECONDS, gt=0.0)
@@ -198,6 +213,7 @@ class ConversationCompilerConfig(SyntheticModel):
     user_only_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
     event_light_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
     assistant_duration_variation: float = Field(default=0.1, ge=0.0, le=0.4)
+    source_duration: SourceDurationPolicy = FitRenderedTimeline()
     speculative_eot_horizons_seconds: tuple[float, ...] = (0.5, 1.0)
 
     @model_validator(mode="after")
@@ -360,18 +376,31 @@ def compile_conversation(
     config: ConversationCompilerConfig,
 ) -> CompiledConversation:
     clips_by_id = _validated_clips(plan, rendered_clips)
-    base_user_events, _ = _resolve_variant_timeline(plan, clips_by_id, 1.0)
+    base_user_events, base_assistant_turns = _resolve_variant_timeline(plan, clips_by_id, 1.0)
+    timeline_end_seconds = max(
+        0.0,
+        *(event.end_seconds for event in base_user_events),
+        *(turn.end_seconds for turn in base_assistant_turns),
+    )
+    match config.source_duration:
+        case FitRenderedTimeline(trailing_context_seconds=trailing_context_seconds):
+            fitted_duration_seconds = timeline_end_seconds + trailing_context_seconds
+        case PreservePlannedDuration():
+            fitted_duration_seconds = plan.duration_seconds
+    if fitted_duration_seconds > 120.0:
+        raise ValueError("Rendered conversation exceeds the 120-second source limit.")
+    fitted_plan = plan.model_copy(update={"duration_seconds": fitted_duration_seconds})
     samples = _compose_user_waveform(
-        plan.duration_seconds, base_user_events, clips_by_id, config.sample_rate_hz
+        fitted_plan.duration_seconds, base_user_events, clips_by_id, config.sample_rate_hz
     )
     output_audio_path.parent.mkdir(parents=True, exist_ok=True)
     _write_pcm16_wave(output_audio_path, samples, config.sample_rate_hz)
     crops = tuple(
-        _compile_crop(plan, clips_by_id, variant_index, config)
+        _compile_crop(fitted_plan, clips_by_id, variant_index, config)
         for variant_index in range(config.crop_variant_count)
     )
     return CompiledConversation(
-        plan=plan,
+        plan=fitted_plan,
         audio_path=output_audio_path,
         audio_sha256=_file_sha256(output_audio_path),
         sample_rate_hz=config.sample_rate_hz,
@@ -424,8 +453,6 @@ def _validated_clips(
         actual_duration_seconds = clip_samples.size / sample_rate_hz
         if not np.isclose(actual_duration_seconds, clip.duration_seconds, atol=1 / sample_rate_hz):
             raise ValueError(f"Measured duration changed for rendered clip {clip.clip_id}.")
-        if event.kind == "hold" and not clip.continuation_silences:
-            raise ValueError(f"Hold event {event.event_id} has no measured continuation silence.")
     _resolve_variant_timeline(plan, clips_by_id, 1.0)
     return clips_by_id
 
