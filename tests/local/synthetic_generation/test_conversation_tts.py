@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +47,9 @@ from app.local.synthetic_generation.conversation_voice_references import (
     TtsBackendIdentity,
     generate_conversation_voice_references,
     load_voice_reference_manifest,
+)
+from app.local.synthetic_generation.merge_conversation_tts_shards import (
+    merge_conversation_tts_shards,
 )
 
 
@@ -272,6 +276,81 @@ def test_renderer_resumes_completed_units_without_tts(tmp_path: Path) -> None:
 
     assert resumed.requests == []
     assert len(manifest.rendered_units) == 4
+
+
+def test_renderer_rejects_unknown_or_empty_plan_shard(tmp_path: Path) -> None:
+    prompt_set, prompt_set_path = _write_prompt_set(tmp_path)
+    reference_manifest, reference_manifest_path = _reference_manifest(
+        prompt_set, prompt_set_path, tmp_path
+    )
+
+    for plan_ids, expected_message in (
+        (frozenset(), "at least one plan"),
+        (frozenset({"unknown_plan"}), "unknown plans"),
+    ):
+        with pytest.raises(ValueError, match=expected_message):
+            render_conversation_user_audio(
+                prompt_set,
+                prompt_set_path,
+                reference_manifest,
+                reference_manifest_path,
+                tmp_path / "rendered",
+                RecordingSynthesizer(),
+                batch_size=1,
+                plan_ids=plan_ids,
+            )
+
+
+def test_merge_conversation_tts_shards_restores_order_and_audio(tmp_path: Path) -> None:
+    prompt_set, prompt_set_path = _write_prompt_set(tmp_path)
+    reference_manifest, reference_manifest_path = _reference_manifest(
+        prompt_set, prompt_set_path, tmp_path
+    )
+    source_directory = tmp_path / "source"
+    complete = render_conversation_user_audio(
+        prompt_set,
+        prompt_set_path,
+        reference_manifest,
+        reference_manifest_path,
+        source_directory,
+        RecordingSynthesizer(),
+        batch_size=4,
+    )
+    shard_paths = []
+    for shard_index, shard_units in enumerate(
+        (complete.rendered_units[::2], complete.rendered_units[1::2])
+    ):
+        shard_directory = tmp_path / f"shard-{shard_index}"
+        (shard_directory / "audio").mkdir(parents=True)
+        for unit in shard_units:
+            shutil.copy2(
+                source_directory / unit.clip.audio_path,
+                shard_directory / unit.clip.audio_path,
+            )
+        shard_manifest = complete.model_copy(update={"rendered_units": shard_units})
+        shard_path = shard_directory / "render.json"
+        shard_path.write_text(shard_manifest.model_dump_json(indent=2), encoding="utf-8")
+        shard_paths.append(shard_path)
+
+    merged = merge_conversation_tts_shards(
+        prompt_set_path,
+        reference_manifest_path,
+        tuple(shard_paths),
+        tmp_path / "merged",
+    )
+
+    assert tuple(unit.prompt.unit_id for unit in merged.rendered_units) == (
+        "user_1",
+        "user_2",
+        "user_3",
+        "user_4",
+    )
+    assert all(
+        (tmp_path / "merged" / unit.clip.audio_path).exists() for unit in merged.rendered_units
+    )
+    assert (tmp_path / "merged" / "rendered-units.jsonl").read_text(encoding="utf-8").count(
+        "\n"
+    ) == 4
 
 
 def _result(

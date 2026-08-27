@@ -53,17 +53,66 @@ run_reference_stage() {
 
 run_render_stage() {
   local stage_output="$1"
+  local worker_count="$2"
   export PYTHONPATH="$cosy_repository:$cosy_repository/third_party/Matcha-TTS:$repository"
+  if [[ "$worker_count" -eq 1 ]]; then
+    run_render_worker "$stage_output" "$stage_output/cosyvoice" 0 1
+    return
+  fi
+  local process_ids=()
+  local shard_index
+  for ((shard_index = 0; shard_index < worker_count; shard_index++)); do
+    run_render_worker \
+      "$stage_output" \
+      "$stage_output/cosyvoice-shards/$(printf '%03d' "$shard_index")" \
+      "$shard_index" \
+      "$worker_count" &
+    process_ids+=("$!")
+  done
+  local failed=0
+  local process_id
+  for process_id in "${process_ids[@]}"; do
+    if ! wait "$process_id"; then
+      failed=1
+    fi
+  done
+  if [[ "$failed" -ne 0 ]]; then
+    echo "One or more CosyVoice render shards failed." >&2
+    return 1
+  fi
+  export PYTHONPATH="$repository"
+  local merge_arguments=()
+  for ((shard_index = 0; shard_index < worker_count; shard_index++)); do
+    merge_arguments+=(
+      --shard-manifest
+      "$stage_output/cosyvoice-shards/$(printf '%03d' "$shard_index")/render.json"
+    )
+  done
+  "$qwen_environment/bin/python" \
+    -m app.local.synthetic_generation.merge_conversation_tts_shards \
+    --prompts "$stage_output/prompts.json" \
+    --references "$stage_output/references/voice-references.json" \
+    --output "$stage_output/cosyvoice" \
+    "${merge_arguments[@]}"
+}
+
+run_render_worker() {
+  local stage_output="$1"
+  local worker_output="$2"
+  local shard_index="$3"
+  local shard_count="$4"
   "$cosy_environment/bin/python" \
     -m app.local.synthetic_generation.generate_conversation_cosyvoice \
     --prompts "$stage_output/prompts.json" \
     --references "$stage_output/references/voice-references.json" \
-    --output "$stage_output/cosyvoice" \
+    --output "$worker_output" \
     --model-directory "$cosy_repository/pretrained_models/Fun-CosyVoice3-0.5B" \
     --model-id FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
     --model-revision "$cosy_model_revision" \
     --runtime-revision "$cosy_runtime_revision" \
-    --batch-size 1
+    --batch-size 1 \
+    --shard-index "$shard_index" \
+    --shard-count "$shard_count"
 }
 
 run_compile_stage() {
@@ -109,7 +158,7 @@ cd "$repository"
 preflight="$output/preflight"
 run_prompt_stage "$preflight" voice_light_conversation_preflight_v3 --count 10
 run_reference_stage "$preflight"
-run_render_stage "$preflight"
+run_render_stage "$preflight" 1
 run_compile_stage "$preflight"
 run_review_stage "$preflight"
 touch "$preflight/PREFLIGHT_COMPLETE"
@@ -122,7 +171,7 @@ run_prompt_stage \
   --count 2000 \
   --target-conversation-hours "$target_planned_hours"
 run_reference_stage "$corpus"
-run_render_stage "$corpus"
+run_render_stage "$corpus" 3
 run_compile_stage "$corpus"
 touch "$corpus/CORPUS_COMPLETE"
 echo "CORPUS_COMPLETE"

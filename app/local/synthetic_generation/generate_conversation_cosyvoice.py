@@ -105,6 +105,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         parsed.prompts.read_text(encoding="utf-8")
     )
     reference_manifest = load_voice_reference_manifest(parsed.references)
+    plan_ids = _shard_plan_ids(prompt_set, parsed.shard_index, parsed.shard_count)
     model = AutoModel(model_dir=str(parsed.model_directory))
     synthesizer = CosyVoiceConversationSynthesizer(
         model=model,
@@ -120,6 +121,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         output_directory=parsed.output,
         synthesizer=synthesizer,
         batch_size=parsed.batch_size,
+        plan_ids=plan_ids,
     )
     print(manifest.model_dump_json(indent=2), flush=True)
 
@@ -152,7 +154,28 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-revision", required=True)
     parser.add_argument("--runtime-revision", required=True)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--shard-count", type=int, default=1)
     return parser
+
+
+def _shard_plan_ids(
+    prompt_set: EnglishConversationPromptSet,
+    shard_index: int,
+    shard_count: int,
+) -> frozenset[str]:
+    if shard_count <= 0:
+        raise ValueError("CosyVoice shard count must be positive.")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("CosyVoice shard index must be within the shard count.")
+    plan_ids = frozenset(
+        plan.plan_id
+        for index, plan in enumerate(prompt_set.plans)
+        if index % shard_count == shard_index
+    )
+    if not plan_ids:
+        raise ValueError("CosyVoice shard assignment produced an empty shard.")
+    return plan_ids
 
 
 if __name__ == "__main__":

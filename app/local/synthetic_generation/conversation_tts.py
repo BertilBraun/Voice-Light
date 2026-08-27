@@ -161,6 +161,7 @@ def render_conversation_user_audio(
     output_directory: Path,
     synthesizer: BatchSpeechSynthesizer,
     batch_size: int,
+    plan_ids: frozenset[str] | None = None,
     detection: SilenceDetectionConfiguration = DEFAULT_SILENCE_DETECTION,
 ) -> ConversationTtsManifest:
     if batch_size <= 0:
@@ -182,7 +183,8 @@ def render_conversation_user_audio(
         synthesizer.identity,
     )
     existing = _read_records(records_path)
-    expected = _prepared_units(prompt_set)
+    selected_plan_ids = _validated_plan_ids(prompt_set, plan_ids)
+    expected = _prepared_units(prompt_set, selected_plan_ids)
     _validate_checkpoint(
         existing,
         expected,
@@ -194,6 +196,8 @@ def render_conversation_user_audio(
         _record_key(record.plan_id, record.prompt.unit_id): record for record in existing
     }
     for plan in prompt_set.plans:
+        if plan.plan_id not in selected_plan_ids:
+            continue
         pending = tuple(
             prepared
             for prepared in expected
@@ -255,9 +259,29 @@ def load_rendered_user_clips(manifest_path: Path) -> tuple[RenderedUserClip, ...
     )
 
 
-def _prepared_units(prompt_set: EnglishConversationPromptSet) -> tuple[_PreparedUnit, ...]:
+def _validated_plan_ids(
+    prompt_set: EnglishConversationPromptSet,
+    plan_ids: frozenset[str] | None,
+) -> frozenset[str]:
+    available = frozenset(plan.plan_id for plan in prompt_set.plans)
+    if plan_ids is None:
+        return available
+    if not plan_ids:
+        raise ValueError("Conversation TTS shard must contain at least one plan.")
+    unexpected = sorted(plan_ids - available)
+    if unexpected:
+        raise ValueError(f"Conversation TTS shard contains unknown plans: {unexpected}.")
+    return plan_ids
+
+
+def _prepared_units(
+    prompt_set: EnglishConversationPromptSet,
+    plan_ids: frozenset[str],
+) -> tuple[_PreparedUnit, ...]:
     prepared = []
     for plan in prompt_set.plans:
+        if plan.plan_id not in plan_ids:
+            continue
         for prompt in sorted(plan.user_prompts, key=lambda item: item.sequence_index):
             texts = _prompt_clauses(prompt)
             requests = tuple(
