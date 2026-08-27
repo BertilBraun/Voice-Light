@@ -26,15 +26,17 @@ directly replies to a user turn. Assistant-first and proactive-assistant scenari
 distribution and invalid at the typed plan boundary.
 
 The first pilot contains 5-20 representative English conversations. It is a design and listening
-gate, not an attempt to generate a statistically complete corpus.
+gate, not an attempt to generate a statistically complete corpus. The accepted pilot now advances
+to a checkpointed 20-hour conversation-timeline experiment, preceded by a retained ten-conversation
+production preflight.
 
 The August 2026 clone-consistency pilot rejected Qwen Base ICL cloning for dataset generation. It
 kept speaker identity stable but made every reviewed conversation substantially more robotic than
 direct Qwen synthesis. A later provider pilot accepted CosyVoice 3 zero-shot cloning as a promising
 conversation renderer: isolated micro-utterances were occasionally odd, but complete conversations
 were coherent and natural enough to continue testing. IndexTTS 2.5, Chatterbox, and VoXtream were
-rejected on listening quality. No scaled generation run is approved before the focused
-Qwen-reference-to-CosyVoice pilot passes review.
+rejected on listening quality. The focused Qwen-reference-to-CosyVoice pilot passed its content,
+naturalness, trimming, timeline, and dense-label review after removing artificial delivery text.
 
 ## Product objective
 
@@ -312,6 +314,13 @@ and compressed labels are small compared with audio and model caches.
 Generation workers must finalize bounded batches, copy the canonical FLACs and manifests off the
 GPU node, verify checksums, and only then clear that batch's scratch artifacts. A corpus-scale run
 must not depend on a single end-of-run transfer.
+
+The initial managed run retains everything on the generation node until the user completes an
+explicit Hugging Face upload and approves cleanup. Prompt planning checkpoints after every accepted
+conversation; reference and user-unit renderers append durable JSONL records and atomically rewrite
+their manifests. The corpus audit reports planned and measured hours, rendered-user hours, RTF,
+topic similarity flags, every semantic and delivery dimension, and measured extended-turn duration
+coverage without silently excluding an item.
 
 ## Label construction
 
