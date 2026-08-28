@@ -47,6 +47,7 @@ class SpeechSynthesisRequest:
     delivery_instruction: str
     speed: float
     seed: int
+    alternative_texts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class SpeechSynthesisResult:
 class SpeechSynthesisAttemptProvenance(SyntheticModel):
     attempt_index: int = Field(ge=1, le=2)
     seed: int = Field(ge=0)
+    text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     generated_duration_seconds: float = Field(gt=0.0)
     generation_seconds: float = Field(ge=0.0)
     outcome: Literal["accepted", "no_speech_like_energy"]
@@ -302,6 +304,7 @@ def _prepared_units(
                     delivery_instruction=_delivery_instruction(prompt),
                     speed=_speech_speed(prompt.delivery.pace),
                     seed=_clause_seed(plan.seed, plan.plan_id, prompt.unit_id, clause_index),
+                    alternative_texts=_alternative_synthesis_texts(prompt),
                 )
                 for clause_index, text in enumerate(texts)
             )
@@ -455,6 +458,25 @@ def _prompt_clauses(prompt: UserPrompt) -> tuple[str, ...]:
             | InterruptionFloorClaimUserPrompt(text=text)
         ):
             return (text,)
+
+
+def _alternative_synthesis_texts(prompt: UserPrompt) -> tuple[str, ...]:
+    match prompt:
+        case NonFloorFeedbackUserPrompt(text=text) if text in {
+            MicroBackchannel.MHM,
+            MicroBackchannel.MM_HMM,
+            MicroBackchannel.UH_HUH,
+        }:
+            return ("yeah",)
+        case NonFloorFeedbackUserPrompt():
+            return ("mm-hmm",)
+        case (
+            CompletionUserPrompt()
+            | HoldUserPrompt()
+            | ResponseFloorClaimUserPrompt()
+            | InterruptionFloorClaimUserPrompt()
+        ):
+            return ()
 
 
 def _manifest(

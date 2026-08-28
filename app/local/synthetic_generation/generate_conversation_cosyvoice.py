@@ -89,6 +89,11 @@ class CosyVoiceConversationSynthesizer:
         total_generation_seconds = 0.0
         for attempt_index in range(1, 3):
             seed = (request.seed + attempt_index - 1) % (2**32)
+            attempt_text = (
+                request.alternative_texts[attempt_index - 2]
+                if attempt_index > 1 and len(request.alternative_texts) >= attempt_index - 1
+                else request.text
+            )
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
             started_at = time.monotonic()
@@ -96,7 +101,7 @@ class CosyVoiceConversationSynthesizer:
                 cast(
                     Iterable[CosyVoiceChunk],
                     self._model.inference_zero_shot(
-                        request.text,
+                        attempt_text,
                         cosyvoice3_reference_prompt(reference.reference_text),
                         str(reference.audio_path),
                         stream=False,
@@ -131,6 +136,7 @@ class CosyVoiceConversationSynthesizer:
                 SpeechSynthesisAttemptProvenance(
                     attempt_index=attempt_index,
                     seed=seed,
+                    text_sha256=hashlib.sha256(attempt_text.encode()).hexdigest(),
                     generated_duration_seconds=samples.size / int(self._model.sample_rate),
                     generation_seconds=generation_seconds,
                     outcome=outcome,
