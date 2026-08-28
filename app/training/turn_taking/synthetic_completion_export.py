@@ -66,12 +66,12 @@ def export_synthetic_completion_validation(
         conversation_id = conversation.plan.conversation_id
         conversation_ids.add(conversation_id)
         window_id = hashlib.sha256(item.sample_id.encode("utf-8")).hexdigest()
-        relative_audio_path = Path("audio") / f"{window_id}.flac"
+        relative_audio_path = Path("audio") / f"{window_id}.wav"
         sf.write(
             output_root / relative_audio_path,
             item.waveform.numpy(),
             compiler_config.sample_rate_hz,
-            format="FLAC",
+            format="WAV",
             subtype="PCM_16",
         )
         anchor_frames = item.targets.event_mask[:, 0].nonzero().flatten().tolist()
