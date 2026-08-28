@@ -21,9 +21,9 @@ exec "$python_environment/bin/python" -m app.training.turn_taking.cli \
   --max-steps 3500 \
   --validation-interval-steps 125 \
   --minimum-steps-before-stopping 1000 \
-  --batch-size 2 \
+  --batch-size 4 \
   --validation-batch-size 4 \
-  --gradient-accumulation-steps 8 \
+  --gradient-accumulation-steps 4 \
   --data-loader-workers 4 \
   --precision bfloat16 \
   --augmentation-profile expanded
