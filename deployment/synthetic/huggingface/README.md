@@ -32,9 +32,11 @@ Each versioned run contains:
 - `audit-prompts.json` and `audit-complete.json`: complete, unfiltered quality flags;
 - `provenance.json`: model revisions, source-code revision, and file checksums.
 
-`builder/voice-light-source.tar.gz` contains the exact source snapshot recorded by
-each run's provenance. Extract it before running the command below, or use a
-Voice-Light checkout at that revision.
+The `builder/` directory contains source snapshots for the revisions recorded by
+the run provenance. `voice-light-source.tar.gz` is the V4 snapshot, while later
+runs whose compiler changed use a revision-qualified archive. Extract the archive
+matching the run's `source_code_revision`, or use a Voice-Light checkout at that
+revision.
 
 Rendered conversations and dense 20-second targets are reproducible build products and
 are intentionally not stored as canonical audio. The included builder code reconstructs
