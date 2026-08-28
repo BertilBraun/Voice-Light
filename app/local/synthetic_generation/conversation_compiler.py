@@ -530,6 +530,9 @@ def _compile_crop(
         variant_index,
         variant_duration,
         event_times,
+        completions + floor_takes,
+        hold_intervals + feedback_intervals,
+        completions,
         user_events,
         assistant_turns,
         user_floor,
@@ -816,6 +819,9 @@ def _crop_start_for_stratum(
     variant_index: int,
     duration_seconds: float,
     event_times: tuple[float, ...],
+    supervised_point_events: tuple[float, ...],
+    supervised_intervals: tuple[tuple[float, float], ...],
+    speculative_completions: tuple[float, ...],
     user_events: tuple[ResolvedUserEvent, ...],
     assistant_turns: tuple[ResolvedAssistantTurn, ...],
     user_floor: tuple[tuple[float, float], ...],
@@ -834,6 +840,10 @@ def _crop_start_for_stratum(
             candidates,
             candidate_stratum,
             event_times,
+            supervised_point_events,
+            supervised_intervals,
+            speculative_completions,
+            duration_seconds,
             user_events,
             assistant_turns,
             user_floor,
@@ -850,6 +860,10 @@ def _valid_crop_starts(
     candidates: tuple[float, ...],
     sampling_stratum: CropSamplingStratum,
     event_times: tuple[float, ...],
+    supervised_point_events: tuple[float, ...],
+    supervised_intervals: tuple[tuple[float, float], ...],
+    speculative_completions: tuple[float, ...],
+    conversation_duration_seconds: float,
     user_events: tuple[ResolvedUserEvent, ...],
     assistant_turns: tuple[ResolvedAssistantTurn, ...],
     user_floor: tuple[tuple[float, float], ...],
@@ -861,7 +875,16 @@ def _valid_crop_starts(
             return tuple(
                 start
                 for start in candidates
-                if _contains_event_after_context(start, crop_duration_seconds, event_times)
+                if _contains_supervised_positive(
+                    start,
+                    crop_duration_seconds,
+                    supervised_point_events,
+                    supervised_intervals,
+                    speculative_completions,
+                    speculative_horizon_seconds,
+                    conversation_duration_seconds,
+                    minimum_context_seconds=min(4.0, crop_duration_seconds),
+                )
             )
         case CropSamplingStratum.ASSISTANT_ONLY:
             return tuple(
@@ -891,11 +914,14 @@ def _valid_crop_starts(
             return tuple(
                 start
                 for start in candidates
-                if not _contains_event(
+                if not _contains_supervised_positive(
                     start,
                     crop_duration_seconds,
-                    event_times,
+                    supervised_point_events,
+                    supervised_intervals,
+                    speculative_completions,
                     speculative_horizon_seconds,
+                    conversation_duration_seconds,
                 )
             )
 
@@ -948,14 +974,34 @@ def _contains_event(
     return any(crop_start_seconds <= event_time < crop_end for event_time in event_times)
 
 
-def _contains_event_after_context(
+def _contains_supervised_positive(
     crop_start_seconds: float,
     crop_duration_seconds: float,
-    event_times: tuple[float, ...],
+    point_events: tuple[float, ...],
+    intervals: tuple[tuple[float, float], ...],
+    speculative_completions: tuple[float, ...],
+    speculative_horizon_seconds: float,
+    conversation_duration_seconds: float,
+    minimum_context_seconds: float = 0.0,
 ) -> bool:
-    supervised_start = crop_start_seconds + min(4.0, crop_duration_seconds)
-    crop_end = crop_start_seconds + crop_duration_seconds
-    return any(supervised_start <= event_time < crop_end for event_time in event_times)
+    first_frame_index = max(0, round(minimum_context_seconds / FRAME_SECONDS))
+    frame_count = round(crop_duration_seconds / FRAME_SECONDS)
+    frame_times = (
+        crop_start_seconds + (frame_index + 0.5) * FRAME_SECONDS
+        for frame_index in range(first_frame_index, frame_count)
+    )
+    return any(
+        _frame_contains(frame_time, point_events)
+        or _active_at(frame_time, intervals) == 1.0
+        or (
+            frame_time + speculative_horizon_seconds <= conversation_duration_seconds
+            and any(
+                frame_time < completion <= frame_time + speculative_horizon_seconds
+                for completion in speculative_completions
+            )
+        )
+        for frame_time in frame_times
+    )
 
 
 def _assistant_only_control(

@@ -356,6 +356,48 @@ def test_composition_plan_allows_rendered_reflow_beyond_prompt_target_limit() ->
     assert plan.duration_seconds == 150.0
 
 
+def test_subframe_feedback_falls_back_to_event_light_crop(tmp_path: Path) -> None:
+    feedback = _clip(tmp_path, "subframe_feedback", 0.02, 0.0, 0.02)
+    plan = ConversationCompositionPlan(
+        conversation_id="subframe_feedback",
+        seed=11,
+        duration_seconds=20.0,
+        user_events=(
+            NonFloorFeedbackPlacement(
+                event_id="feedback",
+                clip_id="subframe_feedback",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant",
+                    position_fraction=0.513,
+                ),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant",
+                timing=FixedAssistantTiming(start_seconds=0.0),
+                duration_seconds=10.0,
+            ),
+        ),
+    )
+
+    compiled = compile_conversation(
+        plan,
+        (feedback,),
+        tmp_path / "subframe-feedback.wav",
+        ConversationCompilerConfig(
+            crop_variant_count=1,
+            assistant_only_fraction=0.0,
+            user_only_fraction=0.0,
+            event_light_fraction=0.0,
+            assistant_duration_variation=0.0,
+        ),
+    )
+
+    assert compiled.crops[0].sampling_stratum is CropSamplingStratum.EVENT_LIGHT
+    assert compiled.crops[0].event_light
+
+
 def test_long_source_materializes_every_sampling_control_without_padding(tmp_path: Path) -> None:
     extended = _clip(tmp_path, "extended", 26.0, 0.0, 26.0)
     closing = _clip(tmp_path, "closing", 1.0, 0.0, 0.9)
