@@ -51,6 +51,13 @@ def test_prepare_hub_corpora_downloads_only_canonical_units_and_materializes_run
 
     observed_outputs: list[Path] = []
 
+    def extract_archives(downloaded_units_directory: Path, destination: Path) -> Path:
+        assert downloaded_units_directory.name == "units"
+        destination.mkdir(parents=True)
+        path = destination / "render.json"
+        path.write_text("{}")
+        return path
+
     def build_corpus(
         prompt_set_path: Path,
         tts_manifest_path: Path,
@@ -69,6 +76,10 @@ def test_prepare_hub_corpora_downloads_only_canonical_units_and_materializes_run
         "app.local.synthetic_generation.synthetic_hub.build_conversation_corpus",
         build_corpus,
     )
+    monkeypatch.setattr(
+        "app.local.synthetic_generation.synthetic_hub.extract_synthetic_unit_archives",
+        extract_archives,
+    )
     request = SyntheticHubPreparationRequest(
         repository_id="test/synthetic",
         revision="1" * 40,
@@ -85,10 +96,12 @@ def test_prepare_hub_corpora_downloads_only_canonical_units_and_materializes_run
         (
             "runs/v4/prompts.json",
             "runs/v4/units/render.json",
-            "runs/v4/units/audio/*.flac",
+            "runs/v4/units/unit-shards.json",
+            "runs/v4/units/shards/*.tar",
             "runs/v5/prompts.json",
             "runs/v5/units/render.json",
-            "runs/v5/units/audio/*.flac",
+            "runs/v5/units/unit-shards.json",
+            "runs/v5/units/shards/*.tar",
         )
     ]
     assert observed_outputs == [tmp_path / "prepared" / "v4", tmp_path / "prepared" / "v5"]

@@ -56,6 +56,7 @@ from app.local.synthetic_generation.conversation_voice_references import (
     ConversationVoiceReferenceManifest,
     TtsBackendIdentity,
 )
+from app.local.synthetic_generation.synthetic_hub import extract_synthetic_unit_archives
 from app.local.synthetic_generation.synthetic_publication import (
     SyntheticPublicationRequest,
     stage_synthetic_publication,
@@ -242,7 +243,18 @@ def test_stage_synthetic_publication_rewrites_absolute_reference_paths(
     assert (stage / "units" / portable_manifest.rendered_units[0].clip.audio_path).is_file()
     assert manifest.conversation_count == 1
     assert manifest.rendered_unit_count == 1
-    assert len(manifest.files) == 7
+    assert (stage / "units" / "unit-shards.json").is_file()
+    assert tuple((stage / "units" / "shards").glob("*.tar"))
+    assert len(manifest.files) == 9
+    extracted_manifest_path = extract_synthetic_unit_archives(
+        stage / "units", tmp_path / "extracted-units"
+    )
+    extracted_manifest = ConversationTtsManifest.model_validate_json(
+        extracted_manifest_path.read_text(encoding="utf-8")
+    )
+    assert (
+        extracted_manifest_path.parent / extracted_manifest.rendered_units[0].clip.audio_path
+    ).is_file()
 
 
 def _write_pipeline_inputs(tmp_path: Path) -> tuple[Path, Path]:

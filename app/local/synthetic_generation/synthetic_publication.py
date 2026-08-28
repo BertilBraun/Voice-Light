@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import tarfile
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -26,6 +27,8 @@ class PublishedFileRole(StrEnum):
     REFERENCE_AUDIO = "reference_audio"
     UNIT_MANIFEST = "unit_manifest"
     UNIT_AUDIO = "unit_audio"
+    UNIT_ARCHIVE_MANIFEST = "unit_archive_manifest"
+    UNIT_ARCHIVE = "unit_archive"
     QUALITY_LEDGER = "quality_ledger"
 
 
@@ -54,6 +57,20 @@ class SyntheticRunPublicationManifest(SyntheticModel):
     conversation_count: int = Field(gt=0)
     rendered_unit_count: int = Field(gt=0)
     files: tuple[PublishedFile, ...]
+
+
+class PublishedUnitArchive(SyntheticModel):
+    path: Path
+    size_bytes: int = Field(gt=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    audio_paths: tuple[Path, ...] = Field(min_length=1)
+
+
+class PublishedUnitArchiveManifest(SyntheticModel):
+    schema_version: Literal["voice-light-synthetic-unit-archives-v1"] = (
+        "voice-light-synthetic-unit-archives-v1"
+    )
+    archives: tuple[PublishedUnitArchive, ...] = Field(min_length=1)
 
 
 class SyntheticPublicationSummary(SyntheticModel):
@@ -122,6 +139,7 @@ def stage_synthetic_publication(
         portable_units.model_dump_json(indent=2) + "\n",
         encoding="utf-8",
     )
+    _stage_unit_archives(destination / "units", portable_units)
     for ledger_name in ("audit-prompts.json", "audit-complete.json"):
         _copy_file(
             request.source_directory / ledger_name,
@@ -213,6 +231,67 @@ def _stage_units(
     return manifest.model_copy(update={"rendered_units": tuple(portable_units)})
 
 
+def _stage_unit_archives(
+    units_directory: Path,
+    manifest: ConversationTtsManifest,
+    maximum_archive_bytes: int = 64 * 1024 * 1024,
+) -> PublishedUnitArchiveManifest:
+    if maximum_archive_bytes <= 0:
+        raise ValueError("maximum_archive_bytes must be positive.")
+    audio_paths = tuple(sorted({unit.clip.audio_path for unit in manifest.rendered_units}))
+    groups: list[list[Path]] = []
+    current: list[Path] = []
+    current_size = 0
+    for audio_path in audio_paths:
+        size = (units_directory / audio_path).stat().st_size
+        if current and current_size + size > maximum_archive_bytes:
+            groups.append(current)
+            current = []
+            current_size = 0
+        current.append(audio_path)
+        current_size += size
+    if current:
+        groups.append(current)
+    archive_directory = units_directory / "shards"
+    archive_directory.mkdir()
+    archives = tuple(
+        _write_unit_archive(units_directory, index, tuple(group))
+        for index, group in enumerate(groups)
+    )
+    archive_manifest = PublishedUnitArchiveManifest(archives=archives)
+    (units_directory / "unit-shards.json").write_text(
+        archive_manifest.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return archive_manifest
+
+
+def _write_unit_archive(
+    units_directory: Path,
+    index: int,
+    audio_paths: tuple[Path, ...],
+) -> PublishedUnitArchive:
+    relative_archive_path = Path("shards") / f"{index:04d}.tar"
+    archive_path = units_directory / relative_archive_path
+    with tarfile.open(archive_path, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for audio_path in audio_paths:
+            source = units_directory / audio_path
+            archive_info = archive.gettarinfo(str(source), arcname=audio_path.as_posix())
+            archive_info.mtime = 0
+            archive_info.uid = 0
+            archive_info.gid = 0
+            archive_info.uname = ""
+            archive_info.gname = ""
+            with source.open("rb") as audio_file:
+                archive.addfile(archive_info, audio_file)
+    return PublishedUnitArchive(
+        path=relative_archive_path,
+        size_bytes=archive_path.stat().st_size,
+        sha256=_file_sha256(archive_path),
+        audio_paths=audio_paths,
+    )
+
+
 def _resolved_audio_path(directory: Path, audio_path: Path) -> Path:
     return audio_path if audio_path.is_absolute() else directory / audio_path
 
@@ -257,6 +336,10 @@ def _file_role(path: Path) -> PublishedFileRole:
         return PublishedFileRole.REFERENCE_AUDIO
     if path == Path("units/render.json"):
         return PublishedFileRole.UNIT_MANIFEST
+    if path == Path("units/unit-shards.json"):
+        return PublishedFileRole.UNIT_ARCHIVE_MANIFEST
+    if path.parts[:2] == ("units", "shards"):
+        return PublishedFileRole.UNIT_ARCHIVE
     if path.parts[0] == "units":
         return PublishedFileRole.UNIT_AUDIO
     return PublishedFileRole.QUALITY_LEDGER

@@ -268,8 +268,8 @@ def main() -> None:
             )
             validation_inventory = build_turn_completion_inventory(
                 samples=validation_source.samples,
-                corpus_repository=arguments.hub_repository,
-                corpus_revision=arguments.hub_revision,
+                corpus_repository=validation_repository,
+                corpus_revision=validation_revision,
                 split=TrainingCorpusSplit.VALIDATION,
             )
             validation_boundaries = build_inventory_completion_boundaries(
