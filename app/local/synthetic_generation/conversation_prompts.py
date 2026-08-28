@@ -254,10 +254,10 @@ class EnglishConversationPromptPlanData(SyntheticModel):
     plan_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     seed: int = Field(ge=0)
     domain: TopicDomain
-    topic: str = Field(min_length=1, max_length=120)
+    topic: str = Field(min_length=1)
     target_duration_seconds: float = Field(ge=60.0, le=120.0)
     base_user_voice: BaseUserVoice
-    voice_reference_text: str = Field(min_length=1, max_length=180)
+    voice_reference_text: str = Field(min_length=1)
     prefix_ambiguity: PrefixAmbiguity = IndependentPrefixAmbiguity()
     assistant_turns: tuple[AssistantTurnPrompt, ...]
     user_prompts: tuple[UserPrompt, ...] = Field(min_length=3, max_length=12)
@@ -274,8 +274,8 @@ class EnglishConversationPromptPlanData(SyntheticModel):
 
 
 class EnglishConversationContentDraft(SyntheticModel):
-    topic: str = Field(min_length=1, max_length=120)
-    voice_reference_text: str = Field(min_length=1, max_length=180)
+    topic: str = Field(min_length=1)
+    voice_reference_text: str = Field(min_length=1)
     opening_user_turn: str = Field(min_length=1, max_length=600)
     brief_user_turn: str = Field(min_length=1, max_length=160)
     normal_user_turn: str = Field(min_length=1, max_length=600)

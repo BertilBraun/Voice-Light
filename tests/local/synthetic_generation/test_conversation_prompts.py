@@ -286,6 +286,17 @@ def test_plan_accepts_natural_turn_lengths_outside_target_bands() -> None:
     assert plan.user_prompts[0].text == "No."
 
 
+def test_content_schema_accepts_descriptive_topics_and_references() -> None:
+    values = _content_draft().model_dump()
+    values["topic"] = " ".join(["descriptive topic"] * 20)
+    values["voice_reference_text"] = " ".join(["natural reference sentence"] * 20)
+
+    draft = EnglishConversationContentDraft.model_validate(values)
+
+    assert len(draft.topic) > 120
+    assert len(draft.voice_reference_text) > 180
+
+
 def test_llm_content_schema_excludes_structural_plan_fields() -> None:
     properties = EnglishConversationContentDraft.model_json_schema()["properties"]
 
