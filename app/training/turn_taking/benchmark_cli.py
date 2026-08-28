@@ -146,6 +146,9 @@ from app.training.turn_taking.hub import (
     HuggingFaceTurnTakingDataset,
     LocalMaterializedTurnTakingDataset,
 )
+from app.training.turn_taking.synthetic_completion_export import (
+    export_synthetic_completion_validation,
+)
 
 PINNED_CORPUS_REVISION = "56e68eb8fb1d42159483612f508b9ce27672f724"
 PINNED_NEMOTRON_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
@@ -183,6 +186,7 @@ def main() -> None:
     _add_completion_analyze_parser(subparsers)
     _add_completion_merge_inventory_parser(subparsers)
     _add_completion_merge_predictions_parser(subparsers)
+    _add_synthetic_completion_export_parser(subparsers)
     _add_completion_audit_parser(subparsers)
     _add_completion_audit_refresh_parser(subparsers)
     _add_completion_audit_analysis_parser(subparsers)
@@ -216,6 +220,8 @@ def main() -> None:
             _merge_completion_inventories(arguments)
         case "merge-completion-predictions-v2":
             _merge_completion_predictions(arguments)
+        case "export-synthetic-completion-validation-v1":
+            _export_synthetic_completion_validation(arguments)
         case "completion-label-audit-v2":
             _completion_label_audit(arguments)
         case "refresh-completion-label-audit-ui-v2":
@@ -426,6 +432,18 @@ def _add_completion_merge_predictions_parser(
     parser.add_argument("inventory", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("predictions", type=Path, nargs="+")
+
+
+def _add_synthetic_completion_export_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "export-synthetic-completion-validation-v1",
+        help="Materialize every deterministic synthetic EOT/HOLD validation anchor.",
+    )
+    parser.add_argument("source_root", type=Path)
+    parser.add_argument("output_root", type=Path)
+    parser.add_argument("--random-seed", type=int, required=True)
 
 
 def _add_completion_audit_parser(
@@ -1030,6 +1048,15 @@ def _merge_completion_predictions(arguments: argparse.Namespace) -> None:
     )
     write_completion_predictions(arguments.output, artifact)
     print(artifact.manifest.model_dump_json(indent=2), flush=True)
+
+
+def _export_synthetic_completion_validation(arguments: argparse.Namespace) -> None:
+    manifest = export_synthetic_completion_validation(
+        source_root=arguments.source_root,
+        output_root=arguments.output_root,
+        random_seed=arguments.random_seed,
+    )
+    print(manifest.model_dump_json(indent=2), flush=True)
 
 
 def _completion_label_audit(arguments: argparse.Namespace) -> None:
