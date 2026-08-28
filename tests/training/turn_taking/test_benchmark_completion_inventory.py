@@ -198,6 +198,33 @@ def test_inventory_uses_explicit_synthetic_continuation_interval() -> None:
     assert len(candidate.target_points) == 5
 
 
+def test_explicit_synthetic_inventory_retains_terminal_anchor_during_floor_overlap() -> None:
+    floor = [0.0] * FRAMES_PER_SAMPLE
+    floor[0:4] = [1.0] * 4
+    completion = [-1.0] * FRAMES_PER_SAMPLE
+    completion[3] = 1.0
+
+    inventory = build_turn_completion_inventory(
+        samples=(
+            _sample(
+                "a" * 64,
+                floor=floor,
+                completion=completion,
+                assistant_floor=[1.0] * FRAMES_PER_SAMPLE,
+            ),
+        ),
+        corpus_repository="owner/corpus",
+        corpus_revision=CORPUS_REVISION,
+        split=TrainingCorpusSplit.VALIDATION,
+        causal_horizon_seconds=0.32,
+        continuation_interval_targets=True,
+    )
+
+    assert inventory.manifest.candidate_count == 1
+    assert inventory.candidates[0].boundary_kind is CompletionBoundaryKind.TERMINAL
+    assert len(inventory.candidates[0].target_points) == 4
+
+
 def _sample(
     window_id: str,
     floor: list[float],
