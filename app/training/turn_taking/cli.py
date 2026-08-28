@@ -17,6 +17,7 @@ from app.training.turn_taking.completion_training import (
     balanced_completion_weights,
     build_completion_boundaries,
     build_inventory_completion_boundaries,
+    filter_completion_boundaries_by_dataset,
 )
 from app.training.turn_taking.completion_validation import (
     CompletionValidator,
@@ -66,6 +67,7 @@ def main() -> None:
     parser.add_argument("--synthetic-replay-corpus", type=Path, action="append")
     parser.add_argument("--synthetic-replay-fraction", type=_open_unit_float)
     parser.add_argument("--hub-revision")
+    parser.add_argument("--hub-training-dataset-name", action="append")
     parser.add_argument(
         "--hub-split",
         choices=tuple(split.value for split in TrainingCorpusSplit),
@@ -114,6 +116,8 @@ def main() -> None:
         )
     if arguments.synthetic_replay_corpus is not None and arguments.hub_revision is None:
         parser.error("Synthetic replay requires a pinned human --hub-revision.")
+    if arguments.hub_training_dataset_name is not None and arguments.hub_revision is None:
+        parser.error("Human training dataset selection requires a pinned --hub-revision.")
     if arguments.resume_checkpoint is None:
         config = TrainingConfig()
         if arguments.max_steps is not None:
@@ -292,6 +296,12 @@ def main() -> None:
                 parser.error("Turn-completion training requires --hub-split train.")
             if arguments.dynamic_synthetic_corpus is None:
                 boundaries = build_completion_boundaries(dataset.samples, completion_objective)
+                if arguments.hub_training_dataset_name is not None:
+                    boundaries = filter_completion_boundaries_by_dataset(
+                        samples=dataset.samples,
+                        boundaries=boundaries,
+                        dataset_names=frozenset(arguments.hub_training_dataset_name),
+                    )
                 dataset = CompletionBoundaryDataset(dataset, boundaries)
                 human_weights = balanced_completion_weights(boundaries)
                 if arguments.synthetic_replay_corpus is None:

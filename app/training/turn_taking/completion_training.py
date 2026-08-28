@@ -99,6 +99,25 @@ def build_completion_boundaries(
     return tuple(boundaries)
 
 
+def filter_completion_boundaries_by_dataset(
+    samples: tuple[MaterializedTrainingSample, ...],
+    boundaries: tuple[CompletionBoundaryIndex, ...],
+    dataset_names: frozenset[str],
+) -> tuple[CompletionBoundaryIndex, ...]:
+    if not dataset_names:
+        raise ValueError("At least one human training dataset name is required.")
+    filtered = tuple(
+        boundary
+        for boundary in boundaries
+        if samples[boundary.sample_index].dataset_name in dataset_names
+    )
+    if not filtered:
+        raise ValueError(
+            f"No completion boundaries matched human training datasets {sorted(dataset_names)}."
+        )
+    return filtered
+
+
 def build_inventory_completion_boundaries(
     samples: tuple[MaterializedTrainingSample, ...],
     inventory: TurnCompletionInventory,

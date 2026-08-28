@@ -17,9 +17,30 @@ from app.training.turn_taking.completion_training import (
     balanced_completion_weights,
     build_completion_boundaries,
     build_inventory_completion_boundaries,
+    filter_completion_boundaries_by_dataset,
 )
 from app.training.turn_taking.config import TurnCompletionObjectiveConfig
 from app.training.turn_taking.data import FrameTargets, TrainingItem
+
+
+def test_filter_completion_boundaries_by_dataset() -> None:
+    masked = [-1.0] * FRAMES_PER_SAMPLE
+    zeros = [0.0] * FRAMES_PER_SAMPLE
+    sample = _sample(masked, masked, zeros, zeros)
+    first = sample.model_copy(update={"dataset_name": "first"})
+    second = sample.model_copy(update={"dataset_name": "second"})
+    boundaries = (
+        CompletionBoundaryIndex(0, 10, CompletionClass.HOLD),
+        CompletionBoundaryIndex(1, 20, CompletionClass.EOT),
+    )
+
+    filtered = filter_completion_boundaries_by_dataset(
+        samples=(first, second),
+        boundaries=boundaries,
+        dataset_names=frozenset(("second",)),
+    )
+
+    assert filtered == (CompletionBoundaryIndex(1, 20, CompletionClass.EOT),)
 
 
 class _ItemDataset(Dataset[TrainingItem]):
