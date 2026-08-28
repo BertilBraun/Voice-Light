@@ -345,6 +345,17 @@ def test_assistant_duration_variation_reflows_audio_and_eot_labels(tmp_path: Pat
         assert abs(audio_onset - expected_onset) < 0.01
 
 
+def test_composition_plan_allows_rendered_reflow_beyond_prompt_target_limit() -> None:
+    plan = ConversationCompositionPlan(
+        conversation_id="long_rendered_reflow",
+        seed=9,
+        duration_seconds=150.0,
+        user_events=(),
+    )
+
+    assert plan.duration_seconds == 150.0
+
+
 def test_long_source_materializes_every_sampling_control_without_padding(tmp_path: Path) -> None:
     extended = _clip(tmp_path, "extended", 26.0, 0.0, 26.0)
     closing = _clip(tmp_path, "closing", 1.0, 0.0, 0.9)

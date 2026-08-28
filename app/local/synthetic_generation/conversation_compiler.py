@@ -16,6 +16,7 @@ from app.local.synthetic_generation.models import SyntheticModel
 from app.local.training_samples.constants import FRAME_SECONDS, INPUT_DURATION_SECONDS
 
 MASKED_TARGET = -1.0
+MAXIMUM_RENDERED_CONVERSATION_SECONDS = 180.0
 
 
 class MeasuredSilence(SyntheticModel):
@@ -178,7 +179,7 @@ class ConversationCompositionPlan(SyntheticModel):
     )
     conversation_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     seed: int = Field(ge=0)
-    duration_seconds: float = Field(gt=0.0, le=120.0)
+    duration_seconds: float = Field(gt=0.0, le=MAXIMUM_RENDERED_CONVERSATION_SECONDS)
     user_events: tuple[UserClipPlacement, ...]
     assistant_turns: tuple[VirtualAssistantTurn, ...] = ()
 
@@ -411,8 +412,8 @@ def compile_conversation(
             fitted_duration_seconds = plan.duration_seconds
             if timeline_end_seconds > fitted_duration_seconds:
                 raise ValueError("Nominal timeline exceeds preserved conversation duration.")
-    if fitted_duration_seconds > 120.0:
-        raise ValueError("Rendered conversation exceeds the 120-second source limit.")
+    if fitted_duration_seconds > MAXIMUM_RENDERED_CONVERSATION_SECONDS:
+        raise ValueError("Rendered conversation exceeds the 180-second source limit.")
     fitted_plan = plan.model_copy(update={"duration_seconds": fitted_duration_seconds})
     samples = _compose_user_waveform(
         fitted_plan.duration_seconds, base_user_events, clips_by_id, config.sample_rate_hz
@@ -519,8 +520,8 @@ def _compile_crop(
         *(event.end_seconds for event in user_events),
         *(turn.end_seconds for turn in assistant_turns),
     )
-    if variant_duration > 120.0:
-        raise ValueError("Reflowed conversation exceeds the 120-second source limit.")
+    if variant_duration > MAXIMUM_RENDERED_CONVERSATION_SECONDS:
+        raise ValueError("Reflowed conversation exceeds the 180-second source limit.")
     feedback_starts = tuple(start for start, _ in feedback_intervals)
     hold_starts = tuple(start for start, _ in hold_intervals)
     event_times = completions + hold_starts + feedback_starts + floor_takes
