@@ -158,7 +158,7 @@ def build_conversation_corpus(
     samples: list[MaterializedTrainingSample] = []
     compiled_crops: list[TrainingCropPlan] = []
     references: list[CompiledConversationReference] = []
-    for prompt_plan in prompt_set.plans:
+    for plan_index, prompt_plan in enumerate(prompt_set.plans):
         rendered_clips = rendered_by_plan[prompt_plan.plan_id]
         composition_plan = composition_plan_from_rendered_prompt(prompt_plan, rendered_clips)
         conversation_directory = output_directory / "conversations" / prompt_plan.plan_id
@@ -167,6 +167,7 @@ def build_conversation_corpus(
             rendered_clips,
             conversation_directory / "source.flac",
             compiler_config,
+            sampling_offset=plan_index * compiler_config.crop_variant_count,
         )
         plan_path = conversation_directory / "composition.json"
         compiled_path = conversation_directory / "compiled.json"

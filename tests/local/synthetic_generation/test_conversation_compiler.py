@@ -28,6 +28,7 @@ from app.local.synthetic_generation.conversation_compiler import (
     VirtualAssistantTurn,
     compile_conversation,
     materialize_crop_audio,
+    sampling_stratum_for_index,
 )
 from app.local.synthetic_generation.conversation_pipeline import summarize_crop_sampling
 
@@ -289,6 +290,25 @@ def test_compile_conversation_is_deterministic_across_epochs(tmp_path: Path) -> 
     assert tuple(crop.assistant_duration_scale for crop in first.crops) == tuple(
         crop.assistant_duration_scale for crop in second.crops
     )
+
+
+def test_sampling_strata_follow_corpus_level_fractions() -> None:
+    config = ConversationCompilerConfig(
+        crop_variant_count=4,
+        assistant_only_fraction=0.1,
+        user_only_fraction=0.1,
+        event_light_fraction=0.1,
+    )
+
+    strata = tuple(sampling_stratum_for_index(index, config) for index in range(1_000))
+
+    expected = {
+        CropSamplingStratum.ASSISTANT_ONLY: 100,
+        CropSamplingStratum.USER_ONLY: 100,
+        CropSamplingStratum.EVENT_LIGHT: 100,
+        CropSamplingStratum.EVENT_FOCUSED: 700,
+    }
+    assert all(abs(strata.count(stratum) - count) <= 2 for stratum, count in expected.items())
 
 
 def test_assistant_duration_variation_reflows_audio_and_eot_labels(tmp_path: Path) -> None:

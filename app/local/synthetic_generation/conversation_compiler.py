@@ -17,6 +17,7 @@ from app.local.training_samples.constants import FRAME_SECONDS, INPUT_DURATION_S
 
 MASKED_TARGET = -1.0
 MAXIMUM_RENDERED_CONVERSATION_SECONDS = 180.0
+MINIMUM_CONTROL_ACTIVITY_SECONDS = 2.0
 
 
 class MeasuredSilence(SyntheticModel):
@@ -233,16 +234,15 @@ class ConversationCompilerConfig(SyntheticModel):
             self.speculative_eot_horizons_seconds
         ):
             raise ValueError("Speculative EOT horizons must be strictly increasing and unique.")
-        requested_control_count = sum(
-            _fraction_count(self.crop_variant_count, fraction)
-            for fraction in (
+        requested_control_fraction = sum(
+            (
                 self.assistant_only_fraction,
                 self.user_only_fraction,
                 self.event_light_fraction,
             )
         )
-        if requested_control_count > self.crop_variant_count:
-            raise ValueError("Requested crop control strata exceed the crop variant count.")
+        if requested_control_fraction > 1.0:
+            raise ValueError("Requested crop control strata exceed the corpus fraction.")
         return self
 
 
@@ -397,7 +397,10 @@ def compile_conversation(
     rendered_clips: tuple[RenderedUserClip, ...],
     output_audio_path: Path,
     config: ConversationCompilerConfig,
+    sampling_offset: int = 0,
 ) -> CompiledConversation:
+    if sampling_offset < 0:
+        raise ValueError("sampling_offset must not be negative.")
     clips_by_id = _validated_clips(plan, rendered_clips)
     base_user_events, base_assistant_turns = _resolve_variant_timeline(plan, clips_by_id, 1.0)
     timeline_end_seconds = max(
@@ -421,7 +424,13 @@ def compile_conversation(
     output_audio_path.parent.mkdir(parents=True, exist_ok=True)
     write_mono_pcm16_audio(output_audio_path, samples, config.sample_rate_hz)
     crops = tuple(
-        _compile_crop(fitted_plan, clips_by_id, variant_index, config)
+        _compile_crop(
+            fitted_plan,
+            clips_by_id,
+            variant_index,
+            sampling_offset + variant_index,
+            config,
+        )
         for variant_index in range(config.crop_variant_count)
     )
     return CompiledConversation(
@@ -506,13 +515,14 @@ def _compile_crop(
     plan: ConversationCompositionPlan,
     clips_by_id: dict[str, RenderedUserClip],
     variant_index: int,
+    sampling_index: int,
     config: ConversationCompilerConfig,
 ) -> TrainingCropPlan:
     generator = np.random.default_rng(plan.seed + variant_index * 104_729)
     variation = config.assistant_duration_variation
     assistant_scale = float(generator.uniform(1.0 - variation, 1.0 + variation))
     user_events, assistant_turns = _resolve_variant_timeline(plan, clips_by_id, assistant_scale)
-    requested_sampling_stratum = _sampling_stratum(variant_index, config)
+    requested_sampling_stratum = sampling_stratum_for_index(sampling_index, config)
     match requested_sampling_stratum:
         case CropSamplingStratum.ASSISTANT_ONLY:
             user_events = ()
@@ -532,11 +542,9 @@ def _compile_crop(
         raise ValueError("Reflowed conversation exceeds the 180-second source limit.")
     feedback_starts = tuple(start for start, _ in feedback_intervals)
     hold_starts = tuple(start for start, _ in hold_intervals)
-    event_times = completions + hold_starts + feedback_starts + floor_takes
     crop_start, sampling_stratum = _crop_start_for_stratum(
         variant_index,
         variant_duration,
-        event_times,
         completions + floor_takes,
         hold_intervals + feedback_intervals,
         completions,
@@ -606,10 +614,8 @@ def _compile_crop(
     user_only = _user_only_control(
         crop_start,
         config.crop_duration_seconds,
-        event_times,
         user_floor,
         assistant_turns,
-        max(config.speculative_eot_horizons_seconds),
     )
     padded = left_padding > 0.0 or right_padding > 0.0
     return TrainingCropPlan(
@@ -825,7 +831,6 @@ def _semantic_timeline(
 def _crop_start_for_stratum(
     variant_index: int,
     duration_seconds: float,
-    event_times: tuple[float, ...],
     supervised_point_events: tuple[float, ...],
     supervised_intervals: tuple[tuple[float, float], ...],
     speculative_completions: tuple[float, ...],
@@ -846,7 +851,6 @@ def _crop_start_for_stratum(
         valid = _valid_crop_starts(
             candidates,
             candidate_stratum,
-            event_times,
             supervised_point_events,
             supervised_intervals,
             speculative_completions,
@@ -866,7 +870,6 @@ def _crop_start_for_stratum(
 def _valid_crop_starts(
     candidates: tuple[float, ...],
     sampling_stratum: CropSamplingStratum,
-    event_times: tuple[float, ...],
     supervised_point_events: tuple[float, ...],
     supervised_intervals: tuple[tuple[float, float], ...],
     speculative_completions: tuple[float, ...],
@@ -911,10 +914,8 @@ def _valid_crop_starts(
                 if _user_only_control(
                     start,
                     crop_duration_seconds,
-                    event_times,
                     user_floor,
                     assistant_turns,
-                    speculative_horizon_seconds,
                 )
             )
         case CropSamplingStratum.EVENT_LIGHT:
@@ -933,28 +934,31 @@ def _valid_crop_starts(
             )
 
 
-def _sampling_stratum(
-    variant_index: int,
+def sampling_stratum_for_index(
+    sampling_index: int,
     config: ConversationCompilerConfig,
 ) -> CropSamplingStratum:
-    assistant_count = _fraction_count(config.crop_variant_count, config.assistant_only_fraction)
-    user_count = _fraction_count(config.crop_variant_count, config.user_only_fraction)
-    event_light_count = _fraction_count(config.crop_variant_count, config.event_light_fraction)
-    control_count = assistant_count + user_count + event_light_count
-    event_focused_count = config.crop_variant_count - control_count
-    if variant_index < event_focused_count:
-        return CropSamplingStratum.EVENT_FOCUSED
-    if variant_index < event_focused_count + assistant_count:
+    quantile = _binary_radical_inverse(sampling_index + 1)
+    assistant_end = config.assistant_only_fraction
+    user_end = assistant_end + config.user_only_fraction
+    event_light_end = user_end + config.event_light_fraction
+    if quantile < assistant_end:
         return CropSamplingStratum.ASSISTANT_ONLY
-    if variant_index < event_focused_count + assistant_count + user_count:
+    if quantile < user_end:
         return CropSamplingStratum.USER_ONLY
-    return CropSamplingStratum.EVENT_LIGHT
+    if quantile < event_light_end:
+        return CropSamplingStratum.EVENT_LIGHT
+    return CropSamplingStratum.EVENT_FOCUSED
 
 
-def _fraction_count(total_count: int, fraction: float) -> int:
-    if fraction == 0.0:
-        return 0
-    return max(1, round(total_count * fraction))
+def _binary_radical_inverse(index: int) -> float:
+    inverse = 0.0
+    fraction = 0.5
+    while index:
+        inverse += fraction * (index & 1)
+        index >>= 1
+        fraction *= 0.5
+    return inverse
 
 
 def _candidate_crop_starts(
@@ -969,16 +973,6 @@ def _candidate_crop_starts(
     if not np.isclose(starts[-1], maximum_start, atol=1e-9):
         return (*starts, maximum_start)
     return starts
-
-
-def _contains_event(
-    crop_start_seconds: float,
-    crop_duration_seconds: float,
-    event_times: tuple[float, ...],
-    future_margin_seconds: float = 0.0,
-) -> bool:
-    crop_end = crop_start_seconds + crop_duration_seconds + future_margin_seconds
-    return any(crop_start_seconds <= event_time < crop_end for event_time in event_times)
 
 
 def _contains_supervised_positive(
@@ -1026,16 +1020,14 @@ def _assistant_only_control(
         _overlap_seconds(crop_start_seconds, crop_end, turn.start_seconds, turn.end_seconds)
         for turn in assistant_turns
     )
-    return not has_user_audio and assistant_seconds >= 2.0
+    return not has_user_audio and assistant_seconds >= MINIMUM_CONTROL_ACTIVITY_SECONDS
 
 
 def _user_only_control(
     crop_start_seconds: float,
     crop_duration_seconds: float,
-    event_times: tuple[float, ...],
     user_floor: tuple[tuple[float, float], ...],
     assistant_turns: tuple[ResolvedAssistantTurn, ...],
-    speculative_horizon_seconds: float = 0.0,
 ) -> bool:
     crop_end = crop_start_seconds + crop_duration_seconds
     has_assistant_activity = any(
@@ -1045,16 +1037,7 @@ def _user_only_control(
     user_floor_seconds = sum(
         _overlap_seconds(crop_start_seconds, crop_end, start, end) for start, end in user_floor
     )
-    return (
-        not has_assistant_activity
-        and user_floor_seconds >= crop_duration_seconds * 0.5
-        and not _contains_event(
-            crop_start_seconds,
-            crop_duration_seconds,
-            event_times,
-            speculative_horizon_seconds,
-        )
-    )
+    return not has_assistant_activity and user_floor_seconds >= MINIMUM_CONTROL_ACTIVITY_SECONDS
 
 
 def _intervals_overlap(
