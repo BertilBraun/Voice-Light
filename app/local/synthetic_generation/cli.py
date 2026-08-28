@@ -73,6 +73,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
                             event_light_fraction=parsed.event_light_fraction,
                             assistant_duration_variation=parsed.assistant_duration_variation,
                         ),
+                        enforce_sampling_gates=not parsed.allow_incomplete_sampling_controls,
                     )
                 )
                 print(manifest.model_dump_json(indent=2), flush=True)
@@ -141,6 +142,11 @@ def _parser() -> argparse.ArgumentParser:
     hub_parser.add_argument("--user-only-fraction", default=0.1, type=float)
     hub_parser.add_argument("--event-light-fraction", default=0.1, type=float)
     hub_parser.add_argument("--assistant-duration-variation", default=0.1, type=float)
+    hub_parser.add_argument(
+        "--allow-incomplete-sampling-controls",
+        action="store_true",
+        help="Allow dynamic-corpus preparation without materialized control quotas.",
+    )
     publication_parser = subparsers.add_parser(
         "stage-public-run",
         help="Copy a completed corpus into the portable public dataset layout.",

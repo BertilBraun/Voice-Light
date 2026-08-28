@@ -67,7 +67,7 @@ def test_prepare_hub_corpora_downloads_only_canonical_units_and_materializes_run
         enforce_sampling_gates: bool = True,
     ) -> SyntheticConversationCorpusManifest:
         del prompt_set_path, tts_manifest_path, compiler_config
-        assert enforce_sampling_gates
+        assert not enforce_sampling_gates
         assert split_seed in {"synthetic-seed:v4", "synthetic-seed:v5"}
         observed_outputs.append(output_directory)
         return _corpus(output_directory.name)
@@ -88,6 +88,7 @@ def test_prepare_hub_corpora_downloads_only_canonical_units_and_materializes_run
         output_directory=tmp_path / "prepared",
         split_seed="synthetic-seed",
         compiler=ConversationCompilerConfig(crop_variant_count=4),
+        enforce_sampling_gates=False,
     )
 
     manifest = prepare_synthetic_hub_corpora(request, downloader=download_snapshot)

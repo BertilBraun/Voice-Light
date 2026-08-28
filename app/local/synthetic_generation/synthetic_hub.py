@@ -43,6 +43,7 @@ class SyntheticHubPreparationRequest(SyntheticModel):
     output_directory: Path
     split_seed: str = Field(min_length=1)
     compiler: ConversationCompilerConfig
+    enforce_sampling_gates: bool = True
 
     @model_validator(mode="after")
     def validate_unique_runs(self) -> SyntheticHubPreparationRequest:
@@ -140,6 +141,7 @@ def _prepare_run(
         output_directory=materialized_directory,
         split_seed=f"{request.split_seed}:{run_id}",
         compiler_config=request.compiler,
+        enforce_sampling_gates=request.enforce_sampling_gates,
     )
     return _prepared_run(
         run_id=run_id,
