@@ -13,6 +13,8 @@ def test_materialized_completion_sample_keeps_only_selected_boundary() -> None:
     event_mask = torch.zeros((frame_count, 5), dtype=torch.bool)
     event_targets[100, 0] = 1.0
     event_mask[100, 0] = True
+    event_targets[100, 1] = 0.0
+    event_mask[100, 1] = True
     item = TrainingItem(
         sample_id="sample",
         waveform=torch.zeros(320_000),

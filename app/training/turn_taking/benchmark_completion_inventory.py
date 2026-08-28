@@ -59,6 +59,7 @@ def build_turn_completion_inventory(
     user_floor_threshold: float = DEFAULT_USER_FLOOR_THRESHOLD,
     assistant_active_threshold: float = DEFAULT_ASSISTANT_ACTIVE_THRESHOLD,
     causal_horizon_seconds: float = DEFAULT_CAUSAL_HORIZON_SECONDS,
+    continuation_interval_targets: bool = False,
 ) -> TurnCompletionInventory:
     if frame_seconds <= 0.0:
         raise ValueError("frame_seconds must be positive.")
@@ -95,6 +96,7 @@ def build_turn_completion_inventory(
             user_floor_threshold=user_floor_threshold,
             assistant_active_threshold=assistant_active_threshold,
             horizon_frames=horizon_frames,
+            continuation_interval_targets=continuation_interval_targets,
         )
     )
     manifest = TurnCompletionInventoryManifest(
@@ -219,6 +221,7 @@ def _stream_candidates(
     user_floor_threshold: float,
     assistant_active_threshold: float,
     horizon_frames: int,
+    continuation_interval_targets: bool,
 ) -> tuple[TurnCompletionCandidate, ...]:
     candidates: list[TurnCompletionCandidate] = []
     for anchor_frame, anchor in sorted(stream.observations.items()):
@@ -226,7 +229,14 @@ def _stream_candidates(
             continue
         if anchor.assistant_has_floor >= assistant_active_threshold:
             continue
-        if anchor.user_has_floor is None or anchor.user_has_floor >= user_floor_threshold:
+        is_interval_continuation = bool(
+            continuation_interval_targets
+            and anchor.continuation_pause is not None
+            and anchor.continuation_pause >= 0.8
+        )
+        if anchor.user_has_floor is None or (
+            anchor.user_has_floor >= user_floor_threshold and not is_interval_continuation
+        ):
             continue
         candidate = _candidate_at_anchor(
             stream_key=stream_key,
@@ -237,6 +247,7 @@ def _stream_candidates(
             frame_seconds=frame_seconds,
             user_floor_threshold=user_floor_threshold,
             horizon_frames=horizon_frames,
+            continuation_interval_targets=continuation_interval_targets,
         )
         if candidate is not None:
             candidates.append(candidate)
@@ -252,6 +263,7 @@ def _candidate_at_anchor(
     frame_seconds: float,
     user_floor_threshold: float,
     horizon_frames: int,
+    continuation_interval_targets: bool,
 ) -> TurnCompletionCandidate | None:
     preceding_speech_start = _preceding_speech_start(
         stream=stream,
@@ -260,6 +272,21 @@ def _candidate_at_anchor(
     )
     if preceding_speech_start is None:
         return None
+    if (
+        continuation_interval_targets
+        and continuation_probability is not None
+        and continuation_probability >= 0.8
+    ):
+        return _interval_continuation_candidate(
+            stream_key=stream_key,
+            stream=stream,
+            anchor_frame=anchor_frame,
+            preceding_speech_start=preceding_speech_start,
+            completion_probability=completion_probability,
+            continuation_probability=continuation_probability,
+            frame_seconds=frame_seconds,
+            horizon_frames=horizon_frames,
+        )
     target_frames: list[int] = []
     boundary_kind = CompletionBoundaryKind.TERMINAL
     for frame_index in range(anchor_frame, anchor_frame + horizon_frames):
@@ -292,6 +319,59 @@ def _candidate_at_anchor(
         anchor_seconds=anchor_seconds,
         end_seconds=end_seconds,
         boundary_kind=boundary_kind,
+        continuation_probability=continuation_probability,
+        target_points=tuple(
+            CompletionTargetPoint(
+                absolute_time_seconds=(frame_index + 1) * frame_seconds,
+                elapsed_seconds=(offset + 1) * frame_seconds,
+                completion_probability=completion_probability,
+            )
+            for offset, frame_index in enumerate(target_frames)
+        ),
+        categories=categories,
+        source_window_ids=source_window_ids,
+    )
+
+
+def _interval_continuation_candidate(
+    stream_key: _StreamKey,
+    stream: _Stream,
+    anchor_frame: int,
+    preceding_speech_start: int,
+    completion_probability: float,
+    continuation_probability: float,
+    frame_seconds: float,
+    horizon_frames: int,
+) -> TurnCompletionCandidate | None:
+    target_frames: list[int] = []
+    for frame_index in range(anchor_frame, anchor_frame + horizon_frames):
+        observation = stream.observations.get(frame_index)
+        if observation is None:
+            return None
+        if observation.continuation_pause is None or observation.continuation_pause < 0.8:
+            break
+        target_frames.append(frame_index)
+    if not target_frames:
+        return None
+    end_frame = target_frames[-1] + 1
+    observations = tuple(stream.observations[index] for index in target_frames)
+    categories = tuple(sorted({value for item in observations for value in item.categories}))
+    source_window_ids = tuple(
+        sorted({value for item in observations for value in item.source_window_ids})
+    )
+    anchor_seconds = anchor_frame * frame_seconds
+    return TurnCompletionCandidate(
+        candidate_id=_candidate_id(stream_key, anchor_seconds, end_frame * frame_seconds),
+        dataset_id=stream_key.dataset_id,
+        dataset_name=stream.dataset_name,
+        conversation_id=stream_key.sample_id,
+        external_id=stream.external_id,
+        user_side=stream_key.user_side,
+        user_audio_path=stream_key.user_audio_path,
+        preceding_speech_start_seconds=preceding_speech_start * frame_seconds,
+        anchor_seconds=anchor_seconds,
+        end_seconds=end_frame * frame_seconds,
+        boundary_kind=CompletionBoundaryKind.CONTINUATION,
         continuation_probability=continuation_probability,
         target_points=tuple(
             CompletionTargetPoint(

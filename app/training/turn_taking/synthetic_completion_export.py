@@ -156,9 +156,15 @@ def _materialized_sample(
     frame_count = item.targets.yield_probability.shape[0]
     masked = [MASKED_TARGET] * frame_count
     completion = masked.copy()
-    continuation = masked.copy()
     completion[anchor_frame] = completion_target
-    continuation[anchor_frame] = 1.0 - completion_target
+    continuation = tuple(
+        float(value) if bool(valid) else MASKED_TARGET
+        for value, valid in zip(
+            item.targets.event_targets[:, 1],
+            item.targets.event_mask[:, 1],
+            strict=True,
+        )
+    )
     user_floor = tuple(
         1.0 - float(value) if bool(valid) else MASKED_TARGET
         for value, valid in zip(
@@ -202,7 +208,7 @@ def _materialized_sample(
         future_activity_500_1000=tuple(masked),
         future_activity_1000_1500=tuple(masked),
         turn_completion=tuple(completion),
-        continuation_pause=tuple(continuation),
+        continuation_pause=continuation,
         non_floor_feedback=tuple(masked),
         floor_take=tuple(masked),
     )

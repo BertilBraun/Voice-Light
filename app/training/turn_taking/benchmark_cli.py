@@ -355,6 +355,7 @@ def _add_completion_inventory_parser(
     parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
     parser.add_argument("--hub-cache-directory", type=Path)
     parser.add_argument("--local-export-root", type=Path)
+    parser.add_argument("--continuation-interval-targets", action="store_true")
 
 
 def _add_completion_baseline_parser(
@@ -780,6 +781,7 @@ def _create_completion_inventory(arguments: argparse.Namespace) -> None:
         corpus_repository=arguments.hub_repository,
         corpus_revision=arguments.hub_revision,
         split=split,
+        continuation_interval_targets=arguments.continuation_interval_targets,
     )
     write_turn_completion_inventory(arguments.output, inventory)
     print(inventory.manifest.model_dump_json(indent=2), flush=True)

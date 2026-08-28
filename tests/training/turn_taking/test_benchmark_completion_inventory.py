@@ -166,6 +166,37 @@ def test_inventory_rejects_conflicting_continuation_evidence() -> None:
         )
 
 
+def test_inventory_uses_explicit_synthetic_continuation_interval() -> None:
+    floor = [0.0] * FRAMES_PER_SAMPLE
+    floor[0:10] = [1.0] * 10
+    completion = [-1.0] * FRAMES_PER_SAMPLE
+    completion[3] = 0.0
+    continuation = [-1.0] * FRAMES_PER_SAMPLE
+    continuation[3:8] = [1.0] * 5
+
+    inventory = build_turn_completion_inventory(
+        samples=(
+            _sample(
+                "a" * 64,
+                floor=floor,
+                completion=completion,
+                continuation=continuation,
+            ),
+        ),
+        corpus_repository="owner/corpus",
+        corpus_revision=CORPUS_REVISION,
+        split=TrainingCorpusSplit.VALIDATION,
+        continuation_interval_targets=True,
+    )
+
+    assert inventory.manifest.candidate_count == 1
+    candidate = inventory.candidates[0]
+    assert candidate.boundary_kind is CompletionBoundaryKind.CONTINUATION
+    assert candidate.anchor_seconds == pytest.approx(0.24)
+    assert candidate.end_seconds == pytest.approx(0.64)
+    assert len(candidate.target_points) == 5
+
+
 def _sample(
     window_id: str,
     floor: list[float],
