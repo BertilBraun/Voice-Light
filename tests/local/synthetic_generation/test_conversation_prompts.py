@@ -149,11 +149,28 @@ def test_generation_instruction_requests_only_natural_content() -> None:
     assert "will add all IDs" in instruction
     assert "assistant never initiates" in instruction
     assert "initial conversational direction" in instruction
+    assert "unique scenario key" in instruction
+    assert brief.plan_id in instruction
+    assert "independent scenario cues" in instruction
     assert "not exact word-count requirements" in instruction
     assert "Do not output backchannels" in instruction
     assert '"opening_user_turn"' in instruction
     assert "naturally invites a hesitation" in instruction
     assert "distribution-matched ambiguity pair" in instruction
+
+
+def test_generation_instructions_have_distinct_scenario_cues() -> None:
+    instructions = tuple(
+        conversation_generation_instruction(brief)
+        for brief in representative_conversation_briefs(count=100, seed=41)
+    )
+
+    cue_lines = tuple(
+        instruction.split("independent scenario cues:\n  ", maxsplit=1)[1].split(".", maxsplit=1)[0]
+        for instruction in instructions
+    )
+
+    assert len(set(cue_lines)) >= 95
 
 
 def test_extended_turn_rotates_across_conversation_positions() -> None:

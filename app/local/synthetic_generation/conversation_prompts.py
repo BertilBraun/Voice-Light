@@ -563,8 +563,13 @@ will add all IDs, interaction conditions, references, timing, voice metadata, an
 Do not add any of those structural fields.
 
 Fixed requirements:
-- The domain is {brief.domain.value!r}; invent a specific topic unlike generic rural or farming
-  stories.
+- The domain is {brief.domain.value!r}. This item has the unique scenario key {brief.plan_id!r}.
+- Ground the topic and exchange in at least two of these independent scenario cues:
+  {_scenario_cues(brief)}. Interpret them freely and naturally; they are inspiration rather than
+  words that must be repeated literally.
+- Invent a concrete situation specific to this item. Do not default to recurring corpus themes
+  such as quantum computing, classroom seating, remote software teams, sustainable seafood,
+  farming, or generic productivity advice unless the scenario cues make one genuinely relevant.
 - Use this initial conversational direction: {_creative_direction(brief)}
 - The user always opens the conversation. The assistant never initiates a conversation or starts a
   new turn without directly replying to a floor-owning user turn.
@@ -611,6 +616,106 @@ def _creative_direction(brief: ConversationGenerationBrief) -> str:
         "reflect on a small change that had an unintended consequence",
     )
     return directions[brief.seed % len(directions)]
+
+
+def _scenario_cues(brief: ConversationGenerationBrief) -> str:
+    settings = (
+        "an apartment lobby",
+        "a neighborhood repair shop",
+        "a museum archive",
+        "a ferry terminal",
+        "a rehearsal studio",
+        "a community clinic",
+        "a university lab",
+        "a crowded café",
+        "a public library",
+        "a small hotel",
+        "a makerspace",
+        "a sports center",
+        "a local council office",
+        "a train platform",
+        "a family kitchen",
+        "an outdoor market",
+        "a shared workshop",
+        "a school theater",
+        "a wildlife center",
+        "a recording booth",
+        "a rooftop garden",
+        "a coastal visitor center",
+        "a volunteer meeting",
+        "a home office",
+        "a bookshop",
+        "a bicycle garage",
+        "a conference hallway",
+        "a music venue",
+        "a pottery studio",
+        "a neighborhood park",
+        "a language class",
+    )
+    complications = (
+        "a missing receipt",
+        "an ambiguous instruction",
+        "a last-minute cancellation",
+        "an unexpected repair",
+        "a confusing measurement",
+        "a double booking",
+        "a delayed delivery",
+        "a misunderstood message",
+        "a limited budget",
+        "a changing weather forecast",
+        "a forgotten commitment",
+        "a surprising test result",
+        "an inaccessible entrance",
+        "a damaged borrowed item",
+        "a scheduling conflict",
+        "a disputed memory",
+        "an unfamiliar rule",
+        "a noisy environment",
+        "a missing ingredient",
+        "a reluctant participant",
+        "a software update",
+        "a misplaced key",
+        "a sensitive deadline",
+        "an unclear price",
+        "a minor injury",
+        "an incorrect assumption",
+        "a crowded waiting list",
+        "a broken promise",
+        "a change of ownership",
+    )
+    perspectives = (
+        "a first-time visitor",
+        "an experienced volunteer",
+        "a skeptical colleague",
+        "a careful beginner",
+        "a tired parent",
+        "an enthusiastic neighbor",
+        "a returning customer",
+        "a new team member",
+        "a practical hobbyist",
+        "a concerned friend",
+        "an independent contractor",
+        "a curious student",
+        "a cautious organizer",
+        "a regular commuter",
+        "a recent graduate",
+        "a longtime resident",
+        "a visiting relative",
+        "a shift supervisor",
+        "a club member",
+        "a small business owner",
+        "a patient instructor",
+        "a reluctant guest",
+        "an observant bystander",
+    )
+    digest = hashlib.sha256(f"scenario:{brief.plan_id}:{brief.seed}".encode()).digest()
+    return ", ".join(
+        (
+            settings[int.from_bytes(digest[0:4], "big") % len(settings)],
+            complications[int.from_bytes(digest[4:8], "big") % len(complications)],
+            perspectives[int.from_bytes(digest[8:12], "big") % len(perspectives)],
+        )
+    )
 
 
 def qwen_voice_instruction(
