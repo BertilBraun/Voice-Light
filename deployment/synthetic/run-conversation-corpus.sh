@@ -10,6 +10,8 @@ vllm_environment="${VOICE_LIGHT_VLLM_ENVIRONMENT:?VOICE_LIGHT_VLLM_ENVIRONMENT i
 cosy_environment="${VOICE_LIGHT_COSY_ENVIRONMENT:?VOICE_LIGHT_COSY_ENVIRONMENT is required}"
 cosy_repository="${VOICE_LIGHT_COSY_REPOSITORY:?VOICE_LIGHT_COSY_REPOSITORY is required}"
 target_planned_hours="${VOICE_LIGHT_TARGET_PLANNED_HOURS:-27.0}"
+run_id="${VOICE_LIGHT_CORPUS_RUN_ID:?VOICE_LIGHT_CORPUS_RUN_ID is required}"
+prompt_seed="${VOICE_LIGHT_CORPUS_PROMPT_SEED:?VOICE_LIGHT_CORPUS_PROMPT_SEED is required}"
 
 export HF_HOME="${HF_HOME:-/workspace/.hf_home}"
 export PYTHONUNBUFFERED=1
@@ -28,7 +30,7 @@ run_prompt_stage() {
     "$vllm_environment/bin/python" \
       -m app.local.synthetic_generation.generate_conversation_prompts_vllm \
       --set-id "$set_id" \
-      --seed 260830 \
+      --seed "$prompt_seed" \
       --output "$stage_output/prompts.json" \
       --generation-batch-size 64 \
       "$@"
@@ -124,7 +126,7 @@ run_compile_stage() {
       --prompt-set "$stage_output/prompts.json" \
       --tts-manifest "$stage_output/cosyvoice/render.json" \
       --output "$stage_output/compiled" \
-      --split-seed voice-light-synthetic-conversations-20h-v4 \
+      --split-seed "voice-light-synthetic-conversations-${run_id}" \
       --crop-variants 1 \
       --assistant-only-fraction 0.0 \
       --user-only-fraction 0.0 \
@@ -156,7 +158,7 @@ mkdir -p "$output"
 cd "$repository"
 
 preflight="$output/preflight"
-run_prompt_stage "$preflight" voice_light_conversation_preflight_v4 --count 10
+run_prompt_stage "$preflight" "voice_light_conversation_preflight_${run_id}" --count 10
 run_reference_stage "$preflight"
 run_render_stage "$preflight" 1
 run_compile_stage "$preflight"
@@ -167,7 +169,7 @@ echo "PREFLIGHT_COMPLETE"
 corpus="$output/corpus"
 run_prompt_stage \
   "$corpus" \
-  voice_light_synthetic_conversations_20h_v4 \
+  "voice_light_synthetic_conversations_${run_id}" \
   --count 2000 \
   --target-conversation-hours "$target_planned_hours"
 run_reference_stage "$corpus"
