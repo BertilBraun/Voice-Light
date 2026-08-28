@@ -18,6 +18,11 @@ from app.local.synthetic_generation.synthetic_hub import (
     SyntheticHubPreparationRequest,
     prepare_synthetic_hub_corpora,
 )
+from app.local.synthetic_generation.synthetic_publication import (
+    SyntheticPublicationRequest,
+    stage_synthetic_publication,
+    summarize_synthetic_publication,
+)
 
 
 def main(arguments: Sequence[str] | None = None) -> None:
@@ -71,6 +76,22 @@ def main(arguments: Sequence[str] | None = None) -> None:
                     )
                 )
                 print(manifest.model_dump_json(indent=2), flush=True)
+            case "stage-public-run":
+                destination = parsed.staging_root / "runs" / parsed.run_id
+                manifest = stage_synthetic_publication(
+                    SyntheticPublicationRequest(
+                        run_id=parsed.run_id,
+                        source_directory=parsed.source,
+                        staging_root=parsed.staging_root,
+                        source_code_revision=parsed.source_code_revision,
+                    )
+                )
+                print(
+                    summarize_synthetic_publication(manifest, destination).model_dump_json(
+                        indent=2
+                    ),
+                    flush=True,
+                )
             case _:
                 raise AssertionError(f"Unexpected command: {parsed.command}")
     except (OSError, ValidationError, ValueError) as error:
@@ -120,6 +141,14 @@ def _parser() -> argparse.ArgumentParser:
     hub_parser.add_argument("--user-only-fraction", default=0.1, type=float)
     hub_parser.add_argument("--event-light-fraction", default=0.1, type=float)
     hub_parser.add_argument("--assistant-duration-variation", default=0.1, type=float)
+    publication_parser = subparsers.add_parser(
+        "stage-public-run",
+        help="Copy a completed corpus into the portable public dataset layout.",
+    )
+    publication_parser.add_argument("--run-id", required=True)
+    publication_parser.add_argument("--source", required=True, type=Path)
+    publication_parser.add_argument("--staging-root", required=True, type=Path)
+    publication_parser.add_argument("--source-code-revision", required=True)
     return parser
 
 

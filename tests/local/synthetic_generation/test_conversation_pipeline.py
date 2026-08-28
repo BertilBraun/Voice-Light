@@ -53,7 +53,12 @@ from app.local.synthetic_generation.conversation_tts import (
 )
 from app.local.synthetic_generation.conversation_voice_references import (
     ConversationVoiceReference,
+    ConversationVoiceReferenceManifest,
     TtsBackendIdentity,
+)
+from app.local.synthetic_generation.synthetic_publication import (
+    SyntheticPublicationRequest,
+    stage_synthetic_publication,
 )
 from app.local.training_corpus.export import MaterializedTrainingSample
 
@@ -146,6 +151,98 @@ def test_review_pilot_can_preserve_incomplete_sampling_controls(tmp_path: Path) 
 
     assert manifest.sampling_summary.total_crop_count == 1
     assert not manifest.sampling_summary.control_quotas_satisfied
+
+
+def test_stage_synthetic_publication_rewrites_absolute_reference_paths(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    prompt_set = _prompt_set()
+    prompt_path = source / "prompts.json"
+    prompt_path.parent.mkdir(parents=True)
+    prompt_path.write_text(prompt_set.model_dump_json(indent=2), encoding="utf-8")
+    backend = TtsBackendIdentity(
+        backend_id="fake",
+        model_id="fake/tts",
+        model_revision="test",
+        runtime_version="1",
+        model_license="test-only",
+    )
+    reference_path = source / "references" / "audio" / "pipeline_pilot.flac"
+    reference_path.parent.mkdir(parents=True)
+    soundfile.write(reference_path, np.zeros(16_000, dtype=np.float32), 16_000)
+    reference = _reference(source / "references", prompt_set.plans[0], backend).model_copy(
+        update={
+            "audio_path": Path("audio/pipeline_pilot.flac"),
+            "audio_sha256": hashlib.sha256(reference_path.read_bytes()).hexdigest(),
+        }
+    )
+    reference_manifest = ConversationVoiceReferenceManifest(
+        prompt_set_id=prompt_set.set_id,
+        prompt_set_sha256=hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+        backend=backend,
+        detection=DEFAULT_SILENCE_DETECTION,
+        references=(reference,),
+    )
+    reference_manifest_path = source / "references" / "voice-references.json"
+    reference_manifest_path.write_text(
+        reference_manifest.model_dump_json(indent=2), encoding="utf-8"
+    )
+    unit = _rendered_unit(
+        source / "cosyvoice",
+        prompt_set.plans[0],
+        prompt_set.plans[0].user_prompts[0],
+        backend,
+        reference,
+    )
+    wave_path = source / "cosyvoice" / unit.clip.audio_path
+    unit_path = wave_path.with_suffix(".flac")
+    unit_samples, unit_sample_rate_hz = soundfile.read(wave_path, dtype="float32")
+    soundfile.write(unit_path, unit_samples, unit_sample_rate_hz)
+    portable_clip = unit.clip.model_copy(
+        update={
+            "audio_path": Path("audio") / unit_path.name,
+            "audio_sha256": hashlib.sha256(unit_path.read_bytes()).hexdigest(),
+        }
+    )
+    absolute_reference = reference.model_copy(update={"audio_path": reference_path})
+    tts_manifest = ConversationTtsManifest(
+        prompt_set_id=prompt_set.set_id,
+        prompt_set_sha256=hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+        reference_manifest_sha256=hashlib.sha256(reference_manifest_path.read_bytes()).hexdigest(),
+        backend=backend,
+        detection=DEFAULT_SILENCE_DETECTION,
+        clone_prompts=(_clone_prompt(prompt_set.plans[0], backend),),
+        rendered_units=(
+            unit.model_copy(update={"clip": portable_clip, "reference": absolute_reference}),
+        ),
+    )
+    render_path = source / "cosyvoice" / "render.json"
+    render_path.write_text(tts_manifest.model_dump_json(indent=2), encoding="utf-8")
+    (source / "audit-prompts.json").write_text("{}\n", encoding="utf-8")
+    (source / "audit-complete.json").write_text("{}\n", encoding="utf-8")
+    (source / "CORPUS_COMPLETE").touch()
+
+    manifest = stage_synthetic_publication(
+        SyntheticPublicationRequest(
+            run_id="test_v1",
+            source_directory=source,
+            staging_root=tmp_path / "stage",
+            source_code_revision="a" * 40,
+        )
+    )
+
+    stage = tmp_path / "stage" / "runs" / "test_v1"
+    portable_manifest = ConversationTtsManifest.model_validate_json(
+        (stage / "units" / "render.json").read_text(encoding="utf-8")
+    )
+    assert portable_manifest.rendered_units[0].reference.audio_path == Path(
+        "../references/audio/pipeline_pilot.flac"
+    )
+    assert (stage / "units" / portable_manifest.rendered_units[0].clip.audio_path).is_file()
+    assert manifest.conversation_count == 1
+    assert manifest.rendered_unit_count == 1
+    assert len(manifest.files) == 7
 
 
 def _write_pipeline_inputs(tmp_path: Path) -> tuple[Path, Path]:

@@ -29,8 +29,11 @@ Each versioned run contains:
 - `references/`: Qwen VoiceDesign reference clips and their manifest;
 - `units/`: trimmed CosyVoice speech units and their render manifest;
 - `audit-prompts.json` and `audit-complete.json`: complete, unfiltered quality flags;
-- `compiled/`: split and materialization metadata; and
 - `provenance.json`: model revisions, source-code revision, and file checksums.
+
+`builder/voice-light-source.tar.gz` contains the exact source snapshot recorded by
+each run's provenance. Extract it before running the command below, or use a
+Voice-Light checkout at that revision.
 
 Rendered conversations and dense 20-second targets are reproducible build products and
 are intentionally not stored as canonical audio. The included builder code reconstructs
