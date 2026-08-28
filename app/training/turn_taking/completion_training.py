@@ -84,7 +84,10 @@ def build_completion_boundaries(
                 continue
             if sample.assistant_has_floor[frame_index] >= 0.5:
                 continue
-            if sample.p_user_has_floor[frame_index] >= 0.5:
+            if (
+                completion_class is CompletionClass.EOT
+                and sample.p_user_has_floor[frame_index] >= 0.5
+            ):
                 continue
             boundaries.append(
                 CompletionBoundaryIndex(

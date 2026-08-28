@@ -57,8 +57,9 @@ def test_completion_boundaries_select_clean_causal_labels() -> None:
     assert [(item.frame_index, item.completion_class) for item in boundaries] == [
         (5, CompletionClass.HOLD),
         (10, CompletionClass.EOT),
+        (25, CompletionClass.HOLD),
     ]
-    assert balanced_completion_weights(boundaries).tolist() == pytest.approx([0.5, 0.5])
+    assert balanced_completion_weights(boundaries).tolist() == pytest.approx([0.25, 0.5, 0.25])
 
 
 def test_boundary_dataset_exposes_only_selected_completion_target() -> None:
