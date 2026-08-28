@@ -314,6 +314,16 @@ def test_content_schema_accepts_descriptive_topics_and_references() -> None:
     assert len(draft.voice_reference_text) > 180
 
 
+def test_plan_accepts_extended_assistant_turn() -> None:
+    brief = representative_conversation_briefs(count=5, seed=41)[0]
+    values = assemble_conversation_prompt_plan(_content_draft(), brief).model_dump(mode="json")
+    values["assistant_turns"][0]["text"] = " ".join(["detailed"] * 60)
+
+    plan = EnglishConversationPromptPlan.model_validate(values)
+
+    assert len(plan.assistant_turns[0].text) > 400
+
+
 def test_content_schema_accepts_numeric_conversational_turn() -> None:
     values = _content_draft().model_dump()
     values["brief_user_turn"] = "4.5?"

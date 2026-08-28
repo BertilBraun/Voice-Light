@@ -156,7 +156,7 @@ class SegmentDelivery(SyntheticModel):
 class AssistantTurnPrompt(SyntheticModel):
     turn_id: str = Field(pattern=r"^assistant_[1-9][0-9]*$")
     sequence_index: int = Field(ge=0)
-    text: str = Field(min_length=1, max_length=400)
+    text: str = Field(min_length=1, max_length=1200)
     speaking_rate_words_per_minute: int = Field(ge=135, le=215)
     punctuation_pause_seconds: float = Field(ge=0.0, le=2.0)
     duration_variation_fraction: float = Field(default=0.15, ge=0.0, le=0.25)
