@@ -32,6 +32,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     VocalWeight,
 )
 from app.local.synthetic_generation.conversation_tts import (
+    SpeechSynthesisAttemptProvenance,
     SpeechSynthesisRequest,
     SpeechSynthesisResult,
     VoiceClonePromptProvenance,
@@ -212,7 +213,7 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     assert all("conversational affect" in request.delivery_instruction for request in requests)
     assert {request.speed for request in requests} <= {0.96, 1.06, 1.16}
     assert requests[1].text == "mm-hmm"
-    assert requests[1].alternative_texts == ("yeah",)
+    assert requests[1].alternative_texts == ("yeah, yeah",)
     assert len(manifest.rendered_units) == 4
     assert all(unit.reference == reference for unit in manifest.rendered_units)
     hold = next(unit for unit in manifest.rendered_units if unit.prompt.condition == "hold")
@@ -246,6 +247,20 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     assert "assistant reply" in review
     assert "non_floor_feedback" in review
     assert "../references/audio/pilot_render.flac" in review
+
+
+def test_attempt_provenance_loads_checkpoint_created_before_text_hashes() -> None:
+    attempt = SpeechSynthesisAttemptProvenance.model_validate(
+        {
+            "attempt_index": 1,
+            "seed": 42,
+            "generated_duration_seconds": 0.75,
+            "generation_seconds": 1.5,
+            "outcome": "accepted",
+        }
+    )
+
+    assert attempt.text_sha256 is None
 
 
 def test_renderer_resumes_completed_units_without_tts(tmp_path: Path) -> None:

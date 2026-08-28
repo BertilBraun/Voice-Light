@@ -64,7 +64,7 @@ class SpeechSynthesisResult:
 class SpeechSynthesisAttemptProvenance(SyntheticModel):
     attempt_index: int = Field(ge=1, le=2)
     seed: int = Field(ge=0)
-    text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    text_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     generated_duration_seconds: float = Field(gt=0.0)
     generation_seconds: float = Field(ge=0.0)
     outcome: Literal["accepted", "no_speech_like_energy"]
@@ -467,9 +467,9 @@ def _alternative_synthesis_texts(prompt: UserPrompt) -> tuple[str, ...]:
             MicroBackchannel.MM_HMM,
             MicroBackchannel.UH_HUH,
         }:
-            return ("yeah",)
+            return ("yeah, yeah",)
         case NonFloorFeedbackUserPrompt():
-            return ("mm-hmm",)
+            return ("mm-hmm, mm-hmm",)
         case (
             CompletionUserPrompt()
             | HoldUserPrompt()
