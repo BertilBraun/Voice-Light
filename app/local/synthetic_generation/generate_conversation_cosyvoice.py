@@ -20,6 +20,7 @@ from app.local.synthetic_generation.conversation_tts import (
     VoiceClonePromptProvenance,
     cosyvoice3_reference_prompt,
     render_conversation_user_audio,
+    retain_first_spoken_phrase,
 )
 from app.local.synthetic_generation.conversation_voice_references import (
     ConversationVoiceReference,
@@ -90,8 +91,8 @@ class CosyVoiceConversationSynthesizer:
         for attempt_index in range(1, 3):
             seed = (request.seed + attempt_index - 1) % (2**32)
             attempt_text = (
-                request.alternative_texts[attempt_index - 2]
-                if attempt_index > 1 and len(request.alternative_texts) >= attempt_index - 1
+                request.alternative.text
+                if attempt_index > 1 and request.alternative is not None
                 else request.text
             )
             torch.manual_seed(seed)
@@ -120,7 +121,7 @@ class CosyVoiceConversationSynthesizer:
                     for chunk in chunks
                 )
             )
-            outcome: Literal["accepted", "no_speech_like_energy"] = "accepted"
+            outcome: Literal["accepted", "accepted_prefix", "no_speech_like_energy"] = "accepted"
             try:
                 trim_generated_speech(
                     samples,
@@ -132,6 +133,14 @@ class CosyVoiceConversationSynthesizer:
                 if "no speech-like energy" not in str(error):
                     raise
                 outcome = "no_speech_like_energy"
+            if outcome == "accepted" and attempt_index > 1 and request.alternative is not None:
+                samples = retain_first_spoken_phrase(
+                    samples=samples,
+                    sample_rate_hz=int(self._model.sample_rate),
+                    item_id=request.clause_id,
+                    maximum_seconds=request.alternative.retained_prefix_max_seconds,
+                )
+                outcome = "accepted_prefix"
             attempts.append(
                 SpeechSynthesisAttemptProvenance(
                     attempt_index=attempt_index,
@@ -142,7 +151,7 @@ class CosyVoiceConversationSynthesizer:
                     outcome=outcome,
                 )
             )
-            if outcome == "accepted":
+            if outcome in {"accepted", "accepted_prefix"}:
                 return samples, total_generation_seconds, seed, tuple(attempts)
         raise ValueError(
             f"CosyVoice returned no speech-like energy after two attempts for {request.clause_id}."

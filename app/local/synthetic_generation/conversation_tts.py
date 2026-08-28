@@ -41,13 +41,19 @@ from app.local.synthetic_generation.models import SyntheticModel
 
 
 @dataclass(frozen=True)
+class SpeechSynthesisAlternative:
+    text: str
+    retained_prefix_max_seconds: float
+
+
+@dataclass(frozen=True)
 class SpeechSynthesisRequest:
     clause_id: str
     text: str
     delivery_instruction: str
     speed: float
     seed: int
-    alternative_texts: tuple[str, ...] = ()
+    alternative: SpeechSynthesisAlternative | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +73,7 @@ class SpeechSynthesisAttemptProvenance(SyntheticModel):
     text_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     generated_duration_seconds: float = Field(gt=0.0)
     generation_seconds: float = Field(ge=0.0)
-    outcome: Literal["accepted", "no_speech_like_energy"]
+    outcome: Literal["accepted", "accepted_prefix", "no_speech_like_energy"]
 
 
 def cosyvoice3_reference_prompt(reference_text: str) -> str:
@@ -304,7 +310,7 @@ def _prepared_units(
                     delivery_instruction=_delivery_instruction(prompt),
                     speed=_speech_speed(prompt.delivery.pace),
                     seed=_clause_seed(plan.seed, plan.plan_id, prompt.unit_id, clause_index),
-                    alternative_texts=_alternative_synthesis_texts(prompt),
+                    alternative=_alternative_synthesis_text(prompt),
                 )
                 for clause_index, text in enumerate(texts)
             )
@@ -460,23 +466,64 @@ def _prompt_clauses(prompt: UserPrompt) -> tuple[str, ...]:
             return (text,)
 
 
-def _alternative_synthesis_texts(prompt: UserPrompt) -> tuple[str, ...]:
+def retain_first_spoken_phrase(
+    samples: np.ndarray,
+    sample_rate_hz: int,
+    item_id: str,
+    maximum_seconds: float,
+    minimum_phrase_pause_seconds: float = 0.12,
+) -> np.ndarray:
+    if maximum_seconds <= 0.0 or minimum_phrase_pause_seconds <= 0.0:
+        raise ValueError("Spoken-phrase retention durations must be positive.")
+    trimmed = trim_generated_speech(
+        samples,
+        sample_rate_hz,
+        item_id,
+        DEFAULT_SILENCE_DETECTION,
+    )
+    minimum_pause_frames = round(minimum_phrase_pause_seconds / trimmed.frame_seconds)
+    maximum_frames = max(1, round(maximum_seconds / trimmed.frame_seconds))
+    cutoff_frame = min(trimmed.active_frames.size, maximum_frames)
+    silence_start: int | None = None
+    for frame_index, active in enumerate(trimmed.active_frames[:maximum_frames]):
+        if active:
+            silence_start = None
+            continue
+        if silence_start is None:
+            silence_start = frame_index
+        if frame_index - silence_start + 1 >= minimum_pause_frames:
+            cutoff_frame = silence_start
+            break
+    retained_sample_count = min(
+        trimmed.samples.size,
+        max(1, round(cutoff_frame * trimmed.frame_seconds * sample_rate_hz)),
+    )
+    retained = trimmed.samples[:retained_sample_count].copy()
+    fade_sample_count = min(retained.size, round(0.01 * sample_rate_hz))
+    retained[-fade_sample_count:] *= np.linspace(1.0, 0.0, fade_sample_count, dtype=np.float32)
+    trim_generated_speech(
+        retained,
+        sample_rate_hz,
+        item_id,
+        DEFAULT_SILENCE_DETECTION,
+    )
+    return retained
+
+
+def _alternative_synthesis_text(prompt: UserPrompt) -> SpeechSynthesisAlternative | None:
     match prompt:
-        case NonFloorFeedbackUserPrompt(text=text) if text in {
-            MicroBackchannel.MHM,
-            MicroBackchannel.MM_HMM,
-            MicroBackchannel.UH_HUH,
-        }:
-            return ("yeah, yeah",)
         case NonFloorFeedbackUserPrompt():
-            return ("mm-hmm, mm-hmm",)
+            return SpeechSynthesisAlternative(
+                text="yeah. I hear you.",
+                retained_prefix_max_seconds=0.9,
+            )
         case (
             CompletionUserPrompt()
             | HoldUserPrompt()
             | ResponseFloorClaimUserPrompt()
             | InterruptionFloorClaimUserPrompt()
         ):
-            return ()
+            return None
 
 
 def _manifest(

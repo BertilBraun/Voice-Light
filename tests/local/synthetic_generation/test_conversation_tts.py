@@ -39,6 +39,7 @@ from app.local.synthetic_generation.conversation_tts import (
     cosyvoice3_reference_prompt,
     load_rendered_user_clips,
     render_conversation_user_audio,
+    retain_first_spoken_phrase,
 )
 from app.local.synthetic_generation.conversation_voice_references import (
     ConversationVoiceReference,
@@ -213,7 +214,9 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     assert all("conversational affect" in request.delivery_instruction for request in requests)
     assert {request.speed for request in requests} <= {0.96, 1.06, 1.16}
     assert requests[1].text == "mm-hmm"
-    assert requests[1].alternative_texts == ("yeah, yeah",)
+    assert requests[1].alternative is not None
+    assert requests[1].alternative.text == "yeah. I hear you."
+    assert requests[1].alternative.retained_prefix_max_seconds == 0.9
     assert len(manifest.rendered_units) == 4
     assert all(unit.reference == reference for unit in manifest.rendered_units)
     hold = next(unit for unit in manifest.rendered_units if unit.prompt.condition == "hold")
@@ -261,6 +264,22 @@ def test_attempt_provenance_loads_checkpoint_created_before_text_hashes() -> Non
     )
 
     assert attempt.text_sha256 is None
+
+
+def test_retain_first_spoken_phrase_removes_carrier_phrase() -> None:
+    sample_rate_hz = 16_000
+    first_phrase = np.full(round(0.32 * sample_rate_hz), 0.1, dtype=np.float32)
+    pause = np.zeros(round(0.16 * sample_rate_hz), dtype=np.float32)
+    carrier_phrase = np.full(round(0.4 * sample_rate_hz), 0.1, dtype=np.float32)
+
+    retained = retain_first_spoken_phrase(
+        samples=np.concatenate((first_phrase, pause, carrier_phrase)),
+        sample_rate_hz=sample_rate_hz,
+        item_id="carrier_phrase",
+        maximum_seconds=0.9,
+    )
+
+    assert 0.30 <= retained.size / sample_rate_hz <= 0.34
 
 
 def test_renderer_resumes_completed_units_without_tts(tmp_path: Path) -> None:
