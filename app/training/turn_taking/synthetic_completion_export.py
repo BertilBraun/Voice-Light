@@ -157,13 +157,10 @@ def _materialized_sample(
     masked = [MASKED_TARGET] * frame_count
     completion = masked.copy()
     completion[anchor_frame] = completion_target
-    continuation = tuple(
-        float(value) if bool(valid) else MASKED_TARGET
-        for value, valid in zip(
-            item.targets.event_targets[:, 1],
-            item.targets.event_mask[:, 1],
-            strict=True,
-        )
+    continuation = _continuation_targets(
+        item=item,
+        anchor_frame=anchor_frame,
+        completion_target=completion_target,
     )
     user_floor = tuple(
         1.0 - float(value) if bool(valid) else MASKED_TARGET
@@ -212,3 +209,32 @@ def _materialized_sample(
         non_floor_feedback=tuple(masked),
         floor_take=tuple(masked),
     )
+
+
+def _continuation_targets(
+    item: TrainingItem,
+    anchor_frame: int,
+    completion_target: float,
+) -> tuple[float, ...]:
+    values = [
+        float(value) if bool(valid) else MASKED_TARGET
+        for value, valid in zip(
+            item.targets.event_targets[:, 1],
+            item.targets.event_mask[:, 1],
+            strict=True,
+        )
+    ]
+    if completion_target == 1.0:
+        return tuple(values)
+    positive_frames = [index for index, value in enumerate(values) if value == 1.0]
+    if not positive_frames:
+        raise ValueError("A synthetic hold crop must contain its continuation interval.")
+    closest_frame = min(positive_frames, key=lambda index: abs(index - anchor_frame))
+    interval_end = closest_frame
+    while interval_end + 1 < len(values) and values[interval_end + 1] == 1.0:
+        interval_end += 1
+    if interval_end < anchor_frame:
+        raise ValueError("A synthetic hold interval must not end before its anchor.")
+    for frame_index in range(anchor_frame, interval_end + 1):
+        values[frame_index] = 1.0
+    return tuple(values)
