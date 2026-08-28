@@ -265,18 +265,27 @@ def _candidate_at_anchor(
     horizon_frames: int,
     continuation_interval_targets: bool,
 ) -> TurnCompletionCandidate | None:
-    preceding_speech_start = _preceding_speech_start(
-        stream=stream,
-        anchor_frame=anchor_frame,
-        user_floor_threshold=user_floor_threshold,
-    )
-    if preceding_speech_start is None:
-        return None
-    if (
+    is_interval_continuation = bool(
         continuation_interval_targets
         and continuation_probability is not None
         and continuation_probability >= 0.8
-    ):
+    )
+    preceding_speech_start = (
+        _preceding_speech_start_before_pause(
+            stream=stream,
+            anchor_frame=anchor_frame,
+            user_floor_threshold=user_floor_threshold,
+        )
+        if is_interval_continuation
+        else _preceding_speech_start(
+            stream=stream,
+            anchor_frame=anchor_frame,
+            user_floor_threshold=user_floor_threshold,
+        )
+    )
+    if preceding_speech_start is None:
+        return None
+    if is_interval_continuation:
         return _interval_continuation_candidate(
             stream_key=stream_key,
             stream=stream,
@@ -406,6 +415,26 @@ def _preceding_speech_start(
         ):
             return frame_index
         frame_index -= 1
+
+
+def _preceding_speech_start_before_pause(
+    stream: _Stream,
+    anchor_frame: int,
+    user_floor_threshold: float,
+) -> int | None:
+    speech_end_frame = anchor_frame - 1
+    while speech_end_frame >= 0:
+        observation = stream.observations.get(speech_end_frame)
+        if observation is None or observation.user_has_floor is None:
+            return None
+        if observation.user_has_floor >= user_floor_threshold:
+            return _preceding_speech_start(
+                stream=stream,
+                anchor_frame=speech_end_frame + 1,
+                user_floor_threshold=user_floor_threshold,
+            )
+        speech_end_frame -= 1
+    return None
 
 
 def _candidate_id(

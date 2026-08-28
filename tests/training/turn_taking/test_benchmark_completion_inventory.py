@@ -168,7 +168,7 @@ def test_inventory_rejects_conflicting_continuation_evidence() -> None:
 
 def test_inventory_uses_explicit_synthetic_continuation_interval() -> None:
     floor = [0.0] * FRAMES_PER_SAMPLE
-    floor[0:10] = [1.0] * 10
+    floor[0:3] = [1.0] * 3
     completion = [-1.0] * FRAMES_PER_SAMPLE
     completion[3] = 0.0
     continuation = [-1.0] * FRAMES_PER_SAMPLE
