@@ -580,7 +580,19 @@ def compile_anchored_crop(
     clips_by_id = {clip.clip_id: clip for clip in conversation.rendered_clips}
     generator = np.random.default_rng(random_seed)
     variation = config.assistant_duration_variation
-    assistant_scale = float(generator.uniform(1.0 - variation, 1.0 + variation))
+    minimum_assistant_scale = 1.0 - variation
+    match anchor:
+        case AssistantStateAnchor(turn_id=turn_id):
+            assistant_turns_by_id = {
+                turn.turn_id: turn for turn in conversation.plan.assistant_turns
+            }
+            minimum_assistant_scale = max(
+                minimum_assistant_scale,
+                MINIMUM_CONTROL_ACTIVITY_SECONDS / assistant_turns_by_id[turn_id].duration_seconds,
+            )
+        case _:
+            pass
+    assistant_scale = float(generator.uniform(minimum_assistant_scale, 1.0 + variation))
     user_events, assistant_turns = _resolve_variant_timeline(
         conversation.plan, clips_by_id, assistant_scale
     )

@@ -9,9 +9,14 @@ output_root="${VOICE_LIGHT_TRAINING_OUTPUT:-/workspace/voice-light-synthetic-v4-
 export HF_HOME="${HF_HOME:-/workspace/.hf_home}"
 cd "$repository"
 mkdir -p "$output_root"
+resume_arguments=()
+if [[ -f "$output_root/adapter.pt" ]]; then
+  resume_arguments=(--resume-checkpoint "$output_root/adapter.pt")
+fi
 
 exec "$python_environment/bin/python" -m app.training.turn_taking.cli \
   "$output_root/adapter.pt" \
+  "${resume_arguments[@]}" \
   --dynamic-synthetic-corpus "$corpus_root/v4" \
   --dynamic-synthetic-corpus "$corpus_root/v5" \
   --validation-hub-repository BertilBraun/voice-light-audio \

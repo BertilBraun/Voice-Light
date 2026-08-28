@@ -350,6 +350,43 @@ def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path
     assert not np.any(crop_samples)
 
 
+@pytest.mark.parametrize("random_seed", range(32))
+def test_assistant_state_anchor_preserves_minimum_control_activity(
+    tmp_path: Path,
+    random_seed: int,
+) -> None:
+    plan = ConversationCompositionPlan(
+        conversation_id="minimum_assistant_control",
+        seed=9,
+        duration_seconds=20.0,
+        user_events=(),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant",
+                timing=FixedAssistantTiming(start_seconds=5.0),
+                duration_seconds=2.0,
+            ),
+        ),
+    )
+    config = ConversationCompilerConfig(crop_variant_count=1)
+    compiled = compile_conversation(
+        plan,
+        (),
+        tmp_path / "minimum-assistant-control.wav",
+        config,
+    )
+
+    anchored = compile_anchored_crop(
+        compiled,
+        AssistantStateAnchor(turn_id="assistant"),
+        random_seed,
+        config,
+    )
+
+    assert anchored.crop.sampling_stratum is CropSamplingStratum.ASSISTANT_ONLY
+    assert anchored.crop.assistant_only
+
+
 def test_compile_conversation_is_deterministic_across_epochs(tmp_path: Path) -> None:
     clip = _clip(tmp_path, "turn", 2.0, 0.1, 1.8)
     plan = ConversationCompositionPlan(
