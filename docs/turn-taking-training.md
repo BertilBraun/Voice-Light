@@ -61,26 +61,35 @@ uv run python -m app.local.synthetic_generation.cli prepare-hub-training `
   --run v4 `
   --run v5 `
   --output .cache\synthetic-training `
-  --crop-variants 4
+  --crop-variants 1
 ```
 
-Each run becomes a standard materialized corpus containing 20-second FLAC crops, Parquet shards,
-250 hard-label frames at 80 ms, and `-1.0` masks. Train on both local runs while keeping the real
-conversation corpus as the validation gate:
+Each run reconstructs the conversation plans, trimmed user units, virtual-assistant timeline, and a
+standard materialized compatibility corpus. Production training samples directly from those
+reconstructed conversations. Every access selects a typed semantic anchor, varies assistant timing,
+randomly places the anchor after the four-second burn-in, and recompiles 250 hard-label frames at
+80 ms. The configured sampling distribution is 25% EOT, 20% HOLD, 15% backchannel, 15%
+interruption, 10% normal response, 7.5% assistant-state controls, and 7.5% user-state controls.
+
+Train on both local runs while keeping fixed conversation-disjoint synthetic validation and the
+private real conversation validation corpus active together:
 
 ```powershell
 uv run python -m app.training.turn_taking.cli .cache\synthetic-adapter.pt `
-  --materialized-corpus .cache\synthetic-training\v4 `
-  --materialized-corpus .cache\synthetic-training\v5 `
+  --dynamic-synthetic-corpus .cache\synthetic-training\v4 `
+  --dynamic-synthetic-corpus .cache\synthetic-training\v5 `
   --validation-hub-repository BertilBraun/voice-light-audio `
   --validation-hub-revision <40-character-real-corpus-commit> `
   --primary-objective turn_completion
 ```
 
-The trainer verifies Parquet hashes before reading rows and lazily decodes each crop. Training-time
-augmentation applies only to synthetic training inputs; real validation audio stays clean. The
-existing `hf_hub_download` path remains available for already-materialized corpora, and the JSONL
-manifest format remains available through `--manifest` for older local experiments.
+The trainer reports synthetic and human completion metrics separately. Synthetic validation uses
+fixed EOT/HOLD crops from the synthetic validation split to diagnose task fit. Human validation
+remains the checkpoint-selection and early-stopping score, so improving on generator artifacts
+cannot select a worse production checkpoint. Training-time augmentation applies only to synthetic
+training inputs; both validation sources stay clean. The existing materialized and
+`hf_hub_download` paths remain available for compatibility, and the JSONL manifest format remains
+available through `--manifest` for older local experiments.
 
 ### Intended source preparation
 

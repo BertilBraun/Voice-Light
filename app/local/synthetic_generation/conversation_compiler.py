@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import numpy as np
+from numpy.typing import NDArray
 from pydantic import Field, model_validator
 
 from app.local.synthetic_generation.audio_files import (
@@ -253,6 +254,54 @@ class CropSamplingStratum(StrEnum):
     EVENT_LIGHT = "event_light"
 
 
+class EotAnchor(SyntheticModel):
+    kind: Literal["eot"] = "eot"
+    event_id: str
+
+
+class HoldAnchor(SyntheticModel):
+    kind: Literal["hold"] = "hold"
+    event_id: str
+    silence_index: int = Field(ge=0)
+
+
+class BackchannelAnchor(SyntheticModel):
+    kind: Literal["backchannel"] = "backchannel"
+    event_id: str
+
+
+class InterruptionAnchor(SyntheticModel):
+    kind: Literal["interruption"] = "interruption"
+    event_id: str
+
+
+class ResponseAnchor(SyntheticModel):
+    kind: Literal["response"] = "response"
+    event_id: str
+
+
+class AssistantStateAnchor(SyntheticModel):
+    kind: Literal["assistant_state"] = "assistant_state"
+    turn_id: str
+
+
+class UserStateAnchor(SyntheticModel):
+    kind: Literal["user_state"] = "user_state"
+    event_id: str
+
+
+ConversationAnchor = Annotated[
+    EotAnchor
+    | HoldAnchor
+    | BackchannelAnchor
+    | InterruptionAnchor
+    | ResponseAnchor
+    | AssistantStateAnchor
+    | UserStateAnchor,
+    Field(discriminator="kind"),
+]
+
+
 class SpeculativeEotTrack(SyntheticModel):
     horizon_seconds: float = Field(gt=0.0)
     probabilities: tuple[float, ...]
@@ -380,6 +429,12 @@ class TrainingCropPlan(SyntheticModel):
         return self
 
 
+class AnchoredTrainingCrop(SyntheticModel):
+    anchor: ConversationAnchor
+    anchor_frame_index: int = Field(ge=0)
+    crop: TrainingCropPlan
+
+
 class CompiledConversation(SyntheticModel):
     schema_version: Literal["voice-light-compiled-conversation-v1"] = (
         "voice-light-compiled-conversation-v1"
@@ -448,6 +503,16 @@ def materialize_crop_audio(
     crop: TrainingCropPlan,
     output_audio_path: Path,
 ) -> Path:
+    output = render_crop_audio(conversation, crop)
+    output_audio_path.parent.mkdir(parents=True, exist_ok=True)
+    write_mono_pcm16_audio(output_audio_path, output, conversation.sample_rate_hz)
+    return output_audio_path
+
+
+def render_crop_audio(
+    conversation: CompiledConversation,
+    crop: TrainingCropPlan,
+) -> NDArray[np.float32]:
     clips_by_id = {clip.clip_id: clip for clip in conversation.rendered_clips}
     variant_duration = max(
         conversation.plan.duration_seconds,
@@ -464,9 +529,127 @@ def materialize_crop_audio(
     output_start = round(crop.left_padding_seconds * conversation.sample_rate_hz)
     selected = source_samples[source_start:source_end]
     output[output_start : output_start + selected.size] = selected
-    output_audio_path.parent.mkdir(parents=True, exist_ok=True)
-    write_mono_pcm16_audio(output_audio_path, output, conversation.sample_rate_hz)
-    return output_audio_path
+    return output
+
+
+def conversation_anchors(conversation: CompiledConversation) -> tuple[ConversationAnchor, ...]:
+    anchors: list[ConversationAnchor] = []
+    clips_by_id = {clip.clip_id: clip for clip in conversation.rendered_clips}
+    for event in conversation.plan.user_events:
+        if event.kind != "non_floor_feedback":
+            anchors.append(EotAnchor(event_id=event.event_id))
+            clip = clips_by_id[event.clip_id]
+            if (
+                clip.active_end_seconds - clip.active_start_seconds
+                >= MINIMUM_CONTROL_ACTIVITY_SECONDS
+            ):
+                anchors.append(UserStateAnchor(event_id=event.event_id))
+        match event:
+            case HoldPlacement():
+                anchors.extend(
+                    HoldAnchor(event_id=event.event_id, silence_index=silence_index)
+                    for silence_index in range(
+                        len(clips_by_id[event.clip_id].continuation_silences)
+                    )
+                )
+            case NonFloorFeedbackPlacement():
+                anchors.append(BackchannelAnchor(event_id=event.event_id))
+            case InterruptionFloorClaimPlacement():
+                anchors.append(InterruptionAnchor(event_id=event.event_id))
+            case ResponseFloorClaimPlacement():
+                anchors.append(ResponseAnchor(event_id=event.event_id))
+            case CompletionPlacement():
+                pass
+    anchors.extend(
+        AssistantStateAnchor(turn_id=turn.turn_id)
+        for turn in conversation.plan.assistant_turns
+        if turn.duration_seconds >= MINIMUM_CONTROL_ACTIVITY_SECONDS
+    )
+    return tuple(anchors)
+
+
+def compile_anchored_crop(
+    conversation: CompiledConversation,
+    anchor: ConversationAnchor,
+    random_seed: int,
+    config: ConversationCompilerConfig,
+    minimum_context_seconds: float = 4.0,
+) -> AnchoredTrainingCrop:
+    if not 0.0 <= minimum_context_seconds < config.crop_duration_seconds:
+        raise ValueError("minimum_context_seconds must fall inside the crop.")
+    clips_by_id = {clip.clip_id: clip for clip in conversation.rendered_clips}
+    generator = np.random.default_rng(random_seed)
+    variation = config.assistant_duration_variation
+    assistant_scale = float(generator.uniform(1.0 - variation, 1.0 + variation))
+    user_events, assistant_turns = _resolve_variant_timeline(
+        conversation.plan, clips_by_id, assistant_scale
+    )
+    match anchor:
+        case AssistantStateAnchor():
+            user_events = ()
+            sampling_stratum = CropSamplingStratum.ASSISTANT_ONLY
+        case UserStateAnchor():
+            assistant_turns = ()
+            sampling_stratum = CropSamplingStratum.USER_ONLY
+        case _:
+            sampling_stratum = CropSamplingStratum.EVENT_FOCUSED
+    anchor_seconds = _anchor_seconds(anchor, user_events, assistant_turns, clips_by_id)
+    maximum_position = config.crop_duration_seconds - FRAME_SECONDS
+    anchor_position = float(generator.uniform(minimum_context_seconds, maximum_position))
+    crop_start = anchor_seconds - anchor_position
+    crop = _build_crop(
+        plan=conversation.plan,
+        clips_by_id=clips_by_id,
+        variant_index=random_seed,
+        assistant_scale=assistant_scale,
+        user_events=user_events,
+        assistant_turns=assistant_turns,
+        crop_start=crop_start,
+        sampling_stratum=sampling_stratum,
+        config=config,
+    )
+    anchor_frame_index = int((anchor_seconds - crop_start) / FRAME_SECONDS)
+    if not 0 <= anchor_frame_index < len(crop.labels.turn_completion):
+        raise AssertionError("Selected anchor falls outside its compiled crop.")
+    return AnchoredTrainingCrop(
+        anchor=anchor,
+        anchor_frame_index=anchor_frame_index,
+        crop=crop,
+    )
+
+
+def _anchor_seconds(
+    anchor: ConversationAnchor,
+    user_events: tuple[ResolvedUserEvent, ...],
+    assistant_turns: tuple[ResolvedAssistantTurn, ...],
+    clips_by_id: dict[str, RenderedUserClip],
+) -> float:
+    users_by_id = {event.event_id: event for event in user_events}
+    assistants_by_id = {turn.turn_id: turn for turn in assistant_turns}
+    match anchor:
+        case EotAnchor(event_id=event_id):
+            event = users_by_id[event_id]
+            return event.start_seconds + clips_by_id[event.clip_id].active_end_seconds
+        case HoldAnchor(event_id=event_id, silence_index=silence_index):
+            event = users_by_id[event_id]
+            silence = clips_by_id[event.clip_id].continuation_silences[silence_index]
+            return event.start_seconds + silence.start_seconds
+        case (
+            BackchannelAnchor(event_id=event_id)
+            | InterruptionAnchor(event_id=event_id)
+            | ResponseAnchor(event_id=event_id)
+            | UserStateAnchor(event_id=event_id)
+        ):
+            event = users_by_id[event_id]
+            clip = clips_by_id[event.clip_id]
+            active_start = event.start_seconds + clip.active_start_seconds
+            active_end = event.start_seconds + clip.active_end_seconds
+            return (
+                (active_start + active_end) / 2.0 if anchor.kind == "user_state" else active_start
+            )
+        case AssistantStateAnchor(turn_id=turn_id):
+            turn = assistants_by_id[turn_id]
+            return (turn.start_seconds + turn.end_seconds) / 2.0
 
 
 def _validated_clips(
@@ -540,8 +723,6 @@ def _compile_crop(
     )
     if variant_duration > MAXIMUM_RENDERED_CONVERSATION_SECONDS:
         raise ValueError("Reflowed conversation exceeds the 180-second source limit.")
-    feedback_starts = tuple(start for start, _ in feedback_intervals)
-    hold_starts = tuple(start for start, _ in hold_intervals)
     crop_start, sampling_stratum = _crop_start_for_stratum(
         variant_index,
         variant_duration,
@@ -554,6 +735,40 @@ def _compile_crop(
         requested_sampling_stratum,
         config,
         generator,
+    )
+    return _build_crop(
+        plan=plan,
+        clips_by_id=clips_by_id,
+        variant_index=variant_index,
+        assistant_scale=assistant_scale,
+        user_events=user_events,
+        assistant_turns=assistant_turns,
+        crop_start=crop_start,
+        sampling_stratum=sampling_stratum,
+        config=config,
+    )
+
+
+def _build_crop(
+    plan: ConversationCompositionPlan,
+    clips_by_id: dict[str, RenderedUserClip],
+    variant_index: int,
+    assistant_scale: float,
+    user_events: tuple[ResolvedUserEvent, ...],
+    assistant_turns: tuple[ResolvedAssistantTurn, ...],
+    crop_start: float,
+    sampling_stratum: CropSamplingStratum,
+    config: ConversationCompilerConfig,
+) -> TrainingCropPlan:
+    completions, hold_intervals, feedback_intervals, floor_takes, user_floor = _semantic_timeline(
+        user_events, clips_by_id
+    )
+    feedback_starts = tuple(start for start, _ in feedback_intervals)
+    hold_starts = tuple(start for start, _ in hold_intervals)
+    variant_duration = max(
+        plan.duration_seconds,
+        *(event.end_seconds for event in user_events),
+        *(turn.end_seconds for turn in assistant_turns),
     )
     source_start = max(0.0, crop_start)
     source_end = min(variant_duration, crop_start + config.crop_duration_seconds)

@@ -5,7 +5,10 @@ import torch
 from torch import Tensor
 
 from app.training.turn_taking.backbone import BackboneFeatures
-from app.training.turn_taking.completion_validation import evaluate_completion_boundaries
+from app.training.turn_taking.completion_validation import (
+    SyntheticAndHumanCompletionValidator,
+    evaluate_completion_boundaries,
+)
 from app.training.turn_taking.data import FrameTargets, TrainingBatch
 from app.training.turn_taking.model import AdapterOutput
 
@@ -77,3 +80,28 @@ def test_completion_validation_scores_one_boundary_per_item() -> None:
     assert metrics.average_precision == pytest.approx(1.0)
     assert metrics.binary_cross_entropy == pytest.approx(-torch.log(torch.tensor(0.9)).item())
     assert metrics.support == 2
+
+
+class _RecordingValidator:
+    def __init__(self, name: str, score: float, calls: list[str]) -> None:
+        self.name = name
+        self.score = score
+        self.calls = calls
+
+    def __call__(self, adapter: object, optimizer_step: int) -> float:
+        del adapter
+        self.calls.append(f"{self.name}:{optimizer_step}")
+        return self.score
+
+
+def test_combined_validation_reports_synthetic_but_selects_on_human() -> None:
+    calls: list[str] = []
+    validator = SyntheticAndHumanCompletionValidator(
+        synthetic=_RecordingValidator("synthetic", 0.9, calls),
+        human=_RecordingValidator("human", 0.6, calls),
+    )
+
+    score = validator(object(), 125)  # type: ignore[arg-type]
+
+    assert score == pytest.approx(0.6)
+    assert calls == ["synthetic:125", "human:125"]

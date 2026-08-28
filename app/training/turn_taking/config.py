@@ -54,6 +54,60 @@ class WaveformAugmentationProfile(StrEnum):
     EXPANDED = "expanded"
 
 
+class SyntheticAnchorKind(StrEnum):
+    EOT = "eot"
+    HOLD = "hold"
+    BACKCHANNEL = "backchannel"
+    INTERRUPTION = "interruption"
+    RESPONSE = "response"
+    ASSISTANT_STATE = "assistant_state"
+    USER_STATE = "user_state"
+
+
+class SyntheticAnchorSamplingConfig(FrozenBaseModel):
+    eot_fraction: float = Field(default=0.25, gt=0.0, le=1.0)
+    hold_fraction: float = Field(default=0.2, gt=0.0, le=1.0)
+    backchannel_fraction: float = Field(default=0.15, gt=0.0, le=1.0)
+    interruption_fraction: float = Field(default=0.15, gt=0.0, le=1.0)
+    response_fraction: float = Field(default=0.1, gt=0.0, le=1.0)
+    assistant_state_fraction: float = Field(default=0.075, gt=0.0, le=1.0)
+    user_state_fraction: float = Field(default=0.075, gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> SyntheticAnchorSamplingConfig:
+        if abs(sum(self.fractions()) - 1.0) > 1e-9:
+            raise ValueError("Synthetic anchor sampling fractions must sum to one.")
+        return self
+
+    def fractions(self) -> tuple[float, ...]:
+        return (
+            self.eot_fraction,
+            self.hold_fraction,
+            self.backchannel_fraction,
+            self.interruption_fraction,
+            self.response_fraction,
+            self.assistant_state_fraction,
+            self.user_state_fraction,
+        )
+
+    def fraction(self, kind: SyntheticAnchorKind) -> float:
+        match kind:
+            case SyntheticAnchorKind.EOT:
+                return self.eot_fraction
+            case SyntheticAnchorKind.HOLD:
+                return self.hold_fraction
+            case SyntheticAnchorKind.BACKCHANNEL:
+                return self.backchannel_fraction
+            case SyntheticAnchorKind.INTERRUPTION:
+                return self.interruption_fraction
+            case SyntheticAnchorKind.RESPONSE:
+                return self.response_fraction
+            case SyntheticAnchorKind.ASSISTANT_STATE:
+                return self.assistant_state_fraction
+            case SyntheticAnchorKind.USER_STATE:
+                return self.user_state_fraction
+
+
 class WaveformAugmentationConfig(FrozenBaseModel):
     gain_probability: float = Field(default=0.8, ge=0.0, le=1.0)
     minimum_gain_db: float = -12.0

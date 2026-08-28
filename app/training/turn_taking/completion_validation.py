@@ -28,6 +28,10 @@ class CompletionScoringAdapter(Protocol):
     ) -> AdapterOutput: ...
 
 
+class CompletionValidationCallback(Protocol):
+    def __call__(self, adapter: TurnTakingAdapter, optimizer_step: int) -> float: ...
+
+
 @dataclass(frozen=True)
 class CompletionValidationMetrics:
     auroc: float
@@ -43,10 +47,12 @@ class CompletionValidator:
         backbone: FeatureBackbone,
         batches: Iterable[TrainingBatch],
         device: torch.device,
+        name: str = "human",
     ) -> None:
         self.backbone = backbone
         self.batches = batches
         self.device = device
+        self.name = name
 
     def __call__(self, adapter: TurnTakingAdapter, optimizer_step: int) -> float:
         metrics = evaluate_completion_boundaries(
@@ -56,13 +62,28 @@ class CompletionValidator:
             device=self.device,
         )
         print(
-            f"validation_step={optimizer_step}; completion_auroc={metrics.auroc:.6f}; "
+            f"validation={self.name}; validation_step={optimizer_step}; "
+            f"completion_auroc={metrics.auroc:.6f}; "
             f"completion_ap={metrics.average_precision:.6f}; "
             f"completion_bce={metrics.binary_cross_entropy:.6f}; "
             f"completion_brier={metrics.brier_score:.6f}; support={metrics.support}",
             flush=True,
         )
         return metrics.auroc
+
+
+class SyntheticAndHumanCompletionValidator:
+    def __init__(
+        self,
+        synthetic: CompletionValidationCallback,
+        human: CompletionValidationCallback,
+    ) -> None:
+        self.synthetic = synthetic
+        self.human = human
+
+    def __call__(self, adapter: TurnTakingAdapter, optimizer_step: int) -> float:
+        self.synthetic(adapter, optimizer_step)
+        return self.human(adapter, optimizer_step)
 
 
 def evaluate_completion_boundaries(

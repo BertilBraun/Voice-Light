@@ -11,22 +11,31 @@ from app.local.synthetic_generation.conversation_compiler import (
     AfterAssistantUserTiming,
     AfterUserAssistantTiming,
     AssistantProbabilityDip,
+    AssistantStateAnchor,
+    BackchannelAnchor,
     CompletionPlacement,
     ConversationCompilerConfig,
     ConversationCompositionPlan,
     CropSamplingStratum,
     DuringAssistantUserTiming,
+    EotAnchor,
     FixedAssistantTiming,
     FixedUserTiming,
+    HoldAnchor,
     HoldPlacement,
+    InterruptionAnchor,
     InterruptionFloorClaimPlacement,
     MeasuredSilence,
     NonFloorFeedbackPlacement,
     PreservePlannedDuration,
     RenderedUserClip,
+    ResponseAnchor,
     ResponseFloorClaimPlacement,
+    UserStateAnchor,
     VirtualAssistantTurn,
+    compile_anchored_crop,
     compile_conversation,
+    conversation_anchors,
     materialize_crop_audio,
     sampling_stratum_for_index,
 )
@@ -171,6 +180,97 @@ def test_compile_conversation_composes_audio_and_all_dense_labels(tmp_path: Path
     crop_origin = interruption_crop.source_start_seconds - interruption_crop.left_padding_seconds
     interruption_frame = round((interruption_event.start_seconds - crop_origin) / 0.08 - 0.5)
     assert interruption_crop.labels.assistant_speaking_probability[interruption_frame] > 0.8
+
+
+def test_dynamic_anchors_cover_interactions_and_randomize_context(tmp_path: Path) -> None:
+    clips = (
+        _clip(
+            tmp_path,
+            "holding",
+            5.0,
+            0.1,
+            4.9,
+            continuation_silences=(MeasuredSilence(start_seconds=2.0, end_seconds=2.7),),
+        ),
+        _clip(tmp_path, "feedback", 0.4, 0.02, 0.35),
+        _clip(tmp_path, "response", 3.0, 0.05, 2.9),
+        _clip(tmp_path, "interrupt", 3.0, 0.05, 2.9),
+    )
+    plan = ConversationCompositionPlan(
+        conversation_id="dynamic_anchors",
+        seed=81,
+        duration_seconds=42.0,
+        user_events=(
+            HoldPlacement(
+                event_id="holding",
+                clip_id="holding",
+                timing=FixedUserTiming(start_seconds=1.0),
+            ),
+            NonFloorFeedbackPlacement(
+                event_id="feedback",
+                clip_id="feedback",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant_one", position_fraction=0.4
+                ),
+            ),
+            ResponseFloorClaimPlacement(
+                event_id="response",
+                clip_id="response",
+                timing=AfterAssistantUserTiming(
+                    assistant_turn_id="assistant_one", delay_seconds=0.3
+                ),
+            ),
+            InterruptionFloorClaimPlacement(
+                event_id="interrupt",
+                clip_id="interrupt",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant_two", position_fraction=0.5
+                ),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant_one",
+                timing=AfterUserAssistantTiming(user_event_id="holding", delay_seconds=0.2),
+                duration_seconds=5.0,
+            ),
+            VirtualAssistantTurn(
+                turn_id="assistant_two",
+                timing=AfterUserAssistantTiming(user_event_id="response", delay_seconds=0.2),
+                duration_seconds=5.0,
+            ),
+        ),
+    )
+    config = ConversationCompilerConfig(
+        crop_variant_count=1,
+        assistant_only_fraction=0.0,
+        user_only_fraction=0.0,
+        event_light_fraction=0.0,
+    )
+    compiled = compile_conversation(plan, clips, tmp_path / "dynamic.wav", config)
+    anchors = conversation_anchors(compiled)
+
+    assert {type(anchor) for anchor in anchors} == {
+        EotAnchor,
+        HoldAnchor,
+        BackchannelAnchor,
+        InterruptionAnchor,
+        ResponseAnchor,
+        AssistantStateAnchor,
+        UserStateAnchor,
+    }
+    hold_anchor = next(anchor for anchor in anchors if isinstance(anchor, HoldAnchor))
+    first = compile_anchored_crop(compiled, hold_anchor, 100, config)
+    second = compile_anchored_crop(compiled, hold_anchor, 101, config)
+
+    assert first.crop.crop_id != second.crop.crop_id
+    assert first.crop.labels.turn_completion[first.anchor_frame_index] == 0.0
+    assert (
+        1.0
+        in first.crop.labels.continuation_pause[
+            first.anchor_frame_index : first.anchor_frame_index + 2
+        ]
+    )
 
 
 def test_fitted_source_duration_accepts_rendered_timeline_longer_than_estimate(
