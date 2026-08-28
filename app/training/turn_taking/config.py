@@ -164,6 +164,7 @@ class TrainingConfig(FrozenBaseModel):
     encoder_frame_seconds: float = 0.08
     lookahead_tokens: int = 1
     batch_size: int = 2
+    validation_batch_size: int = Field(default=4, gt=0)
     gradient_accumulation_steps: int = 8
     data_loader_workers: int = Field(default=4, ge=0)
     data_loader_prefetch_factor: int = Field(default=2, gt=0)

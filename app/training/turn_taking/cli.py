@@ -73,6 +73,7 @@ def main() -> None:
     parser.add_argument("--max-steps", type=_positive_int)
     parser.add_argument("--minimum-steps-before-stopping", type=_nonnegative_int)
     parser.add_argument("--batch-size", type=_positive_int)
+    parser.add_argument("--validation-batch-size", type=_positive_int)
     parser.add_argument("--gradient-accumulation-steps", type=_positive_int)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int)
     parser.add_argument("--validation-interval-steps", type=_positive_int)
@@ -113,6 +114,10 @@ def main() -> None:
             )
     if arguments.batch_size is not None:
         config = config.model_copy(update={"batch_size": arguments.batch_size})
+    if arguments.validation_batch_size is not None:
+        config = config.model_copy(
+            update={"validation_batch_size": arguments.validation_batch_size}
+        )
     if arguments.gradient_accumulation_steps is not None:
         config = config.model_copy(
             update={"gradient_accumulation_steps": arguments.gradient_accumulation_steps}
@@ -332,7 +337,7 @@ def main() -> None:
             )
             validation_loader = DataLoader(
                 validation_dataset,
-                batch_size=config.batch_size,
+                batch_size=config.validation_batch_size,
                 shuffle=False,
                 collate_fn=collate_training_items,
                 num_workers=config.data_loader_workers,
@@ -364,7 +369,7 @@ def main() -> None:
                 )
                 synthetic_validation_loader = DataLoader(
                     synthetic_validation_dataset,
-                    batch_size=config.batch_size,
+                    batch_size=config.validation_batch_size,
                     shuffle=False,
                     collate_fn=collate_training_items,
                     num_workers=config.data_loader_workers,
