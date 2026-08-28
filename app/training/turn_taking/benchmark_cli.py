@@ -59,6 +59,10 @@ from app.training.turn_taking.benchmark_completion_audit_export import (
 from app.training.turn_taking.benchmark_completion_inventory import (
     build_turn_completion_inventory,
 )
+from app.training.turn_taking.benchmark_completion_merge import (
+    merge_completion_inventories,
+    merge_completion_predictions,
+)
 from app.training.turn_taking.benchmark_completion_metrics import (
     CompletionAnalysisReport,
     CompletionEvaluationConfiguration,
@@ -140,6 +144,7 @@ from app.training.turn_taking.data import collate_training_items
 from app.training.turn_taking.hub import (
     DEFAULT_HUB_REPOSITORY,
     HuggingFaceTurnTakingDataset,
+    LocalMaterializedTurnTakingDataset,
 )
 
 PINNED_CORPUS_REVISION = "56e68eb8fb1d42159483612f508b9ce27672f724"
@@ -176,6 +181,8 @@ def main() -> None:
     _add_completion_baseline_parser(subparsers)
     _add_completion_voice_light_parser(subparsers)
     _add_completion_analyze_parser(subparsers)
+    _add_completion_merge_inventory_parser(subparsers)
+    _add_completion_merge_predictions_parser(subparsers)
     _add_completion_audit_parser(subparsers)
     _add_completion_audit_refresh_parser(subparsers)
     _add_completion_audit_analysis_parser(subparsers)
@@ -205,6 +212,10 @@ def main() -> None:
             _predict_voice_light_completion(arguments)
         case "analyze-completion-v2":
             _analyze_completion(arguments)
+        case "merge-completion-inventories-v2":
+            _merge_completion_inventories(arguments)
+        case "merge-completion-predictions-v2":
+            _merge_completion_predictions(arguments)
         case "completion-label-audit-v2":
             _completion_label_audit(arguments)
         case "refresh-completion-label-audit-ui-v2":
@@ -369,6 +380,7 @@ def _add_completion_voice_light_parser(
     parser.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
     parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
     parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--local-export-root", type=Path)
     parser.add_argument("--model-revision", default=PINNED_NEMOTRON_REVISION)
     parser.add_argument("--batch-size", type=_positive_int, default=4)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=0)
@@ -391,6 +403,29 @@ def _add_completion_analyze_parser(
         default=DEFAULT_COMPLETION_ACTION_DELAYS_SECONDS,
     )
     parser.add_argument("--timeouts-seconds", type=_float_tuple, default=DEFAULT_TIMEOUTS_SECONDS)
+
+
+def _add_completion_merge_inventory_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "merge-completion-inventories-v2",
+        help="Merge compatible validation completion inventories.",
+    )
+    parser.add_argument("output", type=Path)
+    parser.add_argument("inventories", type=Path, nargs="+")
+
+
+def _add_completion_merge_predictions_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "merge-completion-predictions-v2",
+        help="Merge compatible completion predictions for a merged inventory.",
+    )
+    parser.add_argument("inventory", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("predictions", type=Path, nargs="+")
 
 
 def _add_completion_audit_parser(
@@ -846,13 +881,22 @@ def _predict_voice_light_completion(arguments: argparse.Namespace) -> None:
         raise ValueError("Turn-completion prediction is restricted to validation.")
     checkpoints = tuple(load_voice_light_checkpoint(path) for path in arguments.checkpoints)
     reference_config = checkpoints[0].config
-    dataset = HuggingFaceTurnTakingDataset(
-        split=TrainingCorpusSplit.VALIDATION,
-        revision=arguments.hub_revision,
-        repository_id=arguments.hub_repository,
-        cache_directory=arguments.hub_cache_directory,
-        sample_rate_hz=reference_config.sample_rate_hz,
-        pad_missing_audio_suffix=True,
+    dataset = (
+        LocalMaterializedTurnTakingDataset(
+            root=arguments.local_export_root,
+            split=TrainingCorpusSplit.VALIDATION,
+            sample_rate_hz=reference_config.sample_rate_hz,
+            pad_missing_audio_suffix=True,
+        )
+        if arguments.local_export_root is not None
+        else HuggingFaceTurnTakingDataset(
+            split=TrainingCorpusSplit.VALIDATION,
+            revision=arguments.hub_revision,
+            repository_id=arguments.hub_repository,
+            cache_directory=arguments.hub_cache_directory,
+            sample_rate_hz=reference_config.sample_rate_hz,
+            pad_missing_audio_suffix=True,
+        )
     )
     relevant_window_ids = {
         window_id for candidate in inventory.candidates for window_id in candidate.source_window_ids
@@ -969,6 +1013,23 @@ def _analyze_completion(arguments: argparse.Namespace) -> None:
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(selected.model_dump_json(indent=2), flush=True)
+
+
+def _merge_completion_inventories(arguments: argparse.Namespace) -> None:
+    inventory = merge_completion_inventories(
+        tuple(read_turn_completion_inventory(path) for path in arguments.inventories)
+    )
+    write_turn_completion_inventory(arguments.output, inventory)
+    print(inventory.manifest.model_dump_json(indent=2), flush=True)
+
+
+def _merge_completion_predictions(arguments: argparse.Namespace) -> None:
+    artifact = merge_completion_predictions(
+        inventory=read_turn_completion_inventory(arguments.inventory),
+        artifacts=tuple(read_completion_predictions(path) for path in arguments.predictions),
+    )
+    write_completion_predictions(arguments.output, artifact)
+    print(artifact.manifest.model_dump_json(indent=2), flush=True)
 
 
 def _completion_label_audit(arguments: argparse.Namespace) -> None:
