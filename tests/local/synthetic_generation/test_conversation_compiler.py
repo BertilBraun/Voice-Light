@@ -355,11 +355,21 @@ def test_assistant_state_anchor_preserves_minimum_control_activity(
     tmp_path: Path,
     random_seed: int,
 ) -> None:
+    interruption = _clip(tmp_path, "minimum_control_interruption", 1.0, 0.0, 1.0)
     plan = ConversationCompositionPlan(
         conversation_id="minimum_assistant_control",
         seed=9,
         duration_seconds=20.0,
-        user_events=(),
+        user_events=(
+            InterruptionFloorClaimPlacement(
+                event_id="interruption",
+                clip_id="minimum_control_interruption",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant",
+                    position_fraction=0.1,
+                ),
+            ),
+        ),
         assistant_turns=(
             VirtualAssistantTurn(
                 turn_id="assistant",
@@ -371,7 +381,7 @@ def test_assistant_state_anchor_preserves_minimum_control_activity(
     config = ConversationCompilerConfig(crop_variant_count=1)
     compiled = compile_conversation(
         plan,
-        (),
+        (interruption,),
         tmp_path / "minimum-assistant-control.wav",
         config,
     )

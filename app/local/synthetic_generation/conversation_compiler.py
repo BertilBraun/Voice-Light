@@ -597,8 +597,20 @@ def compile_anchored_crop(
         conversation.plan, clips_by_id, assistant_scale
     )
     match anchor:
-        case AssistantStateAnchor():
+        case AssistantStateAnchor(turn_id=turn_id):
             user_events = ()
+            assistant_turn = next(turn for turn in assistant_turns if turn.turn_id == turn_id)
+            planned_turn = next(
+                turn for turn in conversation.plan.assistant_turns if turn.turn_id == turn_id
+            )
+            assistant_turns = (
+                assistant_turn.model_copy(
+                    update={
+                        "end_seconds": assistant_turn.start_seconds
+                        + planned_turn.duration_seconds * assistant_scale
+                    }
+                ),
+            )
             sampling_stratum = CropSamplingStratum.ASSISTANT_ONLY
         case UserStateAnchor():
             assistant_turns = ()
