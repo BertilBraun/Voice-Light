@@ -5,6 +5,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from app.local.synthetic_generation.audio_files import read_mono_pcm16_audio
 from app.local.synthetic_generation.conversation_compiler import (
@@ -579,6 +580,59 @@ def test_subframe_feedback_falls_back_to_event_light_crop(tmp_path: Path) -> Non
 
     assert compiled.crops[0].sampling_stratum is CropSamplingStratum.EVENT_LIGHT
     assert compiled.crops[0].event_light
+
+
+@pytest.mark.parametrize("random_seed", range(32))
+def test_anchored_subframe_feedback_is_aligned_to_a_supervised_frame(
+    tmp_path: Path,
+    random_seed: int,
+) -> None:
+    feedback = _clip(tmp_path, "anchored_subframe_feedback", 0.02, 0.0, 0.02)
+    plan = ConversationCompositionPlan(
+        conversation_id="anchored_subframe_feedback",
+        seed=11,
+        duration_seconds=20.0,
+        user_events=(
+            NonFloorFeedbackPlacement(
+                event_id="feedback",
+                clip_id="anchored_subframe_feedback",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant",
+                    position_fraction=0.513,
+                ),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant",
+                timing=FixedAssistantTiming(start_seconds=0.0),
+                duration_seconds=10.0,
+            ),
+        ),
+    )
+    config = ConversationCompilerConfig(
+        crop_variant_count=1,
+        assistant_only_fraction=0.0,
+        user_only_fraction=0.0,
+        event_light_fraction=0.0,
+        assistant_duration_variation=0.0,
+    )
+    compiled = compile_conversation(
+        plan,
+        (feedback,),
+        tmp_path / "anchored-subframe-feedback.wav",
+        config,
+    )
+
+    anchored = compile_anchored_crop(
+        compiled,
+        BackchannelAnchor(event_id="feedback"),
+        random_seed,
+        config,
+    )
+
+    assert anchored.crop.sampling_stratum is CropSamplingStratum.EVENT_FOCUSED
+    assert anchored.crop.labels.non_floor_feedback[anchored.anchor_frame_index] == 1.0
 
 
 def test_long_source_materializes_every_sampling_control_without_padding(tmp_path: Path) -> None:

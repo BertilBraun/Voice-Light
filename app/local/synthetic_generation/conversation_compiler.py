@@ -594,7 +594,7 @@ def compile_anchored_crop(
         case _:
             sampling_stratum = CropSamplingStratum.EVENT_FOCUSED
     anchor_seconds = _anchor_seconds(anchor, user_events, assistant_turns, clips_by_id)
-    maximum_position = config.crop_duration_seconds - FRAME_SECONDS
+    maximum_position = config.crop_duration_seconds - FRAME_SECONDS / 2.0
     variant_duration = max(
         conversation.plan.duration_seconds,
         *(event.end_seconds for event in user_events),
@@ -604,10 +604,12 @@ def compile_anchored_crop(
     maximum_crop_start = max(0.0, variant_duration - config.crop_duration_seconds)
     minimum_position = max(minimum_context_seconds, anchor_seconds - maximum_crop_start)
     feasible_maximum_position = min(maximum_position, anchor_seconds - minimum_crop_start)
-    anchor_position = (
-        float(generator.uniform(minimum_position, feasible_maximum_position))
-        if minimum_position <= feasible_maximum_position
-        else minimum_context_seconds
+    anchor_position, anchor_frame_index = _frame_aligned_anchor_position(
+        minimum_position=minimum_position,
+        maximum_position=feasible_maximum_position,
+        fallback_minimum_position=minimum_context_seconds,
+        frame_count=round(config.crop_duration_seconds / FRAME_SECONDS),
+        generator=generator,
     )
     crop_start = anchor_seconds - anchor_position
     crop = _build_crop(
@@ -621,7 +623,6 @@ def compile_anchored_crop(
         sampling_stratum=sampling_stratum,
         config=config,
     )
-    anchor_frame_index = int((anchor_seconds - crop_start) / FRAME_SECONDS)
     if not 0 <= anchor_frame_index < len(crop.labels.turn_completion):
         raise AssertionError("Selected anchor falls outside its compiled crop.")
     return AnchoredTrainingCrop(
@@ -629,6 +630,32 @@ def compile_anchored_crop(
         anchor_frame_index=anchor_frame_index,
         crop=crop,
     )
+
+
+def _frame_aligned_anchor_position(
+    minimum_position: float,
+    maximum_position: float,
+    fallback_minimum_position: float,
+    frame_count: int,
+    generator: np.random.Generator,
+) -> tuple[float, int]:
+    frame_positions = tuple((index + 0.5) * FRAME_SECONDS for index in range(frame_count))
+    feasible = tuple(
+        (position, index)
+        for index, position in enumerate(frame_positions)
+        if minimum_position <= position <= maximum_position
+    )
+    if feasible:
+        return feasible[int(generator.integers(0, len(feasible)))]
+    fallback_index = next(
+        (
+            index
+            for index, position in enumerate(frame_positions)
+            if position >= fallback_minimum_position
+        ),
+        frame_count - 1,
+    )
+    return frame_positions[fallback_index], fallback_index
 
 
 def _anchor_seconds(
@@ -646,10 +673,21 @@ def _anchor_seconds(
         case HoldAnchor(event_id=event_id, silence_index=silence_index):
             event = users_by_id[event_id]
             silence = clips_by_id[event.clip_id].continuation_silences[silence_index]
-            return event.start_seconds + silence.start_seconds
+            interior_offset = min(
+                (silence.end_seconds - silence.start_seconds) / 2.0,
+                FRAME_SECONDS / 4.0,
+            )
+            return event.start_seconds + silence.start_seconds + interior_offset
+        case BackchannelAnchor(event_id=event_id):
+            event = users_by_id[event_id]
+            clip = clips_by_id[event.clip_id]
+            interior_offset = min(
+                (clip.active_end_seconds - clip.active_start_seconds) / 2.0,
+                FRAME_SECONDS / 4.0,
+            )
+            return event.start_seconds + clip.active_start_seconds + interior_offset
         case (
-            BackchannelAnchor(event_id=event_id)
-            | InterruptionAnchor(event_id=event_id)
+            InterruptionAnchor(event_id=event_id)
             | ResponseAnchor(event_id=event_id)
             | UserStateAnchor(event_id=event_id)
         ):
