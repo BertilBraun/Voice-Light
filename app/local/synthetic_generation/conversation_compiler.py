@@ -595,7 +595,20 @@ def compile_anchored_crop(
             sampling_stratum = CropSamplingStratum.EVENT_FOCUSED
     anchor_seconds = _anchor_seconds(anchor, user_events, assistant_turns, clips_by_id)
     maximum_position = config.crop_duration_seconds - FRAME_SECONDS
-    anchor_position = float(generator.uniform(minimum_context_seconds, maximum_position))
+    variant_duration = max(
+        conversation.plan.duration_seconds,
+        *(event.end_seconds for event in user_events),
+        *(turn.end_seconds for turn in assistant_turns),
+    )
+    minimum_crop_start = min(0.0, variant_duration - config.crop_duration_seconds)
+    maximum_crop_start = max(0.0, variant_duration - config.crop_duration_seconds)
+    minimum_position = max(minimum_context_seconds, anchor_seconds - maximum_crop_start)
+    feasible_maximum_position = min(maximum_position, anchor_seconds - minimum_crop_start)
+    anchor_position = (
+        float(generator.uniform(minimum_position, feasible_maximum_position))
+        if minimum_position <= feasible_maximum_position
+        else minimum_context_seconds
+    )
     crop_start = anchor_seconds - anchor_position
     crop = _build_crop(
         plan=conversation.plan,
