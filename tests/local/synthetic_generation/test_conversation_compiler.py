@@ -477,6 +477,57 @@ def test_assistant_duration_variation_reflows_audio_and_eot_labels(tmp_path: Pat
         assert abs(audio_onset - expected_onset) < 0.01
 
 
+def test_backchannel_is_moved_earlier_to_fit_inside_assistant_turn(tmp_path: Path) -> None:
+    feedback = _clip(tmp_path, "feedback", 1.5, 0.0, 1.5)
+    response = _clip(tmp_path, "response", 1.0, 0.0, 1.0)
+    plan = ConversationCompositionPlan(
+        conversation_id="backchannel_fit",
+        seed=5,
+        duration_seconds=10.0,
+        user_events=(
+            NonFloorFeedbackPlacement(
+                event_id="feedback",
+                clip_id="feedback",
+                timing=DuringAssistantUserTiming(
+                    assistant_turn_id="assistant", position_fraction=0.8
+                ),
+            ),
+            ResponseFloorClaimPlacement(
+                event_id="response",
+                clip_id="response",
+                timing=AfterAssistantUserTiming(assistant_turn_id="assistant", delay_seconds=0.2),
+            ),
+        ),
+        assistant_turns=(
+            VirtualAssistantTurn(
+                turn_id="assistant",
+                timing=FixedAssistantTiming(start_seconds=1.0),
+                duration_seconds=4.0,
+            ),
+        ),
+    )
+
+    compiled = compile_conversation(
+        plan,
+        (feedback, response),
+        tmp_path / "backchannel-fit.wav",
+        ConversationCompilerConfig(
+            crop_variant_count=1,
+            assistant_only_fraction=0.0,
+            user_only_fraction=0.0,
+            event_light_fraction=0.0,
+            assistant_duration_variation=0.0,
+        ),
+    )
+
+    crop = compiled.crops[0]
+    feedback_event = next(event for event in crop.user_events if event.event_id == "feedback")
+    response_event = next(event for event in crop.user_events if event.event_id == "response")
+    assistant_turn = crop.assistant_turns[0]
+    assert feedback_event.end_seconds == assistant_turn.end_seconds
+    assert feedback_event.end_seconds < response_event.start_seconds
+
+
 def test_composition_plan_allows_rendered_reflow_beyond_prompt_target_limit() -> None:
     plan = ConversationCompositionPlan(
         conversation_id="long_rendered_reflow",

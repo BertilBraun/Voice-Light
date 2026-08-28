@@ -887,6 +887,7 @@ def _resolve_variant_timeline(
         if event is None:
             raise ValueError(f"Unknown user timing dependency {event_id}.")
         resolving.add(dependency_key)
+        clip = clips_by_id[event.clip_id]
         match event.timing:
             case FixedUserTiming(start_seconds=start_seconds):
                 resolved_start = start_seconds
@@ -904,7 +905,11 @@ def _resolve_variant_timeline(
                     assistant_by_id[assistant_turn_id].duration_seconds * assistant_duration_scale
                 )
                 resolved_start = assistant_turn.start_seconds + nominal_duration * position_fraction
-        clip = clips_by_id[event.clip_id]
+                if event.kind == "non_floor_feedback":
+                    latest_start = assistant_turn.end_seconds - clip.duration_seconds
+                    resolved_start = min(
+                        resolved_start, max(assistant_turn.start_seconds, latest_start)
+                    )
         resolved = ResolvedUserEvent(
             event_id=event.event_id,
             clip_id=event.clip_id,
