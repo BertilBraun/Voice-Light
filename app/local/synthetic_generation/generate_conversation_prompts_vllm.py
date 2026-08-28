@@ -8,9 +8,11 @@ import vllm
 from huggingface_hub import model_info
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from vllm import LLM, SamplingParams
+from vllm.sampling_params import StructuredOutputsParams
 
 from app.local.synthetic_generation.conversation_prompts import (
     ConversationGenerationBrief,
+    EnglishConversationContentDraft,
     conversation_generation_instruction,
     validate_conversation_prompt_set_id,
 )
@@ -44,6 +46,10 @@ class VllmConversationTextGenerator:
                 top_p=0.92,
                 max_tokens=self._maximum_new_tokens,
                 seed=brief.seed,
+                structured_outputs=StructuredOutputsParams(
+                    json=EnglishConversationContentDraft.model_json_schema(),
+                    disable_additional_properties=True,
+                ),
             )
             for brief in briefs
         )
