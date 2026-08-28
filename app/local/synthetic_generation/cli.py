@@ -13,6 +13,11 @@ from app.local.synthetic_generation.corpus import (
     build_synthetic_corpus,
 )
 from app.local.synthetic_generation.models import SyntheticConversationPlan
+from app.local.synthetic_generation.synthetic_hub import (
+    DEFAULT_SYNTHETIC_HUB_REPOSITORY,
+    SyntheticHubPreparationRequest,
+    prepare_synthetic_hub_corpora,
+)
 
 
 def main(arguments: Sequence[str] | None = None) -> None:
@@ -45,6 +50,25 @@ def main(arguments: Sequence[str] | None = None) -> None:
                         assistant_duration_variation=parsed.assistant_duration_variation,
                     ),
                     enforce_sampling_gates=not parsed.allow_incomplete_sampling_controls,
+                )
+                print(manifest.model_dump_json(indent=2), flush=True)
+            case "prepare-hub-training":
+                manifest = prepare_synthetic_hub_corpora(
+                    SyntheticHubPreparationRequest(
+                        repository_id=parsed.repository,
+                        revision=parsed.revision,
+                        run_ids=tuple(parsed.run),
+                        cache_directory=parsed.cache_directory,
+                        output_directory=parsed.output,
+                        split_seed=parsed.split_seed,
+                        compiler=ConversationCompilerConfig(
+                            crop_variant_count=parsed.crop_variants,
+                            assistant_only_fraction=parsed.assistant_only_fraction,
+                            user_only_fraction=parsed.user_only_fraction,
+                            event_light_fraction=parsed.event_light_fraction,
+                            assistant_duration_variation=parsed.assistant_duration_variation,
+                        ),
+                    )
                 )
                 print(manifest.model_dump_json(indent=2), flush=True)
             case _:
@@ -81,6 +105,21 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow small review pilots that cannot meet corpus-scale control quotas.",
     )
+    hub_parser = subparsers.add_parser(
+        "prepare-hub-training",
+        help="Download source speech units and materialize local training corpora.",
+    )
+    hub_parser.add_argument("--repository", default=DEFAULT_SYNTHETIC_HUB_REPOSITORY)
+    hub_parser.add_argument("--revision", required=True)
+    hub_parser.add_argument("--run", required=True, action="append")
+    hub_parser.add_argument("--cache-directory", type=Path)
+    hub_parser.add_argument("--output", required=True, type=Path)
+    hub_parser.add_argument("--split-seed", default="voice-light-synthetic-training-v1")
+    hub_parser.add_argument("--crop-variants", default=4, type=int)
+    hub_parser.add_argument("--assistant-only-fraction", default=0.1, type=float)
+    hub_parser.add_argument("--user-only-fraction", default=0.1, type=float)
+    hub_parser.add_argument("--event-light-fraction", default=0.1, type=float)
+    hub_parser.add_argument("--assistant-duration-variation", default=0.1, type=float)
     return parser
 
 

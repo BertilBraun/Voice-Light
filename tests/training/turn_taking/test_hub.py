@@ -23,7 +23,12 @@ from app.local.training_corpus.splits import (
     ConversationSplitPlan,
     TrainingCorpusSplit,
 )
-from app.training.turn_taking.hub import HuggingFaceTurnTakingDataset, validate_sample_contract
+from app.training.turn_taking.hub import (
+    HuggingFaceTurnTakingDataset,
+    LocalMaterializedTurnTakingDataset,
+    MaterializedTurnTakingDatasetCollection,
+    validate_sample_contract,
+)
 
 
 def test_hub_dataset_indexes_parquet_and_downloads_audio_lazily(
@@ -138,6 +143,70 @@ def test_hub_dataset_applies_worker_seeded_augmentation(
     assert torch.equal(dataset[0].waveform, torch.ones(320))
     assert torch.equal(dataset[0].waveform, torch.ones(320))
     assert len(set(observed_random_values)) == 2
+
+
+def test_local_materialized_dataset_resolves_shards_and_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "materialized"
+    sample = _sample()
+    shard = _write_shard(
+        root=root,
+        split=TrainingCorpusSplit.TRAIN,
+        path="training/train/shard-00000.parquet",
+        sample=sample,
+    )
+    _write(root / "corpus.json", _manifest((sample,), (shard,)).model_dump_json())
+    observed_audio_paths: list[Path] = []
+
+    def load_local_audio(**arguments: object) -> torch.Tensor:
+        audio_path = arguments["path"]
+        assert isinstance(audio_path, Path)
+        observed_audio_paths.append(audio_path)
+        return torch.ones(320, dtype=torch.float32)
+
+    monkeypatch.setattr("app.training.turn_taking.hub.load_audio_window", load_local_audio)
+    dataset = LocalMaterializedTurnTakingDataset(
+        root=root,
+        split=TrainingCorpusSplit.TRAIN,
+    )
+
+    assert len(dataset) == 1
+    assert dataset[0].waveform.shape == (320,)
+    assert observed_audio_paths == [(root / sample.user_audio_path).resolve()]
+
+
+def test_materialized_dataset_collection_preserves_flat_sample_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "app.training.turn_taking.hub.load_audio_window",
+        lambda **_: torch.ones(320, dtype=torch.float32),
+    )
+    datasets: list[LocalMaterializedTurnTakingDataset] = []
+    for index in range(2):
+        root = tmp_path / f"materialized-{index}"
+        sample = _sample().model_copy(update={"window_id": str(index + 1) * 64})
+        shard = _write_shard(
+            root=root,
+            split=TrainingCorpusSplit.TRAIN,
+            path="training/train/shard-00000.parquet",
+            sample=sample,
+        )
+        _write(root / "corpus.json", _manifest((sample,), (shard,)).model_dump_json())
+        datasets.append(
+            LocalMaterializedTurnTakingDataset(
+                root=root,
+                split=TrainingCorpusSplit.TRAIN,
+            )
+        )
+
+    collection = MaterializedTurnTakingDatasetCollection(tuple(datasets))
+
+    assert tuple(sample.window_id for sample in collection.samples) == ("1" * 64, "2" * 64)
+    assert tuple(collection[index].sample_id for index in range(2)) == ("1" * 64, "2" * 64)
 
 
 def test_hub_dataset_rejects_tampered_parquet_shard(tmp_path: Path) -> None:

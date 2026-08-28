@@ -512,6 +512,14 @@ def _compile_crop(
     variation = config.assistant_duration_variation
     assistant_scale = float(generator.uniform(1.0 - variation, 1.0 + variation))
     user_events, assistant_turns = _resolve_variant_timeline(plan, clips_by_id, assistant_scale)
+    requested_sampling_stratum = _sampling_stratum(variant_index, config)
+    match requested_sampling_stratum:
+        case CropSamplingStratum.ASSISTANT_ONLY:
+            user_events = ()
+        case CropSamplingStratum.USER_ONLY:
+            assistant_turns = ()
+        case CropSamplingStratum.EVENT_FOCUSED | CropSamplingStratum.EVENT_LIGHT:
+            pass
     completions, hold_intervals, feedback_intervals, floor_takes, user_floor = _semantic_timeline(
         user_events, clips_by_id
     )
@@ -525,7 +533,6 @@ def _compile_crop(
     feedback_starts = tuple(start for start, _ in feedback_intervals)
     hold_starts = tuple(start for start, _ in hold_intervals)
     event_times = completions + hold_starts + feedback_starts + floor_takes
-    requested_sampling_stratum = _sampling_stratum(variant_index, config)
     crop_start, sampling_stratum = _crop_start_for_stratum(
         variant_index,
         variant_duration,

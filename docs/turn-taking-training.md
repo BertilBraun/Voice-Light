@@ -50,15 +50,37 @@ encoder design in [Fast Conformer](https://arxiv.org/abs/2305.05084).
 
 ## Manifest And Sample Contract
 
-The intended materialized training corpus will be a private Hugging Face dataset;
-it has not been published by this repository. Once a prepared corpus is available,
-the trainer can load Parquet shards at startup and download only the user-side FLAC
-needed by each sampled crop. `hf_hub_download` provides a persistent,
-content-addressed disk cache and cross-process download locking; pass
-`--hub-cache-directory` to place that cache on the training volume. The corpus
-format uses 20-second crops, 250 80-ms frames, and `-1.0` to mask individual
-targets. The JSONL manifest format below remains available through `--manifest`
-for local experiments.
+The public synthetic source corpus is
+[`BertilBraun/voice-light-synthetic-audio`](https://huggingface.co/datasets/BertilBraun/voice-light-synthetic-audio).
+It stores trimmed speech units and reconstruction metadata rather than duplicate rendered
+conversations. Prepare deterministic local training caches from an immutable Hub revision:
+
+```powershell
+uv run python -m app.local.synthetic_generation.cli prepare-hub-training `
+  --revision <40-character-synthetic-dataset-commit> `
+  --run v4 `
+  --run v5 `
+  --output .cache\synthetic-training `
+  --crop-variants 4
+```
+
+Each run becomes a standard materialized corpus containing 20-second FLAC crops, Parquet shards,
+250 hard-label frames at 80 ms, and `-1.0` masks. Train on both local runs while keeping the real
+conversation corpus as the validation gate:
+
+```powershell
+uv run python -m app.training.turn_taking.cli .cache\synthetic-adapter.pt `
+  --materialized-corpus .cache\synthetic-training\v4 `
+  --materialized-corpus .cache\synthetic-training\v5 `
+  --validation-hub-repository BertilBraun/voice-light-audio `
+  --validation-hub-revision <40-character-real-corpus-commit> `
+  --primary-objective turn_completion
+```
+
+The trainer verifies Parquet hashes before reading rows and lazily decodes each crop. Training-time
+augmentation applies only to synthetic training inputs; real validation audio stays clean. The
+existing `hf_hub_download` path remains available for already-materialized corpora, and the JSONL
+manifest format remains available through `--manifest` for older local experiments.
 
 ### Intended source preparation
 

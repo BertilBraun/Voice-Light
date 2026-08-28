@@ -4,6 +4,7 @@ import hashlib
 import random
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -39,36 +40,32 @@ class HubFileDownloader(Protocol):
     ) -> str: ...
 
 
-class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
-    """Indexed Parquet supervision with lazy, Hugging Face-cached audio access."""
+class CorpusFileResolver(Protocol):
+    def __call__(self, filename: str) -> Path: ...
+
+
+class MaterializedTurnTakingDataset(Dataset[TrainingItem]):
+    """Indexed Parquet supervision with lazy resolved audio access."""
 
     def __init__(
         self,
         split: TrainingCorpusSplit,
-        revision: str,
-        repository_id: str = DEFAULT_HUB_REPOSITORY,
-        cache_directory: Path | None = None,
+        resolver: CorpusFileResolver,
         sample_rate_hz: int = 16_000,
         augmenter: Callable[[Tensor, random.Random], Tensor] | None = None,
         pad_missing_audio_suffix: bool = False,
         random_seed: int = 17,
-        downloader: HubFileDownloader = hf_hub_download,
     ) -> None:
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive.")
-        if PINNED_REVISION_PATTERN.fullmatch(revision) is None:
-            raise ValueError("revision must be an immutable 40-character commit SHA.")
         self.split = split
-        self.revision = revision
-        self.repository_id = repository_id
-        self.cache_directory = cache_directory
+        self.resolver = resolver
         self.sample_rate_hz = sample_rate_hz
         self.augmenter = augmenter
         self.pad_missing_audio_suffix = pad_missing_audio_suffix
         self.random_seed = random_seed
         self.augmentation_worker_seed: int | None = None
         self.augmentation_generator = random.Random()
-        self.downloader = downloader
         self.manifest = self._load_manifest()
         self.samples = self._load_samples()
 
@@ -140,6 +137,17 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
         return self.augmentation_generator
 
     def _download(self, filename: str) -> Path:
+        return self.resolver(filename)
+
+
+@dataclass(frozen=True)
+class HubCorpusResolver:
+    repository_id: str
+    revision: str
+    cache_directory: Path | None
+    downloader: HubFileDownloader
+
+    def __call__(self, filename: str) -> Path:
         return Path(
             self.downloader(
                 repo_id=self.repository_id,
@@ -149,6 +157,95 @@ class HuggingFaceTurnTakingDataset(Dataset[TrainingItem]):
                 cache_dir=self.cache_directory,
             )
         )
+
+
+@dataclass(frozen=True)
+class LocalCorpusResolver:
+    root: Path
+
+    def __call__(self, filename: str) -> Path:
+        relative_path = Path(filename)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ValueError(f"Corpus file path must remain under its root: {filename}")
+        return self.root / relative_path
+
+
+class HuggingFaceTurnTakingDataset(MaterializedTurnTakingDataset):
+    """Materialized supervision loaded lazily from an immutable Hub revision."""
+
+    def __init__(
+        self,
+        split: TrainingCorpusSplit,
+        revision: str,
+        repository_id: str = DEFAULT_HUB_REPOSITORY,
+        cache_directory: Path | None = None,
+        sample_rate_hz: int = 16_000,
+        augmenter: Callable[[Tensor, random.Random], Tensor] | None = None,
+        pad_missing_audio_suffix: bool = False,
+        random_seed: int = 17,
+        downloader: HubFileDownloader = hf_hub_download,
+    ) -> None:
+        if PINNED_REVISION_PATTERN.fullmatch(revision) is None:
+            raise ValueError("revision must be an immutable 40-character commit SHA.")
+        super().__init__(
+            split=split,
+            resolver=HubCorpusResolver(
+                repository_id=repository_id,
+                revision=revision,
+                cache_directory=cache_directory,
+                downloader=downloader,
+            ),
+            sample_rate_hz=sample_rate_hz,
+            augmenter=augmenter,
+            pad_missing_audio_suffix=pad_missing_audio_suffix,
+            random_seed=random_seed,
+        )
+
+
+class LocalMaterializedTurnTakingDataset(MaterializedTurnTakingDataset):
+    """Materialized supervision loaded from a reconstructed local corpus."""
+
+    def __init__(
+        self,
+        root: Path,
+        split: TrainingCorpusSplit,
+        sample_rate_hz: int = 16_000,
+        augmenter: Callable[[Tensor, random.Random], Tensor] | None = None,
+        pad_missing_audio_suffix: bool = False,
+        random_seed: int = 17,
+    ) -> None:
+        if not (root / "corpus.json").is_file():
+            raise ValueError(f"Materialized corpus has no corpus.json: {root}")
+        super().__init__(
+            split=split,
+            resolver=LocalCorpusResolver(root.resolve()),
+            sample_rate_hz=sample_rate_hz,
+            augmenter=augmenter,
+            pad_missing_audio_suffix=pad_missing_audio_suffix,
+            random_seed=random_seed,
+        )
+
+
+class MaterializedTurnTakingDatasetCollection(Dataset[TrainingItem]):
+    def __init__(self, datasets: tuple[MaterializedTurnTakingDataset, ...]) -> None:
+        if not datasets:
+            raise ValueError("Materialized dataset collection requires at least one corpus.")
+        self.datasets = datasets
+        self.samples = tuple(sample for dataset in datasets for sample in dataset.samples)
+
+    def __len__(self) -> int:
+        return sum(len(dataset) for dataset in self.datasets)
+
+    def __getitem__(self, index: int) -> TrainingItem:
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        for dataset in self.datasets:
+            if index < len(dataset):
+                return dataset[index]
+            index -= len(dataset)
+        raise AssertionError("Dataset collection index resolution failed.")
 
 
 def frame_targets_from_sample(sample: MaterializedTrainingSample) -> FrameTargets:

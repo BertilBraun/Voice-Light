@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.local.synthetic_generation.audio_files import read_mono_pcm16_audio
 from app.local.synthetic_generation.conversation_compiler import (
     AfterAssistantUserTiming,
     AfterUserAssistantTiming,
@@ -204,11 +205,18 @@ def test_fitted_source_duration_accepts_rendered_timeline_longer_than_estimate(
 
 
 def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path: Path) -> None:
+    clip = _clip(tmp_path, "assistant_overlap", 20.0, 0.0, 20.0)
     plan = ConversationCompositionPlan(
         conversation_id="assistant_only",
         seed=9,
         duration_seconds=20.0,
-        user_events=(),
+        user_events=(
+            CompletionPlacement(
+                event_id="assistant_overlap",
+                clip_id="assistant_overlap",
+                timing=FixedUserTiming(start_seconds=0.0),
+            ),
+        ),
         assistant_turns=(
             VirtualAssistantTurn(
                 turn_id="long_assistant",
@@ -220,7 +228,7 @@ def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path
 
     compiled = compile_conversation(
         plan,
-        (),
+        (clip,),
         tmp_path / "assistant-only.wav",
         ConversationCompilerConfig(
             crop_variant_count=2,
@@ -234,6 +242,10 @@ def test_compile_conversation_supports_assistant_only_event_light_crops(tmp_path
     assert all(value == -1.0 for value in compiled.crops[0].labels.turn_completion)
     assert max(compiled.crops[0].labels.assistant_speaking_probability) > 0.9
     assert set(compiled.crops[0].labels.p_user_floor_now) == {0.0}
+    assert compiled.crops[0].user_events == ()
+    crop_path = materialize_crop_audio(compiled, compiled.crops[0], tmp_path / "control.wav")
+    crop_samples, _ = read_mono_pcm16_audio(crop_path)
+    assert not np.any(crop_samples)
 
 
 def test_compile_conversation_is_deterministic_across_epochs(tmp_path: Path) -> None:
@@ -420,8 +432,8 @@ def test_long_source_materializes_every_sampling_control_without_padding(tmp_pat
         assistant_turns=(
             VirtualAssistantTurn(
                 turn_id="long_assistant",
-                timing=FixedAssistantTiming(start_seconds=40.0),
-                duration_seconds=25.0,
+                timing=FixedAssistantTiming(start_seconds=0.0),
+                duration_seconds=100.0,
             ),
         ),
     )
@@ -456,6 +468,8 @@ def test_long_source_materializes_every_sampling_control_without_padding(tmp_pat
     )
     assert assistant_crop.assistant_only
     assert user_crop.user_only
+    assert assistant_crop.user_events == ()
+    assert user_crop.assistant_turns == ()
     assert event_light_crop.event_light
     assert all(
         value != 1.0

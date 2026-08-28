@@ -34,6 +34,8 @@ from app.training.turn_taking.data import (
 from app.training.turn_taking.hub import (
     DEFAULT_HUB_REPOSITORY,
     HuggingFaceTurnTakingDataset,
+    LocalMaterializedTurnTakingDataset,
+    MaterializedTurnTakingDatasetCollection,
 )
 from app.training.turn_taking.model import TurnTakingAdapter
 from app.training.turn_taking.schema import read_manifest
@@ -46,6 +48,7 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--manifest", type=Path)
     source.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
+    source.add_argument("--materialized-corpus", type=Path, action="append")
     parser.add_argument("--hub-revision")
     parser.add_argument(
         "--hub-split",
@@ -53,6 +56,8 @@ def main() -> None:
         default=TrainingCorpusSplit.TRAIN.value,
     )
     parser.add_argument("--hub-cache-directory", type=Path)
+    parser.add_argument("--validation-hub-repository")
+    parser.add_argument("--validation-hub-revision")
     parser.add_argument("--model-revision")
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--max-steps", type=_positive_int)
@@ -125,9 +130,35 @@ def main() -> None:
         config = config.model_copy(
             update={"loss": config.loss.model_copy(update={"primary_objective": primary_objective})}
         )
+    validation_repository: str | None = None
+    validation_revision: str | None = None
+    match config.loss.primary_objective:
+        case TurnCompletionObjectiveConfig():
+            if arguments.manifest is not None:
+                parser.error("Turn-completion training requires a materialized corpus.")
+            if arguments.materialized_corpus is not None:
+                validation_repository = (
+                    arguments.validation_hub_repository or DEFAULT_HUB_REPOSITORY
+                )
+                validation_revision = arguments.validation_hub_revision
+                if validation_revision is None:
+                    parser.error(
+                        "Synthetic training requires --validation-hub-revision for the real "
+                        "validation corpus."
+                    )
+            else:
+                validation_repository = (
+                    arguments.validation_hub_repository or arguments.hub_repository
+                )
+                validation_revision = arguments.validation_hub_revision or arguments.hub_revision
+                if validation_revision is None:
+                    parser.error("Completion training requires a validation Hub revision.")
+        case UserYieldObjectiveConfig():
+            pass
     torch.manual_seed(config.random_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if arguments.manifest is not None:
+        training_split = TrainingCorpusSplit.TRAIN
         samples = read_manifest(arguments.manifest)
         dataset = TurnTakingDataset(
             samples=samples,
@@ -137,19 +168,36 @@ def main() -> None:
             augmenter=WaveformAugmenter(config.augmentation, config.sample_rate_hz),
             random_seed=config.random_seed,
         )
+    elif arguments.materialized_corpus is not None:
+        training_split = TrainingCorpusSplit.TRAIN
+        materialized_datasets = tuple(
+            LocalMaterializedTurnTakingDataset(
+                root=root,
+                split=training_split,
+                sample_rate_hz=config.sample_rate_hz,
+                augmenter=WaveformAugmenter(config.augmentation, config.sample_rate_hz),
+                random_seed=config.random_seed + index,
+            )
+            for index, root in enumerate(arguments.materialized_corpus)
+        )
+        dataset = (
+            materialized_datasets[0]
+            if len(materialized_datasets) == 1
+            else MaterializedTurnTakingDatasetCollection(materialized_datasets)
+        )
     else:
         if arguments.hub_revision is None:
             parser.error("--hub-revision is required when loading the Hub corpus.")
-        hub_split = TrainingCorpusSplit(arguments.hub_split)
+        training_split = TrainingCorpusSplit(arguments.hub_split)
         dataset = HuggingFaceTurnTakingDataset(
-            split=hub_split,
+            split=training_split,
             revision=arguments.hub_revision,
             repository_id=arguments.hub_repository,
             cache_directory=arguments.hub_cache_directory,
             sample_rate_hz=config.sample_rate_hz,
             augmenter=(
                 WaveformAugmenter(config.augmentation, config.sample_rate_hz)
-                if hub_split is TrainingCorpusSplit.TRAIN
+                if training_split is TrainingCorpusSplit.TRAIN
                 else None
             ),
             random_seed=config.random_seed,
@@ -157,9 +205,7 @@ def main() -> None:
     sampler: WeightedRandomSampler[int] | None = None
     match config.loss.primary_objective:
         case TurnCompletionObjectiveConfig() as completion_objective:
-            if arguments.manifest is not None:
-                parser.error("Turn-completion training requires the pinned Hub corpus.")
-            if hub_split is not TrainingCorpusSplit.TRAIN:
+            if training_split is not TrainingCorpusSplit.TRAIN:
                 parser.error("Turn-completion training requires --hub-split train.")
             boundaries = build_completion_boundaries(dataset.samples, completion_objective)
             dataset = CompletionBoundaryDataset(dataset, boundaries)
@@ -210,10 +256,12 @@ def main() -> None:
     validation_callback: CompletionValidator | None = None
     match config.loss.primary_objective:
         case TurnCompletionObjectiveConfig() as completion_objective:
+            assert validation_repository is not None
+            assert validation_revision is not None
             validation_source = HuggingFaceTurnTakingDataset(
                 split=TrainingCorpusSplit.VALIDATION,
-                revision=arguments.hub_revision,
-                repository_id=arguments.hub_repository,
+                revision=validation_revision,
+                repository_id=validation_repository,
                 cache_directory=arguments.hub_cache_directory,
                 sample_rate_hz=config.sample_rate_hz,
                 pad_missing_audio_suffix=True,
