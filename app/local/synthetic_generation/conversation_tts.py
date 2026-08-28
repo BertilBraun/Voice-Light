@@ -71,9 +71,14 @@ class SpeechSynthesisAttemptProvenance(SyntheticModel):
     attempt_index: int = Field(ge=1, le=2)
     seed: int = Field(ge=0)
     text_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    generated_duration_seconds: float = Field(gt=0.0)
+    generated_duration_seconds: float = Field(ge=0.0)
     generation_seconds: float = Field(ge=0.0)
-    outcome: Literal["accepted", "accepted_prefix", "no_speech_like_energy"]
+    outcome: Literal[
+        "accepted",
+        "accepted_prefix",
+        "empty_model_output",
+        "no_speech_like_energy",
+    ]
 
 
 def cosyvoice3_reference_prompt(reference_text: str) -> str:

@@ -98,41 +98,54 @@ class CosyVoiceConversationSynthesizer:
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
             started_at = time.monotonic()
-            chunks = tuple(
-                cast(
-                    Iterable[CosyVoiceChunk],
-                    self._model.inference_zero_shot(
-                        attempt_text,
-                        cosyvoice3_reference_prompt(reference.reference_text),
-                        str(reference.audio_path),
-                        stream=False,
-                        speed=request.speed,
-                        text_frontend=True,
-                    ),
+            try:
+                chunks = tuple(
+                    cast(
+                        Iterable[CosyVoiceChunk],
+                        self._model.inference_zero_shot(
+                            attempt_text,
+                            cosyvoice3_reference_prompt(reference.reference_text),
+                            str(reference.audio_path),
+                            stream=False,
+                            speed=request.speed,
+                            text_frontend=True,
+                        ),
+                    )
                 )
-            )
+            except RuntimeError as error:
+                if "Input and output sizes should be greater than 0" not in str(error):
+                    raise
+                chunks = ()
             generation_seconds = time.monotonic() - started_at
             total_generation_seconds += generation_seconds
-            if not chunks:
-                raise ValueError(f"CosyVoice returned no audio for {request.clause_id}.")
-            samples = np.concatenate(
-                tuple(
-                    chunk["tts_speech"].detach().cpu().to(torch.float32).numpy().reshape(-1)
-                    for chunk in chunks
+            outcome: Literal[
+                "accepted",
+                "accepted_prefix",
+                "empty_model_output",
+                "no_speech_like_energy",
+            ]
+            if chunks:
+                samples = np.concatenate(
+                    tuple(
+                        chunk["tts_speech"].detach().cpu().to(torch.float32).numpy().reshape(-1)
+                        for chunk in chunks
+                    )
                 )
-            )
-            outcome: Literal["accepted", "accepted_prefix", "no_speech_like_energy"] = "accepted"
-            try:
-                trim_generated_speech(
-                    samples,
-                    int(self._model.sample_rate),
-                    request.clause_id,
-                    DEFAULT_SILENCE_DETECTION,
-                )
-            except ValueError as error:
-                if "no speech-like energy" not in str(error):
-                    raise
-                outcome = "no_speech_like_energy"
+                outcome = "accepted"
+                try:
+                    trim_generated_speech(
+                        samples,
+                        int(self._model.sample_rate),
+                        request.clause_id,
+                        DEFAULT_SILENCE_DETECTION,
+                    )
+                except ValueError as error:
+                    if "no speech-like energy" not in str(error):
+                        raise
+                    outcome = "no_speech_like_energy"
+            else:
+                samples = np.empty(0, dtype=np.float32)
+                outcome = "empty_model_output"
             if outcome == "accepted" and attempt_index > 1 and request.alternative is not None:
                 samples = retain_first_spoken_phrase(
                     samples=samples,

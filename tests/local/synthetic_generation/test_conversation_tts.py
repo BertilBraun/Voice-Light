@@ -266,6 +266,19 @@ def test_attempt_provenance_loads_checkpoint_created_before_text_hashes() -> Non
     assert attempt.text_sha256 is None
 
 
+def test_attempt_provenance_records_empty_model_output() -> None:
+    attempt = SpeechSynthesisAttemptProvenance(
+        attempt_index=1,
+        seed=42,
+        text_sha256=hashlib.sha256(b"mm-hmm").hexdigest(),
+        generated_duration_seconds=0.0,
+        generation_seconds=0.5,
+        outcome="empty_model_output",
+    )
+
+    assert attempt.generated_duration_seconds == 0.0
+
+
 def test_retain_first_spoken_phrase_removes_carrier_phrase() -> None:
     sample_rate_hz = 16_000
     first_phrase = np.full(round(0.32 * sample_rate_hz), 0.1, dtype=np.float32)
