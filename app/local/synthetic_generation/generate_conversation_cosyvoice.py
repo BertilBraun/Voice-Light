@@ -5,14 +5,16 @@ import hashlib
 import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 import numpy as np
 import torch
 from cosyvoice.cli.cosyvoice import AutoModel
 
+from app.local.synthetic_generation.completion_dataset import DEFAULT_SILENCE_DETECTION
 from app.local.synthetic_generation.conversation_prompts import EnglishConversationPromptSet
 from app.local.synthetic_generation.conversation_tts import (
+    SpeechSynthesisAttemptProvenance,
     SpeechSynthesisRequest,
     SpeechSynthesisResult,
     VoiceClonePromptProvenance,
@@ -23,6 +25,7 @@ from app.local.synthetic_generation.conversation_voice_references import (
     ConversationVoiceReference,
     TtsBackendIdentity,
     load_voice_reference_manifest,
+    trim_generated_speech,
 )
 
 
@@ -61,8 +64,33 @@ class CosyVoiceConversationSynthesizer:
         clone_prompt = _clone_prompt_provenance(reference, self.identity)
         results = []
         for request in requests:
-            torch.manual_seed(request.seed)
-            torch.cuda.manual_seed_all(request.seed)
+            samples, generation_seconds, batch_seed, attempts = self._generate_request(
+                reference, request
+            )
+            results.append(
+                SpeechSynthesisResult(
+                    clause_id=request.clause_id,
+                    samples=samples,
+                    sample_rate_hz=int(self._model.sample_rate),
+                    generation_seconds=generation_seconds,
+                    batch_seed=batch_seed,
+                    clone_prompt=clone_prompt,
+                    attempts=attempts,
+                )
+            )
+        return tuple(results)
+
+    def _generate_request(
+        self,
+        reference: ConversationVoiceReference,
+        request: SpeechSynthesisRequest,
+    ) -> tuple[np.ndarray, float, int, tuple[SpeechSynthesisAttemptProvenance, ...]]:
+        attempts = []
+        total_generation_seconds = 0.0
+        for attempt_index in range(1, 3):
+            seed = (request.seed + attempt_index - 1) % (2**32)
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
             started_at = time.monotonic()
             chunks = tuple(
                 cast(
@@ -78,6 +106,7 @@ class CosyVoiceConversationSynthesizer:
                 )
             )
             generation_seconds = time.monotonic() - started_at
+            total_generation_seconds += generation_seconds
             if not chunks:
                 raise ValueError(f"CosyVoice returned no audio for {request.clause_id}.")
             samples = np.concatenate(
@@ -86,17 +115,32 @@ class CosyVoiceConversationSynthesizer:
                     for chunk in chunks
                 )
             )
-            results.append(
-                SpeechSynthesisResult(
-                    clause_id=request.clause_id,
-                    samples=samples,
-                    sample_rate_hz=int(self._model.sample_rate),
+            outcome: Literal["accepted", "no_speech_like_energy"] = "accepted"
+            try:
+                trim_generated_speech(
+                    samples,
+                    int(self._model.sample_rate),
+                    request.clause_id,
+                    DEFAULT_SILENCE_DETECTION,
+                )
+            except ValueError as error:
+                if "no speech-like energy" not in str(error):
+                    raise
+                outcome = "no_speech_like_energy"
+            attempts.append(
+                SpeechSynthesisAttemptProvenance(
+                    attempt_index=attempt_index,
+                    seed=seed,
+                    generated_duration_seconds=samples.size / int(self._model.sample_rate),
                     generation_seconds=generation_seconds,
-                    batch_seed=request.seed,
-                    clone_prompt=clone_prompt,
+                    outcome=outcome,
                 )
             )
-        return tuple(results)
+            if outcome == "accepted":
+                return samples, total_generation_seconds, seed, tuple(attempts)
+        raise ValueError(
+            f"CosyVoice returned no speech-like energy after two attempts for {request.clause_id}."
+        )
 
 
 def main(arguments: Sequence[str] | None = None) -> None:

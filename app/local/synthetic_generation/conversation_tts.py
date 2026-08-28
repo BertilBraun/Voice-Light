@@ -56,6 +56,15 @@ class SpeechSynthesisResult:
     generation_seconds: float
     batch_seed: int
     clone_prompt: VoiceClonePromptProvenance
+    attempts: tuple[SpeechSynthesisAttemptProvenance, ...] = ()
+
+
+class SpeechSynthesisAttemptProvenance(SyntheticModel):
+    attempt_index: int = Field(ge=1, le=2)
+    seed: int = Field(ge=0)
+    generated_duration_seconds: float = Field(gt=0.0)
+    generation_seconds: float = Field(ge=0.0)
+    outcome: Literal["accepted", "no_speech_like_energy"]
 
 
 def cosyvoice3_reference_prompt(reference_text: str) -> str:
@@ -96,6 +105,7 @@ class RenderedClauseProvenance(SyntheticModel):
     trimmed_trailing_seconds: float = Field(ge=0.0)
     generation_seconds: float = Field(ge=0.0)
     real_time_factor: float = Field(ge=0.0)
+    attempts: tuple[SpeechSynthesisAttemptProvenance, ...] = ()
 
 
 class RenderedConversationUserUnit(SyntheticModel):
@@ -603,6 +613,7 @@ def _clause_provenance(
         generation_seconds=result.generation_seconds,
         real_time_factor=result.generation_seconds
         / (activity.samples.size / result.sample_rate_hz),
+        attempts=result.attempts,
     )
 
 
