@@ -314,6 +314,23 @@ def test_content_schema_accepts_descriptive_topics_and_references() -> None:
     assert len(draft.voice_reference_text) > 180
 
 
+def test_content_schema_accepts_numeric_conversational_turn() -> None:
+    values = _content_draft().model_dump()
+    values["brief_user_turn"] = "4.5?"
+
+    draft = EnglishConversationContentDraft.model_validate(values)
+
+    assert draft.brief_user_turn == "4.5?"
+
+
+def test_content_schema_rejects_punctuation_only_turn() -> None:
+    values = _content_draft().model_dump()
+    values["brief_user_turn"] = "...?"
+
+    with pytest.raises(ValidationError, match="must contain alphanumeric text"):
+        EnglishConversationContentDraft.model_validate(values)
+
+
 def test_llm_content_schema_excludes_structural_plan_fields() -> None:
     properties = EnglishConversationContentDraft.model_json_schema()["properties"]
 

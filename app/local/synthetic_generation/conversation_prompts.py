@@ -932,8 +932,8 @@ def _target_duration_seconds(
 def _validate_english_text(value: str) -> str:
     if any(not character.isprintable() for character in value):
         raise ValueError("English prompt text must use printable text.")
-    if not any(character.isalpha() for character in value):
-        raise ValueError("English prompt text must contain alphabetic text.")
+    if not any(character.isalnum() for character in value):
+        raise ValueError("English prompt text must contain alphanumeric text.")
     return value
 
 
