@@ -36,6 +36,10 @@ from app.training.turn_taking.data import (
     WaveformAugmenter,
     collate_training_items,
 )
+from app.training.turn_taking.dataset_collection import (
+    WeightedTrainingDatasetCollection,
+    WeightedTrainingSource,
+)
 from app.training.turn_taking.hub import (
     DEFAULT_HUB_REPOSITORY,
     HuggingFaceTurnTakingDataset,
@@ -59,6 +63,8 @@ def main() -> None:
     source.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
     source.add_argument("--materialized-corpus", type=Path, action="append")
     source.add_argument("--dynamic-synthetic-corpus", type=Path, action="append")
+    parser.add_argument("--synthetic-replay-corpus", type=Path, action="append")
+    parser.add_argument("--synthetic-replay-fraction", type=_open_unit_float)
     parser.add_argument("--hub-revision")
     parser.add_argument(
         "--hub-split",
@@ -70,6 +76,7 @@ def main() -> None:
     parser.add_argument("--validation-hub-revision")
     parser.add_argument("--model-revision")
     parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--initialize-adapter-checkpoint", type=Path)
     parser.add_argument("--max-steps", type=_positive_int)
     parser.add_argument("--minimum-steps-before-stopping", type=_nonnegative_int)
     parser.add_argument("--batch-size", type=_positive_int)
@@ -78,6 +85,9 @@ def main() -> None:
     parser.add_argument("--data-loader-workers", type=_nonnegative_int)
     parser.add_argument("--validation-interval-steps", type=_positive_int)
     parser.add_argument("--run-seed", type=_nonnegative_int)
+    parser.add_argument("--learning-rate", type=_positive_float)
+    parser.add_argument("--minimum-learning-rate", type=_positive_float)
+    parser.add_argument("--warmup-steps", type=_nonnegative_int)
     parser.add_argument(
         "--augmentation-profile",
         type=WaveformAugmentationProfile,
@@ -93,6 +103,17 @@ def main() -> None:
         choices=tuple(precision.value for precision in TrainingPrecision),
     )
     arguments = parser.parse_args()
+    if (
+        arguments.resume_checkpoint is not None
+        and arguments.initialize_adapter_checkpoint is not None
+    ):
+        parser.error("Resume and adapter initialization checkpoints are mutually exclusive.")
+    if (arguments.synthetic_replay_corpus is None) != (arguments.synthetic_replay_fraction is None):
+        parser.error(
+            "--synthetic-replay-corpus and --synthetic-replay-fraction must be used together."
+        )
+    if arguments.synthetic_replay_corpus is not None and arguments.hub_revision is None:
+        parser.error("Synthetic replay requires a pinned human --hub-revision.")
     if arguments.resume_checkpoint is None:
         config = TrainingConfig()
         if arguments.max_steps is not None:
@@ -138,6 +159,16 @@ def main() -> None:
         config = config.model_copy(update={"model_revision": arguments.model_revision})
     if arguments.run_seed is not None:
         config = config.model_copy(update={"random_seed": arguments.run_seed})
+    if arguments.learning_rate is not None:
+        config = config.model_copy(update={"learning_rate": arguments.learning_rate})
+    if arguments.minimum_learning_rate is not None:
+        config = config.model_copy(
+            update={"minimum_learning_rate": arguments.minimum_learning_rate}
+        )
+    if arguments.warmup_steps is not None:
+        config = config.model_copy(update={"warmup_steps": arguments.warmup_steps})
+    if config.minimum_learning_rate > config.learning_rate:
+        parser.error("--minimum-learning-rate must not exceed --learning-rate.")
     config = config.model_copy(
         update={"augmentation": waveform_augmentation_config(arguments.augmentation_profile)}
     )
@@ -159,6 +190,7 @@ def main() -> None:
             if (
                 arguments.materialized_corpus is not None
                 or arguments.dynamic_synthetic_corpus is not None
+                or arguments.synthetic_replay_corpus is not None
             ):
                 validation_repository = (
                     arguments.validation_hub_repository or DEFAULT_HUB_REPOSITORY
@@ -261,12 +293,53 @@ def main() -> None:
             if arguments.dynamic_synthetic_corpus is None:
                 boundaries = build_completion_boundaries(dataset.samples, completion_objective)
                 dataset = CompletionBoundaryDataset(dataset, boundaries)
-                sampler = WeightedRandomSampler(
-                    weights=balanced_completion_weights(boundaries),
-                    num_samples=len(boundaries),
-                    replacement=True,
-                    generator=torch.Generator().manual_seed(config.random_seed + 1),
-                )
+                human_weights = balanced_completion_weights(boundaries)
+                if arguments.synthetic_replay_corpus is None:
+                    sampler = WeightedRandomSampler(
+                        weights=human_weights,
+                        num_samples=len(boundaries),
+                        replacement=True,
+                        generator=torch.Generator().manual_seed(config.random_seed + 1),
+                    )
+                else:
+                    assert arguments.synthetic_replay_fraction is not None
+                    replay_datasets = tuple(
+                        AnchoredSyntheticTurnTakingDataset(
+                            root=root,
+                            split=training_split,
+                            compiler_config=ConversationCompilerConfig(
+                                sample_rate_hz=config.sample_rate_hz,
+                                crop_duration_seconds=config.context_seconds,
+                                crop_variant_count=1,
+                            ),
+                            sampling_config=SyntheticAnchorSamplingConfig(),
+                            augmenter=WaveformAugmenter(config.augmentation, config.sample_rate_hz),
+                            random_seed=config.random_seed + index,
+                            randomize=True,
+                        )
+                        for index, root in enumerate(arguments.synthetic_replay_corpus)
+                    )
+                    replay_dataset = AnchoredSyntheticDatasetCollection(replay_datasets)
+                    dataset = WeightedTrainingDatasetCollection(
+                        (
+                            WeightedTrainingSource(
+                                dataset=dataset,
+                                sampling_weights=human_weights,
+                                fraction=1.0 - arguments.synthetic_replay_fraction,
+                            ),
+                            WeightedTrainingSource(
+                                dataset=replay_dataset,
+                                sampling_weights=replay_dataset.sampling_weights(),
+                                fraction=arguments.synthetic_replay_fraction,
+                            ),
+                        )
+                    )
+                    sampler = WeightedRandomSampler(
+                        weights=dataset.sampling_weights(),
+                        num_samples=len(dataset),
+                        replacement=True,
+                        generator=torch.Generator().manual_seed(config.random_seed + 1),
+                    )
                 hold_count = sum(
                     boundary.completion_class.value == "hold" for boundary in boundaries
                 )
@@ -348,21 +421,30 @@ def main() -> None:
                 pin_memory=device.type == "cuda",
             )
             human_validator = CompletionValidator(backbone, validation_loader, device, name="human")
-            if arguments.dynamic_synthetic_corpus is None:
+            synthetic_validation_roots = tuple(
+                arguments.dynamic_synthetic_corpus or arguments.synthetic_replay_corpus or ()
+            )
+            if not synthetic_validation_roots:
                 validation_callback = human_validator
             else:
+                validation_compiler_config = ConversationCompilerConfig(
+                    sample_rate_hz=config.sample_rate_hz,
+                    crop_duration_seconds=config.context_seconds,
+                    crop_variant_count=1,
+                )
+                validation_sampling_config = SyntheticAnchorSamplingConfig()
                 synthetic_validation_datasets = tuple(
                     AnchoredSyntheticTurnTakingDataset(
                         root=root,
                         split=TrainingCorpusSplit.VALIDATION,
-                        compiler_config=compiler_config,
-                        sampling_config=sampling_config,
+                        compiler_config=validation_compiler_config,
+                        sampling_config=validation_sampling_config,
                         augmenter=None,
                         random_seed=config.random_seed + index,
                         randomize=False,
                         completion_only=True,
                     )
-                    for index, root in enumerate(arguments.dynamic_synthetic_corpus)
+                    for index, root in enumerate(synthetic_validation_roots)
                 )
                 synthetic_validation_dataset = AnchoredSyntheticDatasetCollection(
                     synthetic_validation_datasets
@@ -392,9 +474,17 @@ def main() -> None:
                 )
         case UserYieldObjectiveConfig():
             pass
+    adapter = TurnTakingAdapter(config.adapter)
+    if arguments.initialize_adapter_checkpoint is not None:
+        initial_checkpoint = torch.load(
+            arguments.initialize_adapter_checkpoint,
+            map_location="cpu",
+            weights_only=False,
+        )
+        adapter.load_state_dict(initial_checkpoint["adapter_state"], strict=True)
     result = train(
         backbone=backbone,
-        adapter=TurnTakingAdapter(config.adapter),
+        adapter=adapter,
         batches=loader,
         config=config,
         checkpoint_path=arguments.checkpoint,
@@ -431,6 +521,20 @@ def _nonnegative_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("value must be nonnegative")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _open_unit_float(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 < parsed < 1.0:
+        raise argparse.ArgumentTypeError("value must be between zero and one")
     return parsed
 
 

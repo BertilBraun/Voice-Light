@@ -91,6 +91,29 @@ training inputs; both validation sources stay clean. The existing materialized a
 `hf_hub_download` paths remain available for compatibility, and the JSONL manifest format remains
 available through `--manifest` for older local experiments.
 
+After synthetic pretraining, initialize a fresh optimizer from the selected adapter and fine-tune
+primarily on the human training split. A small synthetic replay fraction preserves the learned
+event semantics while checkpoint selection continues to use only human validation AUROC:
+
+```powershell
+uv run python -m app.training.turn_taking.cli .cache\human-finetune\adapter.pt `
+  --hub-revision <40-character-real-corpus-commit> `
+  --initialize-adapter-checkpoint .cache\synthetic-adapter-best.pt `
+  --synthetic-replay-corpus .cache\synthetic-training\v4 `
+  --synthetic-replay-corpus .cache\synthetic-training\v5 `
+  --synthetic-replay-fraction 0.15 `
+  --validation-hub-revision <40-character-real-corpus-commit> `
+  --primary-objective turn_completion `
+  --learning-rate 3e-5 `
+  --minimum-learning-rate 3e-6 `
+  --warmup-steps 50 `
+  --max-steps 750
+```
+
+This is warm-start fine-tuning, not checkpoint resume: adapter weights are loaded, while optimizer
+and learning-rate schedule state start fresh. Synthetic and human validation are both reported,
+but only the human score can select the best checkpoint.
+
 ### Intended source preparation
 
 The first planned sources are [Mundo TurnBench dev](https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev)
