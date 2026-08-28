@@ -24,6 +24,7 @@ from app.local.synthetic_generation.conversation_prompts import (
     EnglishConversationPromptSet,
     HoldUserPrompt,
     InterruptionFloorClaimUserPrompt,
+    MicroBackchannel,
     NonFloorFeedbackUserPrompt,
     ResponseFloorClaimUserPrompt,
     SpeakingPace,
@@ -446,7 +447,7 @@ def measure_internal_silences(
 def _prompt_clauses(prompt: UserPrompt) -> tuple[str, ...]:
     match prompt:
         case NonFloorFeedbackUserPrompt(text=text):
-            return (text.value,)
+            return ("mm-hmm" if text is MicroBackchannel.MHM else text.value,)
         case (
             CompletionUserPrompt(text=text)
             | HoldUserPrompt(text=text)

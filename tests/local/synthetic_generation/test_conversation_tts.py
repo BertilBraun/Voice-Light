@@ -211,6 +211,7 @@ def test_renderer_measures_natural_tts_hold_without_inserting_silence(tmp_path: 
     assert all("Speak in English" in request.delivery_instruction for request in requests)
     assert all("conversational affect" in request.delivery_instruction for request in requests)
     assert {request.speed for request in requests} <= {0.96, 1.06, 1.16}
+    assert requests[1].text == "mm-hmm"
     assert len(manifest.rendered_units) == 4
     assert all(unit.reference == reference for unit in manifest.rendered_units)
     hold = next(unit for unit in manifest.rendered_units if unit.prompt.condition == "hold")
@@ -414,7 +415,7 @@ def _prompt_set() -> EnglishConversationPromptSet:
                 unit_id="user_2",
                 sequence_index=2,
                 delivery=delivery,
-                text=MicroBackchannel.RIGHT,
+                text=MicroBackchannel.MHM,
                 during_assistant_turn_id="assistant_1",
             ),
             CompletionUserPrompt(
