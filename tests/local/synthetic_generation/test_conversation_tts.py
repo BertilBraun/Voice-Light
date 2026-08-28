@@ -162,8 +162,8 @@ def test_reference_stage_uses_exact_plan_text_once(tmp_path: Path) -> None:
     short_values["duration_seconds"] = 2.9
     assert ConversationVoiceReference.model_validate(short_values).duration_seconds == 2.9
     longer_values = manifest.references[0].model_dump()
-    longer_values["duration_seconds"] = 8.6
-    assert ConversationVoiceReference.model_validate(longer_values).duration_seconds == 8.6
+    longer_values["duration_seconds"] = 20.24
+    assert ConversationVoiceReference.model_validate(longer_values).duration_seconds == 20.24
 
 
 def test_renderer_rejects_missing_plan_reference(tmp_path: Path) -> None:
