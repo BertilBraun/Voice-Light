@@ -227,13 +227,15 @@ def _stream_candidates(
     for anchor_frame, anchor in sorted(stream.observations.items()):
         if anchor.turn_completion is None:
             continue
-        if anchor.assistant_has_floor >= assistant_active_threshold:
-            continue
         is_interval_continuation = bool(
             continuation_interval_targets
             and anchor.continuation_pause is not None
             and anchor.continuation_pause >= 0.8
         )
+        if anchor.assistant_has_floor >= assistant_active_threshold and not (
+            is_interval_continuation
+        ):
+            continue
         if anchor.user_has_floor is None or (
             anchor.user_has_floor >= user_floor_threshold and not is_interval_continuation
         ):

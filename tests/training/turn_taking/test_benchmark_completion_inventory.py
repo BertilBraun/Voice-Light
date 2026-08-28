@@ -181,6 +181,7 @@ def test_inventory_uses_explicit_synthetic_continuation_interval() -> None:
                 floor=floor,
                 completion=completion,
                 continuation=continuation,
+                assistant_floor=[1.0] * FRAMES_PER_SAMPLE,
             ),
         ),
         corpus_repository="owner/corpus",
