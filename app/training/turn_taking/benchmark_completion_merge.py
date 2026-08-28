@@ -80,8 +80,9 @@ def merge_completion_predictions(
     )
     candidate_ids = {candidate.candidate_id for candidate in inventory.candidates}
     prediction_ids = {prediction.candidate_id for prediction in predictions}
-    if prediction_ids != candidate_ids:
-        raise ValueError("Merged predictions do not cover the merged inventory candidates.")
+    unknown_candidate_ids = prediction_ids - candidate_ids
+    if unknown_candidate_ids:
+        raise ValueError("Merged predictions reference candidates outside the merged inventory.")
     return CompletionPredictionArtifact(
         manifest=CompletionPredictionManifest(
             inventory_sha256=inventory.manifest.candidate_sha256,
