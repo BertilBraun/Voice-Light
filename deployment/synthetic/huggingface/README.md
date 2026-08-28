@@ -27,7 +27,8 @@ Each versioned run contains:
 
 - `prompts.json`: semantic conversation plans;
 - `references/`: Qwen VoiceDesign reference clips and their manifest;
-- `units/`: trimmed CosyVoice speech units and their render manifest;
+- `units/`: trimmed CosyVoice speech units, their render manifest, and deterministic
+  download shards;
 - `audit-prompts.json` and `audit-complete.json`: complete, unfiltered quality flags;
 - `provenance.json`: model revisions, source-code revision, and file checksums.
 
@@ -53,9 +54,10 @@ python -m app.local.synthetic_generation.cli prepare-hub-training \
   --crop-variants 4
 ```
 
-This downloads only the canonical prompt set, render manifest, and trimmed unit FLACs. It then
-reconstructs each user-side conversation, samples balanced 20-second views, and writes the standard
-Voice-Light Parquet training contract. All descendants of one conversation retain one split.
+This downloads the canonical prompt set, render manifest, and roughly 64 MB unit archives, then
+verifies and extracts the trimmed FLACs. It reconstructs each user-side conversation, samples
+balanced 20-second views, and writes the standard Voice-Light Parquet training contract. All
+descendants of one conversation retain one split.
 
 ## Intended use
 
