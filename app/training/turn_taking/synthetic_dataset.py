@@ -42,6 +42,13 @@ class SyntheticAnchorIndex:
     anchor: ConversationAnchor
 
 
+@dataclass(frozen=True)
+class AnchoredSyntheticTrainingItem:
+    item: TrainingItem
+    anchor: ConversationAnchor
+    anchor_frame_index: int
+
+
 class AnchoredSyntheticTurnTakingDataset(Dataset[TrainingItem]):
     def __init__(
         self,
@@ -89,6 +96,9 @@ class AnchoredSyntheticTurnTakingDataset(Dataset[TrainingItem]):
         return len(self.anchors)
 
     def __getitem__(self, index: int) -> TrainingItem:
+        return self.anchored_item(index).item
+
+    def anchored_item(self, index: int) -> AnchoredSyntheticTrainingItem:
         entry = self.anchors[index]
         crop_seed = (
             self._worker_generator().randrange(2**31)
@@ -114,24 +124,28 @@ class AnchoredSyntheticTurnTakingDataset(Dataset[TrainingItem]):
         user_floor = torch.tensor(labels.p_user_floor_now, dtype=torch.float32)
         primary_mask = user_floor >= 0.0
         future_activity = torch.zeros((len(user_floor), 4), dtype=torch.float32)
-        return TrainingItem(
-            sample_id=(
-                f"{self.conversations[entry.conversation_index].plan.conversation_id}:"
-                f"{entry.anchor.kind}:{crop_seed}"
+        return AnchoredSyntheticTrainingItem(
+            item=TrainingItem(
+                sample_id=(
+                    f"{self.conversations[entry.conversation_index].plan.conversation_id}:"
+                    f"{entry.anchor.kind}:{crop_seed}"
+                ),
+                waveform=waveform,
+                assistant_speaking=torch.tensor(
+                    labels.assistant_speaking_probability, dtype=torch.float32
+                ),
+                targets=FrameTargets(
+                    yield_probability=(1.0 - user_floor).masked_fill(~primary_mask, 0.0),
+                    primary_weight=primary_mask.float(),
+                    primary_mask=primary_mask,
+                    event_targets=event_targets,
+                    event_mask=event_mask,
+                    future_activity=future_activity,
+                    future_activity_mask=torch.zeros_like(future_activity, dtype=torch.bool),
+                ),
             ),
-            waveform=waveform,
-            assistant_speaking=torch.tensor(
-                labels.assistant_speaking_probability, dtype=torch.float32
-            ),
-            targets=FrameTargets(
-                yield_probability=(1.0 - user_floor).masked_fill(~primary_mask, 0.0),
-                primary_weight=primary_mask.float(),
-                primary_mask=primary_mask,
-                event_targets=event_targets,
-                event_mask=event_mask,
-                future_activity=future_activity,
-                future_activity_mask=torch.zeros_like(future_activity, dtype=torch.bool),
-            ),
+            anchor=entry.anchor,
+            anchor_frame_index=anchored.anchor_frame_index,
         )
 
     def sampling_weights(self) -> Tensor:

@@ -91,6 +91,31 @@ training inputs; both validation sources stay clean. The existing materialized a
 `hf_hub_download` paths remain available for compatibility, and the JSONL manifest format remains
 available through `--manifest` for older local experiments.
 
+Evaluate the two interaction heads separately from completion. Prediction runs the frozen ASR
+backbone once and persists the `non_floor_feedback` and `floor_take` trajectories around every
+synthetic validation backchannel and interruption. Analysis is CPU-only and can be repeated with
+different controller thresholds without rerunning inference:
+
+```powershell
+uv run python -m app.training.turn_taking.interaction_evaluate_cli predict `
+  .cache\human-finetune\adapter-best.pt `
+  .cache\interaction-predictions.json `
+  --dynamic-synthetic-corpus .cache\synthetic-training\v4 `
+  --dynamic-synthetic-corpus .cache\synthetic-training\v5 `
+  --model-cache-directory .cache\huggingface
+
+uv run python -m app.training.turn_taking.interaction_evaluate_cli analyze `
+  .cache\interaction-predictions.json `
+  .cache\interaction-report.json `
+  --threshold 0.5
+```
+
+The report includes backchannel false-cancel rate, interruption/floor-take recall, a three-way
+backchannel/interruption/unresolved confusion matrix, and observed-versus-censored decision
+latencies. Missing encoder coverage is retained with an exact reason rather than silently dropped.
+These synthetic metrics validate whether the trained auxiliary heads learned their generator
+targets; they are not a substitute for a separately annotated real interaction benchmark.
+
 After synthetic pretraining, initialize a fresh optimizer from the selected adapter and fine-tune
 primarily on the human training split. A small synthetic replay fraction preserves the learned
 event semantics while checkpoint selection continues to use only human validation AUROC:
