@@ -10,6 +10,7 @@ from app.training.turn_taking.benchmark_voice_light import load_voice_light_chec
 from app.training.turn_taking.interaction_evaluation import (
     InteractionPredictionArtifact,
     evaluate_interaction_predictions,
+    merge_interaction_prediction_artifacts,
 )
 from app.training.turn_taking.interaction_prediction import predict_synthetic_interactions
 
@@ -32,11 +33,16 @@ def main() -> None:
     analyze.add_argument("predictions", type=Path)
     analyze.add_argument("output", type=Path)
     analyze.add_argument("--threshold", type=_probability, default=0.5)
+    merge = subparsers.add_parser("merge", help="Merge durable prediction shards.")
+    merge.add_argument("output", type=Path)
+    merge.add_argument("predictions", type=Path, nargs="+")
     arguments = parser.parse_args()
     if arguments.command == "predict":
         _predict(arguments)
-    else:
+    elif arguments.command == "analyze":
         _analyze(arguments)
+    else:
+        _merge(arguments)
 
 
 def _predict(arguments: argparse.Namespace) -> None:
@@ -80,6 +86,21 @@ def _analyze(arguments: argparse.Namespace) -> None:
         f"backchannel_false_cancel={report.backchannel_false_cancel_rate}; "
         f"interruption_recall={report.interruption_floor_take_recall}; "
         f"coverage={report.evaluated_event_count}/{report.eligible_event_count}",
+        flush=True,
+    )
+
+
+def _merge(arguments: argparse.Namespace) -> None:
+    artifacts = tuple(
+        InteractionPredictionArtifact.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in arguments.predictions
+    )
+    merged = merge_interaction_prediction_artifacts(artifacts)
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    arguments.output.write_text(merged.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    print(
+        f"Merged {len(artifacts)} shards with {len(merged.predictions)} predictions and "
+        f"{len(merged.missing_events)} missing-event records into {arguments.output}",
         flush=True,
     )
 

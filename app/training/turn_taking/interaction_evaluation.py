@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 import torch
@@ -217,6 +217,66 @@ def interaction_predictions_sha256(
         digest.update(prediction.model_dump_json().encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def merge_interaction_prediction_artifacts(
+    artifacts: Sequence[InteractionPredictionArtifact],
+) -> InteractionPredictionArtifact:
+    if not artifacts:
+        raise ValueError("Interaction prediction merge requires at least one artifact.")
+    first = artifacts[0].manifest
+    for artifact in artifacts[1:]:
+        manifest = artifact.manifest
+        if (
+            manifest.checkpoint_sha256 != first.checkpoint_sha256
+            or manifest.optimizer_step != first.optimizer_step
+            or manifest.split != first.split
+            or manifest.frame_seconds != first.frame_seconds
+            or manifest.detection_horizon_seconds != first.detection_horizon_seconds
+        ):
+            raise ValueError("Interaction prediction artifacts use incompatible configurations.")
+    predictions = tuple(
+        sorted(
+            (prediction for artifact in artifacts for prediction in artifact.predictions),
+            key=lambda prediction: prediction.event_id,
+        )
+    )
+    missing_events = tuple(
+        sorted(
+            (event for artifact in artifacts for event in artifact.missing_events),
+            key=lambda event: event.event_id,
+        )
+    )
+    event_ids = tuple(prediction.event_id for prediction in predictions) + tuple(
+        event.event_id for event in missing_events
+    )
+    if len(event_ids) != len(set(event_ids)):
+        raise ValueError("Interaction prediction artifacts contain duplicate event IDs.")
+    source_roots = tuple(
+        dict.fromkeys(
+            source_root for artifact in artifacts for source_root in artifact.manifest.source_roots
+        )
+    )
+    return InteractionPredictionArtifact(
+        manifest=InteractionPredictionManifest(
+            generated_at=datetime.now(UTC),
+            checkpoint_sha256=first.checkpoint_sha256,
+            optimizer_step=first.optimizer_step,
+            source_roots=source_roots,
+            split=first.split,
+            frame_seconds=first.frame_seconds,
+            detection_horizon_seconds=first.detection_horizon_seconds,
+            event_offset=0,
+            eligible_event_count=sum(
+                artifact.manifest.eligible_event_count for artifact in artifacts
+            ),
+            prediction_count=len(predictions),
+            missing_event_count=len(missing_events),
+            predictions_sha256=interaction_predictions_sha256(predictions),
+        ),
+        predictions=predictions,
+        missing_events=missing_events,
+    )
 
 
 def aligned_source_indices(source_frame_count: int, output_frame_count: int) -> Tensor:

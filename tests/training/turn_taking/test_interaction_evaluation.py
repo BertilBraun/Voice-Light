@@ -15,6 +15,7 @@ from app.training.turn_taking.interaction_evaluation import (
     MissingInteractionReason,
     evaluate_interaction_predictions,
     interaction_predictions_sha256,
+    merge_interaction_prediction_artifacts,
     output_anchor_index,
 )
 
@@ -116,6 +117,36 @@ def test_interaction_artifact_rejects_unaccounted_events() -> None:
         )
 
 
+def test_merge_interaction_artifacts_preserves_predictions_and_missing_events() -> None:
+    first_prediction = _prediction("first", InteractionKind.BACKCHANNEL, ((0.0, 0.8, 0.1),))
+    second_prediction = _prediction("second", InteractionKind.INTERRUPTION, ((0.0, 0.1, 0.8),))
+    first = _artifact((first_prediction,), (), ("v4",), event_offset=0)
+    missing = MissingInteractionEvent(
+        event_id="missing",
+        interaction_kind=InteractionKind.INTERRUPTION,
+        reason=MissingInteractionReason.NO_VALID_OBSERVATION,
+    )
+    second = _artifact((second_prediction,), (missing,), ("v5",), event_offset=1)
+
+    merged = merge_interaction_prediction_artifacts((first, second))
+
+    assert merged.manifest.source_roots == ("v4", "v5")
+    assert merged.manifest.eligible_event_count == 3
+    assert tuple(prediction.event_id for prediction in merged.predictions) == (
+        "first",
+        "second",
+    )
+    assert merged.missing_events == (missing,)
+
+
+def test_merge_interaction_artifacts_rejects_duplicate_events() -> None:
+    prediction = _prediction("duplicate", InteractionKind.BACKCHANNEL, ((0.0, 0.8, 0.1),))
+    artifact = _artifact((prediction,), (), ("v4",), event_offset=0)
+
+    with pytest.raises(ValueError, match="duplicate event IDs"):
+        merge_interaction_prediction_artifacts((artifact, artifact))
+
+
 def _prediction(
     event_id: str,
     kind: InteractionKind,
@@ -143,4 +174,30 @@ def _confusion_count(
 ) -> int:
     return next(
         value.count for value in values if value.actual is actual and value.predicted is predicted
+    )
+
+
+def _artifact(
+    predictions: tuple[InteractionEventPrediction, ...],
+    missing_events: tuple[MissingInteractionEvent, ...],
+    source_roots: tuple[str, ...],
+    event_offset: int,
+) -> InteractionPredictionArtifact:
+    return InteractionPredictionArtifact(
+        manifest=InteractionPredictionManifest(
+            generated_at=datetime.now(UTC),
+            checkpoint_sha256="a" * 64,
+            optimizer_step=750,
+            source_roots=source_roots,
+            split="validation",
+            frame_seconds=0.08,
+            detection_horizon_seconds=0.8,
+            event_offset=event_offset,
+            eligible_event_count=len(predictions) + len(missing_events),
+            prediction_count=len(predictions),
+            missing_event_count=len(missing_events),
+            predictions_sha256=interaction_predictions_sha256(predictions),
+        ),
+        predictions=predictions,
+        missing_events=missing_events,
     )
