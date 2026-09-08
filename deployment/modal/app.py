@@ -108,7 +108,7 @@ image = (
 with image.imports():
     from app.compute.main import create_app_from_environment
 
-application = modal.App(APPLICATION_NAME)
+app = modal.App(APPLICATION_NAME)
 compute_secret = modal.Secret.from_name(configuration.secret_name)
 model_cache = modal.Volume.from_name(
     configuration.model_cache_volume_name,
@@ -120,7 +120,7 @@ runtime_cache = modal.Volume.from_name(
 )
 
 
-@application.function(
+@app.function(
     image=image,
     gpu=configuration.gpu,
     max_containers=1,
