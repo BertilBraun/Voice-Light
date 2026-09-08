@@ -27,7 +27,7 @@ RUNTIME_CACHE_MOUNT: Final = PurePosixPath("/runtime-cache")
 @dataclass(frozen=True)
 class ModalDeploymentConfiguration:
     gpu: str = "L40S"
-    scaledown_window_seconds: int = 60
+    scaledown_window_seconds: int = 1_200
     function_timeout_seconds: int = 86_400
     secret_name: str = "voice-light-compute"
     model_cache_volume_name: str = "voice-light-agent-model-cache"
