@@ -116,6 +116,30 @@ latencies. Missing encoder coverage is retained with an exact reason rather than
 These synthetic metrics validate whether the trained auxiliary heads learned their generator
 targets; they are not a substitute for a separately annotated real interaction benchmark.
 
+Operational baselines use the same deterministic crops and persist their raw action probabilities.
+Silero is evaluated as an immediate assistant-cancellation policy after 100 ms of sustained speech.
+Smart Turn and LiveKit cannot classify turn starts; their completion probabilities are instead
+evaluated as post-utterance response decisions after their native 200 ms and 300 ms gates. These
+two action semantics are reported separately and must not be presented as equivalent latency:
+
+```powershell
+uv run python -m app.training.turn_taking.interaction_evaluate_cli predict-baseline `
+  silero_speech_cancel `
+  .cache\silero-interaction-predictions.json `
+  --dynamic-synthetic-corpus .cache\synthetic-training\v4 `
+  --dynamic-synthetic-corpus .cache\synthetic-training\v5 `
+  --crop-random-seed 17
+
+uv run python -m app.training.turn_taking.interaction_evaluate_cli sweep-baseline `
+  .cache\silero-interaction-predictions.json `
+  .cache\silero-interaction-sweep.json `
+  --threshold-step 0.01
+```
+
+Use `smart_turn_completion_as_response` or `livekit_completion_as_response` for the corresponding
+post-utterance policy. A sweep reports backchannel false-action rate, interruption recall, and
+conditional action latency; threshold changes never repeat model inference.
+
 After synthetic pretraining, initialize a fresh optimizer from the selected adapter and fine-tune
 primarily on the human training split. A small synthetic replay fraction preserves the learned
 event semantics while checkpoint selection continues to use only human validation AUROC:
