@@ -55,7 +55,7 @@ class ModalDeploymentConfiguration:
 
 configuration = ModalDeploymentConfiguration()
 
-if not ADAPTER_CHECKPOINT.is_file():
+if modal.is_local() and not ADAPTER_CHECKPOINT.is_file():
     raise ValueError(f"Turn-taking adapter checkpoint is missing: {ADAPTER_CHECKPOINT}")
 
 image = (
