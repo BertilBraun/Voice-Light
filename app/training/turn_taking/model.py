@@ -16,6 +16,12 @@ class AdapterOutput:
     recurrent_state: Tensor
 
 
+@dataclass(frozen=True)
+class IncrementalAdapterState:
+    convolution_histories: tuple[Tensor, ...]
+    recurrent_state: Tensor
+
+
 class CausalConvolutionBlock(nn.Module):
     def __init__(self, dimension: int, kernel_size: int, dilation: int, dropout: float) -> None:
         super().__init__()
@@ -38,6 +44,33 @@ class CausalConvolutionBlock(nn.Module):
         temporal = nn.functional.pad(temporal, (self.left_padding, 0))
         temporal = self.pointwise(self.depthwise(temporal)).transpose(1, 2)
         return self.normalization(residual + self.dropout(self.activation(temporal)))
+
+    def forward_incremental(
+        self,
+        features: Tensor,
+        history: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        if history is None:
+            history = features.new_zeros(
+                features.shape[0],
+                self.left_padding,
+                features.shape[2],
+            )
+        expected_history_shape = (
+            features.shape[0],
+            self.left_padding,
+            features.shape[2],
+        )
+        if history.shape != expected_history_shape:
+            raise ValueError(
+                "Causal convolution history must match the current batch and feature dimensions."
+            )
+        convolution_input = torch.cat((history, features), dim=1)
+        temporal = self.depthwise(convolution_input.transpose(1, 2))
+        temporal = self.pointwise(temporal).transpose(1, 2)
+        output = self.normalization(features + self.dropout(self.activation(temporal)))
+        next_history = convolution_input[:, -self.left_padding :, :].detach()
+        return output, next_history
 
 
 class TurnTakingAdapter(nn.Module):
@@ -107,6 +140,57 @@ class TurnTakingAdapter(nn.Module):
             event_logits=self.event_head(temporal),
             recurrent_state=next_state,
         )
+
+    def forward_incremental(
+        self,
+        feature_taps: tuple[Tensor, ...],
+        assistant_speaking: Tensor,
+        state: IncrementalAdapterState | None = None,
+    ) -> tuple[AdapterOutput, IncrementalAdapterState]:
+        if len(feature_taps) != len(self.tap_projections):
+            raise ValueError(
+                f"Expected {len(self.tap_projections)} feature taps, received {len(feature_taps)}."
+            )
+        expected_shape = feature_taps[0].shape[:2]
+        if assistant_speaking.shape != expected_shape:
+            raise ValueError(
+                "assistant_speaking must match the feature tap batch and temporal dimensions."
+            )
+        histories: tuple[Tensor | None, ...]
+        recurrent_state: Tensor | None
+        if state is None:
+            histories = tuple(None for _ in self.convolution_blocks)
+            recurrent_state = None
+        else:
+            if len(state.convolution_histories) != len(self.convolution_blocks):
+                raise ValueError("Incremental adapter state has the wrong convolution depth.")
+            histories = state.convolution_histories
+            recurrent_state = state.recurrent_state
+        projected = [
+            projection(normalization(features))
+            for features, normalization, projection in zip(
+                feature_taps, self.tap_normalizations, self.tap_projections, strict=True
+            )
+        ]
+        temporal = self.fusion(torch.cat(projected, dim=-1))
+        next_histories: list[Tensor] = []
+        for block, history in zip(self.convolution_blocks, histories, strict=True):
+            temporal, next_history = block.forward_incremental(temporal, history)
+            next_histories.append(next_history)
+        assistant_condition = assistant_speaking.to(dtype=temporal.dtype).unsqueeze(-1)
+        recurrent_input = torch.cat((temporal, assistant_condition), dim=-1)
+        temporal, next_recurrent_state = self.recurrent(recurrent_input, recurrent_state)
+        output = AdapterOutput(
+            yield_logits=self.yield_head(temporal).squeeze(-1),
+            future_activity_logits=self.future_activity_head(temporal),
+            event_logits=self.event_head(temporal),
+            recurrent_state=next_recurrent_state,
+        )
+        next_state = IncrementalAdapterState(
+            convolution_histories=tuple(next_histories),
+            recurrent_state=next_recurrent_state.detach(),
+        )
+        return output, next_state
 
 
 def freeze_module(module: nn.Module) -> None:
