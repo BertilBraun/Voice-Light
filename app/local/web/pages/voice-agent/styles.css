@@ -20,7 +20,7 @@ header a { color: #bdc7c0; text-decoration: none; }
 .eyebrow { color: #78d8ae; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 h1 { font-size: clamp(44px, 8vw, 74px); letter-spacing: -.055em; line-height: .95; margin: 12px 0 18px; }
 .hero > p:last-child { color: #aab4ad; font-size: 18px; max-width: 600px; }
-.controls, .conversation, details { background: #181e1a; border: 1px solid #29322c; border-radius: 16px; }
+.controls, .conversation, .interaction-debug, details { background: #181e1a; border: 1px solid #29322c; border-radius: 16px; }
 .controls { padding: 22px; }
 label { color: #aab4ad; display: block; font-size: 13px; margin-bottom: 8px; }
 input { background: #0f1311; border: 1px solid #39443d; border-radius: 9px; color: inherit; font: inherit; padding: 12px; width: 100%; }
@@ -38,6 +38,12 @@ button:disabled { cursor: default; opacity: .4; }
 .recording-review audio { display: block; width: 100%; }
 .recording-review a { color: #78d8ae; display: inline-block; font-size: 13px; margin-top: 10px; }
 .conversation { margin: 22px 0; overflow: hidden; }
+.interaction-debug { margin: 22px 0; padding: 20px 22px; }
+.interaction-debug .eyebrow { margin: 0 0 6px; }
+.interaction-debug dl { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 18px 0 0; }
+.interaction-debug dl div { background: #111613; border: 1px solid #303a33; border-radius: 10px; padding: 10px 12px; }
+.interaction-debug dt { color: #718078; font-size: 11px; text-transform: uppercase; }
+.interaction-debug dd { color: #dce4de; font-family: ui-monospace, monospace; margin: 5px 0 0; }
 .conversation-heading { align-items: flex-end; border-bottom: 1px solid #29322c; display: flex; gap: 24px; justify-content: space-between; padding: 20px 22px; }
 .conversation-heading .eyebrow { margin: 0 0 6px; }
 h2 { font-size: 24px; letter-spacing: -.025em; margin: 0; }
@@ -68,4 +74,5 @@ details { color: #aab4ad; padding: 16px 20px; }
   .conversation-heading { align-items: flex-start; flex-direction: column; }
   .conversation-status { justify-content: flex-start; }
   .conversation-turn { max-width: 94%; }
+  .interaction-debug dl { grid-template-columns: 1fr 1fr; }
 }

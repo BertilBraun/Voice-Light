@@ -54,11 +54,26 @@
         </div>
       </section>
 
+      <section class="interaction-debug" aria-labelledby="interaction-debug-title">
+        <div>
+          <p class="eyebrow">Ephemeral model evidence</p>
+          <h2 id="interaction-debug-title">Interaction policy</h2>
+        </div>
+        <dl>
+          <div><dt>Silero</dt><dd id="debug-silero">waiting</dd></div>
+          <div><dt>Turn completion</dt><dd id="debug-turn-completion">—</dd></div>
+          <div><dt>Floor take</dt><dd id="debug-floor-take">—</dd></div>
+          <div><dt>Non-floor feedback</dt><dd id="debug-non-floor">—</dd></div>
+          <div><dt>Decision</dt><dd id="debug-policy-decision">waiting</dd></div>
+          <div><dt>Decision latency</dt><dd id="debug-policy-latency">—</dd></div>
+        </dl>
+      </section>
+
       <details>
         <summary>Session events</summary>
         <ol id="event-log"></ol>
       </details>
     </main>
-    <script type="module" src="/pages/voice-agent/app.js?v=8"></script>
+    <script type="module" src="/pages/voice-agent/app.js?v=9"></script>
   </body>
 </html>

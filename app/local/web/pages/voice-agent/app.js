@@ -16,6 +16,12 @@ const playbackStatus = document.querySelector("#playback-status");
 const conversationHistory = document.querySelector("#conversation-history");
 const conversationEmpty = document.querySelector("#conversation-empty");
 const eventLog = document.querySelector("#event-log");
+const debugSilero = document.querySelector("#debug-silero");
+const debugTurnCompletion = document.querySelector("#debug-turn-completion");
+const debugFloorTake = document.querySelector("#debug-floor-take");
+const debugNonFloor = document.querySelector("#debug-non-floor");
+const debugPolicyDecision = document.querySelector("#debug-policy-decision");
+const debugPolicyLatency = document.querySelector("#debug-policy-latency");
 
 let socket;
 let microphoneStream;
@@ -404,6 +410,16 @@ function handleMessage(event) {
   if (message.type === "vad.stopped") {
     vadStatus.textContent = "thinking";
   }
+  if (message.type === "speech_understanding.debug") {
+    debugSilero.textContent = message.silero_speech ? "speech" : "silence";
+    debugTurnCompletion.textContent = formatProbability(message.turn_completion_probability);
+    debugFloorTake.textContent = formatProbability(message.floor_take_probability);
+    debugNonFloor.textContent = formatProbability(message.non_floor_feedback_probability);
+  }
+  if (message.type === "interaction_policy.debug") {
+    debugPolicyDecision.textContent = `${message.decision} · ${message.reason}`;
+    debugPolicyLatency.textContent = `${message.decision_latency_ms.toFixed(1)} ms`;
+  }
   if (message.type === "transcript.partial" || message.type === "transcript.final") {
     updateUserDraft(message.text);
   }
@@ -545,6 +561,16 @@ function resetControls() {
   stopButton.disabled = true;
   vadStatus.textContent = "waiting";
   playbackStatus.textContent = "waiting";
+  debugSilero.textContent = "waiting";
+  debugTurnCompletion.textContent = "—";
+  debugFloorTake.textContent = "—";
+  debugNonFloor.textContent = "—";
+  debugPolicyDecision.textContent = "waiting";
+  debugPolicyLatency.textContent = "—";
+}
+
+function formatProbability(value) {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function clearInputRecording() {

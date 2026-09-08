@@ -5,14 +5,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.compute.voice.schemas import CausalSource
-
-
-class OverlapResolutionKind(StrEnum):
-    NON_FLOOR_TAKING = "non_floor_taking"
-    RESPONSE_REQUIRED = "response_required"
-    FLOOR_TAKING = "floor_taking"
-    UNRESOLVED = "unresolved"
+from app.compute.voice.schemas import CausalSource, OverlapResolutionKind
 
 
 class OverlapResolutionReason(StrEnum):
@@ -24,6 +17,7 @@ class OverlapResolutionReason(StrEnum):
     MEANINGFUL_LEXICAL_MATERIAL = "meaningful_lexical_material"
     ACKNOWLEDGEMENT_CONTINUATION = "acknowledgement_continuation"
     PREDICTED_INTERRUPTION = "predicted_interruption"
+    PREDICTED_NON_FLOOR_FEEDBACK = "predicted_non_floor_feedback"
     SPEECH_DURATION_DEADLINE = "speech_duration_deadline"
     AWAITING_MORE_EVIDENCE = "awaiting_more_evidence"
 
@@ -59,13 +53,16 @@ class ProvisionalOverlapPolicyConfig:
     )
     acknowledgement_continuation_words: tuple[str, ...] = ("and", "but", "though", "however")
     classification_deadline_ms: int = 500
-    interruption_probability_threshold: float = 0.7
+    interruption_probability_threshold: float = 0.82
+    non_floor_feedback_probability_threshold: float = 0.82
 
     def __post_init__(self) -> None:
         if self.classification_deadline_ms <= 0:
             raise ValueError("Overlap classification deadline must be positive.")
         if not 0.0 <= self.interruption_probability_threshold <= 1.0:
             raise ValueError("Interruption probability threshold must be between zero and one.")
+        if not 0.0 <= self.non_floor_feedback_probability_threshold <= 1.0:
+            raise ValueError("Non-floor-feedback threshold must be between zero and one.")
         if not self.acknowledgement_phrases:
             raise ValueError("At least one acknowledgement phrase is required.")
 
@@ -78,6 +75,8 @@ class OverlapEvidence:
     transcript_event_id: str | None
     interruption_probability: float | None
     interruption_evidence_event_id: str | None
+    non_floor_feedback_probability: float | None = None
+    non_floor_feedback_evidence_event_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.elapsed_ms < 0:
@@ -86,6 +85,10 @@ class OverlapEvidence:
             0.0 <= self.interruption_probability <= 1.0
         ):
             raise ValueError("Interruption probability must be between zero and one.")
+        if self.non_floor_feedback_probability is not None and not (
+            0.0 <= self.non_floor_feedback_probability <= 1.0
+        ):
+            raise ValueError("Non-floor-feedback probability must be between zero and one.")
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
             for event_id in (
                 evidence.transcript_event_id,
                 evidence.interruption_evidence_event_id,
+                evidence.non_floor_feedback_evidence_event_id,
             )
             if event_id is not None
         )
@@ -244,6 +248,19 @@ class ProvisionalVadTranscriptOverlapPolicy:
                 kind=OverlapResolutionKind.FLOOR_TAKING,
                 reason=OverlapResolutionReason.PREDICTED_INTERRUPTION,
                 confidence=evidence.interruption_probability,
+                causal_source=CausalSource.TURN_ADAPTER,
+                causal_event_ids=causal_event_ids,
+                fast_path=True,
+            )
+        if (
+            evidence.non_floor_feedback_probability is not None
+            and evidence.non_floor_feedback_probability
+            >= self.config.non_floor_feedback_probability_threshold
+        ):
+            return ProvisionalOverlapDecision(
+                kind=OverlapResolutionKind.NON_FLOOR_TAKING,
+                reason=OverlapResolutionReason.PREDICTED_NON_FLOOR_FEEDBACK,
+                confidence=evidence.non_floor_feedback_probability,
                 causal_source=CausalSource.TURN_ADAPTER,
                 causal_event_ids=causal_event_ids,
                 fast_path=True,

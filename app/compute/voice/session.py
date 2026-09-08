@@ -85,6 +85,7 @@ from app.compute.voice.schemas import (
     CapturedAudioChunk,
     CausalSource,
     ErrorEvent,
+    InteractionPolicyDebugEvent,
     InteractionPrediction,
     LlmHistoryEvent,
     LlmHistoryMessage,
@@ -109,6 +110,7 @@ from app.compute.voice.schemas import (
     SessionStopEvent,
     SileroEvidence,
     SpeechStateEvent,
+    SpeechUnderstandingDebugEvent,
     SpeechUnderstandingDegradedEvent,
     TraceStamp,
     TranscriptEvent,
@@ -151,7 +153,9 @@ class SessionPolicy:
     commitment_yield_threshold: float = 0.9
     minimum_prediction_confidence: float = 0.7
     decisive_hold_threshold: float = 0.65
-    floor_taking_overlap_threshold: float = 0.7
+    floor_taking_overlap_threshold: float = 0.82
+    non_floor_feedback_overlap_threshold: float = 0.82
+    overlap_classification_deadline_ms: int = 500
     vad_speculation_enabled: bool = True
     vad_speculation_debounce_ms: int = 100
     vad_endpoint_yield_probability: float = 0.7
@@ -207,12 +211,30 @@ class SessionPolicy:
                 maximum_tool_rounds = int(maximum_tool_rounds_value)
             except ValueError as error:
                 raise ValueError("VOICE_LIGHT_MAXIMUM_TOOL_ROUNDS must be an integer.") from error
+        floor_taking_overlap_threshold = _environment_float(
+            environment,
+            "VOICE_LIGHT_FLOOR_TAKE_THRESHOLD",
+            0.82,
+        )
+        non_floor_feedback_overlap_threshold = _environment_float(
+            environment,
+            "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD",
+            0.82,
+        )
+        overlap_classification_deadline_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS",
+            500,
+        )
         return cls(
             vad_speculation_enabled=vad_speculation_enabled,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
             tool_timeout_seconds=tool_timeout_seconds,
             tool_cancellation_timeout_seconds=tool_cancellation_timeout_seconds,
             maximum_tool_rounds=maximum_tool_rounds,
+            floor_taking_overlap_threshold=floor_taking_overlap_threshold,
+            non_floor_feedback_overlap_threshold=non_floor_feedback_overlap_threshold,
+            overlap_classification_deadline_ms=overlap_classification_deadline_ms,
         )
 
     def __post_init__(self) -> None:
@@ -222,6 +244,7 @@ class SessionPolicy:
             self.minimum_prediction_confidence,
             self.decisive_hold_threshold,
             self.floor_taking_overlap_threshold,
+            self.non_floor_feedback_overlap_threshold,
             self.vad_endpoint_yield_probability,
             self.vad_endpoint_confidence,
         )
@@ -233,6 +256,8 @@ class SessionPolicy:
             raise ValueError("The VAD speculation debounce cannot be negative.")
         if self.maximum_prediction_lag_ms < 0:
             raise ValueError("The maximum prediction lag cannot be negative.")
+        if self.overlap_classification_deadline_ms <= 0:
+            raise ValueError("The overlap classification deadline must be positive.")
         if self.tool_timeout_seconds <= 0.0:
             raise ValueError("The tool timeout must be positive.")
         if self.tool_cancellation_timeout_seconds <= 0.0:
@@ -476,10 +501,11 @@ class VoiceSession:
         )
         self.overlap_policy = overlap_policy or ProvisionalVadTranscriptOverlapPolicy(
             ProvisionalOverlapPolicyConfig(
-                classification_deadline_ms=(
-                    self.playback_controller.config.classification_deadline_ms
-                ),
+                classification_deadline_ms=(policy.overlap_classification_deadline_ms),
                 interruption_probability_threshold=policy.floor_taking_overlap_threshold,
+                non_floor_feedback_probability_threshold=(
+                    policy.non_floor_feedback_overlap_threshold
+                ),
             )
         )
         self.session_id = str(uuid4())
@@ -912,6 +938,12 @@ class VoiceSession:
                 interruption_evidence_event_id=(
                     prediction.stamp.event_id if prediction_is_causal else None
                 ),
+                non_floor_feedback_probability=(
+                    prediction.p_user_backchannel if prediction_is_causal else None
+                ),
+                non_floor_feedback_evidence_event_id=(
+                    prediction.stamp.event_id if prediction_is_causal else None
+                ),
             )
         )
         if decision.kind is OverlapResolutionKind.UNRESOLVED:
@@ -933,7 +965,7 @@ class VoiceSession:
                 decision,
                 elapsed_ms,
             )
-        self._record_overlap_resolution(overlap, decision, generation)
+        await self._record_overlap_resolution(overlap, decision, generation)
         await self._promote_overlap_to_user_turn(overlap, decision, transcript)
         return decision.kind
 
@@ -998,7 +1030,7 @@ class VoiceSession:
         )
         if final_decision.kind is not OverlapResolutionKind.NON_FLOOR_TAKING:
             generation = self.generations[overlap.generation_id]
-            self._record_overlap_resolution(overlap, final_decision, generation)
+            await self._record_overlap_resolution(overlap, final_decision, generation)
             await self._promote_overlap_to_user_turn(overlap, final_decision, final_text)
             finalized_at = time.perf_counter()
             await self._commit_finalized_user_turn(
@@ -1037,7 +1069,7 @@ class VoiceSession:
                 active_generation.synthesis_budget_available.set()
                 overlap.resume_command_id = resume_command.command_id
                 await self._send_event(resume_command)
-        self._record_overlap_resolution(overlap, final_decision, generation)
+        await self._record_overlap_resolution(overlap, final_decision, generation)
         self.active_user_overlap = None
         logger.info(
             "ephemeral user overlap resolved: session=%s overlap=%s generation=%d "
@@ -1051,7 +1083,7 @@ class VoiceSession:
         )
         return OverlapResolutionKind.NON_FLOOR_TAKING
 
-    def _record_overlap_resolution(
+    async def _record_overlap_resolution(
         self,
         overlap: ActiveUserOverlap,
         decision: ProvisionalOverlapDecision,
@@ -1070,6 +1102,15 @@ class VoiceSession:
                 generation.tts_sample_count - overlap.synthesized_source_sample_count_at_onset,
                 0,
             ),
+        )
+        await self._send_event(
+            InteractionPolicyDebugEvent(
+                decision=decision.kind,
+                reason=decision.reason,
+                decision_latency_ms=(decision_time_ns - overlap.onset_monotonic_time_ns)
+                / 1_000_000,
+                causal_source=decision.causal_source,
+            )
         )
 
     async def _promote_overlap_to_user_turn(
@@ -1146,6 +1187,24 @@ class VoiceSession:
                         current_input_sample=chunk.end_input_sample,
                     ):
                         latest_prediction = prediction
+                        await self._send_event(
+                            SpeechUnderstandingDebugEvent(
+                                silero_speech=chunk.silero_evidence.is_speech,
+                                turn_completion_probability=prediction.p_turn_completion,
+                                floor_take_probability=prediction.p_user_interruption,
+                                non_floor_feedback_probability=(prediction.p_user_backchannel),
+                                inference_latency_ms=(
+                                    prediction.stamp.emission_monotonic_time_ns
+                                    - prediction.stamp.observation_monotonic_time_ns
+                                )
+                                / 1_000_000,
+                                observed_audio_time_ms=(
+                                    prediction.stamp.observed_through_input_sample
+                                    * 1_000
+                                    // INPUT_SAMPLE_RATE
+                                ),
+                            )
+                        )
         return latest_prediction
 
     def _prediction_is_applicable(
@@ -3314,6 +3373,34 @@ def _require_latency_point(
     if point is None:
         raise AssertionError(f"Missing {label} latency point.")
     return point
+
+
+def _environment_float(
+    environment: Mapping[str, str],
+    name: str,
+    default: float,
+) -> float:
+    value = environment.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be numeric.") from error
+
+
+def _environment_integer(
+    environment: Mapping[str, str],
+    name: str,
+    default: int,
+) -> int:
+    value = environment.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer.") from error
 
 
 def _component_error(

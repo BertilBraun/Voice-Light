@@ -123,6 +123,36 @@ def test_session_policy_reads_vad_speculation_debounce() -> None:
     assert policy.vad_speculation_debounce_ms == 75
 
 
+def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
+    policy = SessionPolicy.from_environment(
+        {
+            "VOICE_LIGHT_FLOOR_TAKE_THRESHOLD": "0.84",
+            "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.86",
+            "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "640",
+        }
+    )
+
+    assert policy.floor_taking_overlap_threshold == 0.84
+    assert policy.non_floor_feedback_overlap_threshold == 0.86
+    assert policy.overlap_classification_deadline_ms == 640
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (
+        ("VOICE_LIGHT_FLOOR_TAKE_THRESHOLD", "1.1"),
+        ("VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD", "soon"),
+        ("VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS", "0"),
+    ),
+)
+def test_session_policy_rejects_invalid_interaction_configuration(
+    name: str,
+    value: str,
+) -> None:
+    with pytest.raises(ValueError):
+        SessionPolicy.from_environment({name: value})
+
+
 def test_session_policy_rejects_invalid_vad_speculation_switch() -> None:
     with pytest.raises(
         ValueError,

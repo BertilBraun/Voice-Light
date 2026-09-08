@@ -182,6 +182,13 @@ class OverlapDisposition(StrEnum):
     FLOOR_TAKING = "floor_taking"
 
 
+class OverlapResolutionKind(StrEnum):
+    NON_FLOOR_TAKING = "non_floor_taking"
+    RESPONSE_REQUIRED = "response_required"
+    FLOOR_TAKING = "floor_taking"
+    UNRESOLVED = "unresolved"
+
+
 class OverlapDispositionProbability(FrozenBaseModel):
     disposition: OverlapDisposition
     probability: float = Field(ge=0.0, le=1.0)
@@ -404,6 +411,8 @@ class VoiceServerEventType(StrEnum):
     LLM_HISTORY = "llm.history"
     LLM_MODEL_REQUEST = "llm.model_request"
     SEARCH_DEBUG = "search.debug"
+    SPEECH_UNDERSTANDING_DEBUG = "speech_understanding.debug"
+    INTERACTION_POLICY_DEBUG = "interaction_policy.debug"
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
@@ -502,6 +511,28 @@ class SearchDebugEvent(FrozenBaseModel):
     total_duration_ms: float = Field(ge=0)
 
 
+class SpeechUnderstandingDebugEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.SPEECH_UNDERSTANDING_DEBUG] = (
+        VoiceServerEventType.SPEECH_UNDERSTANDING_DEBUG
+    )
+    silero_speech: bool
+    turn_completion_probability: float = Field(ge=0.0, le=1.0)
+    floor_take_probability: float = Field(ge=0.0, le=1.0)
+    non_floor_feedback_probability: float = Field(ge=0.0, le=1.0)
+    inference_latency_ms: float = Field(ge=0.0)
+    observed_audio_time_ms: int = Field(ge=0)
+
+
+class InteractionPolicyDebugEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.INTERACTION_POLICY_DEBUG] = (
+        VoiceServerEventType.INTERACTION_POLICY_DEBUG
+    )
+    decision: OverlapResolutionKind
+    reason: str
+    decision_latency_ms: float = Field(ge=0.0)
+    causal_source: CausalSource
+
+
 class AssistantTextDeltaEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.ASSISTANT_TEXT_DELTA] = (
         VoiceServerEventType.ASSISTANT_TEXT_DELTA
@@ -593,6 +624,8 @@ VoiceServerEvent = Annotated[
     | LlmHistoryEvent
     | LlmModelRequestEvent
     | SearchDebugEvent
+    | SpeechUnderstandingDebugEvent
+    | InteractionPolicyDebugEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioTextBoundaryEvent
