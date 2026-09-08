@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
+from livekit.local_inference import VAD_WINDOW_SAMPLES
 from numpy.typing import NDArray
 from pydantic import Field, model_validator
 
@@ -57,6 +58,7 @@ IMPLEMENTATION_VERSION = "voice-light-interaction-baselines-v1"
 
 class InteractionBaselineKind(StrEnum):
     SILERO_SPEECH_CANCEL = "silero_speech_cancel"
+    LIVEKIT_VAD_CANCEL = "livekit_vad_cancel"
     SMART_TURN_RESPONSE = "smart_turn_completion_as_response"
     LIVEKIT_RESPONSE = "livekit_completion_as_response"
 
@@ -102,6 +104,21 @@ class SmartTurnInteractionProvenance(FrozenBaseModel):
     )
 
 
+class LiveKitVadInteractionProvenance(FrozenBaseModel):
+    baseline_kind: Literal[InteractionBaselineKind.LIVEKIT_VAD_CANCEL] = (
+        InteractionBaselineKind.LIVEKIT_VAD_CANCEL
+    )
+    display_name: str = "LiveKit v1-mini VAD immediate cancellation"
+    implementation_version: str = IMPLEMENTATION_VERSION
+    package_version: str
+    sample_rate_hz: Literal[16000] = 16000
+    frame_seconds: Literal[0.032] = 0.032
+    minimum_action_seconds: Literal[0.09] = 0.09
+    action_semantic: Literal[InteractionActionSemantic.CANCEL_ASSISTANT] = (
+        InteractionActionSemantic.CANCEL_ASSISTANT
+    )
+
+
 class LiveKitInteractionProvenance(FrozenBaseModel):
     baseline_kind: Literal[InteractionBaselineKind.LIVEKIT_RESPONSE] = (
         InteractionBaselineKind.LIVEKIT_RESPONSE
@@ -120,7 +137,10 @@ class LiveKitInteractionProvenance(FrozenBaseModel):
 
 
 InteractionBaselineProvenance = Annotated[
-    SileroInteractionProvenance | SmartTurnInteractionProvenance | LiveKitInteractionProvenance,
+    SileroInteractionProvenance
+    | LiveKitVadInteractionProvenance
+    | SmartTurnInteractionProvenance
+    | LiveKitInteractionProvenance,
     Field(discriminator="baseline_kind"),
 ]
 
@@ -229,6 +249,11 @@ def predict_interaction_baseline(
         case InteractionBaselineKind.SILERO_SPEECH_CANCEL:
             detector = SileroInteractionProvenance(package_version=version("silero-vad"))
             predictions = _predict_silero(examples, detection_horizon_seconds)
+        case InteractionBaselineKind.LIVEKIT_VAD_CANCEL:
+            detector = LiveKitVadInteractionProvenance(
+                package_version=version("livekit-local-inference")
+            )
+            predictions = _predict_livekit_vad(examples, detection_horizon_seconds)
         case InteractionBaselineKind.SMART_TURN_RESPONSE:
             model_path = Path(
                 hf_hub_download(
@@ -460,6 +485,47 @@ def _predict_smart_turn(
         predictions.append(
             _single_observation_prediction(
                 example, evaluation_seconds, probability, inference_duration_seconds
+            )
+        )
+    return tuple(predictions)
+
+
+def _predict_livekit_vad(
+    examples: tuple[_InteractionExample, ...],
+    detection_horizon_seconds: float,
+) -> tuple[InteractionBaselineEventPrediction, ...]:
+    inference = load_livekit_v1_mini_inference()
+    predictions: list[InteractionBaselineEventPrediction] = []
+    for example in examples:
+        start_sample = round(example.anchor_seconds * MODEL_SAMPLE_RATE)
+        end_seconds = min(
+            example.active_end_seconds,
+            example.anchor_seconds + detection_horizon_seconds,
+        )
+        end_sample = round(end_seconds * MODEL_SAMPLE_RATE)
+        observations: list[InteractionBaselineObservation] = []
+        inference_duration_seconds = 0.0
+        for window_start in range(start_sample, end_sample, VAD_WINDOW_SAMPLES):
+            float_audio = example.waveform[window_start : window_start + VAD_WINDOW_SAMPLES]
+            if float_audio.size < VAD_WINDOW_SAMPLES:
+                float_audio = np.pad(float_audio, (0, VAD_WINDOW_SAMPLES - float_audio.size))
+            audio = np.clip(float_audio * 32767.0, -32768.0, 32767.0).astype(np.int16)
+            started_at = time.perf_counter()
+            probability = inference.vad_model.predict(audio)
+            inference_duration_seconds += time.perf_counter() - started_at
+            window_end_seconds = (window_start + VAD_WINDOW_SAMPLES) / MODEL_SAMPLE_RATE
+            observations.append(
+                InteractionBaselineObservation(
+                    elapsed_seconds=window_end_seconds - example.anchor_seconds,
+                    action_probability=probability,
+                )
+            )
+        predictions.append(
+            InteractionBaselineEventPrediction(
+                event_id=example.event_id,
+                interaction_kind=example.interaction_kind,
+                observations=tuple(observations),
+                inference_duration_seconds=inference_duration_seconds,
             )
         )
     return tuple(predictions)

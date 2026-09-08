@@ -136,9 +136,11 @@ uv run python -m app.training.turn_taking.interaction_evaluate_cli sweep-baselin
   --threshold-step 0.01
 ```
 
-Use `smart_turn_completion_as_response` or `livekit_completion_as_response` for the corresponding
-post-utterance policy. A sweep reports backchannel false-action rate, interruption recall, and
-conditional action latency; threshold changes never repeat model inference.
+Use `livekit_vad_cancel` for LiveKit's native immediate VAD policy. Use
+`smart_turn_completion_as_response` or `livekit_completion_as_response` for the corresponding
+post-utterance policy; Smart Turn does not ship a turn-start detector and relies on an external
+VAD. A sweep reports backchannel false-action rate, interruption recall, and conditional action
+latency; threshold changes never repeat model inference.
 
 After synthetic pretraining, initialize a fresh optimizer from the selected adapter and fine-tune
 primarily on the human training split. A small synthetic replay fraction preserves the learned
