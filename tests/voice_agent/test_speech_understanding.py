@@ -39,10 +39,10 @@ class RecordingTranscriptionSession:
         self.finished = False
         self.closed = False
 
-    async def add_audio(self, pcm_bytes: bytes) -> str | None:
+    async def add_audio(self, chunk: CapturedAudioChunk) -> str | None:
         if self.fail_add:
             raise RuntimeError("synthetic ASR failure")
-        self.audio.append(pcm_bytes)
+        self.audio.append(chunk.pcm16)
         return self.partial_text
 
     async def finish(self) -> str:
@@ -458,6 +458,8 @@ def create_prediction(
         p_user_yield=0.8,
         p_user_backchannel=0.1,
         p_user_interruption=0.05,
+        p_turn_completion=0.7,
+        p_continuation_pause=0.2,
         future_user_activity_horizons=(),
         assistant_playback_state=chunk.playback_condition.state,
         confidence=0.9,

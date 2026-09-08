@@ -19,9 +19,16 @@ from app.compute.voice.asr_worker_protocol import (
     PartialAsrEvent,
     ShutdownAsrCommand,
     StartAsrCommand,
+    TurnAdapterDegradedEvent,
+    TurnAdapterPredictionEvent,
     asr_worker_event_adapter,
 )
-from app.compute.voice.interfaces import TranscriptionSession
+from app.compute.voice.interfaces import (
+    TranscriptionSession,
+    TurnPredictionObservation,
+    TurnPredictionSource,
+)
+from app.compute.voice.schemas import CapturedAudioChunk, InteractionPrediction
 from app.compute.voice.subprocess_start import read_worker_start_event
 
 logger = logging.getLogger(__name__)
@@ -38,16 +45,29 @@ STREAMING_CHUNK_BYTE_COUNT: Final = (
 
 
 class NemotronWorker(Protocol):
+    @property
+    def turn_adapter_available(self) -> bool: ...
+
     def send(self, command: AsrWorkerCommand) -> None: ...
 
     def read_event(
         self,
-    ) -> AsrWorkerReadyEvent | PartialAsrEvent | FinalAsrEvent | AsrWorkerErrorEvent: ...
+    ) -> (
+        AsrWorkerReadyEvent
+        | PartialAsrEvent
+        | FinalAsrEvent
+        | AsrWorkerErrorEvent
+        | TurnAdapterPredictionEvent
+        | TurnAdapterDegradedEvent
+    ): ...
 
     def terminate(self) -> None: ...
 
 
 class NemotronWorkerManager(Protocol):
+    @property
+    def turn_adapter_available(self) -> bool: ...
+
     async def acquire(self) -> NemotronWorker: ...
 
     def release(self) -> None: ...
@@ -78,6 +98,7 @@ class NemotronWorkerProcess:
             )
             if not isinstance(ready_event, AsrWorkerReadyEvent):
                 raise RuntimeError("The Nemotron worker failed to initialize.")
+            self.ready_event = ready_event
         except BaseException:
             self.terminate()
             raise
@@ -86,9 +107,20 @@ class NemotronWorkerProcess:
         self.input_stream.write(command.model_dump_json() + "\n")
         self.input_stream.flush()
 
+    @property
+    def turn_adapter_available(self) -> bool:
+        return self.ready_event.turn_adapter_available
+
     def read_event(
         self,
-    ) -> AsrWorkerReadyEvent | PartialAsrEvent | FinalAsrEvent | AsrWorkerErrorEvent:
+    ) -> (
+        AsrWorkerReadyEvent
+        | PartialAsrEvent
+        | FinalAsrEvent
+        | AsrWorkerErrorEvent
+        | TurnAdapterPredictionEvent
+        | TurnAdapterDegradedEvent
+    ):
         event_json = self.output_stream.readline()
         if not event_json:
             raise RuntimeError("The Nemotron worker stopped unexpectedly.")
@@ -137,6 +169,10 @@ class RestartingNemotronWorkerManager:
             self.lock.release()
             raise
 
+    @property
+    def turn_adapter_available(self) -> bool:
+        return self.worker is not None and self.worker.turn_adapter_available
+
     def release(self) -> None:
         if not self.lock.locked():
             raise AssertionError("Cannot release an unowned Nemotron worker.")
@@ -161,15 +197,54 @@ class RestartingNemotronWorkerManager:
 class NemotronStreamingTranscriber:
     def __init__(self, python_path: Path = NEMOTRON_PYTHON_PATH) -> None:
         self.worker_manager = RestartingNemotronWorkerManager(python_path)
+        self.active_session: NemotronStreamingSession | None = None
 
     def start_session(self) -> TranscriptionSession:
-        return NemotronStreamingSession(
+        session = NemotronStreamingSession(
             worker_manager=self.worker_manager,
             finish_timeout_seconds=NEMOTRON_SESSION_FINISH_TIMEOUT_SECONDS,
         )
+        self.active_session = session
+        return session
+
+    @property
+    def turn_adapter_available(self) -> bool:
+        return self.worker_manager.turn_adapter_available
+
+    def require_active_session(self) -> NemotronStreamingSession:
+        if self.active_session is None:
+            raise RuntimeError("No Nemotron transcription session is active.")
+        return self.active_session
 
     def close(self) -> None:
         self.worker_manager.close()
+
+
+class NemotronTurnPredictionProvider:
+    def __init__(self, transcriber: NemotronStreamingTranscriber) -> None:
+        self.transcriber = transcriber
+
+    def create_session(self) -> TurnPredictionSource:
+        return NemotronTurnPredictionSource(self.transcriber)
+
+    def close(self) -> None:
+        return
+
+
+class NemotronTurnPredictionSource:
+    def __init__(self, transcriber: NemotronStreamingTranscriber) -> None:
+        self.transcriber = transcriber
+
+    async def predict(
+        self,
+        observation: TurnPredictionObservation,
+    ) -> InteractionPrediction | None:
+        return await self.transcriber.require_active_session().take_prediction(
+            observation.audio_chunk
+        )
+
+    async def close(self) -> None:
+        return
 
 
 class NemotronStreamingSession:
@@ -182,21 +257,27 @@ class NemotronStreamingSession:
         self.finish_timeout_seconds = finish_timeout_seconds
         self.worker: NemotronWorker | None = None
         self.pending_audio = bytearray()
+        self.latest_chunk: CapturedAudioChunk | None = None
         self.partial_text_queue: asyncio.Queue[str] = asyncio.Queue()
         self.output_task: asyncio.Task[str] | None = None
         self.owns_worker = False
         self.finished = False
+        self.expected_prediction_observations: set[str] = set()
+        self.predictions: dict[str, InteractionPrediction] = {}
+        self.prediction_waiters: dict[str, asyncio.Event] = {}
+        self.turn_adapter_error: str | None = None
 
-    async def add_audio(self, pcm_bytes: bytes) -> str | None:
+    async def add_audio(self, chunk: CapturedAudioChunk) -> str | None:
         if self.finished:
             raise RuntimeError("Cannot add audio to a finished Nemotron session.")
         await self._ensure_started()
-        self.pending_audio.extend(pcm_bytes)
+        self.pending_audio.extend(chunk.pcm16)
+        self.latest_chunk = chunk
         while len(self.pending_audio) >= STREAMING_CHUNK_BYTE_COUNT:
-            chunk = bytes(self.pending_audio[:STREAMING_CHUNK_BYTE_COUNT])
+            audio_frame = bytes(self.pending_audio[:STREAMING_CHUNK_BYTE_COUNT])
             del self.pending_audio[:STREAMING_CHUNK_BYTE_COUNT]
             try:
-                self._require_worker().send(AsrAudioCommand.from_pcm_bytes(chunk))
+                self._send_audio_chunk(audio_frame, observation=chunk)
             except Exception as error:
                 await self._fail_worker(error)
                 raise RuntimeError("Failed to send audio to the Nemotron worker.") from error
@@ -204,6 +285,29 @@ class NemotronStreamingSession:
         while not self.partial_text_queue.empty():
             latest_partial_text = self.partial_text_queue.get_nowait()
         return latest_partial_text
+
+    async def take_prediction(
+        self,
+        chunk: CapturedAudioChunk,
+        timeout_seconds: float = 0.12,
+    ) -> InteractionPrediction | None:
+        observation_id = _observation_id(chunk)
+        if observation_id not in self.expected_prediction_observations:
+            return None
+        if self.turn_adapter_error is not None:
+            raise RuntimeError(self.turn_adapter_error)
+        waiter = self.prediction_waiters[observation_id]
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=timeout_seconds)
+        except TimeoutError:
+            self.expected_prediction_observations.discard(observation_id)
+            self.prediction_waiters.pop(observation_id, None)
+            return None
+        self.expected_prediction_observations.discard(observation_id)
+        self.prediction_waiters.pop(observation_id, None)
+        if self.turn_adapter_error is not None:
+            raise RuntimeError(self.turn_adapter_error)
+        return self.predictions.pop(observation_id)
 
     async def finish(self) -> str:
         if self.finished:
@@ -213,9 +317,8 @@ class NemotronStreamingSession:
             return ""
         if self.pending_audio:
             try:
-                self._require_worker().send(
-                    AsrAudioCommand.from_pcm_bytes(bytes(self.pending_audio))
-                )
+                assert self.latest_chunk is not None
+                self._send_audio_chunk(bytes(self.pending_audio), observation=self.latest_chunk)
             except Exception as error:
                 await self._fail_worker(error)
                 raise RuntimeError("Failed to send final audio to the Nemotron worker.") from error
@@ -266,6 +369,40 @@ class NemotronStreamingSession:
                 case AsrWorkerEventType.ERROR:
                     assert isinstance(event, AsrWorkerErrorEvent)
                     raise RuntimeError(f"Nemotron worker failed: {event.message}")
+                case AsrWorkerEventType.TURN_PREDICTION:
+                    assert isinstance(event, TurnAdapterPredictionEvent)
+                    observation_id = event.prediction.stamp.observation_id
+                    waiter = self.prediction_waiters.get(observation_id)
+                    if waiter is not None:
+                        self.predictions[observation_id] = event.prediction
+                        waiter.set()
+                case AsrWorkerEventType.TURN_ADAPTER_DEGRADED:
+                    assert isinstance(event, TurnAdapterDegradedEvent)
+                    self.turn_adapter_error = event.reason
+                    for waiter in self.prediction_waiters.values():
+                        waiter.set()
+
+    def _send_audio_chunk(
+        self,
+        pcm_bytes: bytes,
+        observation: CapturedAudioChunk,
+    ) -> None:
+        observation_id = _observation_id(observation)
+        self.expected_prediction_observations.add(observation_id)
+        self.prediction_waiters[observation_id] = asyncio.Event()
+        self._require_worker().send(
+            AsrAudioCommand.from_observation(
+                pcm_bytes=pcm_bytes,
+                sequence_number=observation.sequence_number,
+                start_input_sample=observation.start_input_sample,
+                end_input_sample=observation.end_input_sample,
+                observation_monotonic_time_ns=observation.monotonic_observation_time_ns,
+                stream_epoch=observation.stream_epoch,
+                turn_epoch=observation.turn_epoch,
+                silero_is_speech=observation.silero_evidence.is_speech,
+                playback_condition=observation.playback_condition,
+            )
+        )
 
     async def _await_final_output(self) -> str:
         assert self.output_task is not None
@@ -317,3 +454,7 @@ class NemotronStreamingSession:
         self.owns_worker = False
         self.worker = None
         self.worker_manager.release()
+
+
+def _observation_id(chunk: CapturedAudioChunk) -> str:
+    return f"audio:{chunk.stream_epoch}:{chunk.sequence_number}"

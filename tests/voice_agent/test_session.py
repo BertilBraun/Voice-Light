@@ -54,6 +54,7 @@ from app.compute.voice.predictive import (
     ReleasedWordBoundary,
 )
 from app.compute.voice.schemas import (
+    CapturedAudioChunk,
     CausalSource,
     InteractionPrediction,
     PlaybackCommandAcknowledgementEvent,
@@ -267,8 +268,8 @@ class ScriptedTranscriptionSession:
         self.closed = False
         self.audio: list[bytes] = []
 
-    async def add_audio(self, pcm_bytes: bytes) -> str | None:
-        self.audio.append(pcm_bytes)
+    async def add_audio(self, chunk: CapturedAudioChunk) -> str | None:
+        self.audio.append(chunk.pcm16)
         if self.next_partial_index >= len(self.partials):
             return None
         partial = self.partials[self.next_partial_index]
@@ -288,9 +289,9 @@ class FakeTranscriptionSession:
         self.audio: list[bytes] = []
         self.closed = False
 
-    async def add_audio(self, pcm_bytes: bytes) -> str | None:
-        self.audio.append(pcm_bytes)
-        return "hello" if any(pcm_bytes) else None
+    async def add_audio(self, chunk: CapturedAudioChunk) -> str | None:
+        self.audio.append(chunk.pcm16)
+        return "hello" if any(chunk.pcm16) else None
 
     async def finish(self) -> str:
         return "hello agent"
@@ -879,6 +880,8 @@ def create_test_prediction(
         p_user_yield=directive.p_user_yield,
         p_user_backchannel=0.0,
         p_user_interruption=directive.p_user_interruption,
+        p_turn_completion=directive.p_user_yield,
+        p_continuation_pause=directive.p_user_speech,
         future_user_activity_horizons=(),
         assistant_playback_state=chunk.playback_condition.state,
         confidence=directive.confidence,

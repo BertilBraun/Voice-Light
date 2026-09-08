@@ -16,12 +16,20 @@ from app.compute.voice.asr_worker_protocol import (
     AsrWorkerReadyEvent,
     FinalAsrEvent,
     PartialAsrEvent,
+    asr_worker_command_adapter,
 )
 from app.compute.voice.nemotron_client import (
     STREAMING_CHUNK_BYTE_COUNT,
     NemotronStreamingSession,
     NemotronWorker,
     RestartingNemotronWorkerManager,
+)
+from app.compute.voice.schemas import (
+    CapturedAudioChunk,
+    PlaybackCondition,
+    PlaybackConditionAuthority,
+    PlaybackState,
+    SileroEvidence,
 )
 
 
@@ -37,6 +45,10 @@ class FakeNemotronWorker:
         self.events: queue.Queue[
             AsrWorkerReadyEvent | PartialAsrEvent | FinalAsrEvent | AsrWorkerErrorEvent
         ] = queue.Queue()
+
+    @property
+    def turn_adapter_available(self) -> bool:
+        return False
 
     def send(self, command: AsrWorkerCommand) -> None:
         if command.type is self.failing_command_type:
@@ -107,12 +119,12 @@ def test_nemotron_session_streams_partial_and_final_text() -> None:
             finish_timeout_seconds=1.0,
         )
 
-        assert await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2)) is None
+        assert await session.add_audio(_chunk(STREAMING_CHUNK_BYTE_COUNT)) is None
         partial_text: str | None = None
         async with asyncio.timeout(1.0):
             while partial_text is None:
                 await asyncio.sleep(0.01)
-                partial_text = await session.add_audio(b"")
+                partial_text = await session.add_audio(_chunk(0, sequence_number=1))
         assert partial_text == "hello"
         assert await session.finish() == "hello world"
 
@@ -124,6 +136,8 @@ def test_nemotron_session_streams_partial_and_final_text() -> None:
         audio_command = worker.commands[1]
         assert isinstance(audio_command, AsrAudioCommand)
         assert len(audio_command.pcm_bytes()) == STREAMING_CHUNK_BYTE_COUNT
+        serialized = audio_command.model_dump_json()
+        assert asr_worker_command_adapter.validate_json(serialized) == audio_command
 
     asyncio.run(run_session())
 
@@ -137,7 +151,7 @@ def test_nemotron_session_replaces_worker_after_finalization_timeout() -> None:
             finish_timeout_seconds=0.01,
         )
 
-        await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2))
+        await session.add_audio(_chunk(STREAMING_CHUNK_BYTE_COUNT))
         with pytest.raises(RuntimeError, match="finalization timed out"):
             await session.finish()
 
@@ -169,10 +183,10 @@ def test_nemotron_send_failure_replaces_worker_and_releases_lock(
 
         with pytest.raises(RuntimeError, match=expected_message):
             if failing_command_type is AsrWorkerCommandType.FINISH:
-                await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2))
+                await session.add_audio(_chunk(STREAMING_CHUNK_BYTE_COUNT))
                 await session.finish()
             else:
-                await session.add_audio(b"\x01\x00" * (STREAMING_CHUNK_BYTE_COUNT // 2))
+                await session.add_audio(_chunk(STREAMING_CHUNK_BYTE_COUNT))
 
         await session.close()
         assert worker_manager.replacement_count == 1
@@ -221,3 +235,28 @@ def test_nemotron_wrong_start_event_terminates_process(
         nemotron_client.NemotronWorkerProcess(Path("python"))
 
     assert process.terminated
+
+
+def _chunk(byte_count: int, sequence_number: int = 0) -> CapturedAudioChunk:
+    sample_count = byte_count // 2
+    return CapturedAudioChunk(
+        pcm16=b"\x01\x00" * sample_count,
+        sequence_number=sequence_number,
+        start_input_sample=0,
+        end_input_sample=sample_count,
+        monotonic_observation_time_ns=1,
+        stream_epoch=1,
+        turn_epoch=1,
+        silero_evidence=SileroEvidence(is_speech=True, monotonic_time_ns=1),
+        playback_condition=PlaybackCondition(
+            event_id=f"playback-{sequence_number}",
+            generation_id=None,
+            state=PlaybackState.IDLE,
+            assistant_audible=False,
+            latest_output_sample_position=0,
+            latest_source_sample_position=0,
+            output_sample_rate=None,
+            monotonic_time_ns=1,
+            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
+        ),
+    )

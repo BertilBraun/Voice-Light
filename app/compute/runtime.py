@@ -17,7 +17,10 @@ from app.compute.voice.model_constants import (
     NEMOTRON_ASR_MODEL_REVISION,
 )
 from app.compute.voice.models import VllmLanguageModel, VllmTextGenerator
-from app.compute.voice.nemotron_client import NemotronStreamingTranscriber
+from app.compute.voice.nemotron_client import (
+    NemotronStreamingTranscriber,
+    NemotronTurnPredictionProvider,
+)
 from app.compute.voice.search import SearchProvider, create_search_provider
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
 from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingProvider
@@ -181,7 +184,11 @@ class ComputeRuntime:
         if transcriber is not None:
             self.speech_understanding_provider = CompositeSpeechUnderstandingProvider(
                 transcriber=transcriber,
-                turn_prediction_provider=None,
+                turn_prediction_provider=(
+                    NemotronTurnPredictionProvider(transcriber)
+                    if transcriber.turn_adapter_available
+                    else None
+                ),
                 asr_model_name=NEMOTRON_ASR_MODEL_NAME,
                 asr_model_revision=NEMOTRON_ASR_MODEL_REVISION,
             )

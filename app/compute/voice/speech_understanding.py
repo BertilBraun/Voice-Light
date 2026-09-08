@@ -216,6 +216,16 @@ class InteractionPredictionReducer:
         )
         if backchannel_probability is None:
             return None
+        turn_completion_probability = _turn_event_probability(
+            group.turn_event,
+            TurnEventKind.TURN_COMPLETION,
+        )
+        continuation_pause_probability = _turn_event_probability(
+            group.turn_event,
+            TurnEventKind.CONTINUATION_PAUSE,
+        )
+        if turn_completion_probability is None or continuation_pause_probability is None:
+            return None
         if playback_record is None:
             return None
         return InteractionPrediction(
@@ -224,6 +234,8 @@ class InteractionPredictionReducer:
             p_user_yield=yield_evidence.p_user_yield,
             p_user_backchannel=backchannel_probability,
             p_user_interruption=group.overlap.p_user_interruption,
+            p_turn_completion=turn_completion_probability,
+            p_continuation_pause=continuation_pause_probability,
             future_user_activity_horizons=group.future_activity.horizons,
             assistant_playback_state=playback_record.condition.state,
             confidence=min(
@@ -372,7 +384,7 @@ class CompositeSpeechUnderstandingSession:
             )
             self.active_status_emitted = True
         try:
-            partial_text = await self.transcription.add_audio(chunk.pcm16)
+            partial_text = await self.transcription.add_audio(chunk)
         except Exception:
             await self._stop_optional_predictor()
             raise
@@ -761,6 +773,14 @@ def _prediction_events(
             evidence_group_id=evidence_group_id,
             probabilities=(
                 TurnEventProbability(
+                    event=TurnEventKind.TURN_COMPLETION,
+                    probability=prediction.p_turn_completion,
+                ),
+                TurnEventProbability(
+                    event=TurnEventKind.CONTINUATION_PAUSE,
+                    probability=prediction.p_continuation_pause,
+                ),
+                TurnEventProbability(
                     event=TurnEventKind.BACKCHANNEL,
                     probability=prediction.p_user_backchannel,
                 ),
@@ -786,6 +806,20 @@ def _prediction_events(
             p_user_speech=prediction.p_user_speech,
             confidence=prediction.confidence,
         ),
+    )
+
+
+def _turn_event_probability(
+    evidence: TurnEventEvidence,
+    kind: TurnEventKind,
+) -> float | None:
+    return next(
+        (
+            probability.probability
+            for probability in evidence.probabilities
+            if probability.event is kind
+        ),
+        None,
     )
 
 

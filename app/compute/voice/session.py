@@ -1212,6 +1212,8 @@ class VoiceSession:
             p_user_yield=self.policy.vad_endpoint_yield_probability,
             p_user_backchannel=0.0,
             p_user_interruption=0.0,
+            p_turn_completion=self.policy.vad_endpoint_yield_probability,
+            p_continuation_pause=0.0,
             future_user_activity_horizons=(),
             assistant_playback_state=chunk.playback_condition.state,
             confidence=self.policy.vad_endpoint_confidence,

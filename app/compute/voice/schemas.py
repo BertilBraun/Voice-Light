@@ -139,6 +139,8 @@ class InteractionPrediction(FrozenBaseModel):
     p_user_yield: float = Field(ge=0.0, le=1.0)
     p_user_backchannel: float = Field(ge=0.0, le=1.0)
     p_user_interruption: float = Field(ge=0.0, le=1.0)
+    p_turn_completion: float = Field(ge=0.0, le=1.0)
+    p_continuation_pause: float = Field(ge=0.0, le=1.0)
     future_user_activity_horizons: tuple[ActivityHorizon, ...]
     assistant_playback_state: PlaybackState = Field(
         deprecated=(
