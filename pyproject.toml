@@ -35,6 +35,9 @@ compute = [
     "moshi==0.2.13",
     "nemo-toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@8e683a05216762f89390b08702b5dc4eaf3e1676",
 ]
+modal = [
+    "modal>=1.3,<2",
+]
 
 [dependency-groups]
 dev = [
