@@ -8,7 +8,6 @@ from typing import Final
 from fastapi import FastAPI
 
 import modal
-from app.compute.main import create_app_from_environment
 
 APPLICATION_NAME: Final = "VoiceLightAgent"
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[2]
@@ -105,6 +104,9 @@ image = (
     .env(configuration.environment())
     .workdir(str(REMOTE_REPOSITORY_ROOT))
 )
+
+with image.imports():
+    from app.compute.main import create_app_from_environment
 
 application = modal.App(APPLICATION_NAME)
 compute_secret = modal.Secret.from_name(configuration.secret_name)
