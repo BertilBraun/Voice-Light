@@ -10,7 +10,7 @@ from fastapi import FastAPI
 import modal
 from app.compute.main import create_app_from_environment
 
-APPLICATION_NAME: Final = "voice-light"
+APPLICATION_NAME: Final = "VoiceLightAgent"
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[2]
 REMOTE_REPOSITORY_ROOT: Final = PurePosixPath("/opt/voice-light")
 ADAPTER_CHECKPOINT: Final = (
@@ -31,7 +31,7 @@ class ModalDeploymentConfiguration:
     scaledown_window_seconds: int = 60
     function_timeout_seconds: int = 86_400
     secret_name: str = "voice-light-compute"
-    model_cache_volume_name: str = "voice-light-model-cache"
+    model_cache_volume_name: str = "voice-light-agent-model-cache"
     runtime_cache_volume_name: str = "voice-light-runtime-cache"
 
     def environment(self) -> dict[str, str]:

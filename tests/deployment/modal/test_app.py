@@ -4,12 +4,14 @@ from pathlib import PurePosixPath
 
 from deployment.modal.app import (
     ADAPTER_CHECKPOINT,
+    APPLICATION_NAME,
     REMOTE_ADAPTER_CHECKPOINT,
     ModalDeploymentConfiguration,
 )
 
 
 def test_adapter_checkpoint_is_packaged_from_expected_backup() -> None:
+    assert APPLICATION_NAME == "VoiceLightAgent"
     assert ADAPTER_CHECKPOINT.is_file()
     assert ADAPTER_CHECKPOINT.name == "adapter-best.pt"
     assert ADAPTER_CHECKPOINT.parent.name == "voice-light-human-finetune-v1"
