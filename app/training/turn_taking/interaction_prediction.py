@@ -40,6 +40,7 @@ def predict_synthetic_interactions(
     batch_size: int,
     detection_horizon_seconds: float,
     device: torch.device,
+    skip_events: int = 0,
     maximum_events: int | None = None,
 ) -> InteractionPredictionArtifact:
     if not source_roots:
@@ -50,7 +51,14 @@ def predict_synthetic_interactions(
         raise ValueError("Interaction detection horizon must be positive.")
     if maximum_events is not None and maximum_events <= 0:
         raise ValueError("Maximum events must be positive when provided.")
+    if skip_events < 0:
+        raise ValueError("Skipped event count must be nonnegative.")
     examples = _interaction_examples(source_roots, checkpoint)
+    if skip_events >= len(examples):
+        raise ValueError(
+            f"Cannot skip {skip_events} events when only {len(examples)} are available."
+        )
+    examples = examples[skip_events:]
     if maximum_events is not None:
         examples = examples[:maximum_events]
     checkpoint.adapter.to(device).eval()
@@ -99,6 +107,7 @@ def predict_synthetic_interactions(
             split=TrainingCorpusSplit.VALIDATION.value,
             frame_seconds=checkpoint.config.encoder_frame_seconds,
             detection_horizon_seconds=detection_horizon_seconds,
+            event_offset=skip_events,
             eligible_event_count=len(examples),
             prediction_count=len(ordered_predictions),
             missing_event_count=len(ordered_missing),

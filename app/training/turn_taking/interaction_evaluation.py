@@ -68,6 +68,7 @@ class InteractionPredictionManifest(FrozenBaseModel):
     split: str
     frame_seconds: float = Field(gt=0.0)
     detection_horizon_seconds: float = Field(gt=0.0)
+    event_offset: int = Field(default=0, ge=0)
     eligible_event_count: int = Field(ge=0)
     prediction_count: int = Field(ge=0)
     missing_event_count: int = Field(ge=0)

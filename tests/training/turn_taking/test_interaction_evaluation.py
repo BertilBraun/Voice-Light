@@ -50,6 +50,7 @@ def test_interaction_metrics_expose_confusion_latency_and_missing_coverage() -> 
             split="validation",
             frame_seconds=0.08,
             detection_horizon_seconds=0.8,
+            event_offset=8,
             eligible_event_count=5,
             prediction_count=4,
             missing_event_count=1,
@@ -85,6 +86,7 @@ def test_interaction_metrics_expose_confusion_latency_and_missing_coverage() -> 
         == 1
     )
     assert report.missing_reasons[0].count == 1
+    assert artifact.manifest.event_offset == 8
 
 
 def test_output_anchor_index_reports_dropped_target_frame() -> None:

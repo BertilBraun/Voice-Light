@@ -26,6 +26,7 @@ def main() -> None:
     predict.add_argument("--model-cache-directory", type=Path)
     predict.add_argument("--batch-size", type=_positive_int, default=4)
     predict.add_argument("--detection-horizon-seconds", type=_positive_float, default=0.8)
+    predict.add_argument("--skip-events", type=_nonnegative_int, default=0)
     predict.add_argument("--maximum-events", type=_positive_int)
     analyze = subparsers.add_parser("analyze", help="Score an existing interaction artifact.")
     analyze.add_argument("predictions", type=Path)
@@ -56,6 +57,7 @@ def _predict(arguments: argparse.Namespace) -> None:
         batch_size=arguments.batch_size,
         detection_horizon_seconds=arguments.detection_horizon_seconds,
         device=device,
+        skip_events=arguments.skip_events,
         maximum_events=arguments.maximum_events,
     )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +95,13 @@ def _positive_float(value: str) -> float:
     parsed = float(value)
     if parsed <= 0.0:
         raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be nonnegative")
     return parsed
 
 
