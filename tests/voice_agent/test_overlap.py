@@ -108,3 +108,23 @@ def test_strong_non_floor_feedback_prediction_resumes_before_deadline() -> None:
 
     assert decision.kind is OverlapResolutionKind.NON_FLOOR_TAKING
     assert decision.fast_path
+
+
+def test_strong_floor_take_prediction_commits_interruption_before_deadline() -> None:
+    policy = ProvisionalVadTranscriptOverlapPolicy(ProvisionalOverlapPolicyConfig())
+
+    decision = policy.classify(
+        OverlapEvidence(
+            elapsed_ms=160,
+            speech_active=True,
+            transcript="",
+            transcript_event_id=None,
+            interruption_probability=0.83,
+            interruption_evidence_event_id="prediction-1",
+            non_floor_feedback_probability=0.1,
+            non_floor_feedback_evidence_event_id="prediction-1",
+        )
+    )
+
+    assert decision.kind is OverlapResolutionKind.FLOOR_TAKING
+    assert decision.fast_path
