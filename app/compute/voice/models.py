@@ -134,6 +134,7 @@ class QwenWorkerProcess:
             encoding="utf-8",
             bufsize=1,
             start_new_session=True,
+            env=_worker_process_environment(python_path),
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -202,6 +203,19 @@ class QwenWorkerProcess:
     def _close_streams(self) -> None:
         self.input_stream.close()
         self.output_stream.close()
+
+
+def _worker_process_environment(python_path: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    worker_binary_directory = str(python_path.parent)
+    inherited_path = environment.get("PATH")
+    environment["PATH"] = (
+        os.pathsep.join((worker_binary_directory, inherited_path))
+        if inherited_path
+        else worker_binary_directory
+    )
+    environment["VIRTUAL_ENV"] = str(python_path.parent.parent)
+    return environment
 
 
 class RestartingQwenWorkerManager:

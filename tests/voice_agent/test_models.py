@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import queue
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -496,3 +497,15 @@ async def collect_text(stream: AsyncIterator[LanguageModelEvent]) -> str:
     return "".join(
         [event.text async for event in stream if isinstance(event, LanguageModelTextDelta)]
     )
+
+
+def test_qwen_worker_environment_exposes_isolated_environment_binaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin")
+    python_path = Path("/opt/voice-light-vllm/.venv/bin/python")
+
+    environment = language_models._worker_process_environment(python_path)
+
+    assert environment["PATH"] == f"{python_path.parent}{os.pathsep}/usr/bin"
+    assert environment["VIRTUAL_ENV"] == str(python_path.parent.parent)
