@@ -29,9 +29,13 @@ class FakeComputeRuntime:
         self.voice_enabled = voice_stack_settings is not None
         self.voice_ready = self.voice_enabled
         self.voice_session_admission = SingleVoiceSessionAdmission()
+        self.waited_for_loading = False
 
     def start_loading(self) -> None:
         pass
+
+    async def wait_until_loading_complete(self) -> None:
+        self.waited_for_loading = True
 
     async def shutdown(self) -> None:
         pass
@@ -82,6 +86,36 @@ async def run_mock_voice_session(
             generation_id=1,
         ).model_dump_json()
     )
+
+
+def test_eager_model_loading_waits_during_application_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtimes: list[FakeComputeRuntime] = []
+
+    def create_fake_runtime(
+        voice_stack_settings: VoiceStackSettings | None,
+        dataset_audio_cache_directory: Path,
+    ) -> FakeComputeRuntime:
+        runtime = FakeComputeRuntime(voice_stack_settings, dataset_audio_cache_directory)
+        runtimes.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(compute_main, "ComputeRuntime", create_fake_runtime)
+    settings = ComputeSettings.from_environment(
+        {
+            "VOICE_LIGHT_COMPUTE_TOKEN": "smoke-token",
+            "VOICE_LIGHT_COMPUTE_LOG_DIR": str(tmp_path / "logs"),
+            "VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR": str(tmp_path / "dataset"),
+            "VOICE_LIGHT_EAGER_MODEL_LOADING": "true",
+        }
+    )
+
+    with TestClient(compute_main.create_compute_app(settings)) as client:
+        assert client.get("/health/live").status_code == 200
+
+    assert runtimes[0].waited_for_loading is True
 
 
 def test_current_voice_websocket_route_smoke(

@@ -27,6 +27,18 @@ def test_compute_settings_enable_voice_stack_by_default() -> None:
 
     assert settings.voice_stack is not None
     assert settings.voice_stack.search == UnconfiguredSearchSettings()
+    assert settings.eager_model_loading is False
+
+
+def test_compute_settings_can_eagerly_load_models() -> None:
+    settings = ComputeSettings.from_environment(
+        {
+            "VOICE_LIGHT_COMPUTE_TOKEN": "secret-token",
+            "VOICE_LIGHT_EAGER_MODEL_LOADING": "true",
+        }
+    )
+
+    assert settings.eager_model_loading is True
 
 
 def test_compute_settings_load_optional_tavily_search_key() -> None:
@@ -47,5 +59,15 @@ def test_compute_settings_reject_invalid_voice_stack_setting() -> None:
             {
                 "VOICE_LIGHT_COMPUTE_TOKEN": "secret-token",
                 "VOICE_LIGHT_VOICE_STACK_ENABLED": "sometimes",
+            }
+        )
+
+
+def test_compute_settings_reject_invalid_eager_loading_setting() -> None:
+    with pytest.raises(ValueError, match="VOICE_LIGHT_EAGER_MODEL_LOADING"):
+        ComputeSettings.from_environment(
+            {
+                "VOICE_LIGHT_COMPUTE_TOKEN": "secret-token",
+                "VOICE_LIGHT_EAGER_MODEL_LOADING": "sometimes",
             }
         )

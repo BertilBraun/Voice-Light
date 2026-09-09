@@ -22,6 +22,7 @@ class ComputeSettings:
     log_directory: Path
     dataset_audio_cache_directory: Path
     voice_stack: VoiceStackSettings | None
+    eager_model_loading: bool = False
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> ComputeSettings:
@@ -53,6 +54,11 @@ class ComputeSettings:
                 )
                 if voice_stack_enabled
                 else None
+            ),
+            eager_model_loading=_parse_boolean_setting(
+                environment=environment,
+                name="VOICE_LIGHT_EAGER_MODEL_LOADING",
+                default=False,
             ),
         )
 

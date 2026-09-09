@@ -28,6 +28,7 @@ RUNTIME_CACHE_MOUNT: Final = PurePosixPath("/runtime-cache")
 class ModalDeploymentConfiguration:
     gpu: str = "L40S"
     scaledown_window_seconds: int = 1_200
+    startup_timeout_seconds: int = 1_800
     function_timeout_seconds: int = 86_400
     secret_name: str = "voice-light-compute"
     model_cache_volume_name: str = "voice-light-agent-model-cache"
@@ -43,6 +44,7 @@ class ModalDeploymentConfiguration:
             "VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS": "1",
             "VOICE_LIGHT_COMPUTE_LOG_DIR": str(RUNTIME_CACHE_MOUNT / "logs"),
             "VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR": str(RUNTIME_CACHE_MOUNT / "dataset-audio"),
+            "VOICE_LIGHT_EAGER_MODEL_LOADING": "true",
             "VOICE_LIGHT_FLOOR_TAKE_THRESHOLD": "0.82",
             "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.82",
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "500",
@@ -126,6 +128,7 @@ runtime_cache = modal.Volume.from_name(
     max_containers=1,
     min_containers=0,
     scaledown_window=configuration.scaledown_window_seconds,
+    startup_timeout=configuration.startup_timeout_seconds,
     timeout=configuration.function_timeout_seconds,
     secrets=[compute_secret],
     volumes={

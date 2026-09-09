@@ -55,6 +55,8 @@ def create_compute_app(settings: ComputeSettings) -> FastAPI:
         logger.info("compute server startup initiated")
         runtime.start_loading()
         try:
+            if settings.eager_model_loading:
+                await runtime.wait_until_loading_complete()
             yield
         finally:
             logger.info("compute server graceful shutdown initiated")

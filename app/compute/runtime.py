@@ -111,6 +111,10 @@ class ComputeRuntime:
             return
         self.loading_task = asyncio.create_task(self._load_models())
 
+    async def wait_until_loading_complete(self) -> None:
+        if self.loading_task is not None:
+            await self.loading_task
+
     async def shutdown(self) -> None:
         if self.loading_task is not None and not self.loading_task.done():
             self.loading_task.cancel()
