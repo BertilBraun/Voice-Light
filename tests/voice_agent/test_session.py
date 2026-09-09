@@ -2620,7 +2620,7 @@ def test_overlap_pause_command_marks_missing_word_boundary_for_forced_pause() ->
 
 def test_optional_interaction_failure_keeps_fallback_playback_cancellation() -> None:
     transcriber = ScriptedTranscriber(
-        partials_by_turn=(("hello", None, None), tuple(None for _ in range(30))),
+        partials_by_turn=(("hello", None, None), tuple(None for _ in range(70))),
         final_texts=("hello agent", "continued request"),
     )
     prediction_source = FailingTurnPredictionSource()
@@ -2640,7 +2640,7 @@ def test_optional_interaction_failure_keeps_fallback_playback_cancellation() -> 
         receive_until(websocket, "assistant.audio.start")
         send_playback_started(websocket, 1)
         wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
-        for _ in range(25):
+        for _ in range(60):
             websocket.send_bytes(SPEECH_CHUNK)
         assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
         assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
