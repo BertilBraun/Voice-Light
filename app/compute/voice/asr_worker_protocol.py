@@ -88,6 +88,8 @@ asr_worker_command_adapter: TypeAdapter[AsrWorkerCommand] = TypeAdapter(AsrWorke
 
 class AsrWorkerReadyEvent(FrozenBaseModel):
     type: Literal[AsrWorkerEventType.READY] = AsrWorkerEventType.READY
+    first_prediction_audio_samples: int = Field(gt=0)
+    subsequent_prediction_audio_samples: int = Field(gt=0)
     turn_adapter_available: bool = False
     turn_adapter_checkpoint_sha256: str | None = None
     turn_adapter_error: str | None = None

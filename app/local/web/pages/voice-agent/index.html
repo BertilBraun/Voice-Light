@@ -60,6 +60,7 @@
           <h2 id="interaction-debug-title">Interaction policy</h2>
         </div>
         <dl>
+          <div><dt>Adapter</dt><dd id="debug-adapter-status">waiting</dd></div>
           <div><dt>Silero</dt><dd id="debug-silero">waiting</dd></div>
           <div><dt>Turn completion</dt><dd id="debug-turn-completion">—</dd></div>
           <div><dt>Floor take</dt><dd id="debug-floor-take">—</dd></div>
@@ -67,6 +68,21 @@
           <div><dt>Decision</dt><dd id="debug-policy-decision">waiting</dd></div>
           <div><dt>Decision latency</dt><dd id="debug-policy-latency">—</dd></div>
         </dl>
+        <div class="interaction-timeline-heading">
+          <p>Last 20 seconds · input frames and causal model evidence</p>
+          <div class="interaction-timeline-legend" aria-hidden="true">
+            <span data-series="completion">completion</span>
+            <span data-series="floor">floor take</span>
+            <span data-series="feedback">non-floor</span>
+          </div>
+        </div>
+        <canvas
+          id="interaction-timeline"
+          class="interaction-timeline"
+          height="240"
+          role="img"
+          aria-label="Live Silero, assistant playback, and turn-taking probability timeline"
+        ></canvas>
       </section>
 
       <details>
@@ -74,6 +90,6 @@
         <ol id="event-log"></ol>
       </details>
     </main>
-    <script type="module" src="/pages/voice-agent/app.js?v=9"></script>
+    <script type="module" src="/pages/voice-agent/app.js?v=10"></script>
   </body>
 </html>

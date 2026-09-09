@@ -36,6 +36,7 @@ from app.compute.voice.schemas import (
     SpeechUnderstandingStatusEvent,
     TraceStamp,
     TranscriptRevision,
+    TurnAdapterStatus,
     TurnEventEvidence,
     TurnEventKind,
     TurnEventProbability,
@@ -371,6 +372,14 @@ class CompositeSpeechUnderstandingSession:
     @property
     def turn_epoch(self) -> int:
         return self._turn_epoch
+
+    @property
+    def turn_adapter_status(self) -> TurnAdapterStatus:
+        if self.prediction_source is None:
+            return TurnAdapterStatus.UNAVAILABLE
+        if self.optional_predictor_degraded:
+            return TurnAdapterStatus.DEGRADED
+        return TurnAdapterStatus.ACTIVE
 
     async def add_audio(self, chunk: CapturedAudioChunk) -> None:
         self._validate_chunk(chunk)

@@ -115,6 +115,7 @@ from app.compute.voice.schemas import (
     TraceStamp,
     TranscriptEvent,
     TranscriptRevision,
+    TurnAdapterStatus,
     VoiceServerEvent,
     VoiceServerEventType,
     voice_client_event_adapter,
@@ -1160,6 +1161,18 @@ class VoiceSession:
                 component=VoiceComponent.ASR,
                 operation=VoiceOperation.TRANSCRIBE,
             ) from error
+        await self._send_event(
+            SpeechUnderstandingDebugEvent(
+                adapter_status=speech_understanding.turn_adapter_status,
+                silero_speech=chunk.silero_evidence.is_speech,
+                assistant_audible=chunk.playback_condition.assistant_audible,
+                turn_completion_probability=None,
+                floor_take_probability=None,
+                non_floor_feedback_probability=None,
+                inference_latency_ms=None,
+                observed_audio_time_ms=chunk.end_input_sample * 1_000 // INPUT_SAMPLE_RATE,
+            )
+        )
         latest_prediction: InteractionPrediction | None = None
         for event in speech_understanding.drain_events():
             match event:
@@ -1180,6 +1193,22 @@ class VoiceSession:
                         event.reason,
                         event.dropped_observation_count,
                     )
+                    await self._send_event(
+                        SpeechUnderstandingDebugEvent(
+                            adapter_status=TurnAdapterStatus.DEGRADED,
+                            silero_speech=chunk.silero_evidence.is_speech,
+                            assistant_audible=chunk.playback_condition.assistant_audible,
+                            turn_completion_probability=None,
+                            floor_take_probability=None,
+                            non_floor_feedback_probability=None,
+                            inference_latency_ms=None,
+                            observed_audio_time_ms=(
+                                event.stamp.observed_through_input_sample
+                                * 1_000
+                                // INPUT_SAMPLE_RATE
+                            ),
+                        )
+                    )
                 case _:
                     prediction = self.interaction_prediction_reducer.reduce(event)
                     if prediction is not None and self._prediction_is_applicable(
@@ -1189,7 +1218,9 @@ class VoiceSession:
                         latest_prediction = prediction
                         await self._send_event(
                             SpeechUnderstandingDebugEvent(
+                                adapter_status=TurnAdapterStatus.ACTIVE,
                                 silero_speech=chunk.silero_evidence.is_speech,
+                                assistant_audible=chunk.playback_condition.assistant_audible,
                                 turn_completion_probability=prediction.p_turn_completion,
                                 floor_take_probability=prediction.p_user_interruption,
                                 non_floor_feedback_probability=(prediction.p_user_backchannel),

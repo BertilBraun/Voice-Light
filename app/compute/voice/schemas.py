@@ -240,6 +240,12 @@ class SpeechUnderstandingStatus(StrEnum):
     CLOSED = "closed"
 
 
+class TurnAdapterStatus(StrEnum):
+    UNAVAILABLE = "unavailable"
+    ACTIVE = "active"
+    DEGRADED = "degraded"
+
+
 class SpeechUnderstandingComponent(StrEnum):
     ASR = "asr"
     STANDALONE_TURN_DETECTOR = "standalone_turn_detector"
@@ -515,11 +521,13 @@ class SpeechUnderstandingDebugEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.SPEECH_UNDERSTANDING_DEBUG] = (
         VoiceServerEventType.SPEECH_UNDERSTANDING_DEBUG
     )
+    adapter_status: TurnAdapterStatus
     silero_speech: bool
-    turn_completion_probability: float = Field(ge=0.0, le=1.0)
-    floor_take_probability: float = Field(ge=0.0, le=1.0)
-    non_floor_feedback_probability: float = Field(ge=0.0, le=1.0)
-    inference_latency_ms: float = Field(ge=0.0)
+    assistant_audible: bool
+    turn_completion_probability: float | None = Field(ge=0.0, le=1.0)
+    floor_take_probability: float | None = Field(ge=0.0, le=1.0)
+    non_floor_feedback_probability: float | None = Field(ge=0.0, le=1.0)
+    inference_latency_ms: float | None = Field(ge=0.0)
     observed_audio_time_ms: int = Field(ge=0)
 
 

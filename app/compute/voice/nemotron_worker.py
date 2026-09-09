@@ -382,6 +382,10 @@ def main() -> None:
     with output_lock:
         sys.stdout.write(
             AsrWorkerReadyEvent(
+                first_prediction_audio_samples=processor.num_samples_first_audio_chunk,
+                subsequent_prediction_audio_samples=(
+                    processor.num_samples_per_audio_chunk - processor.feature_extractor.n_fft // 2
+                ),
                 turn_adapter_available=turn_adapter is not None,
                 turn_adapter_checkpoint_sha256=(
                     None if turn_adapter is None else turn_adapter.checkpoint_sha256

@@ -16,12 +16,14 @@ const playbackStatus = document.querySelector("#playback-status");
 const conversationHistory = document.querySelector("#conversation-history");
 const conversationEmpty = document.querySelector("#conversation-empty");
 const eventLog = document.querySelector("#event-log");
+const debugAdapterStatus = document.querySelector("#debug-adapter-status");
 const debugSilero = document.querySelector("#debug-silero");
 const debugTurnCompletion = document.querySelector("#debug-turn-completion");
 const debugFloorTake = document.querySelector("#debug-floor-take");
 const debugNonFloor = document.querySelector("#debug-non-floor");
 const debugPolicyDecision = document.querySelector("#debug-policy-decision");
 const debugPolicyLatency = document.querySelector("#debug-policy-latency");
+const interactionTimeline = document.querySelector("#interaction-timeline");
 
 let socket;
 let microphoneStream;
@@ -37,6 +39,10 @@ let recordedInputChunks = [];
 let recordingUrl;
 const assistantTurns = new Map();
 const intentionallyClosedSockets = new WeakSet();
+const interactionEvidence = new Map();
+const INTERACTION_TIMELINE_DURATION_MS = 20000;
+
+new ResizeObserver(drawInteractionTimeline).observe(interactionTimeline);
 
 class ConversationTurn {
   constructor(role, state) {
@@ -411,10 +417,7 @@ function handleMessage(event) {
     vadStatus.textContent = "thinking";
   }
   if (message.type === "speech_understanding.debug") {
-    debugSilero.textContent = message.silero_speech ? "speech" : "silence";
-    debugTurnCompletion.textContent = formatProbability(message.turn_completion_probability);
-    debugFloorTake.textContent = formatProbability(message.floor_take_probability);
-    debugNonFloor.textContent = formatProbability(message.non_floor_feedback_probability);
+    updateInteractionEvidence(message);
   }
   if (message.type === "interaction_policy.debug") {
     debugPolicyDecision.textContent = `${message.decision} · ${message.reason}`;
@@ -562,6 +565,7 @@ function resetControls() {
   vadStatus.textContent = "waiting";
   playbackStatus.textContent = "waiting";
   debugSilero.textContent = "waiting";
+  debugAdapterStatus.textContent = "waiting";
   debugTurnCompletion.textContent = "—";
   debugFloorTake.textContent = "—";
   debugNonFloor.textContent = "—";
@@ -570,6 +574,7 @@ function resetControls() {
 }
 
 function formatProbability(value) {
+  if (value === null) return "—";
   return `${(value * 100).toFixed(1)}%`;
 }
 
@@ -646,6 +651,124 @@ function clearConversationHistory() {
   assistantTurns.clear();
   conversationEmpty.hidden = false;
   conversationHistory.replaceChildren(conversationEmpty);
+  interactionEvidence.clear();
+  drawInteractionTimeline();
+}
+
+function updateInteractionEvidence(message) {
+  const previous = interactionEvidence.get(message.observed_audio_time_ms);
+  const hasModelEvidence = message.turn_completion_probability !== null;
+  interactionEvidence.set(message.observed_audio_time_ms, {
+    audioTimeMs: message.observed_audio_time_ms,
+    sileroSpeech: previous?.sileroSpeech ?? message.silero_speech,
+    assistantAudible: previous?.assistantAudible ?? message.assistant_audible,
+    turnCompletion: hasModelEvidence
+      ? message.turn_completion_probability
+      : previous?.turnCompletion ?? null,
+    floorTake: hasModelEvidence ? message.floor_take_probability : previous?.floorTake ?? null,
+    nonFloorFeedback: hasModelEvidence
+      ? message.non_floor_feedback_probability
+      : previous?.nonFloorFeedback ?? null,
+  });
+  const newestAudioTimeMs = Math.max(...interactionEvidence.keys());
+  for (const audioTimeMs of interactionEvidence.keys()) {
+    if (audioTimeMs < newestAudioTimeMs - INTERACTION_TIMELINE_DURATION_MS) {
+      interactionEvidence.delete(audioTimeMs);
+    }
+  }
+  debugAdapterStatus.textContent = message.adapter_status.replaceAll("_", " ");
+  if (message.observed_audio_time_ms === newestAudioTimeMs) {
+    debugSilero.textContent = message.silero_speech ? "speech" : "silence";
+  }
+  if (hasModelEvidence) {
+    debugTurnCompletion.textContent = formatProbability(message.turn_completion_probability);
+    debugFloorTake.textContent = formatProbability(message.floor_take_probability);
+    debugNonFloor.textContent = formatProbability(message.non_floor_feedback_probability);
+  }
+  drawInteractionTimeline();
+}
+
+function drawInteractionTimeline() {
+  const width = Math.max(interactionTimeline.clientWidth, 320);
+  const height = interactionTimeline.clientHeight;
+  const pixelRatio = window.devicePixelRatio || 1;
+  interactionTimeline.width = Math.round(width * pixelRatio);
+  interactionTimeline.height = Math.round(height * pixelRatio);
+  const context = interactionTimeline.getContext("2d");
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  const points = [...interactionEvidence.values()].sort(
+    (left, right) => left.audioTimeMs - right.audioTimeMs,
+  );
+  const rightTimeMs = points.at(-1)?.audioTimeMs ?? INTERACTION_TIMELINE_DURATION_MS;
+  const leftTimeMs = Math.max(0, rightTimeMs - INTERACTION_TIMELINE_DURATION_MS);
+  const labelWidth = 82;
+  const plotRight = width - 12;
+  const plotWidth = plotRight - labelWidth;
+  const laneHeight = 18;
+  const userLaneTop = 12;
+  const assistantLaneTop = 36;
+  const probabilityTop = 70;
+  const probabilityBottom = height - 24;
+
+  context.font = "11px ui-monospace, monospace";
+  context.fillStyle = "#718078";
+  context.textBaseline = "middle";
+  context.fillText("user speech", 8, userLaneTop + laneHeight / 2);
+  context.fillText("assistant", 8, assistantLaneTop + laneHeight / 2);
+  for (const [label, probability] of [["1", 1], [".5", 0.5], ["0", 0]]) {
+    const y = probabilityBottom - probability * (probabilityBottom - probabilityTop);
+    context.strokeStyle = "#29322c";
+    context.beginPath();
+    context.moveTo(labelWidth, y);
+    context.lineTo(plotRight, y);
+    context.stroke();
+    context.fillText(label, labelWidth - 24, y);
+  }
+
+  const xForTime = (audioTimeMs) =>
+    labelWidth + ((audioTimeMs - leftTimeMs) / INTERACTION_TIMELINE_DURATION_MS) * plotWidth;
+  const frameWidth = Math.max((80 / INTERACTION_TIMELINE_DURATION_MS) * plotWidth, 1);
+  for (const point of points) {
+    const x = xForTime(point.audioTimeMs);
+    if (x < labelWidth || x > plotRight) continue;
+    if (point.sileroSpeech) {
+      context.fillStyle = "#34764f";
+      context.fillRect(x - frameWidth, userLaneTop, frameWidth, laneHeight);
+    }
+    if (point.assistantAudible) {
+      context.fillStyle = "#8b6f2e";
+      context.fillRect(x - frameWidth, assistantLaneTop, frameWidth, laneHeight);
+    }
+  }
+  drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "turnCompletion", "#66e3a4");
+  drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "floorTake", "#ff796f");
+  drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "nonFloorFeedback", "#77a9ff");
+
+  context.fillStyle = "#718078";
+  context.textBaseline = "alphabetic";
+  context.fillText("−20s", labelWidth, height - 7);
+  context.textAlign = "right";
+  context.fillText("now", plotRight, height - 7);
+  context.textAlign = "left";
+}
+
+function drawProbabilitySeries(context, points, xForTime, top, bottom, field, color) {
+  context.beginPath();
+  let drawing = false;
+  for (const point of points) {
+    const probability = point[field];
+    if (probability === null) continue;
+    const x = xForTime(point.audioTimeMs);
+    const y = bottom - probability * (bottom - top);
+    if (drawing) context.lineTo(x, y);
+    else context.moveTo(x, y);
+    drawing = true;
+  }
+  context.strokeStyle = color;
+  context.lineWidth = 2;
+  context.stroke();
 }
 
 function updateBoundaryProgress(progress) {

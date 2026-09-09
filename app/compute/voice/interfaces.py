@@ -11,6 +11,7 @@ from app.compute.voice.schemas import (
     InteractionPrediction,
     SpeechUnderstandingEvent,
     TranscriptRevision,
+    TurnAdapterStatus,
 )
 from app.compute.voice.tools import SerializedToolCall, ToolCallFailure, ToolSpecification
 
@@ -156,6 +157,9 @@ class SpeechUnderstandingSession(Protocol):
 
     @property
     def turn_epoch(self) -> int: ...
+
+    @property
+    def turn_adapter_status(self) -> TurnAdapterStatus: ...
 
     async def add_audio(self, chunk: CapturedAudioChunk) -> None: ...
 

@@ -38,17 +38,27 @@ class FakeNemotronWorker:
         self,
         finalizes_on_finish: bool = True,
         failing_command_type: AsrWorkerCommandType | None = None,
+        turn_adapter_available: bool = False,
     ) -> None:
         self.finalizes_on_finish = finalizes_on_finish
         self.failing_command_type = failing_command_type
+        self._turn_adapter_available = turn_adapter_available
         self.commands: list[AsrWorkerCommand] = []
         self.events: queue.Queue[
             AsrWorkerReadyEvent | PartialAsrEvent | FinalAsrEvent | AsrWorkerErrorEvent
         ] = queue.Queue()
 
     @property
+    def first_prediction_audio_samples(self) -> int:
+        return 2_560
+
+    @property
+    def subsequent_prediction_audio_samples(self) -> int:
+        return 1_280
+
+    @property
     def turn_adapter_available(self) -> bool:
-        return False
+        return self._turn_adapter_available
 
     def send(self, command: AsrWorkerCommand) -> None:
         if command.type is self.failing_command_type:
@@ -75,6 +85,10 @@ class FakeNemotronWorkerManager:
         self.worker = worker
         self.lock = asyncio.Lock()
         self.replacement_count = 0
+
+    @property
+    def turn_adapter_available(self) -> bool:
+        return self.worker.turn_adapter_available
 
     async def acquire(self) -> FakeNemotronWorker:
         await self.lock.acquire()
@@ -140,6 +154,45 @@ def test_nemotron_session_streams_partial_and_final_text() -> None:
         assert asr_worker_command_adapter.validate_json(serialized) == audio_command
 
     asyncio.run(run_session())
+
+
+def test_nemotron_prediction_waiters_follow_encoder_chunk_boundaries() -> None:
+    async def run_session() -> None:
+        worker = FakeNemotronWorker(turn_adapter_available=True)
+        session = NemotronStreamingSession(
+            worker_manager=FakeNemotronWorkerManager(worker),
+            finish_timeout_seconds=1.0,
+        )
+        first_chunk = _chunk(STREAMING_CHUNK_BYTE_COUNT)
+        second_chunk = _chunk(STREAMING_CHUNK_BYTE_COUNT, sequence_number=1)
+
+        await session.add_audio(first_chunk)
+        assert session.expected_prediction_observations == set()
+        assert await session.take_prediction(first_chunk) is None
+
+        await session.add_audio(second_chunk)
+        assert session.expected_prediction_observations == {"audio:1:1"}
+        await session.close()
+
+    asyncio.run(run_session())
+
+
+def test_asr_ready_event_serializes_prediction_cadence() -> None:
+    event = AsrWorkerReadyEvent(
+        first_prediction_audio_samples=16_000,
+        subsequent_prediction_audio_samples=1_280,
+        turn_adapter_available=True,
+        turn_adapter_checkpoint_sha256="abc",
+    )
+
+    assert event.model_dump(mode="json") == {
+        "type": "ready",
+        "first_prediction_audio_samples": 16_000,
+        "subsequent_prediction_audio_samples": 1_280,
+        "turn_adapter_available": True,
+        "turn_adapter_checkpoint_sha256": "abc",
+        "turn_adapter_error": None,
+    }
 
 
 def test_nemotron_session_replaces_worker_after_finalization_timeout() -> None:

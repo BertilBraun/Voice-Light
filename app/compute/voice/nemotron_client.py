@@ -36,6 +36,7 @@ NEMOTRON_PYTHON_PATH: Final = Path(sys.executable)
 NEMOTRON_SESSION_FINISH_TIMEOUT_SECONDS: Final = 15.0
 NEMOTRON_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
 NEMOTRON_WORKER_START_TIMEOUT_SECONDS: Final = 180.0
+NEMOTRON_TURN_PREDICTION_TIMEOUT_SECONDS: Final = 0.5
 STREAMING_CHUNK_DURATION_MS: Final = 80
 INPUT_SAMPLE_RATE: Final = 16_000
 PCM_BYTES_PER_SAMPLE: Final = 2
@@ -45,6 +46,12 @@ STREAMING_CHUNK_BYTE_COUNT: Final = (
 
 
 class NemotronWorker(Protocol):
+    @property
+    def first_prediction_audio_samples(self) -> int: ...
+
+    @property
+    def subsequent_prediction_audio_samples(self) -> int: ...
+
     @property
     def turn_adapter_available(self) -> bool: ...
 
@@ -110,6 +117,14 @@ class NemotronWorkerProcess:
     @property
     def turn_adapter_available(self) -> bool:
         return self.ready_event.turn_adapter_available
+
+    @property
+    def first_prediction_audio_samples(self) -> int:
+        return self.ready_event.first_prediction_audio_samples
+
+    @property
+    def subsequent_prediction_audio_samples(self) -> int:
+        return self.ready_event.subsequent_prediction_audio_samples
 
     def read_event(
         self,
@@ -266,6 +281,7 @@ class NemotronStreamingSession:
         self.predictions: dict[str, InteractionPrediction] = {}
         self.prediction_waiters: dict[str, asyncio.Event] = {}
         self.turn_adapter_error: str | None = None
+        self.prediction_audio_samples_remaining: int | None = None
 
     async def add_audio(self, chunk: CapturedAudioChunk) -> str | None:
         if self.finished:
@@ -289,7 +305,7 @@ class NemotronStreamingSession:
     async def take_prediction(
         self,
         chunk: CapturedAudioChunk,
-        timeout_seconds: float = 0.12,
+        timeout_seconds: float = NEMOTRON_TURN_PREDICTION_TIMEOUT_SECONDS,
     ) -> InteractionPrediction | None:
         observation_id = _observation_id(chunk)
         if observation_id not in self.expected_prediction_observations:
@@ -318,7 +334,11 @@ class NemotronStreamingSession:
         if self.pending_audio:
             try:
                 assert self.latest_chunk is not None
-                self._send_audio_chunk(bytes(self.pending_audio), observation=self.latest_chunk)
+                self._send_audio_chunk(
+                    bytes(self.pending_audio),
+                    observation=self.latest_chunk,
+                    final_audio=True,
+                )
             except Exception as error:
                 await self._fail_worker(error)
                 raise RuntimeError("Failed to send final audio to the Nemotron worker.") from error
@@ -347,6 +367,7 @@ class NemotronStreamingSession:
             return
         self.worker = await self.worker_manager.acquire()
         self.owns_worker = True
+        self.prediction_audio_samples_remaining = self.worker.first_prediction_audio_samples
         try:
             self.worker.send(StartAsrCommand())
         except Exception as error:
@@ -386,10 +407,12 @@ class NemotronStreamingSession:
         self,
         pcm_bytes: bytes,
         observation: CapturedAudioChunk,
+        final_audio: bool = False,
     ) -> None:
         observation_id = _observation_id(observation)
-        self.expected_prediction_observations.add(observation_id)
-        self.prediction_waiters[observation_id] = asyncio.Event()
+        if self._prediction_expected(len(pcm_bytes) // PCM_BYTES_PER_SAMPLE, final_audio):
+            self.expected_prediction_observations.add(observation_id)
+            self.prediction_waiters[observation_id] = asyncio.Event()
         self._require_worker().send(
             AsrAudioCommand.from_observation(
                 pcm_bytes=pcm_bytes,
@@ -403,6 +426,23 @@ class NemotronStreamingSession:
                 playback_condition=observation.playback_condition,
             )
         )
+
+    def _prediction_expected(self, sample_count: int, final_audio: bool) -> bool:
+        worker = self._require_worker()
+        if not worker.turn_adapter_available:
+            return False
+        samples_remaining = self.prediction_audio_samples_remaining
+        if samples_remaining is None:
+            raise AssertionError("Nemotron prediction cadence is not initialized.")
+        if sample_count < samples_remaining and not final_audio:
+            self.prediction_audio_samples_remaining = samples_remaining - sample_count
+            return False
+        overflow_samples = max(sample_count - samples_remaining, 0)
+        prediction_interval = worker.subsequent_prediction_audio_samples
+        while overflow_samples >= prediction_interval:
+            overflow_samples -= prediction_interval
+        self.prediction_audio_samples_remaining = prediction_interval - overflow_samples
+        return True
 
     async def _await_final_output(self) -> str:
         assert self.output_task is not None
