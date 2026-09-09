@@ -59,6 +59,7 @@ from app.compute.voice.schemas import (
     CapturedAudioChunk,
     CausalSource,
     InteractionPrediction,
+    PlaybackClockEvent,
     PlaybackCommandAcknowledgementEvent,
     PlaybackCommandAction,
     PlaybackCommandEvent,
@@ -1239,6 +1240,63 @@ def test_websocket_pcm_backpressure_keeps_overlap_commands_ahead_of_unsent_audio
         events, blocked_audio = receive_until(websocket, "playback.command")
         assert blocked_audio is None
         assert events[-1]["action"] == PlaybackCommandAction.CANCEL
+        websocket.send_json({"type": "session.stop"})
+
+
+def test_speculative_release_does_not_block_playback_clocks_behind_microphone_audio() -> None:
+    sessions: list[VoiceSession] = []
+    language_model = PredictiveTrackingLanguageModel()
+    web_app = create_test_app(
+        ScriptedTranscriber(
+            partials_by_turn=(("hello", "hello", None),),
+            final_texts=("hello",),
+        ),
+        language_model,
+        BurstSpeechSynthesizer(),
+        turn_prediction_source=DeterministicTurnPredictionSource(
+            (
+                PredictionDirective(p_user_speech=0.1, p_user_yield=0.7),
+                PredictionDirective(p_user_speech=0.0, p_user_yield=0.95),
+            )
+        ),
+        created_sessions=sessions,
+        policy=SessionPolicy(
+            silence_duration_ms=40,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=True,
+        ),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+        generation = sessions[0].active_generation
+        assert generation is not None
+        wait_until(lambda: generation.generation_finished)
+        total_source_sample_count = generation.tts_sample_count
+
+        websocket.send_bytes(SILENCE_CHUNK)
+        first_audio: bytes | None = None
+        while first_audio is None:
+            first_audio = websocket.receive().get("bytes")
+
+        for _ in range(120):
+            websocket.send_bytes(SILENCE_CHUNK)
+        send_playback_started(websocket, generation.generation_id)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        for source_sample_position in range(8_000, total_source_sample_count + 1, 8_000):
+            send_playback_clock(
+                websocket,
+                generation.generation_id,
+                source_sample_position,
+            )
+        receive_until(websocket, "assistant.audio.end")
+        assert generation.release_task is not None
+        wait_until(generation.release_task.done)
         websocket.send_json({"type": "session.stop"})
 
 
@@ -3882,6 +3940,24 @@ def send_playback_started(
             browser_monotonic_time_ns=time.perf_counter_ns(),
             rendered_output_sample_position=1,
             source_sample_position=1,
+            output_sample_rate=48_000,
+        ).model_dump_json()
+    )
+
+
+def send_playback_clock(
+    websocket: WebSocketTestSession,
+    generation_id: int,
+    source_sample_position: int,
+) -> None:
+    websocket.send_text(
+        PlaybackClockEvent(
+            generation_id=generation_id,
+            state=PlaybackState.SPEAKING,
+            browser_monotonic_time_ns=time.perf_counter_ns(),
+            rendered_output_sample_position=source_sample_position * 2,
+            source_sample_position=source_sample_position,
+            queued_source_sample_count=0,
             output_sample_rate=48_000,
         ).model_dump_json()
     )

@@ -438,6 +438,7 @@ class ActiveGeneration:
     speculative: bool
     latency: GenerationLatency
     task: asyncio.Task[None] | None = None
+    release_task: asyncio.Task[None] | None = None
     response_text: str = ""
     qwen_token_count: int = 0
     invocation_token_counts: dict[int, int] = field(default_factory=dict)
@@ -1717,7 +1718,7 @@ class VoiceSession:
         )
         self.playback_controller.replace_generation(generation.generation_id)
         self.playback_flow_control.replace_generation(generation.generation_id)
-        await generation.release_gate.release()
+        generation.release_task = asyncio.create_task(self._release_candidate_outputs(generation))
         generation_started_at = generation.latency.generation_started_at
         hidden_work_seconds = (
             0.0 if generation_started_at is None else max(promoted_at - generation_started_at, 0.0)
@@ -1727,16 +1728,6 @@ class VoiceSession:
             hidden_qwen_tokens=generation.qwen_token_count,
             hidden_tts_samples=generation.release_gate.buffered_pcm_sample_count,
         )
-        if generation.release_gate.first_released_pcm_at is not None:
-            generation.latency.first_audio_sent_at = generation.release_gate.first_released_pcm_at
-            generation.latency.first_released_pcm = MediaLatencyPoint(
-                monotonic_time_seconds=generation.release_gate.first_released_pcm_at,
-                input_sample_position=self.audio_sample_count,
-                output_sample_position=(generation.release_gate.first_released_pcm_start_sample),
-                text_offset=None,
-            )
-            self._record_first_released_pcm(generation)
-            self._log_first_audio_latency(generation)
         logger.info(
             "speculative candidate promoted: session=%s generation=%d hidden_work_ms=%.1f "
             "buffered_tts_samples=%d",
@@ -1745,6 +1736,31 @@ class VoiceSession:
             hidden_work_seconds * 1_000,
             generation.release_gate.buffered_pcm_sample_count,
         )
+
+    async def _release_candidate_outputs(self, generation: ActiveGeneration) -> None:
+        try:
+            await generation.release_gate.release()
+            self._record_buffered_first_release(generation)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            await self._handle_generation_failure(generation, error)
+
+    def _record_buffered_first_release(self, generation: ActiveGeneration) -> None:
+        if generation.first_release_recorded:
+            return
+        first_released_pcm_at = generation.release_gate.first_released_pcm_at
+        if first_released_pcm_at is None:
+            return
+        generation.latency.first_audio_sent_at = first_released_pcm_at
+        generation.latency.first_released_pcm = MediaLatencyPoint(
+            monotonic_time_seconds=first_released_pcm_at,
+            input_sample_position=self.audio_sample_count,
+            output_sample_position=generation.release_gate.first_released_pcm_start_sample,
+            text_offset=None,
+        )
+        self._record_first_released_pcm(generation)
+        self._log_first_audio_latency(generation)
 
     async def _start_authoritative_generation(
         self,
@@ -1929,74 +1945,82 @@ class VoiceSession:
                 self._transition_generation(generation, CandidateLifecycle.CANCELLED)
             raise
         except Exception as error:
-            if generation.lifecycle is not CandidateLifecycle.FAILED:
-                self._transition_generation(generation, CandidateLifecycle.FAILED)
-            logger.exception(
-                "voice response generation failed: session=%s generation=%d",
-                self.session_id,
-                generation.generation_id,
-            )
-            if generation.speculative:
-                await generation.release_gate.discard()
-                failure = _component_error(
-                    error,
-                    component=VoiceComponent.SESSION,
-                    operation=VoiceOperation.SESSION_RUN,
-                )
-                reason = (
-                    CandidateInvalidationReason.LANGUAGE_MODEL_FAILED
-                    if failure.component is VoiceComponent.LANGUAGE_MODEL
-                    else CandidateInvalidationReason.SPEECH_SYNTHESIS_FAILED
-                )
-                generation.invalidation_reason = reason
-                generation.latency.candidate_invalidated_at = time.perf_counter()
-                generation.latency.candidate_resolution = MediaLatencyPoint(
-                    monotonic_time_seconds=(generation.latency.candidate_invalidated_at),
-                    input_sample_position=self.audio_sample_count,
-                    output_sample_position=None,
-                    text_offset=len(generation.response_text),
-                )
-                self.predictive_metrics.record_invalidation(
-                    reason,
-                    generation.qwen_token_count,
-                    generation.tts_sample_count,
-                )
-                self.turn_had_invalidated_candidate = True
-            if self.active_generation is generation:
-                generation.cancelled = True
-                self._invalidate_tool_execution(
-                    generation,
-                    reason=ToolInvalidationReason.GENERATION_FAILURE,
-                    candidate_reason=generation.invalidation_reason,
-                )
-                self.active_generation = None
-                if generation.release_gate.released:
-                    self._mark_generation_interrupted(generation)
-                    if self.playback_controller.active_generation_id == generation.generation_id:
-                        command = self.playback_controller.issue_cancel(
-                            generation_id=generation.generation_id,
-                            causal_event_id=str(uuid4()),
-                            causal_source=CausalSource.USER_COMMAND,
-                            stream_epoch=self.speech_understanding.stream_epoch,
-                            turn_epoch=self.speech_understanding.turn_epoch,
-                            confidence=1.0,
-                        )
-                        await self._send_event(command)
+            await self._handle_generation_failure(generation, error)
+
+    async def _handle_generation_failure(
+        self,
+        generation: ActiveGeneration,
+        error: Exception,
+    ) -> None:
+        if generation.lifecycle is CandidateLifecycle.FAILED:
+            return
+        self._transition_generation(generation, CandidateLifecycle.FAILED)
+        logger.error(
+            "voice response generation failed: session=%s generation=%d",
+            self.session_id,
+            generation.generation_id,
+            exc_info=error,
+        )
+        if generation.speculative:
+            await generation.release_gate.discard()
             failure = _component_error(
                 error,
                 component=VoiceComponent.SESSION,
                 operation=VoiceOperation.SESSION_RUN,
             )
-            client_failure = VoiceComponentError(
+            reason = (
+                CandidateInvalidationReason.LANGUAGE_MODEL_FAILED
+                if failure.component is VoiceComponent.LANGUAGE_MODEL
+                else CandidateInvalidationReason.SPEECH_SYNTHESIS_FAILED
+            )
+            generation.invalidation_reason = reason
+            generation.latency.candidate_invalidated_at = time.perf_counter()
+            generation.latency.candidate_resolution = MediaLatencyPoint(
+                monotonic_time_seconds=generation.latency.candidate_invalidated_at,
+                input_sample_position=self.audio_sample_count,
+                output_sample_position=None,
+                text_offset=len(generation.response_text),
+            )
+            self.predictive_metrics.record_invalidation(
+                reason,
+                generation.qwen_token_count,
+                generation.tts_sample_count,
+            )
+            self.turn_had_invalidated_candidate = True
+        if self.active_generation is generation:
+            generation.cancelled = True
+            self._invalidate_tool_execution(
+                generation,
+                reason=ToolInvalidationReason.GENERATION_FAILURE,
+                candidate_reason=generation.invalidation_reason,
+            )
+            self.active_generation = None
+            if generation.release_gate.released:
+                self._mark_generation_interrupted(generation)
+                if self.playback_controller.active_generation_id == generation.generation_id:
+                    command = self.playback_controller.issue_cancel(
+                        generation_id=generation.generation_id,
+                        causal_event_id=str(uuid4()),
+                        causal_source=CausalSource.USER_COMMAND,
+                        stream_epoch=self.speech_understanding.stream_epoch,
+                        turn_epoch=self.speech_understanding.turn_epoch,
+                        confidence=1.0,
+                    )
+                    await self._send_event(command)
+        failure = _component_error(
+            error,
+            component=VoiceComponent.SESSION,
+            operation=VoiceOperation.SESSION_RUN,
+        )
+        await self._send_error(
+            VoiceComponentError(
                 failure.component,
                 failure.operation,
                 f"Response generation failed: {failure}",
-            )
-            await self._send_error(
-                client_failure,
-                generation_id=generation.generation_id,
-                retryable=True,
-            )
+            ),
+            generation_id=generation.generation_id,
+            retryable=True,
+        )
 
     async def _generate_response(self, generation: ActiveGeneration) -> None:
         synthesis = SpeechSynthesisSequence(self.speech_synthesizer)
@@ -3086,6 +3110,8 @@ class VoiceSession:
         self.playback_flow_control.invalidate_generation(generation.generation_id)
         self.active_generation = None
         self.pending_generation_teardown = generation
+        if generation.release_task is not None and not generation.release_task.done():
+            generation.release_task.cancel()
         if generation.task is not None and not generation.task.done():
             generation.task.cancel()
         return command
@@ -3131,6 +3157,8 @@ class VoiceSession:
         )
         self.active_generation = None
         self.pending_generation_teardown = generation
+        if generation.release_task is not None and not generation.release_task.done():
+            generation.release_task.cancel()
         if generation.task is not None and not generation.task.done():
             generation.task.cancel()
         await self._await_generation_teardown()
@@ -3148,10 +3176,10 @@ class VoiceSession:
         generation = self.pending_generation_teardown
         if generation is None:
             return
-        task = generation.task
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        for task in (generation.task, generation.release_task):
+            if task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         if generation.lifecycle is CandidateLifecycle.CANCELLATION_REQUESTED:
             self._transition_generation(generation, CandidateLifecycle.CANCELLED)
         if self.pending_generation_teardown is generation:
@@ -3159,9 +3187,10 @@ class VoiceSession:
 
     async def _close_generation_tasks(self) -> None:
         tasks = tuple(
-            generation.task
+            task
             for generation in self.generations.values()
-            if generation.task is not None and not generation.task.done()
+            for task in (generation.task, generation.release_task)
+            if task is not None and not task.done()
         )
         for task in tasks:
             task.cancel()
@@ -3185,7 +3214,11 @@ class VoiceSession:
         if generation is None:
             return
         latency = generation.latency
-        if latency.playback_started_at is not None or latency.first_audio_sent_at is None:
+        if latency.playback_started_at is not None:
+            return
+        if latency.first_audio_sent_at is None:
+            self._record_buffered_first_release(generation)
+        if latency.first_audio_sent_at is None:
             return
         if not self.playback_controller.record_started(event):
             return
