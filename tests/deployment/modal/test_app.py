@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from deployment.modal.app import (
+from deployment.modal.voice_light import (
     ADAPTER_CHECKPOINT,
     APPLICATION_NAME,
     MERGED_LANGUAGE_MODEL_NAME,
@@ -37,6 +37,8 @@ def test_modal_environment_enables_current_voice_stack() -> None:
         environment["VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION"] == MERGED_LANGUAGE_MODEL_REVISION
     )
     assert environment["VOICE_LIGHT_QWEN_ENFORCE_EAGER"] == "true"
+    assert environment["VOICE_LIGHT_QWEN_BACKEND"] == "transformers"
+    assert environment["VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH"] == "true"
 
 
 def test_modal_cache_paths_are_absolute() -> None:

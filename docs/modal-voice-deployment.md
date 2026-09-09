@@ -49,7 +49,7 @@ package. On a Windows console that does not default to UTF-8, set `PYTHONUTF8` f
 
 ```powershell
 $env:PYTHONUTF8 = '1'
-modal deploy -m deployment.modal.app
+modal deploy -m deployment.modal.voice_light
 ```
 
 The deployed endpoints are:
