@@ -290,6 +290,19 @@ def test_missing_search_credentials_fail_only_when_search_is_invoked() -> None:
     ) == ConfiguredTavilySearchSettings(api_key="configured-key")
 
 
+def test_unconfigured_search_pipeline_does_not_run_the_summarizer() -> None:
+    summarizer = RecordingSearchSummarizer("must not be returned")
+    pipeline = SearchPipeline(
+        UnconfiguredSearchProvider(TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE),
+        summarizer,
+    )
+
+    with pytest.raises(SearchProviderError, match=TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE):
+        asyncio.run(pipeline.answer("current weather in London"))
+
+    assert summarizer.calls == []
+
+
 @pytest.mark.integration
 def test_live_tavily_search_provider() -> None:
     api_key = os.environ.get(TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE, "").strip()

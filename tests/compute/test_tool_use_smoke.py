@@ -25,6 +25,16 @@ from deployment.compute.smoke_test_tool_use import (
             'I’ll check the latest weather. <tool_call>{"name":"search",'
             '"arguments":{"query":"current weather Berlin"}}</tool_call>',
         ),
+        (
+            SmokeCase.EXPLICIT_SEARCH_REQUEST,
+            'I’ll check that now. <tool_call>{"name":"search",'
+            '"arguments":{"query":"current weather London"}}</tool_call>',
+        ),
+        (
+            SmokeCase.CONFIRMED_SEARCH_REQUEST,
+            'I’ll look it up. <tool_call>{"name":"search",'
+            '"arguments":{"query":"current weather London"}}</tool_call>',
+        ),
         (SmokeCase.POST_TOOL_CONTINUATION, "That comes to 518."),
     ],
 )

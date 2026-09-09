@@ -50,6 +50,9 @@ def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
         ToolName.CALCULATE,
         ToolName.GET_TIME,
     )
+    search_description = specifications[0].function.description
+    assert "required for current weather or news" in search_description
+    assert "instead of promising a future search" in search_description
 
 
 def test_search_returns_pipeline_answer() -> None:

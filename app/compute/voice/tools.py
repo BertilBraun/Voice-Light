@@ -377,7 +377,12 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
     return (
         ToolSpecification(
             function=SearchToolFunctionSpecification(
-                description="Search for current or externally verifiable information.",
+                description=(
+                    "Search for current or externally verifiable information. This call is "
+                    "required for current weather or news and when the user asks to search, look "
+                    "up, check, browse, or make a tool call for external information. Call it now "
+                    "instead of promising a future search or asking the user to check elsewhere."
+                ),
                 parameters=SearchParameters(
                     properties=SearchParameterProperties(
                         query=ToolStringParameter(description="A concise search query.")

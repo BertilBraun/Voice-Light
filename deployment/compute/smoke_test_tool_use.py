@@ -48,6 +48,8 @@ class SmokeCase(StrEnum):
     ORDINARY = "ordinary_no_tool"
     CALCULATE = "calculate"
     SEARCH = "search"
+    EXPLICIT_SEARCH_REQUEST = "explicit_search_request"
+    CONFIRMED_SEARCH_REQUEST = "confirmed_search_request"
     POST_TOOL_CONTINUATION = "post_tool_continuation"
 
 
@@ -239,6 +241,34 @@ def _smoke_requests() -> tuple[SmokeRequest, ...]:
                 invocation_id=3,
                 assistant_generation_id=3,
                 messages=(LlmUserMessage(content="Search for the current weather in Berlin."),),
+                tools=tools,
+            ),
+            expected_tool=ToolName.SEARCH,
+        ),
+        SmokeRequest(
+            case=SmokeCase.EXPLICIT_SEARCH_REQUEST,
+            command=StartLlmCommand(
+                invocation_id=5,
+                assistant_generation_id=5,
+                messages=(
+                    LlmUserMessage(
+                        content=("Can you make a tool call to check the weather in London for me?")
+                    ),
+                ),
+                tools=tools,
+            ),
+            expected_tool=ToolName.SEARCH,
+        ),
+        SmokeRequest(
+            case=SmokeCase.CONFIRMED_SEARCH_REQUEST,
+            command=StartLlmCommand(
+                invocation_id=6,
+                assistant_generation_id=6,
+                messages=(
+                    LlmUserMessage(content="Tell me the current weather in London."),
+                    LlmAssistantMessage(content="I can look that up for you."),
+                    LlmUserMessage(content="Please do so."),
+                ),
                 tools=tools,
             ),
             expected_tool=ToolName.SEARCH,
