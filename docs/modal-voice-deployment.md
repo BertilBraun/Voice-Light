@@ -334,9 +334,27 @@ prebuffer. Human listening remains required to confirm that the crackle is gone.
 completed in 52.165 seconds; its cold and immediately warm readiness probes measured 63.038 and
 1.194 seconds respectively.
 
+The next deployment adds direct evidence for that hypothesis. Each 80 ms browser playback clock
+now carries a cumulative underrun count. An underrun is counted only when active, nonterminal audio
+drains before `assistant.audio.end` and later PCM for the same generation resumes; final drains,
+policy pauses, cancellation, replacement, and idle time are excluded. The live browser status and
+server session report expose the count without adding it to durable conversation history.
+
+The deployment completed in 52.965 seconds. A corrected WebSocket benchmark validated every binary
+audio generation, sequence, and source position, returned playback credit for each drained chunk,
+and reached a complete `assistant.audio.end` instead of stopping at the transport window. Its cold
+`session.ready` was 56.317 seconds and the immediately warm result was 1.235 seconds. Cold and warm
+commit-to-first-PCM were 834.78 and 951.84 ms. The fixed WAV endpoint itself lagged true audio end by
+4.751 and 4.586 seconds, so its 5.585 and 5.538 second true-end-to-first-PCM values characterize the
+synthetic benchmark, not natural microphone latency. The shared adapter stayed active with 32 and
+31 predictions; median reported inference latency was 77.72 and 91.94 ms. A real Tavily smoke also
+returned two bounded results in 2,286.85 ms. The benchmark simulates immediate playback drain, so
+only a browser microphone run can establish the deployed audible underrun count and confirm whether
+the larger transport window removed the reported crackle.
+
 ## Known limitations
 
-- The latest truthful cold readiness sample is 63.038 seconds; an earlier instrumented sample
+- The latest truthful cold readiness sample is 56.317 seconds; an earlier instrumented sample
   attributed 58.048 of 72.858 seconds to model load plus first-inference warmup. Modal scheduling
   and fallback GPU selection remain variable; an
   earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
