@@ -60,6 +60,7 @@ package. On a Windows console that does not default to UTF-8, set `PYTHONUTF8` f
 $env:PYTHONUTF8 = '1'
 modal run -m deployment.modal.voice_light::cache_models
 modal deploy -m deployment.modal.voice_light
+python -m deployment.modal.smoke_websocket
 ```
 
 The deployed endpoints are:
@@ -128,6 +129,8 @@ an eight-core reservation were both measured and reverted because they increased
 to 44.924 and 80.462 seconds respectively. These are single observations, not percentiles.
 After cache preparation and the final no-reservation deployment, the verification cold health
 request completed in 44.792 seconds and the immediately following warm request in 0.448 seconds.
+A live `session.start` WebSocket smoke against the deployed `/v1/voice` route received a validated
+`session.ready` event in 1.022 seconds while warm.
 
 CPU/GPU snapshot attempts were also reverted: Modal consistently failed to capture the current
 multi-process GPU stack, including after both vLLM engines entered sleep mode and after vLLM was
