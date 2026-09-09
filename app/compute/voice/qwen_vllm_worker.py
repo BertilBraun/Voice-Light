@@ -26,6 +26,11 @@ def parse_configuration(
     parser.add_argument("--adapter-revision")
     parser.add_argument("--gpu-memory-utilization", required=True, type=float)
     parser.add_argument("--maximum-model-length", required=True, type=int)
+    parser.add_argument(
+        "--enforce-eager",
+        action=argparse.BooleanOptionalAction,
+        required=True,
+    )
     options = parser.parse_args(arguments)
     if (options.adapter is None) != (options.adapter_revision is None):
         parser.error("--adapter and --adapter-revision must be provided together")
@@ -43,6 +48,7 @@ def parse_configuration(
         adapter=adapter,
         gpu_memory_utilization=options.gpu_memory_utilization,
         maximum_model_length=options.maximum_model_length,
+        enforce_eager=options.enforce_eager,
     )
 
 

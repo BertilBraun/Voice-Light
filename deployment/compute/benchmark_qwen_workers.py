@@ -150,6 +150,7 @@ def benchmark_search_worker() -> WorkerBenchmarkResult:
             adapter=None,
             gpu_memory_utilization=SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
             maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+            enforce_eager=False,
         ),
         component_name="Qwen search summarizer",
     )

@@ -60,6 +60,7 @@ from app.compute.voice.model_constants import (
 from app.compute.voice.qwen_config import (
     QwenModelConfiguration,
     language_model_configuration_from_environment,
+    qwen_enforce_eager_from_environment,
 )
 from app.compute.voice.subprocess_start import read_worker_start_event
 
@@ -115,6 +116,7 @@ class QwenWorkerProcess:
             str(configuration.model.gpu_memory_utilization),
             "--maximum-model-length",
             str(configuration.model.maximum_model_length),
+            "--enforce-eager" if configuration.model.enforce_eager else "--no-enforce-eager",
         ]
         adapter = configuration.model.adapter
         if adapter is not None:
@@ -320,6 +322,7 @@ class VllmTextGenerator:
                     adapter=None,
                     gpu_memory_utilization=SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
                     maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+                    enforce_eager=qwen_enforce_eager_from_environment(os.environ),
                 ),
                 component_name="Qwen search summarizer",
             ),

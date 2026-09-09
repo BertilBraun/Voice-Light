@@ -357,6 +357,7 @@ def test_qwen_spawn_failure_releases_manager_lock(
             adapter=None,
             gpu_memory_utilization=0.5,
             maximum_model_length=1_024,
+            enforce_eager=False,
         ),
         component_name="test Qwen",
     )
@@ -414,6 +415,7 @@ def test_conversation_and_search_models_use_distinct_workers_and_locks(
                 ),
                 gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
                 maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+                enforce_eager=False,
             ),
             component_name="Qwen language model",
         ),
@@ -424,6 +426,7 @@ def test_conversation_and_search_models_use_distinct_workers_and_locks(
                 adapter=None,
                 gpu_memory_utilization=SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
                 maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+                enforce_eager=False,
             ),
             component_name="Qwen search summarizer",
         ),
@@ -474,6 +477,7 @@ def test_conversation_model_starts_merged_checkpoint_without_adapter(
                 adapter=None,
                 gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
                 maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+                enforce_eager=False,
             ),
             component_name="Qwen language model",
         )

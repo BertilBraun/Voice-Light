@@ -15,6 +15,7 @@ from app.compute.voice.model_constants import (
 
 MERGED_LANGUAGE_MODEL_NAME_ENVIRONMENT_VARIABLE = "VOICE_LIGHT_MERGED_LANGUAGE_MODEL_NAME"
 MERGED_LANGUAGE_MODEL_REVISION_ENVIRONMENT_VARIABLE = "VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION"
+QWEN_ENFORCE_EAGER_ENVIRONMENT_VARIABLE = "VOICE_LIGHT_QWEN_ENFORCE_EAGER"
 HUGGING_FACE_REPOSITORY_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$"
 )
@@ -34,6 +35,7 @@ class QwenModelConfiguration:
     adapter: QwenAdapterConfiguration | None
     gpu_memory_utilization: float
     maximum_model_length: int
+    enforce_eager: bool
 
     def __post_init__(self) -> None:
         if not 0.0 < self.gpu_memory_utilization <= 1.0:
@@ -70,6 +72,7 @@ def language_model_configuration_from_environment(
             adapter=None,
             gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
             maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+            enforce_eager=qwen_enforce_eager_from_environment(environment),
         )
     return QwenModelConfiguration(
         model_name=LANGUAGE_MODEL_NAME,
@@ -80,4 +83,14 @@ def language_model_configuration_from_environment(
         ),
         gpu_memory_utilization=LANGUAGE_MODEL_GPU_MEMORY_UTILIZATION,
         maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
+        enforce_eager=qwen_enforce_eager_from_environment(environment),
     )
+
+
+def qwen_enforce_eager_from_environment(environment: Mapping[str, str]) -> bool:
+    value = environment.get(QWEN_ENFORCE_EAGER_ENVIRONMENT_VARIABLE, "false").strip().lower()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(f"{QWEN_ENFORCE_EAGER_ENVIRONMENT_VARIABLE} must be true or false.")

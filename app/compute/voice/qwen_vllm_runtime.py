@@ -51,6 +51,7 @@ class QwenVllmRuntime:
             max_lora_rank=MAXIMUM_LORA_RANK,
             max_loras=1,
             max_cpu_loras=1,
+            enforce_eager=configuration.enforce_eager,
         )
         self.engine = AsyncLLM.from_engine_args(engine_arguments)
         self.tokenizer = cast(QwenChatTemplateTokenizer, self.engine.get_tokenizer())
