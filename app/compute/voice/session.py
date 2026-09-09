@@ -59,6 +59,7 @@ from app.compute.voice.overlap import (
 from app.compute.voice.playback import (
     PlaybackAcknowledgementDisposition,
     PlaybackController,
+    PlaybackFlowControl,
     PlaybackPolicyConfig,
 )
 from app.compute.voice.predictive import (
@@ -96,6 +97,7 @@ from app.compute.voice.schemas import (
     LlmModelSystemMessage,
     LlmModelToolMessage,
     LlmModelUserMessage,
+    PlaybackClockEvent,
     PlaybackCommandAcknowledgementEvent,
     PlaybackCommandEvent,
     PlaybackCompleteEvent,
@@ -487,11 +489,27 @@ class ActiveUserOverlap:
 
 
 class WebSocketPlaybackSink:
-    def __init__(self, websocket: WebSocket, send_lock: asyncio.Lock) -> None:
+    def __init__(
+        self,
+        websocket: WebSocket,
+        send_lock: asyncio.Lock,
+        flow_control: PlaybackFlowControl,
+    ) -> None:
         self.websocket = websocket
         self.send_lock = send_lock
+        self.flow_control = flow_control
 
     async def send(self, output: CandidateOutput) -> None:
+        match output:
+            case ReleasedAudioChunk():
+                send_allowed = await self.flow_control.wait_until_send_allowed(
+                    output.generation_id,
+                    output.start_sample + len(output.pcm_bytes) // PCM_BYTES_PER_SAMPLE,
+                )
+                if not send_allowed:
+                    return
+            case _:
+                pass
         async with self.send_lock:
             match output:
                 case ReleasedTextDelta():
@@ -575,7 +593,15 @@ class VoiceSession:
             maxsize=AUDIO_QUEUE_MAX_CHUNKS
         )
         self.send_lock = asyncio.Lock()
-        self.playback_sink = playback_sink or WebSocketPlaybackSink(websocket, self.send_lock)
+        self.playback_flow_control = PlaybackFlowControl(
+            source_sample_rate=speech_synthesizer.sample_rate,
+            maximum_ahead_ms=self.playback_controller.config.maximum_transport_ahead_ms,
+        )
+        self.playback_sink = playback_sink or WebSocketPlaybackSink(
+            websocket,
+            self.send_lock,
+            self.playback_flow_control,
+        )
         self.conversation: list[ConversationMessage] = []
         self.model_context = PrivateModelContext()
         self.tool_execution_journal: list[ToolExecutionJournalEntry] = []
@@ -691,6 +717,8 @@ class VoiceSession:
                     await self._record_playback_started(event)
                 case PlaybackCompleteEvent():
                     self._complete_playback(event)
+                case PlaybackClockEvent():
+                    self._record_playback_clock(event)
                 case PlaybackProgressEvent():
                     self._acknowledge_playback(event)
                 case PlaybackStoppedEvent():
@@ -1681,6 +1709,8 @@ class VoiceSession:
                 ),
             )
         )
+        self.playback_controller.replace_generation(generation.generation_id)
+        self.playback_flow_control.replace_generation(generation.generation_id)
         await generation.release_gate.release()
         generation_started_at = generation.latency.generation_started_at
         hidden_work_seconds = (
@@ -1691,7 +1721,6 @@ class VoiceSession:
             hidden_qwen_tokens=generation.qwen_token_count,
             hidden_tts_samples=generation.release_gate.buffered_pcm_sample_count,
         )
-        self.playback_controller.replace_generation(generation.generation_id)
         if generation.release_gate.first_released_pcm_at is not None:
             generation.latency.first_audio_sent_at = generation.release_gate.first_released_pcm_at
             generation.latency.first_released_pcm = MediaLatencyPoint(
@@ -1778,6 +1807,7 @@ class VoiceSession:
         self.model_context.commit_turn(generation.model_context_turn)
         self.active_generation = generation
         self.playback_controller.replace_generation(generation.generation_id)
+        self.playback_flow_control.replace_generation(generation.generation_id)
         await self._send_event(
             LlmHistoryEvent(
                 generation_id=generation.generation_id,
@@ -2978,6 +3008,7 @@ class VoiceSession:
                 generation.generation_id,
                 PlaybackState.CANCELLED,
             )
+        self.playback_flow_control.invalidate_generation(generation.generation_id)
         self.active_generation = None
         self.pending_generation_teardown = generation
         if generation.task is not None and not generation.task.done():
@@ -3069,6 +3100,7 @@ class VoiceSession:
             return
         if not self.playback_controller.record_complete(event):
             return
+        self.playback_flow_control.observe(event.generation_id, event.source_sample_position)
         generation.playback_complete = True
         generation.accepts_playback = False
         self._commit_assistant_if_complete(generation)
@@ -3082,6 +3114,7 @@ class VoiceSession:
             return
         if not self.playback_controller.record_started(event):
             return
+        self.playback_flow_control.observe(event.generation_id, event.source_sample_position)
         latency.playback_started_at = time.perf_counter()
         latency.first_browser_playback_ack = MediaLatencyPoint(
             monotonic_time_seconds=latency.playback_started_at,
@@ -3212,9 +3245,18 @@ class VoiceSession:
             return
         if not self.playback_controller.record_progress(event):
             return
+        self.playback_flow_control.observe(event.generation_id, event.played_sample_count)
         if event.text_offset <= generation.acknowledged_offset:
             return
         self._update_assistant_history(generation, event.text_offset)
+
+    def _record_playback_clock(self, event: PlaybackClockEvent) -> None:
+        generation = self.generations.get(event.generation_id)
+        if generation is None or not generation.accepts_playback:
+            return
+        if not self.playback_controller.record_clock(event):
+            return
+        self.playback_flow_control.observe(event.generation_id, event.source_sample_position)
 
     def _stop_playback(self, event: PlaybackStoppedEvent) -> None:
         generation = self.generations.get(event.generation_id)
@@ -3249,6 +3291,7 @@ class VoiceSession:
         )
         if disposition is not PlaybackAcknowledgementDisposition.APPLIED:
             return
+        self.playback_flow_control.observe(event.generation_id, event.source_sample_position)
         interaction_action_event = self._record_overlap_acknowledgement(
             event,
             received_monotonic_time_ns,

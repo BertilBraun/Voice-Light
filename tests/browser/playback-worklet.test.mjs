@@ -120,6 +120,30 @@ test("reports a word when it starts and acknowledges it at the next word", () =>
   );
 });
 
+test("reports an authoritative playback clock every eighty milliseconds", () => {
+  const harness = new PlaybackHarness(1_000);
+  harness.enqueue(1, 0, Array.from({ length: 240 }, () => 1));
+
+  harness.process(79);
+  assert.equal(
+    harness.messages.filter((message) => message.type === "playback.clock").length,
+    0,
+  );
+  harness.process(1);
+  harness.process(80);
+
+  const clocks = harness.messages.filter((message) => message.type === "playback.clock");
+  assert.deepEqual(
+    clocks.map((message) => message.sourceSamplePosition),
+    [80, 160],
+  );
+  assert.deepEqual(
+    clocks.map((message) => message.queuedSourceSampleCount),
+    [160, 80],
+  );
+  assert.ok(clocks.every((message) => message.state === "speaking"));
+});
+
 test("coalesces words with the same start sample before acknowledging playback", () => {
   const harness = new PlaybackHarness();
   harness.enqueue(1, 0, [1, 2, 3, 4, 5, 6]);

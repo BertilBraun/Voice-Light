@@ -294,6 +294,7 @@ class VoiceClientEventType(StrEnum):
     SESSION_STOP = "session.stop"
     PLAYBACK_STARTED = "playback.started"
     PLAYBACK_COMPLETE = "playback.complete"
+    PLAYBACK_CLOCK = "playback.clock"
     PLAYBACK_PROGRESS = "playback.progress"
     PLAYBACK_STOPPED = "playback.stopped"
     PLAYBACK_ACKNOWLEDGEMENT = "playback.acknowledgement"
@@ -344,6 +345,17 @@ class PlaybackProgressEvent(FrozenBaseModel):
     played_sample_count: int = Field(ge=0)
     browser_monotonic_time_ns: int = Field(ge=0)
     rendered_output_sample_position: int = Field(ge=0)
+    output_sample_rate: int = Field(gt=0)
+
+
+class PlaybackClockEvent(FrozenBaseModel):
+    type: Literal[VoiceClientEventType.PLAYBACK_CLOCK] = VoiceClientEventType.PLAYBACK_CLOCK
+    generation_id: int = Field(gt=0)
+    state: PlaybackState
+    browser_monotonic_time_ns: int = Field(ge=0)
+    rendered_output_sample_position: int = Field(ge=0)
+    source_sample_position: int = Field(ge=0)
+    queued_source_sample_count: int = Field(ge=0)
     output_sample_rate: int = Field(gt=0)
 
 
@@ -399,6 +411,7 @@ VoiceClientEvent = Annotated[
     | SessionStopEvent
     | PlaybackStartedEvent
     | PlaybackCompleteEvent
+    | PlaybackClockEvent
     | PlaybackProgressEvent
     | PlaybackStoppedEvent
     | PlaybackCommandAcknowledgementEvent,

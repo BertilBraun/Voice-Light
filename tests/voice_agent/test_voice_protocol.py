@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.compute.voice.schemas import (
+    PlaybackClockEvent,
     PlaybackCommandAcknowledgementEvent,
     PlaybackCommandAction,
     PlaybackCompleteEvent,
@@ -47,6 +48,21 @@ from app.compute.voice.schemas import (
                 browser_monotonic_time_ns=10,
                 rendered_output_sample_position=4_800,
                 source_sample_position=2_400,
+                output_sample_rate=48_000,
+            ),
+        ),
+        (
+            '{"type":"playback.clock","generation_id":4,"state":"speaking",'
+            '"browser_monotonic_time_ns":10,"rendered_output_sample_position":4800,'
+            '"source_sample_position":2400,"queued_source_sample_count":12000,'
+            '"output_sample_rate":48000}',
+            PlaybackClockEvent(
+                generation_id=4,
+                state=PlaybackState.SPEAKING,
+                browser_monotonic_time_ns=10,
+                rendered_output_sample_position=4_800,
+                source_sample_position=2_400,
+                queued_source_sample_count=12_000,
                 output_sample_rate=48_000,
             ),
         ),
@@ -133,6 +149,7 @@ def test_client_event_protocol_parses_discriminated_events(
         | SessionStopEvent
         | PlaybackStartedEvent
         | PlaybackCompleteEvent
+        | PlaybackClockEvent
         | PlaybackProgressEvent
         | PlaybackStoppedEvent
         | PlaybackCommandAcknowledgementEvent

@@ -25,6 +25,7 @@ const PauseResult = Object.freeze({
 
 const TERMINAL_STATES = new Set([PlaybackState.CANCELLED, PlaybackState.COMPLETED]);
 const MAX_RETAINED_COMMANDS = 256;
+const PLAYBACK_CLOCK_INTERVAL_MS = 80;
 
 class PcmPlaybackProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -46,6 +47,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.sourceFraction = 0;
     this.sourceSamplePosition = 0;
     this.renderedOutputSamplePosition = 0;
+    this.lastPlaybackClockOutputSamplePosition = 0;
     this.acknowledgedTextOffset = 0;
     this.boundaries = [];
     this.startedBoundary = undefined;
@@ -385,6 +387,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       this.state = PlaybackState.SPEAKING;
     }
     this.reportCrossedBoundaries();
+    this.reportPlaybackClockIfDue();
     this.reportCompletionIfDrained();
     return true;
   }
@@ -460,6 +463,28 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
         outputSampleRate: this.outputSampleRate,
       });
     }
+  }
+
+  reportPlaybackClockIfDue() {
+    const intervalSampleCount = Math.max(
+      1,
+      Math.round(this.outputSampleRate * PLAYBACK_CLOCK_INTERVAL_MS / 1000),
+    );
+    if (
+      this.renderedOutputSamplePosition - this.lastPlaybackClockOutputSamplePosition <
+      intervalSampleCount
+    ) return;
+    this.lastPlaybackClockOutputSamplePosition = this.renderedOutputSamplePosition;
+    this.port.postMessage({
+      type: "playback.clock",
+      generationId: this.generationId,
+      state: this.state,
+      browserMonotonicTimeNs: this.browserMonotonicTimeNs(),
+      renderedOutputSamplePosition: this.renderedOutputSamplePosition,
+      sourceSamplePosition: this.sourceSamplePosition,
+      queuedSourceSampleCount: this.queuedSourceSampleCount,
+      outputSampleRate: this.outputSampleRate,
+    });
   }
 
   reportCompletionIfDrained() {

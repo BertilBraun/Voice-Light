@@ -6,6 +6,7 @@ from fastapi import WebSocket
 
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope
+from app.compute.voice.playback import PlaybackPolicyConfig
 from app.compute.voice.search import QwenSearchResultSummarizer, SearchPipeline
 from app.compute.voice.session import SessionPolicy, VoiceSession
 from app.compute.voice.tools import StandardSearchHandler, create_runtime_tool_registry
@@ -29,6 +30,7 @@ async def run_voice_session(
             language_model=language_model,
             speech_synthesizer=runtime.require_speech_synthesizer(),
             policy=SessionPolicy.from_environment(os.environ),
+            playback_policy=PlaybackPolicyConfig.from_environment(os.environ),
             tool_executor=create_runtime_tool_registry(
                 search_handler=StandardSearchHandler(search_pipeline)
             ),

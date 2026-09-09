@@ -1081,6 +1081,34 @@ class RecordingSpeechSynthesizer:
         return session
 
 
+class BurstSpeechSynthesisSession(FakeSpeechSynthesisSession):
+    async def add_word(self, word: SynthesisWord) -> None:
+        self.words.append(word)
+        await self.events.put(
+            SynthesizedWordBoundary(text_offset=word.text_end, start_sample=self.next_sample)
+        )
+        sample_count = 8_000
+        await self.events.put(
+            SynthesizedAudioChunk(
+                pcm_bytes=b"\x01\x00" * sample_count,
+                start_sample=self.next_sample,
+            )
+        )
+        self.next_sample += sample_count
+
+
+class BurstSpeechSynthesizer:
+    def __init__(self) -> None:
+        self.words: list[SynthesisWord] = []
+
+    @property
+    def sample_rate(self) -> int:
+        return 24_000
+
+    def start_session(self) -> SpeechSynthesisSession:
+        return BurstSpeechSynthesisSession(self.words)
+
+
 class FailingSpeechSynthesisSession:
     def __init__(self) -> None:
         self.failure_ready = asyncio.Event()
@@ -1173,6 +1201,43 @@ def test_full_session_streams_audio_and_commits_naturally_completed_history() ->
     ]
     assert len(synthesizer.sessions) == 2
     assert synthesizer.sessions[0] is not synthesizer.sessions[1]
+
+
+def test_websocket_pcm_backpressure_keeps_overlap_commands_ahead_of_unsent_audio() -> None:
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        BurstSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+
+        first_audio: bytes | None = None
+        while first_audio is None:
+            message = websocket.receive()
+            first_audio = message.get("bytes")
+        assert struct.unpack("<III", first_audio[:12]) == (1, 0, 0)
+        assert len(first_audio[12:]) // 2 == 8_000
+
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+        websocket.send_bytes(SPEECH_CHUNK)
+
+        events, blocked_audio = receive_until(websocket, "playback.command")
+        assert blocked_audio is None
+        assert events[-1]["action"] == PlaybackCommandAction.DUCK
+        events, blocked_audio = receive_until(websocket, "playback.command")
+        assert blocked_audio is None
+        assert events[-1]["action"] == PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        events, blocked_audio = receive_until(websocket, "playback.command")
+        assert blocked_audio is None
+        assert events[-1]["action"] == PlaybackCommandAction.CANCEL
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_speech_debug_continues_during_session_silence_at_eighty_milliseconds() -> None:

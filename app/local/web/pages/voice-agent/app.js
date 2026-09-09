@@ -353,7 +353,7 @@ async function setupCapture(stream) {
 
 async function setupPlayback(inputSampleRate) {
   playbackContext = new AudioContext();
-  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=4");
+  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=5");
   playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", {
     outputChannelCount: [1],
     processorOptions: { inputSampleRate },
@@ -378,6 +378,21 @@ async function setupPlayback(inputSampleRate) {
     }
     if (data.type === "boundary.progress") {
       updateBoundaryProgress(data);
+      return;
+    }
+    if (data.type === "playback.clock") {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: "playback.clock",
+          generation_id: data.generationId,
+          state: data.state,
+          browser_monotonic_time_ns: data.browserMonotonicTimeNs,
+          rendered_output_sample_position: data.renderedOutputSamplePosition,
+          source_sample_position: data.sourceSamplePosition,
+          queued_source_sample_count: data.queuedSourceSampleCount,
+          output_sample_rate: data.outputSampleRate,
+        }));
+      }
       return;
     }
     if (data.type === "boundary.started") {

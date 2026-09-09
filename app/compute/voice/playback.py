@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Self
 from uuid import uuid4
 
 from app.compute.voice.schemas import (
     CausalSource,
+    PlaybackClockEvent,
     PlaybackCommandAcknowledgementEvent,
     PlaybackCommandAction,
     PlaybackCommandEvent,
@@ -29,8 +33,24 @@ class PlaybackPolicyConfig:
     maximum_resumable_paused_age_ms: int = 800
     target_paused_buffer_age_ms: int = 500
     maximum_synthesized_ahead_ms: int = 500
+    maximum_transport_ahead_ms: int = 500
     generation_boundary_hold_ms: int = 350
     classification_deadline_ms: int = 500
+
+    @classmethod
+    def from_environment(cls, environment: Mapping[str, str]) -> Self:
+        maximum_transport_ahead_value = environment.get("VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS")
+        if maximum_transport_ahead_value is None:
+            return cls()
+        try:
+            maximum_transport_ahead_ms = int(maximum_transport_ahead_value)
+        except ValueError as error:
+            raise ValueError(
+                "VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS must be an integer."
+            ) from error
+        if maximum_transport_ahead_ms <= 0:
+            raise ValueError("The maximum transport-ahead duration must be positive.")
+        return cls(maximum_transport_ahead_ms=maximum_transport_ahead_ms)
 
     def __post_init__(self) -> None:
         if self.duck_decibels >= 0:
@@ -42,6 +62,7 @@ class PlaybackPolicyConfig:
             self.maximum_resumable_paused_age_ms,
             self.target_paused_buffer_age_ms,
             self.maximum_synthesized_ahead_ms,
+            self.maximum_transport_ahead_ms,
             self.generation_boundary_hold_ms,
             self.classification_deadline_ms,
         )
@@ -61,6 +82,65 @@ class PlaybackAcknowledgementDisposition(StrEnum):
     APPLIED = "applied"
     DUPLICATE = "duplicate"
     STALE = "stale"
+
+
+class PlaybackFlowControl:
+    def __init__(self, source_sample_rate: int, maximum_ahead_ms: int) -> None:
+        if source_sample_rate <= 0:
+            raise ValueError("Playback source sample rate must be positive.")
+        if maximum_ahead_ms <= 0:
+            raise ValueError("Maximum transport-ahead duration must be positive.")
+        self.maximum_ahead_samples = source_sample_rate * maximum_ahead_ms // 1_000
+        self.active_generation_id: int | None = None
+        self.latest_generation_id = 0
+        self.acknowledged_source_sample_position = 0
+        self.credit_available = asyncio.Event()
+
+    def replace_generation(self, generation_id: int) -> None:
+        if generation_id <= 0:
+            raise ValueError("Playback generation IDs must be positive.")
+        if generation_id <= self.latest_generation_id:
+            raise ValueError("Replacement generation IDs must increase.")
+        self.active_generation_id = generation_id
+        self.latest_generation_id = generation_id
+        self.acknowledged_source_sample_position = 0
+        self.credit_available.set()
+
+    def invalidate_generation(self, generation_id: int) -> bool:
+        if generation_id != self.active_generation_id:
+            return False
+        self.active_generation_id = None
+        self.credit_available.set()
+        return True
+
+    def observe(self, generation_id: int, source_sample_position: int) -> bool:
+        if source_sample_position < 0:
+            raise ValueError("Playback source sample positions cannot be negative.")
+        if generation_id != self.active_generation_id:
+            return False
+        if source_sample_position < self.acknowledged_source_sample_position:
+            return False
+        self.acknowledged_source_sample_position = source_sample_position
+        self.credit_available.set()
+        return True
+
+    async def wait_until_send_allowed(
+        self,
+        generation_id: int,
+        source_end_sample: int,
+    ) -> bool:
+        if source_end_sample < 0:
+            raise ValueError("Playback source sample positions cannot be negative.")
+        while True:
+            if generation_id != self.active_generation_id:
+                return False
+            maximum_source_sample = (
+                self.acknowledged_source_sample_position + self.maximum_ahead_samples
+            )
+            if source_end_sample <= maximum_source_sample:
+                return True
+            self.credit_available.clear()
+            await self.credit_available.wait()
 
 
 @dataclass
@@ -108,6 +188,12 @@ class PlaybackMetrics:
 
     def record_command(self) -> None:
         self.command_count += 1
+
+    def record_buffered_source_sample_count(self, sample_count: int) -> None:
+        self.maximum_buffered_source_sample_count = max(
+            self.maximum_buffered_source_sample_count,
+            sample_count,
+        )
 
     def record_acknowledgement(
         self,
@@ -265,6 +351,44 @@ class PlaybackController:
             rendered_output_sample_position=event.rendered_output_sample_position,
             source_sample_position=event.played_sample_count,
             output_sample_rate=event.output_sample_rate,
+        )
+        return True
+
+    def record_clock(self, event: PlaybackClockEvent) -> bool:
+        if event.generation_id != self.active_generation_id:
+            return False
+        if self.condition.state in (PlaybackState.CANCELLED, PlaybackState.COMPLETED):
+            return False
+        latest_browser_time_ns = self.latest_browser_monotonic_time_ns_by_generation[
+            event.generation_id
+        ]
+        if (
+            event.browser_monotonic_time_ns < latest_browser_time_ns
+            or event.rendered_output_sample_position < self.condition.latest_output_sample_position
+            or event.source_sample_position < self.condition.latest_source_sample_position
+        ):
+            return False
+        self.latest_browser_monotonic_time_ns_by_generation[event.generation_id] = (
+            event.browser_monotonic_time_ns
+        )
+        self.metrics.record_buffered_source_sample_count(event.queued_source_sample_count)
+        state = (
+            self.condition.state
+            if self.condition.authority is PlaybackConditionAuthority.SERVER_ESTIMATED
+            else event.state
+        )
+        authority = (
+            PlaybackConditionAuthority.SERVER_ESTIMATED
+            if self.condition.authority is PlaybackConditionAuthority.SERVER_ESTIMATED
+            else PlaybackConditionAuthority.BROWSER_AUTHORITATIVE
+        )
+        self._set_condition(
+            generation_id=event.generation_id,
+            state=state,
+            rendered_output_sample_position=event.rendered_output_sample_position,
+            source_sample_position=event.source_sample_position,
+            output_sample_rate=event.output_sample_rate,
+            authority=authority,
         )
         return True
 

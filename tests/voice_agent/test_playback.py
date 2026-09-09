@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.compute.voice.playback import (
     PlaybackAcknowledgementDisposition,
     PlaybackController,
+    PlaybackFlowControl,
     PlaybackPolicyConfig,
 )
 from app.compute.voice.schemas import (
     CausalSource,
+    PlaybackClockEvent,
     PlaybackCommandAcknowledgementEvent,
     PlaybackCommandAction,
     PlaybackPauseResult,
@@ -333,3 +337,103 @@ def test_boundary_progress_after_pause_does_not_reactivate_playback() -> None:
         )
     )
     assert controller.condition.state is PlaybackState.PAUSED_BUFFERED
+
+
+def test_transport_flow_control_waits_for_periodic_browser_credit() -> None:
+    async def exercise() -> None:
+        flow_control = PlaybackFlowControl(source_sample_rate=1_000, maximum_ahead_ms=500)
+        flow_control.replace_generation(1)
+
+        await flow_control.wait_until_send_allowed(1, 500)
+        blocked_send = asyncio.create_task(flow_control.wait_until_send_allowed(1, 600))
+        await asyncio.sleep(0)
+        assert not blocked_send.done()
+
+        assert flow_control.observe(1, 80)
+        await asyncio.sleep(0)
+        assert not blocked_send.done()
+        assert flow_control.observe(1, 100)
+        await blocked_send
+
+        assert not flow_control.observe(2, 1_000)
+        assert flow_control.acknowledged_source_sample_position == 100
+
+        blocked_after_credit = asyncio.create_task(flow_control.wait_until_send_allowed(1, 700))
+        await asyncio.sleep(0)
+        assert not blocked_after_credit.done()
+        assert flow_control.invalidate_generation(1)
+        assert await blocked_after_credit is False
+
+        flow_control.replace_generation(2)
+        assert await flow_control.wait_until_send_allowed(1, 1) is False
+
+    asyncio.run(exercise())
+
+
+def test_transport_ahead_window_is_configurable_from_environment() -> None:
+    configuration = PlaybackPolicyConfig.from_environment(
+        {"VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS": "640"}
+    )
+
+    assert configuration.maximum_transport_ahead_ms == 640
+
+
+@pytest.mark.parametrize("value", ("soon", "0"))
+def test_transport_ahead_window_rejects_invalid_environment(value: str) -> None:
+    with pytest.raises(ValueError, match="transport|TRANSPORT"):
+        PlaybackPolicyConfig.from_environment({"VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS": value})
+
+
+def test_periodic_clock_updates_authoritative_playback_position() -> None:
+    controller = PlaybackController(24_000, PlaybackPolicyConfig())
+    controller.replace_generation(1)
+    controller.record_started(_started_event(1))
+
+    assert controller.record_clock(
+        PlaybackClockEvent(
+            generation_id=1,
+            state=PlaybackState.SPEAKING,
+            browser_monotonic_time_ns=2,
+            rendered_output_sample_position=4_000,
+            source_sample_position=2_000,
+            queued_source_sample_count=12_000,
+            output_sample_rate=48_000,
+        )
+    )
+    assert controller.condition.latest_source_sample_position == 2_000
+    assert controller.metrics.report().maximum_buffered_source_sample_count == 12_000
+
+    controller.issue_pause(
+        generation_id=1,
+        causal_event_id="silero-1",
+        causal_source=CausalSource.SILERO_VAD,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=1.0,
+        requested_boundary_source_sample_position=3_000,
+    )
+    assert controller.record_clock(
+        PlaybackClockEvent(
+            generation_id=1,
+            state=PlaybackState.SPEAKING,
+            browser_monotonic_time_ns=3,
+            rendered_output_sample_position=4_100,
+            source_sample_position=2_050,
+            queued_source_sample_count=11_950,
+            output_sample_rate=48_000,
+        )
+    )
+    assert controller.condition.state is PlaybackState.DRAINING_TO_BOUNDARY
+
+    assert not controller.record_clock(
+        PlaybackClockEvent(
+            generation_id=1,
+            state=PlaybackState.SPEAKING,
+            browser_monotonic_time_ns=1,
+            rendered_output_sample_position=3_000,
+            source_sample_position=1_500,
+            queued_source_sample_count=14_000,
+            output_sample_rate=48_000,
+        )
+    )
+    assert controller.condition.latest_source_sample_position == 2_050

@@ -81,7 +81,8 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'case "playback.command":' in worklet_response.text
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
-    assert "playback-worklet.js?v=4" in script_response.text
+    assert "playback-worklet.js?v=5" in script_response.text
+    assert 'data.type === "playback.clock"' in script_response.text
     assert "app.js?v=12" in page_response.text
     assert "dots are actual model observations; gaps mean no inference" in page_response.text
     assert "modelObservationSamples(points, field)" in script_response.text
