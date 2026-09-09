@@ -25,6 +25,15 @@ MODEL_CACHE_MOUNT: Final = PurePosixPath("/model-cache")
 RUNTIME_CACHE_MOUNT: Final = PurePosixPath("/runtime-cache")
 MERGED_LANGUAGE_MODEL_NAME: Final = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
 MERGED_LANGUAGE_MODEL_REVISION: Final = "557314e1a6839183e61a48833911606a23379d15"
+MODEL_REPOSITORIES: Final = (
+    (
+        "nvidia/nemotron-speech-streaming-en-0.6b",
+        "ebe59e5a817142986528bbbee5dba8db7b38ed50",
+    ),
+    (MERGED_LANGUAGE_MODEL_NAME, MERGED_LANGUAGE_MODEL_REVISION),
+    ("kyutai/tts-1.6b-en_fr", "f65439609986c392cb12df63938abcc550c3fb15"),
+    ("kyutai/tts-voices", "323332d33f997de8394f24a193e1a76df720e01a"),
+)
 
 
 @dataclass(frozen=True)
@@ -116,6 +125,8 @@ image = (
 )
 
 with image.imports():
+    from huggingface_hub import snapshot_download
+
     from app.compute.config import ComputeSettings
     from app.compute.main import create_compute_app_for_runtime, create_compute_runtime
     from app.compute.runtime import ComputeRuntime
@@ -133,8 +144,21 @@ runtime_cache = modal.Volume.from_name(
 )
 
 
+@app.function(
+    image=image,
+    timeout=configuration.startup_timeout_seconds,
+    secrets=[compute_secret],
+    volumes={str(MODEL_CACHE_MOUNT): model_cache},
+)
+def cache_models() -> None:
+    for repository_id, revision in MODEL_REPOSITORIES:
+        snapshot_download(repository_id, revision=revision)
+    model_cache.commit()
+
+
 @app.cls(
     image=image,
+    env={"HF_HUB_OFFLINE": "1"},
     gpu=configuration.gpu,
     max_containers=1,
     min_containers=0,

@@ -7,6 +7,7 @@ from deployment.modal.voice_light import (
     APPLICATION_NAME,
     MERGED_LANGUAGE_MODEL_NAME,
     MERGED_LANGUAGE_MODEL_REVISION,
+    MODEL_REPOSITORIES,
     REMOTE_ADAPTER_CHECKPOINT,
     ModalDeploymentConfiguration,
 )
@@ -53,3 +54,15 @@ def test_modal_cache_paths_are_absolute() -> None:
         "XDG_CACHE_HOME",
     ):
         assert PurePosixPath(environment[name]).is_absolute()
+
+
+def test_modal_cache_population_pins_every_hugging_face_repository() -> None:
+    assert MODEL_REPOSITORIES == (
+        (
+            "nvidia/nemotron-speech-streaming-en-0.6b",
+            "ebe59e5a817142986528bbbee5dba8db7b38ed50",
+        ),
+        (MERGED_LANGUAGE_MODEL_NAME, MERGED_LANGUAGE_MODEL_REVISION),
+        ("kyutai/tts-1.6b-en_fr", "f65439609986c392cb12df63938abcc550c3fb15"),
+        ("kyutai/tts-voices", "323332d33f997de8394f24a193e1a76df720e01a"),
+    )
