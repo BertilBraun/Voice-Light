@@ -15,8 +15,10 @@ from app.compute.voice.tools import (
     SerializedToolCall,
     StandardSearchHandler,
     ToolCall,
+    ToolCallAdmission,
     ToolCallFailure,
     ToolCallFailureReason,
+    ToolCircuitBreaker,
     ToolExecutionFailure,
     ToolExecutionFailureReason,
     ToolName,
@@ -74,6 +76,47 @@ def test_search_returns_pipeline_answer() -> None:
         assert answerer.queries == ["current weather in Berlin"]
 
     asyncio.run(execute())
+
+
+def test_tool_circuit_breaker_rejects_only_identical_successful_calls() -> None:
+    first_call = create_test_tool_registry().validate(
+        SerializedToolCall(
+            id="call-1",
+            name="search",
+            arguments_json='{"query":"current weather in London"}',
+        )
+    )
+    repeated_call = create_test_tool_registry().validate(
+        SerializedToolCall(
+            id="call-2",
+            name="search",
+            arguments_json='{"query":"current weather in London"}',
+        )
+    )
+    distinct_call = create_test_tool_registry().validate(
+        SerializedToolCall(
+            id="call-3",
+            name="search",
+            arguments_json='{"query":"current weather in New York"}',
+        )
+    )
+    assert isinstance(first_call, ToolCall)
+    assert isinstance(repeated_call, ToolCall)
+    assert isinstance(distinct_call, ToolCall)
+    circuit_breaker = ToolCircuitBreaker()
+
+    assert circuit_breaker.admit(first_call) is ToolCallAdmission.ALLOWED
+    circuit_breaker.record(
+        first_call,
+        ToolSuccess(
+            call_id=first_call.id,
+            tool_name=ToolName.SEARCH,
+            result="London is cloudy.",
+        ),
+    )
+
+    assert circuit_breaker.admit(repeated_call) is ToolCallAdmission.DUPLICATE
+    assert circuit_breaker.admit(distinct_call) is ToolCallAdmission.ALLOWED
 
 
 @pytest.mark.parametrize(

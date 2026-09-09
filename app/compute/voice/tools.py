@@ -4,6 +4,7 @@ import ast
 import asyncio
 import math
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol
@@ -215,6 +216,38 @@ ToolOutcome = Annotated[
     Field(discriminator="outcome"),
 ]
 tool_outcome_adapter: TypeAdapter[ToolOutcome] = TypeAdapter(ToolOutcome)
+
+
+class ToolCallAdmission(StrEnum):
+    ALLOWED = "allowed"
+    DUPLICATE = "duplicate"
+
+
+@dataclass
+class ToolCircuitBreaker:
+    successful_calls: list[ToolCall] = field(default_factory=list)
+
+    def admit(self, call: ToolCall) -> ToolCallAdmission:
+        if any(previous.function == call.function for previous in self.successful_calls):
+            return ToolCallAdmission.DUPLICATE
+        return ToolCallAdmission.ALLOWED
+
+    def record(self, call: ToolCall, outcome: ToolSuccess | ToolExecutionFailure) -> None:
+        if isinstance(outcome, ToolSuccess):
+            self.successful_calls.append(call)
+
+
+def tool_failure_spoken_response(outcome: ToolExecutionFailure) -> str:
+    match outcome.tool_name:
+        case ToolName.SEARCH:
+            return "I can't access live search right now."
+        case ToolName.CALCULATE:
+            return "I couldn't complete that calculation."
+        case ToolName.GET_TIME:
+            return "I couldn't get the current time."
+        case None:
+            return "I couldn't complete that tool request."
+
 
 SearchToolHandler = Callable[[SearchArguments], Awaitable[str | SearchToolOutput]]
 CalculateToolHandler = Callable[[CalculateArguments], Awaitable[str]]

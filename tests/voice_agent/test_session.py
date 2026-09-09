@@ -375,11 +375,14 @@ class ScriptedWeatherLanguageModel:
     def __init__(
         self,
         second_pass_answer: str = "It is 12 degrees and lightly cloudy in London.",
+        location: str = "London",
     ) -> None:
         self.requests: list[LanguageModelRequest] = []
+        self.location = location
         self.raw_first_pass = (
             "Let me check that."
-            '<tool_call>{"name":"search","arguments":{"query":"current weather in London"}}'
+            '<tool_call>{"name":"search","arguments":{"query":"current weather in '
+            f'{location}"}}}}'
             "</tool_call>"
         )
         self.parsed_first_pass_events: list[LanguageModelEvent] = []
@@ -408,7 +411,7 @@ class ScriptedWeatherLanguageModel:
                     request=SerializedToolCall(
                         id="qwen-1-tool-1",
                         name="search",
-                        arguments_json='{"query":"current weather in London"}',
+                        arguments_json=(f'{{"query":"current weather in {self.location}"}}'),
                     ),
                     cumulative_token_count=16,
                 ),
@@ -1816,14 +1819,21 @@ def test_invalid_tool_call_is_private_and_produces_spoken_recovery() -> None:
 
 
 @pytest.mark.parametrize(
-    "failure_mode",
-    ("handler", "timeout"),
+    ("failure_mode", "location"),
+    (
+        ("handler", "London"),
+        ("handler", "New York"),
+        ("timeout", "London"),
+        ("timeout", "New York"),
+    ),
 )
 def test_tool_execution_failure_is_typed_and_does_not_fabricate_weather(
     failure_mode: str,
+    location: str,
 ) -> None:
     language_model = ScriptedWeatherLanguageModel(
-        second_pass_answer="I could not retrieve the weather right now."
+        second_pass_answer=("Let me try the search again. Let me check the current time instead."),
+        location=location,
     )
     controlled_handler = ControlledWeatherHandler()
 
@@ -1861,19 +1871,17 @@ def test_tool_execution_failure_is_typed_and_does_not_fabricate_weather(
         controlled_handler.release.set()
         websocket.send_json({"type": "session.stop"})
 
-    tool_message = language_model.requests[1].messages[-1]
-    assert isinstance(tool_message, ModelToolMessage)
-    assert isinstance(tool_message.outcome, ToolExecutionFailure)
+    assert len(language_model.requests) == 1
     expected_reason = (
         ToolExecutionFailureReason.HANDLER_FAILURE
         if failure_mode == "handler"
         else ToolExecutionFailureReason.TIMEOUT
     )
-    assert tool_message.outcome.reason is expected_reason
     journal_entry = sessions[0].tool_execution_journal[0]
     assert journal_entry.result_commit_status is ToolResultCommitStatus.SESSION_COMMITTED
-    assert journal_entry.outcome == tool_message.outcome
-    assert released_text(sink).endswith("I could not retrieve the weather right now.")
+    assert isinstance(journal_entry.outcome, ToolExecutionFailure)
+    assert journal_entry.outcome.reason is expected_reason
+    assert released_text(sink) == "Let me check that. I can't access live search right now."
     assert "12 degrees" not in released_text(sink)
 
 

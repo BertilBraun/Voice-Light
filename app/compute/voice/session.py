@@ -127,8 +127,10 @@ from app.compute.voice.tool_routing import route_required_search_call
 from app.compute.voice.tools import (
     SerializedToolCall,
     ToolCall,
+    ToolCallAdmission,
     ToolCallFailure,
     ToolCallFailureReason,
+    ToolCircuitBreaker,
     ToolExecutionFailure,
     ToolExecutionFailureReason,
     ToolExecutor,
@@ -137,6 +139,7 @@ from app.compute.voice.tools import (
     ToolResultCommitStatus,
     ToolSpecification,
     ToolSuccess,
+    tool_failure_spoken_response,
 )
 from app.compute.voice.word_stream import CompleteWordStream
 
@@ -425,6 +428,7 @@ class ActiveGeneration:
     qwen_token_count: int = 0
     invocation_token_counts: dict[int, int] = field(default_factory=dict)
     invocation_ids: list[int] = field(default_factory=list)
+    tool_circuit_breaker: ToolCircuitBreaker = field(default_factory=ToolCircuitBreaker)
     tts_sample_count: int = 0
     synthesis_word_count: int = 0
     acknowledged_offset: int = 0
@@ -2056,11 +2060,23 @@ class VoiceSession:
                         audible_text_end,
                         assistant_message,
                     )
-                    tool_outcome = await self._execute_tool_call(
-                        generation,
-                        result.invocation_id,
-                        validated_call,
-                    )
+                    match generation.tool_circuit_breaker.admit(validated_call):
+                        case ToolCallAdmission.ALLOWED:
+                            tool_outcome = await self._execute_tool_call(
+                                generation,
+                                result.invocation_id,
+                                validated_call,
+                            )
+                            generation.tool_circuit_breaker.record(validated_call, tool_outcome)
+                        case ToolCallAdmission.DUPLICATE:
+                            tool_outcome = ToolExecutionFailure(
+                                call_id=validated_call.id,
+                                tool_name=validated_call.function.name,
+                                reason=ToolCallFailureReason.DUPLICATE_CALL,
+                                message=(
+                                    "An identical tool call already succeeded in this response."
+                                ),
+                            )
             tool = self._require_tool_execution(generation, result.invocation_id)
             tool.outcome = tool_outcome
             if isinstance(tool_outcome, ToolExecutionFailure):
@@ -2099,6 +2115,16 @@ class VoiceSession:
                 return
             if generation.response_text and not generation.response_text[-1].isspace():
                 await self._publish_spoken_text(generation, synthesis, word_stream, " ")
+            if isinstance(tool_outcome, ToolExecutionFailure) and tool_call is not None:
+                await self._publish_spoken_text(
+                    generation,
+                    synthesis,
+                    word_stream,
+                    tool_failure_spoken_response(tool_outcome),
+                )
+                await self._flush_synthesis_words(generation, synthesis, word_stream)
+                await self._finish_synthesis_input(synthesis)
+                return
             audible_text_start = len(generation.response_text)
             if generation.final_answer_text_start is None:
                 generation.final_answer_text_start = audible_text_start
