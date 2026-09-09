@@ -126,6 +126,8 @@ Additional scale-from-zero samples varied up to 80.462 seconds as the three isol
 workers initialized; a warm health request completed in 0.473 seconds. Parallel initialization and
 an eight-core reservation were both measured and reverted because they increased sampled startup
 to 44.924 and 80.462 seconds respectively. These are single observations, not percentiles.
+After cache preparation and the final no-reservation deployment, the verification cold health
+request completed in 44.792 seconds and the immediately following warm request in 0.448 seconds.
 
 CPU/GPU snapshot attempts were also reverted: Modal consistently failed to capture the current
 multi-process GPU stack, including after both vLLM engines entered sleep mode and after vLLM was
