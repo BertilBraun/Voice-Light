@@ -113,7 +113,9 @@ The deployed starting values are:
 | `VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD` | `0.82` | predicted feedback that resumes the same generation |
 | `VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS` | `500` | conservative unresolved-overlap deadline |
 | `VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS` | `1200` | hard deadline for sustained overlap without transcript evidence |
+| `VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS` | `160` | clean Silero silence required before a resolved backchannel can open another overlap |
 | `VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS` | `240` | maximum age of causal adapter evidence during active overlap |
+| `VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS` | `500` | maximum PCM duration released ahead of browser playback credit |
 
 The threshold is the evaluated Voice-Light starting point, not a universal calibration. Silero
 onset always causes the immediate reversible duck/pause. Strong floor-take evidence commits
@@ -130,6 +132,11 @@ encoder is activated only for a Silero speech turn and its bounded pre-roll; it 
 probabilities throughout assistant-only playback or session silence. Continuous encoder-only
 interaction inference remains a known limitation.
 
+The browser sends authoritative playback-clock credit every 80 ms. PCM release waits outside the
+WebSocket send lock once the configured transport window is full, so duck, pause, resume, and cancel
+commands are not queued behind an entire synthesized response. Cancellation wakes blocked senders
+and rejects stale-generation PCM; it does not delete valid audio or advance audible-only history.
+
 ## Validation and measured deployment results
 
 The final validation record is dated 2026-09-09. Automated route-level WebSocket coverage uses the
@@ -142,11 +149,18 @@ acknowledgements, and audible-only history.
 
 | Command | Result |
 | --- | --- |
-| `ruff format app deployment tests` | 537 files formatted or already formatted |
+| `ruff format app deployment tests` | 544 files already formatted |
 | `ruff check --fix app deployment tests` | all checks passed |
-| voice-agent, turn-taking, compute route smoke, configuration, and boundary Pytest suites | 537 passed, 4 skipped |
-| Modal deployment tests (Modal-enabled Python environment) | 4 passed |
-| `node --test tests\browser\*.test.mjs` | 23 passed |
+| `pytest tests\voice_agent -q` | 421 passed, 2 skipped |
+| `pytest tests\training\turn_taking -q` | 97 passed |
+| compute suite excluding the optional LoRA-merge module | 67 passed, 2 skipped |
+| Modal deployment tests | 8 passed |
+| `node --test tests\browser\*.test.mjs` | 28 passed |
+
+The Windows integration environment does not install the optional `peft` package, so collecting the
+entire compute directory fails at `test_merge_qwen_lora.py`. The reported compute run excludes only
+that offline model-merge test; deployed merged-model behavior is covered by the Modal tool-use
+smoke and is not bypassed in production.
 
 An early deployment that loaded in a background lifespan exposed a Modal-specific idle-suspension
 problem: rejected readiness probes released the function input and stretched observed
@@ -244,13 +258,31 @@ Kyutai emitted PCM, so the session recorded zero generated audio samples and no 
 speech-end-to-first-audio, duck, cancellation, or backchannel-resume latency. Speaker audibility
 and the configured-search path were therefore not claimed as live passes.
 
+A later human session exposed three correctness and measurement issues. One backchannel produced
+12 cooperative overlap resolutions and 36 playback commands because the same Silero-positive tail
+could immediately rearm; resume p95 was 832 ms and the browser held as many as 557,568 source
+samples (about 23.2 seconds). The deployed trace also showed that the old endpoint label measured
+from the first pause inside an utterance, so displayed values of 5,516 and 2,491 ms were not final
+speech-end latency. The repaired implementation requires 160 ms of clean silence before overlap
+rearming, bounds transport-ahead PCM to 500 ms, and reports first pause, final endpoint, ASR
+finalization, candidate resolution, server PCM release, and browser playback separately. These are
+pre-deployment findings and test-validated corrections, not post-fix production latency claims.
+
+The real Modal search-provider smoke failed safely before making an HTTP request because the
+`voice-light-compute` secret did not contain `VOICE_LIGHT_TAVILY_API_KEY`. The tool loop now stops
+after one truthful provider failure and rejects an identical repeated successful call, but live
+weather remains unavailable until the account owner supplies that secret and reruns the smoke.
+
 ## Known limitations
 
 - Staged L40S-class model initialization now measures approximately 28 seconds, with total fresh
   connection readiness measured at 35.7 seconds. Modal scheduling and fallback GPU selection remain
   variable; an A100 fallback required 105.341 seconds end to end. Restoring the old approximately
   ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap or replacing the
-  larger current model stack; cached weights alone cannot remove library initialization.
+  larger current model stack; cached weights alone cannot remove library initialization. GPU memory
+  snapshots remain an alpha, fixed-GPU canary candidate, not a production setting: each fallback
+  GPU must prove coherent restoration of all three CUDA subprocesses and at least a 30% readiness
+  improvement without first-turn or p95 regression.
 - A live human must provide microphone speech and judge audible output. Automated and agent-run
   checks cannot honestly certify microphone capture, speaker audibility, natural backchannel, or
   interruption perception.
