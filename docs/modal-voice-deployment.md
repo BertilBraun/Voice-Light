@@ -184,6 +184,14 @@ Nemotron/Qwen, then 44.137 seconds for Kyutai. Because this was much slower than
 workers, H100 precedes A100 in the fallback order. The immediately following warm A100 session was
 ready in 1.131 seconds.
 
+After placing H100 ahead of A100, the final deployed cold container completed model initialization
+in 27.940 seconds: 0.091 seconds for Silero, 10.773/11.608 seconds for concurrent Nemotron/Qwen,
+then 16.056 seconds for Kyutai. Modal reported 35.7 seconds for the first queued WebSocket request
+including scheduling, container, and application startup. A request that joined the already-warming
+container completed in 19.321 seconds locally; it is not reported as warm latency. The final worker's
+GPU-name probe produced no output, so its exact selected fallback type is unknown. The last
+unambiguously warm probe remains the validated 1.131-second A100 `session.ready` result.
+
 The same fixed 7-second WAV smoke measured commit-to-first-PCM at 247.09 ms cold and 183.22/224.72
 ms warm. Separate live traces around Kyutai's first word measured 436.6 and 443.0 ms from first word
 to worker PCM after skipping redundant depformer computation during known delay steps, down from
