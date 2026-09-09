@@ -63,9 +63,15 @@ package. On a Windows console that does not default to UTF-8, set `PYTHONUTF8` f
 ```powershell
 $env:PYTHONUTF8 = '1'
 modal run -m deployment.modal.voice_light::cache_models
+modal run -m deployment.modal.voice_light::smoke_tool_use
 modal deploy -m deployment.modal.voice_light
 python -m deployment.modal.smoke_websocket
 ```
+
+Run the tool-use smoke after prompt, schema, tokenizer, or merged-Qwen changes. It loads the exact
+production checkpoint on one L40S and requires ordinary speech, calculation, current search,
+explicit search, confirmed-search follow-up, and post-tool continuation cases to emit the expected
+spoken text and structured Hermes calls. It validates model behavior without invoking Tavily.
 
 The deployed endpoints are:
 
@@ -94,6 +100,7 @@ The deployed starting values are:
 | `VOICE_LIGHT_FLOOR_TAKE_THRESHOLD` | `0.82` | predicted floor take that commits interruption |
 | `VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD` | `0.82` | predicted feedback that resumes the same generation |
 | `VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS` | `500` | conservative unresolved-overlap deadline |
+| `VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS` | `1200` | hard deadline for sustained overlap without transcript evidence |
 | `VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS` | `240` | maximum age of causal adapter evidence during active overlap |
 
 The threshold is the evaluated Voice-Light starting point, not a universal calibration. Silero

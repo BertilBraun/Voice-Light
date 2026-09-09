@@ -85,6 +85,7 @@ class ModalDeploymentConfiguration:
             "VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION": MERGED_LANGUAGE_MODEL_REVISION,
             "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.82",
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "500",
+            "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS": "1200",
             "VOICE_LIGHT_QWEN_ENFORCE_EAGER": "true",
             "VOICE_LIGHT_QWEN_BACKEND": "transformers",
             "VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH": "true",
@@ -125,6 +126,13 @@ image = (
         str(REPOSITORY_ROOT / "deployment" / "compute" / "vllm"),
         remote_path=str(REMOTE_REPOSITORY_ROOT / "deployment" / "compute" / "vllm"),
         ignore=[".venv", "__pycache__"],
+        copy=True,
+    )
+    .add_local_file(
+        str(REPOSITORY_ROOT / "deployment" / "compute" / "smoke_test_tool_use.py"),
+        remote_path=str(
+            REMOTE_REPOSITORY_ROOT / "deployment" / "compute" / "smoke_test_tool_use.py"
+        ),
         copy=True,
     )
     .run_commands(
@@ -181,6 +189,20 @@ def cache_models() -> None:
             allow_patterns=repository.allowed_files,
         )
     model_cache.commit()
+
+
+@app.function(
+    image=image,
+    env={"HF_HUB_OFFLINE": "1"},
+    gpu="L40S",
+    timeout=configuration.startup_timeout_seconds,
+    secrets=[compute_secret],
+    volumes={str(MODEL_CACHE_MOUNT): model_cache},
+)
+def smoke_tool_use() -> None:
+    from deployment.compute.smoke_test_tool_use import main
+
+    main()
 
 
 @app.cls(
