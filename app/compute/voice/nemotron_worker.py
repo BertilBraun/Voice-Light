@@ -463,7 +463,9 @@ def _load_turn_adapter(
         )
     except Exception as error:
         return None, str(error)
-    return StreamingTurnAdapter(loaded), None
+    adapter = StreamingTurnAdapter(loaded)
+    adapter.warm_up()
+    return adapter, None
 
 
 if __name__ == "__main__":

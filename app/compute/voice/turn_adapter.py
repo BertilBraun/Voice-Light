@@ -47,6 +47,7 @@ def load_streaming_turn_adapter(
     adapter = TurnTakingAdapter(training_config.adapter)
     adapter.load_state_dict(payload["adapter_state"], strict=True)
     adapter.to(device).eval()
+    adapter.recurrent.flatten_parameters()
     return LoadedStreamingTurnAdapter(
         checkpoint_sha256=_file_sha256(checkpoint_path),
         optimizer_step=int(payload["optimizer_step"]),
@@ -70,6 +71,22 @@ class StreamingTurnAdapter:
 
     def reset(self) -> None:
         self.state = None
+
+    def warm_up(self) -> None:
+        parameter = next(self.loaded.adapter.parameters())
+        configuration = self.loaded.training_config.adapter
+        feature_taps = tuple(
+            torch.zeros(
+                1,
+                1,
+                configuration.feature_dimension,
+                device=parameter.device,
+                dtype=parameter.dtype,
+            )
+            for _ in configuration.tap_layer_indices
+        )
+        self.predict(feature_taps, assistant_speaking=False)
+        self.reset()
 
     def predict(
         self,
