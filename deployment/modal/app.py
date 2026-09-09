@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -152,14 +153,17 @@ class VoiceLight:
     runtime: ComputeRuntime
 
     @modal.enter(snap=True)
-    async def load_models(self) -> None:
+    def load_models(self) -> None:
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         self.settings = ComputeSettings.from_environment(os.environ)
         configure_logging(self.settings.log_directory)
         self.runtime = create_compute_runtime(self.settings)
+        asyncio.run(self._load_models())
+
+    async def _load_models(self) -> None:
         self.runtime.start_loading()
         await self.runtime.wait_until_loading_complete()
 
-    @modal.asgi_app(label="voice-light")
+    @modal.asgi_app(label="voicelightagent-voice-light")
     def voice_light(self) -> FastAPI:
         return create_compute_app_for_runtime(self.settings, self.runtime)
