@@ -10,8 +10,9 @@ workers, and Kyutai TTS remain authoritative.
 
 The L40S container admits one Modal input and the compute route separately enforces one live voice
 session. Modal may scale to zero, has one maximum container, and keeps an idle container for 1,200
-seconds. Modal sets `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits sequential
-model initialization before Modal marks a cold container ready or admits the first request. The
+seconds. Modal sets `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
+initialization before Modal marks a cold container ready or admits the first request. Nemotron and
+Qwen start concurrently, then the shared search generator and Kyutai start in dependency order. The
 1,800-second Modal startup timeout bounds that work. Other provider-neutral deployments retain
 background loading: `/health/live` can succeed before `/health/ready`, and `/v1/voice` closes with
 retryable code `1013` until every required model is ready.
@@ -128,9 +129,10 @@ by 112.270 seconds for conversational vLLM and 30.871 seconds for its separate s
 The direct merged-Qwen deployment measured 38.647 seconds on its best sampled cold start: 11.551
 seconds for Nemotron plus the adapter, 8.973 seconds for Qwen, and 17.023 seconds for Kyutai.
 Additional scale-from-zero samples varied up to 80.462 seconds as the three isolated Python/CUDA
-workers initialized; a warm health request completed in 0.473 seconds. Parallel initialization and
-an eight-core reservation were both measured and reverted because they increased sampled startup
-to 44.924 and 80.462 seconds respectively. These are single observations, not percentiles.
+workers initialized; a warm health request completed in 0.473 seconds. Loading all three workers
+concurrently and an eight-core reservation were both measured and reverted because they increased
+sampled startup to 44.924 and 80.462 seconds respectively. These are single observations, not
+percentiles.
 After cache preparation and the final no-reservation deployment, the verification cold health
 request completed in 44.792 seconds and the immediately following warm request in 0.448 seconds.
 A live `session.start` WebSocket smoke against the deployed `/v1/voice` route received a validated
@@ -148,6 +150,15 @@ the cold run delivered four causal predictions with 23.34 ms median inference la
 runs delivered six predictions each with 21.94 and 23.08 ms medians. No adapter degradation event
 was observed. The checkpoint revision mismatch and raw-input-frame queue overflow found in earlier
 runs are therefore fixed in the deployed endpoint.
+
+A later deployed trace attributed 33.102 seconds of initialization to 0.087 seconds for Silero,
+8.878 seconds for Nemotron, 8.843 seconds for Qwen, and 15.294 seconds for Kyutai. Nemotron and Qwen
+each spent less than one second in the visible safetensors deserialization loop; most of their stage
+time was isolated Python, framework, and CUDA worker bootstrap. The staged startup overlaps those
+two similarly sized bootstrap periods without making Kyutai a third concurrent CPU/GPU contender.
+The historical pre-removal demo is not a like-for-like ten-second baseline: it used main-process
+Transformers Qwen, CosyVoice2 0.5B, and only isolated Nemotron. The current deployment uses isolated
+workers for merged Qwen 1.7B, Nemotron 0.6B plus the adapter, and Kyutai 1.6B.
 
 The same fixed 7-second WAV smoke measured commit-to-first-PCM at 247.09 ms cold and 183.22/224.72
 ms warm. Separate live traces around Kyutai's first word measured 436.6 and 443.0 ms from first word
