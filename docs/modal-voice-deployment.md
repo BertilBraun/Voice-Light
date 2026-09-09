@@ -31,6 +31,12 @@ sequential. This avoids vLLM's approximately 90-second engine profiling path and
 backbone while preserving the existing typed streaming, tool-call, cancellation, and stale-event
 protocols.
 
+Qwen remains the primary tool selector. If it omits a structured search call for an explicit
+current-information/search request or a confirmation of an immediately preceding lookup offer, a
+narrow typed router supplies the missing `search` call. The call still passes through the normal
+schema validator, tool journal, configured provider, and sequential Qwen continuation; post-tool
+rounds cannot route again.
+
 ## Account configuration
 
 Create the named secret without putting credentials in the repository:
@@ -110,8 +116,9 @@ the deadline preserves the conservative fallback. The browser debug panel shows 
 turn completion, floor take, non-floor feedback, policy decision, and decision latency. These are
 ephemeral events and never enter durable audible-only conversation history. Its rolling 20-second
 timeline advances every 80 ms during user speech, silence, and assistant playback, and merges causal
-adapter evidence at Nemotron's approximately 169 ms encoder cadence; it does not invent
-interpolated model predictions.
+adapter evidence at Nemotron's approximately 169 ms encoder cadence. Probabilities render only as
+timestamped model-sample dots; gaps mean no inference, and the panel reports observed median cadence
+and latest-sample age instead of inventing interpolated predictions.
 
 ## Validation and measured deployment results
 
@@ -198,6 +205,10 @@ MiB used out of 23,028 MiB. Its stages were 0.111 seconds for Silero, 11.569/12.
 concurrent Nemotron/Qwen, and 18.880 seconds for Kyutai. A10 is therefore the final availability
 fallback ahead of the substantially slower measured A100, not an assumed fit based on checkpoint
 size.
+
+After deploying the A10 fallback and interaction fixes, the final cold WebSocket smoke received a
+validated `session.ready` event in 44.895 seconds. This includes Modal scheduling as well as model
+initialization and is a single observation, not a latency percentile.
 
 After placing H100 ahead of A100, the final deployed cold container completed model initialization
 in 27.940 seconds: 0.091 seconds for Silero, 10.773/11.608 seconds for concurrent Nemotron/Qwen,
