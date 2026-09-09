@@ -289,6 +289,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
                 fast_path=True,
             )
         acknowledgement = self._matching_acknowledgement(words)
+        provisional_feedback = False
         if acknowledgement is not None:
             acknowledgement_word_count = len(acknowledgement.split())
             if len(words) > acknowledgement_word_count:
@@ -315,6 +316,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
                     causal_event_ids=causal_event_ids,
                     fast_path=False,
                 )
+            provisional_feedback = True
         elif transcript and transcript in self._laughter_tokens:
             if not evidence.speech_active:
                 return ProvisionalOverlapDecision(
@@ -325,6 +327,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
                     causal_event_ids=causal_event_ids,
                     fast_path=False,
                 )
+            provisional_feedback = True
         elif transcript:
             return ProvisionalOverlapDecision(
                 kind=OverlapResolutionKind.RESPONSE_REQUIRED,
@@ -336,7 +339,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
             )
         if evidence.speech_active:
             if (
-                transcript
+                (transcript and not provisional_feedback)
                 or evidence.elapsed_ms >= self.config.transcript_free_floor_take_deadline_ms
             ) and evidence.elapsed_ms >= self.config.classification_deadline_ms:
                 return ProvisionalOverlapDecision(
