@@ -10,6 +10,7 @@ import wave
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import Field, TypeAdapter
 from websockets.asyncio.client import ClientConnection, connect
@@ -19,8 +20,10 @@ from app.compute.voice.schemas import (
     AssistantTextDeltaEvent,
     ErrorEvent,
     LlmHistoryEvent,
+    PlaybackClockEvent,
     PlaybackCompleteEvent,
     PlaybackStartedEvent,
+    PlaybackState,
     SessionReadyEvent,
     SessionStartEvent,
     SessionStopEvent,
@@ -70,6 +73,82 @@ class VoiceBenchmarkReport(FrozenBaseModel):
 @dataclass
 class AudioSendTiming:
     true_end_at: float | None = None
+
+
+class PlaybackEventSender(Protocol):
+    async def send(self, message: str) -> None: ...
+
+
+@dataclass
+class PlaybackDrainState:
+    output_sample_rate: int | None = None
+    generation_id: int | None = None
+    next_sequence_number: int = 0
+    source_sample_position: int = 0
+    started: bool = False
+
+    def configure(self, output_sample_rate: int) -> None:
+        if output_sample_rate <= 0:
+            raise ValueError("Playback output sample rate must be positive.")
+        self.output_sample_rate = output_sample_rate
+
+    async def consume_audio(self, sender: PlaybackEventSender, message: bytes) -> int:
+        output_sample_rate = self.output_sample_rate
+        if output_sample_rate is None:
+            raise RuntimeError("Audio arrived before session readiness.")
+        generation_id, sequence_number, start_sample = parse_audio_header(message)
+        payload = message[12:]
+        if not payload or len(payload) % PCM_BYTES_PER_SAMPLE != 0:
+            raise ValueError("Voice audio frames must contain complete PCM16 samples.")
+        if self.generation_id is None:
+            self.generation_id = generation_id
+        elif generation_id != self.generation_id:
+            raise ValueError("Voice audio changed generation before playback completed.")
+        if sequence_number != self.next_sequence_number:
+            raise ValueError("Voice audio sequence numbers must be contiguous.")
+        if start_sample != self.source_sample_position:
+            raise ValueError("Voice audio source sample positions must be contiguous.")
+        if not self.started:
+            await sender.send(
+                PlaybackStartedEvent(
+                    generation_id=generation_id,
+                    browser_monotonic_time_ns=time.perf_counter_ns(),
+                    rendered_output_sample_position=start_sample,
+                    source_sample_position=start_sample,
+                    output_sample_rate=output_sample_rate,
+                ).model_dump_json()
+            )
+            self.started = True
+        sample_count = len(payload) // PCM_BYTES_PER_SAMPLE
+        self.next_sequence_number += 1
+        self.source_sample_position += sample_count
+        await asyncio.sleep(sample_count / output_sample_rate)
+        await sender.send(
+            PlaybackClockEvent(
+                generation_id=generation_id,
+                state=PlaybackState.SPEAKING,
+                browser_monotonic_time_ns=time.perf_counter_ns(),
+                rendered_output_sample_position=self.source_sample_position,
+                source_sample_position=self.source_sample_position,
+                queued_source_sample_count=0,
+                underrun_count=0,
+                output_sample_rate=output_sample_rate,
+            ).model_dump_json()
+        )
+        return generation_id
+
+    def complete_event(self, generation_id: int) -> PlaybackCompleteEvent:
+        if not self.started or self.generation_id != generation_id:
+            raise ValueError("Playback completion must match received audio.")
+        output_sample_rate = self.output_sample_rate
+        assert output_sample_rate is not None
+        return PlaybackCompleteEvent(
+            generation_id=generation_id,
+            browser_monotonic_time_ns=time.perf_counter_ns(),
+            rendered_output_sample_position=self.source_sample_position,
+            source_sample_position=self.source_sample_position,
+            output_sample_rate=output_sample_rate,
+        )
 
 
 @dataclass
@@ -129,6 +208,7 @@ async def run_trial(
     connected_at = time.perf_counter()
     observations = TrialObservations()
     send_timing = AudioSendTiming()
+    playback = PlaybackDrainState()
     async with connect(url, max_size=None, open_timeout=180) as websocket:
         await websocket.send(
             SessionStartEvent(input_sample_rate=INPUT_SAMPLE_RATE).model_dump_json()
@@ -140,19 +220,10 @@ async def run_trial(
                 case bytes():
                     if observations.committed_at is None:
                         observations.speculative_output_before_commit = True
-                    generation_id, _, _ = parse_audio_header(message)
+                    generation_id = await playback.consume_audio(websocket, message)
                     if observations.first_pcm_at is None:
                         observations.first_pcm_at = now
                         observations.generation_id = generation_id
-                        await websocket.send(
-                            PlaybackStartedEvent(
-                                generation_id=generation_id,
-                                browser_monotonic_time_ns=time.perf_counter_ns(),
-                                rendered_output_sample_position=1,
-                                source_sample_position=1,
-                                output_sample_rate=24_000,
-                            ).model_dump_json()
-                        )
                 case str():
                     event = VOICE_SERVER_EVENT_ADAPTER.validate_json(message)
                     if trace_transcripts:
@@ -171,6 +242,7 @@ async def run_trial(
                     match event:
                         case SessionReadyEvent():
                             observations.ready_at = now
+                            playback.configure(event.output_sample_rate)
                             audio_task = asyncio.create_task(
                                 send_audio(
                                     websocket=websocket,
@@ -213,13 +285,7 @@ async def run_trial(
                             observations.response_complete_at = now
                             observations.generation_id = event.generation_id
                             await websocket.send(
-                                PlaybackCompleteEvent(
-                                    generation_id=event.generation_id,
-                                    browser_monotonic_time_ns=time.perf_counter_ns(),
-                                    rendered_output_sample_position=1,
-                                    source_sample_position=1,
-                                    output_sample_rate=24_000,
-                                ).model_dump_json()
+                                playback.complete_event(event.generation_id).model_dump_json()
                             )
                             await websocket.send(SessionStopEvent().model_dump_json())
                             break
