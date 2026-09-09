@@ -2046,6 +2046,9 @@ def test_non_floor_taking_overlap_resumes_existing_generation_without_history(
             pause_result=PlaybackPauseResult.NOT_REQUESTED,
             source_sample_position=paused_source_position,
         )
+        wait_until(
+            lambda: sessions[0].overlap_metrics.report().user_onset_to_resume_p95_ms is not None
+        )
         assert len(language_model.conversations) == 1
         assert all(message.content != final_text for message in sessions[0].conversation)
         metrics = sessions[0].overlap_metrics.report()
@@ -3082,12 +3085,14 @@ def test_long_continuation_pause_invalidates_then_restarts_at_commit() -> None:
         )
     )
     sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
     web_app = create_test_app(
         transcriber,
         language_model,
         RecordingSpeechSynthesizer(),
         turn_prediction_source=prediction_source,
         playback_sink=sink,
+        created_sessions=sessions,
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -3095,7 +3100,14 @@ def test_long_continuation_pause_invalidates_then_restarts_at_commit() -> None:
         websocket.receive_json()
         websocket.send_bytes(SPEECH_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
+        assert language_model.first_delta_produced.wait(timeout=1)
         websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(
+            lambda: (
+                sessions[0].latest_prediction is not None
+                and sessions[0].latest_prediction.p_user_speech == 0.9
+            )
+        )
         websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "llm.history")
         wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
