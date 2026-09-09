@@ -3,7 +3,8 @@
 The prototype page is served by the local application at `http://127.0.0.1:8000/voice-agent`.
 The endpoint field on that page must point directly at the compute WebSocket, for example
 `ws://<compute-host>:8000/v1/voice`. The local application only serves the page; it does not proxy
-or orchestrate voice sessions.
+or orchestrate voice sessions. See [Modal Voice Deployment Runbook](modal-voice-deployment.md) for
+the production endpoint, configuration, deployment commands, and measured smoke results.
 
 ## Session ownership
 
@@ -20,14 +21,13 @@ epochs, transcript-revision state, the current transcription lease, optional-det
 the normalized evidence stream. Closing the WebSocket destroys both conversation-scoped objects.
 
 The application-scoped `SpeechUnderstandingProvider` owns the persistent backend resources.
-Today `CompositeSpeechUnderstandingProvider` owns the existing `NemotronStreamingTranscriber`,
-whose `RestartingNemotronWorkerManager` owns the persistent Nemotron subprocess. An optional
-application-scoped `TurnPredictionProvider` may similarly create a standalone detector source for
-each conversation. Provider shutdown, not WebSocket shutdown, closes those managers and their
-processes. A speech-understanding session lazily acquires the provider-owned Nemotron worker lease
-when audio first reaches a logical turn, releases it when that turn is finalized or the session
-fails, and uses the same manager for the next logical turn. Models are never spawned or reloaded per
-WebSocket or per turn.
+Today `CompositeSpeechUnderstandingProvider` owns the existing `NemotronStreamingTranscriber` and
+the `NemotronTurnPredictionProvider`. Both share the same
+`RestartingNemotronWorkerManager` and persistent Nemotron subprocess. Provider shutdown, not
+WebSocket shutdown, closes that manager and process. A speech-understanding session lazily acquires
+the provider-owned Nemotron worker lease when audio first reaches a logical turn, releases it when
+that turn is finalized or the session fails, and uses the same manager for the next logical turn.
+Models are never spawned or reloaded per WebSocket or per turn.
 
 The compute parent remains CUDA-free for live voice orchestration. Persistent Nemotron,
 conversational Qwen, search-summary Qwen, and Kyutai subprocesses own their respective CUDA models
@@ -429,19 +429,26 @@ conversation history, or manage playback. It finalizes the backend's logical spe
 `VoiceSession` asks it to do so. `VoiceSession` retains policy decisions, the single-Qwen teardown
 barrier, and the Silero endpoint fallback.
 
-### Integrated Nemotron seam
+### Integrated Nemotron turn adapter
 
-`SpeechUnderstandingProvider`, `SpeechUnderstandingSession`, and their explicit
-`IntegratedNemotronSpeechUnderstandingProvider/Session` protocols are the factory seam for the
-future same-pass backend. No integrated runtime is claimed in this prototype, and no second
-Nemotron encoder pass has been added.
+The production worker loads the trained adapter once beside
+`nvidia/nemotron-speech-streaming-en-0.6b` at revision
+`ebe59e5a817142986528bbbee5dba8db7b38ed50`. Forward hooks capture encoder layers 6, 12, 18, and
+24 from the same cache-aware encoder calls already used by RNNT. The worker performs no second
+encoder pass and loads no duplicate 0.6B backbone.
 
-The eventual integrated worker must keep FastConformer attention/convolution caches, RNNT decoder
-state, tapped encoder features, and the turn adapter's recurrent state inside the persistent
-Nemotron process. One cache-aware encoder step will fan out to RNNT decoding and the adapter, then
-emit transcript and interaction siblings with the same inference/observation identity. Process
-ownership, lazy restart after a failed lease, and application shutdown remain provider and worker
-manager responsibilities; conversation and epoch state remain session responsibilities.
+`StreamingTurnAdapter` retains the GRU state and exact left context for each causal convolution.
+Its incremental output is tested against whole-sequence evaluation, and its state resets at every
+logical-turn finalization and close. The checkpoint loader validates the model identifier,
+revision, one-token lookahead, tap layers, architecture, and tensor shapes. The deployed checkpoint
+SHA-256 is `d5c8e02c61dc9c230eac57992278383b81f14e3b71935b8dc684fe5da4171011`.
+
+Each shared encoder step emits typed turn-completion, continuation-pause, four future-activity
+horizons, non-floor-feedback, and floor-take evidence with the causal audio observation and encoder
+frame range. Adapter load or inference failure emits a degradation event and disables only adapter
+inference; ASR and the Silero fallback continue. Process ownership, lazy restart after a failed
+lease, and application shutdown remain provider and worker-manager responsibilities; conversation
+and epoch state remain session responsibilities.
 
 ### Initial GPU evaluation
 
