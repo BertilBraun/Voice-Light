@@ -17,6 +17,11 @@ Qwen start concurrently, then the shared search generator and Kyutai start in de
 background loading: `/health/live` can succeed before `/health/ready`, and `/v1/voice` closes with
 retryable code `1013` until every required model is ready.
 
+Modal CPU memory snapshots retain the parent process's global Python and framework imports. Model
+workers and CUDA initialization remain in the normal `@modal.enter` hook after restore. This is
+deliberately different from the reverted GPU snapshot experiment: no subprocess, model, or CUDA
+state is captured.
+
 One persistent Nemotron subprocess owns both streaming RNNT decoding and turn-adapter inference.
 The adapter consumes layer 6/12/18/24 features from the RNNT encoder call and retains incremental
 causal convolution and GRU state. A second Nemotron backbone and rolling waveform re-encoding are
@@ -138,10 +143,10 @@ request completed in 44.792 seconds and the immediately following warm request i
 A live `session.start` WebSocket smoke against the deployed `/v1/voice` route received a validated
 `session.ready` event in 1.022 seconds while warm.
 
-CPU/GPU snapshot attempts were also reverted: Modal consistently failed to capture the current
+GPU model snapshot attempts were reverted: Modal consistently failed to capture the current
 multi-process GPU stack, including after both vLLM engines entered sleep mode and after vLLM was
-replaced by direct Transformers. The endpoint therefore favors reliable cached loading over an
-alpha snapshot path that prevented admission.
+replaced by direct Transformers. The endpoint only snapshots imports in the parent process and
+favors reliable cached model loading over the alpha GPU snapshot path that prevented admission.
 
 An instrumented deployment after the shared-adapter revision fix measured 46.823 seconds from
 WebSocket connection attempt to session readiness on a cold container. Two immediately following
