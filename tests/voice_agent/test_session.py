@@ -156,6 +156,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD", "soon"),
         ("VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS", "0"),
         ("VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS", "500"),
+        ("VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS", "0"),
         ("VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS", "0"),
         ("VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS", "-1"),
     ),
@@ -2784,7 +2785,7 @@ def test_lexical_interruption_cancels_and_becomes_a_durable_user_turn(
             pause_result=PlaybackPauseResult.NOT_REQUESTED,
             source_sample_position=1,
         )
-        assert sessions[0].overlap_metrics.report().explicit_stop_p95_ms is not None
+        wait_until(lambda: sessions[0].overlap_metrics.report().explicit_stop_p95_ms is not None)
         websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")

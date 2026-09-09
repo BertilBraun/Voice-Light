@@ -1136,6 +1136,11 @@ class VoiceSession:
                         event.reason,
                         event.dropped_observation_count,
                     )
+        except asyncio.CancelledError:
+            finalization_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await finalization_task
+            raise
         except Exception as error:
             raise _component_error(
                 error,
