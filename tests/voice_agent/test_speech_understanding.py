@@ -156,6 +156,24 @@ class BlockingPredictionSource:
         return
 
 
+def test_first_speech_encoder_boundary_is_not_skipped() -> None:
+    async def exercise() -> None:
+        source = RecordingPredictionSource(
+            condition_on_transcript=False,
+            expected_sequences=frozenset({0}),
+        )
+        provider = create_provider(source)
+        session = provider.create_session(stream_epoch=1)
+        chunk = create_chunk(sequence_number=0, stream_epoch=1, turn_epoch=1)
+
+        await session.add_audio(chunk)
+
+        assert [observation.audio_chunk for observation in source.observations] == [chunk]
+        await session.close()
+
+    asyncio.run(exercise())
+
+
 def test_provider_owns_persistent_resources_and_sessions_own_turn_state() -> None:
     async def exercise() -> None:
         transcriber = RecordingTranscriber(RecordingTranscriptionSession)
@@ -190,7 +208,10 @@ def test_transcript_and_prediction_evidence_are_sibling_events_with_causal_input
     condition_on_transcript: bool,
 ) -> None:
     async def exercise() -> None:
-        source = RecordingPredictionSource(condition_on_transcript=condition_on_transcript)
+        source = RecordingPredictionSource(
+            condition_on_transcript=condition_on_transcript,
+            expected_sequences=frozenset({1}),
+        )
         provider = create_provider(source)
         session = provider.create_session(stream_epoch=1)
         chunk = create_chunk(
@@ -380,7 +401,10 @@ def test_prediction_reducer_bounds_and_prunes_causal_state() -> None:
 
 def test_prediction_reducer_releases_completed_group_playback_condition() -> None:
     async def exercise() -> None:
-        source = RecordingPredictionSource(condition_on_transcript=False)
+        source = RecordingPredictionSource(
+            condition_on_transcript=False,
+            expected_sequences=frozenset({1}),
+        )
         provider = create_provider(source)
         session = provider.create_session(stream_epoch=1)
         first_chunk = create_chunk(sequence_number=0, stream_epoch=1, turn_epoch=1)

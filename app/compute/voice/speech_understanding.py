@@ -515,9 +515,9 @@ class CompositeSpeechUnderstandingSession:
         if self.prediction_source is None or self.optional_predictor_degraded:
             return
         if not self.interaction_observation_started:
-            if chunk.silero_evidence.is_speech:
-                self.interaction_observation_started = True
-            return
+            if not chunk.silero_evidence.is_speech:
+                return
+            self.interaction_observation_started = True
         observation = TurnPredictionObservation(
             audio_chunk=chunk,
             transcript_revision=self.transcript_revisions.latest,
