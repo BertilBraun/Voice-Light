@@ -2,8 +2,8 @@
 
 ## Architecture
 
-`deployment.modal.app` is a thin Modal ASGI wrapper around
-`app.compute.main:create_app_from_environment`. It does not restore the deleted
+`deployment.modal.voice_light` is a thin Modal ASGI wrapper around the current
+`app.compute` runtime and application factories. It does not restore the deleted
 `app.voice_agent` runtime. The current `/v1/voice` route, `ComputeRuntime`, `VoiceSession`, tool
 registry, search integration, predictive generation, playback controller, Nemotron ASR, Qwen
 workers, and Kyutai TTS remain authoritative.
@@ -20,6 +20,12 @@ One persistent Nemotron subprocess owns both streaming RNNT decoding and turn-ad
 The adapter consumes layer 6/12/18/24 features from the RNNT encoder call and retains incremental
 causal convolution and GRU state. A second Nemotron backbone and rolling waveform re-encoding are
 not used.
+
+Modal uses the pinned merged 1.7B Qwen checkpoint with the direct Transformers backend. The same
+worker handles conversation generation and search summarization because tool rounds are
+sequential. This avoids vLLM's approximately 90-second engine profiling path and a second Qwen
+backbone while preserving the existing typed streaming, tool-call, cancellation, and stale-event
+protocols.
 
 ## Account configuration
 
@@ -41,6 +47,9 @@ The deployment creates or reuses `voice-light-agent-model-cache` for Hugging Fac
 and `voice-light-runtime-cache` for runtime logs and dataset-audio cache. The adapter checkpoint is
 copied into the immutable image at `/opt/voice-light-artifacts/adapter-best.pt`; the source remains
 the untracked `.cache/rtx3090-node-final-backup-20260829/voice-light-human-finetune-v1` backup.
+Run `cache_models` before deployment to populate the Volume with the exact pinned Nemotron, merged
+Qwen, Kyutai, and selected voice artifacts. Serving sets `HF_HUB_OFFLINE=1`, so scale-from-zero
+containers read these files from Modal storage and do not redownload or query the Hub.
 
 ## Deploy
 
@@ -107,11 +116,21 @@ acknowledgements, and audible-only history.
 
 An early deployment that loaded in a background lifespan exposed a Modal-specific idle-suspension
 problem: rejected readiness probes released the function input and stretched observed
-startup-to-ready to approximately 922 seconds. The eager-startup fix removed that deadlock. On the
-final cached-volume deployment, Silero loaded in 0.092 seconds, Nemotron ASR in 11.819 seconds,
-conversational Qwen in 112.270 seconds, the search summarizer in 30.871 seconds, and Kyutai TTS in
-18.066 seconds. Startup-to-ready and cold WebSocket admission were approximately 173.1 seconds.
-These are single observations, not percentiles.
+startup-to-ready to approximately 922 seconds. The eager-startup fix removed that deadlock. The
+original current-stack deployment then measured approximately 173.1 seconds to ready, dominated
+by 112.270 seconds for conversational vLLM and 30.871 seconds for its separate search model.
+
+The direct merged-Qwen deployment measured 38.647 seconds on its best sampled cold start: 11.551
+seconds for Nemotron plus the adapter, 8.973 seconds for Qwen, and 17.023 seconds for Kyutai.
+Additional scale-from-zero samples varied up to 80.462 seconds as the three isolated Python/CUDA
+workers initialized; a warm health request completed in 0.473 seconds. Parallel initialization and
+an eight-core reservation were both measured and reverted because they increased sampled startup
+to 44.924 and 80.462 seconds respectively. These are single observations, not percentiles.
+
+CPU/GPU snapshot attempts were also reverted: Modal consistently failed to capture the current
+multi-process GPU stack, including after both vLLM engines entered sleep mode and after vLLM was
+replaced by direct Transformers. The endpoint therefore favors reliable cached loading over an
+alpha snapshot path that prevented admission.
 
 The final deployment command completed in 45.74 seconds with cached dependency layers. Its browser
 smoke reached `Ready to talk`, activated the microphone, streamed 16 kHz PCM, produced Nemotron
@@ -124,12 +143,14 @@ and the configured-search path were therefore not claimed as live passes.
 
 ## Known limitations
 
-- Sequential cold startup is about 173 seconds on the single measured L40S run. Parallel or
-  image-snapshot model initialization is the primary deployment optimization opportunity.
+- Sampled sequential cold startup varies from approximately 39 to 80 seconds. Restoring the old
+  approximately ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap
+  or separating the workers into independently snapshot-compatible services; cached weights alone
+  cannot remove library initialization.
 - A live human must provide microphone speech and judge audible output. Automated and agent-run
   checks cannot honestly certify microphone capture, speaker audibility, natural backchannel, or
   interruption perception.
 - Speech-end-to-first-text/audio and live duck, cancellation, and resume latency require a ready
   GPU session plus timestamped real audio; no synthetic result is presented as production proof.
 - Real web search requires the account owner to add `VOICE_LIGHT_TAVILY_API_KEY`.
-- Public Hugging Face downloads are functional but rate-limited without `HF_TOKEN`.
+- Cache preparation works without `HF_TOKEN` but may be rate-limited; serving itself is offline.
