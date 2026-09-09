@@ -11,7 +11,11 @@ from typing import ParamSpec, TypeVar
 from app.compute.asr.models.registry import AsrModelCache
 from app.compute.config import VoiceStackSettings
 from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessionLease
-from app.compute.voice.interfaces import SpeechSynthesizer, SpeechUnderstandingProvider
+from app.compute.voice.interfaces import (
+    SpeechSynthesizer,
+    SpeechUnderstandingProvider,
+    TextGenerator,
+)
 from app.compute.voice.model_constants import (
     NEMOTRON_ASR_MODEL_NAME,
     NEMOTRON_ASR_MODEL_REVISION,
@@ -70,7 +74,7 @@ class ComputeRuntime:
         self.speech_understanding_provider: SpeechUnderstandingProvider | None = None
         self.speech_detector_factory: SileroSpeechDetectorFactory | None = None
         self.language_model: VllmLanguageModel | None = None
-        self.search_text_generator: VllmTextGenerator | None = None
+        self.search_text_generator: TextGenerator | None = None
         self.speech_synthesizer: SpeechSynthesizer | None = None
         self.search_provider: SearchProvider | None = (
             None
@@ -145,7 +149,10 @@ class ComputeRuntime:
             await asyncio.to_thread(self.speech_understanding_provider.close)
         if self.language_model is not None:
             await asyncio.to_thread(self.language_model.close)
-        if self.search_text_generator is not None:
+        if (
+            self.search_text_generator is not None
+            and self.search_text_generator is not self.language_model
+        ):
             await asyncio.to_thread(self.search_text_generator.close)
         if self.speech_synthesizer is not None:
             await asyncio.to_thread(self.speech_synthesizer.close)
@@ -182,7 +189,7 @@ class ComputeRuntime:
             raise RuntimeError("Language model is not ready.")
         return self.language_model
 
-    def require_search_text_generator(self) -> VllmTextGenerator:
+    def require_search_text_generator(self) -> TextGenerator:
         if self.search_text_generator is None:
             raise RuntimeError("Search summarizer is not ready.")
         return self.search_text_generator
@@ -239,6 +246,13 @@ class ComputeRuntime:
             self.language_model = model
 
     async def _load_search_text_generator(self) -> None:
+        assert self.voice_stack_settings is not None
+        if self.voice_stack_settings.share_language_model_for_search:
+            self.search_text_generator = self.require_language_model()
+            self.search_summarizer_stage.status = ModelStageStatus.READY
+            self.search_summarizer_stage.load_time_seconds = 0.0
+            logger.info("search summarizer shares the language model worker")
+            return
         generator = await self._timed_load(
             self.search_summarizer_stage,
             VllmTextGenerator,

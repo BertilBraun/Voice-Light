@@ -14,6 +14,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 class VoiceStackSettings:
     speech_synthesis: SpeechSynthesisSettings
     search: SearchSettings
+    share_language_model_for_search: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,11 @@ class ComputeSettings:
                         REPOSITORY_ROOT,
                     ),
                     search=search_settings_from_environment(environment),
+                    share_language_model_for_search=_parse_boolean_setting(
+                        environment=environment,
+                        name="VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH",
+                        default=False,
+                    ),
                 )
                 if voice_stack_enabled
                 else None

@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -62,8 +63,10 @@ from app.compute.voice.model_constants import (
     SEARCH_SUMMARIZER_MODEL_REVISION,
 )
 from app.compute.voice.qwen_config import (
+    QwenBackend,
     QwenModelConfiguration,
     language_model_configuration_from_environment,
+    qwen_backend_from_environment,
     qwen_enforce_eager_from_environment,
 )
 from app.compute.voice.subprocess_start import read_worker_start_event
@@ -71,6 +74,7 @@ from app.compute.voice.subprocess_start import read_worker_start_event
 logger = logging.getLogger(__name__)
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[3]
 QWEN_PYTHON_PATH: Final = REPOSITORY_ROOT / "deployment/compute/vllm/.venv/bin/python"
+TRANSFORMERS_QWEN_PYTHON_PATH: Final = Path(sys.executable)
 QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS: Final = 10.0
 QWEN_CANCELLATION_TIMEOUT_SECONDS: Final = 2.0
 QWEN_WORKER_STOP_TIMEOUT_SECONDS: Final = 5.0
@@ -112,10 +116,14 @@ class QwenWorkerManager(Protocol):
 
 class QwenWorkerProcess:
     def __init__(self, python_path: Path, configuration: QwenWorkerConfiguration) -> None:
+        worker_module = {
+            QwenBackend.VLLM: "app.compute.voice.qwen_vllm_worker",
+            QwenBackend.TRANSFORMERS: "app.compute.voice.qwen_transformers_worker",
+        }[configuration.model.backend]
         command = [
             python_path.as_posix(),
             "-m",
-            "app.compute.voice.qwen_vllm_worker",
+            worker_module,
             "--model",
             configuration.model.model_name,
             "--revision",
@@ -313,12 +321,13 @@ class RestartingQwenWorkerManager:
 class VllmLanguageModel:
     def __init__(
         self,
-        python_path: Path = QWEN_PYTHON_PATH,
+        python_path: Path | None = None,
     ) -> None:
+        model_configuration = language_model_configuration_from_environment(os.environ)
         self.worker_manager = RestartingQwenWorkerManager(
-            python_path,
+            python_path or qwen_python_path(model_configuration.backend),
             QwenWorkerConfiguration(
-                model=language_model_configuration_from_environment(os.environ),
+                model=model_configuration,
                 component_name="Qwen language model",
             ),
         )
@@ -355,10 +364,11 @@ class VllmLanguageModel:
 class VllmTextGenerator:
     def __init__(
         self,
-        python_path: Path = QWEN_PYTHON_PATH,
+        python_path: Path | None = None,
     ) -> None:
+        backend = qwen_backend_from_environment(os.environ)
         self.worker_manager = RestartingQwenWorkerManager(
-            python_path,
+            python_path or qwen_python_path(backend),
             QwenWorkerConfiguration(
                 model=QwenModelConfiguration(
                     model_name=SEARCH_SUMMARIZER_MODEL_NAME,
@@ -367,6 +377,7 @@ class VllmTextGenerator:
                     gpu_memory_utilization=SEARCH_SUMMARIZER_GPU_MEMORY_UTILIZATION,
                     maximum_model_length=QWEN_MAXIMUM_MODEL_LENGTH,
                     enforce_eager=qwen_enforce_eager_from_environment(os.environ),
+                    backend=backend,
                 ),
                 component_name="Qwen search summarizer",
             ),
@@ -383,6 +394,14 @@ class VllmTextGenerator:
 
     def wake(self) -> None:
         self.worker_manager.wake()
+
+
+def qwen_python_path(backend: QwenBackend) -> Path:
+    match backend:
+        case QwenBackend.VLLM:
+            return QWEN_PYTHON_PATH
+        case QwenBackend.TRANSFORMERS:
+            return TRANSFORMERS_QWEN_PYTHON_PATH
 
 
 async def _generate_text(

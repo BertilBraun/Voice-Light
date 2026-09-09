@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from app.compute.voice.qwen_config import QwenBackend, QwenModelConfiguration
-from app.compute.voice.qwen_vllm_runtime import QwenVllmRuntime
+from app.compute.voice.qwen_transformers_runtime import QwenTransformersRuntime
 from app.compute.voice.qwen_worker import QwenWorkerController
 from app.compute.voice.qwen_worker_cli import parse_qwen_worker_configuration
 
@@ -16,7 +16,7 @@ from app.compute.voice.qwen_worker_cli import parse_qwen_worker_configuration
 def parse_configuration(
     arguments: Sequence[str] | None = None,
 ) -> QwenModelConfiguration:
-    return parse_qwen_worker_configuration(QwenBackend.VLLM, arguments)
+    return parse_qwen_worker_configuration(QwenBackend.TRANSFORMERS, arguments)
 
 
 def redirect_inference_stdout() -> TextIO:
@@ -34,7 +34,7 @@ def redirect_inference_stdout() -> TextIO:
 async def run_worker(configuration: QwenModelConfiguration) -> None:
     protocol_output = redirect_inference_stdout()
     try:
-        runtime = QwenVllmRuntime(configuration)
+        runtime = QwenTransformersRuntime(configuration)
         await QwenWorkerController(runtime, output_stream=protocol_output).run()
     finally:
         protocol_output.close()

@@ -54,6 +54,8 @@ class ModalDeploymentConfiguration:
             "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.82",
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "500",
             "VOICE_LIGHT_QWEN_ENFORCE_EAGER": "true",
+            "VOICE_LIGHT_QWEN_BACKEND": "transformers",
+            "VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH": "true",
             "VOICE_LIGHT_TTS_BACKEND": "kyutai",
             "VOICE_LIGHT_TURN_ADAPTER_CHECKPOINT": str(REMOTE_ADAPTER_CHECKPOINT),
             "VOICE_LIGHT_VOICE_STACK_ENABLED": "true",
@@ -136,8 +138,6 @@ runtime_cache = modal.Volume.from_name(
     gpu=configuration.gpu,
     max_containers=1,
     min_containers=0,
-    enable_memory_snapshot=True,
-    experimental_options={"enable_gpu_snapshot": True},
     scaledown_window=configuration.scaledown_window_seconds,
     startup_timeout=configuration.startup_timeout_seconds,
     timeout=configuration.function_timeout_seconds,
@@ -152,7 +152,7 @@ class VoiceLight:
     settings: ComputeSettings
     runtime: ComputeRuntime
 
-    @modal.enter(snap=True)
+    @modal.enter()
     def load_models(self) -> None:
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         self.settings = ComputeSettings.from_environment(os.environ)
@@ -161,11 +161,8 @@ class VoiceLight:
         asyncio.run(self._load_models())
 
     async def _load_models(self) -> None:
-        await self.runtime.load_before_memory_snapshot()
-
-    @modal.enter(snap=False)
-    def restore_models(self) -> None:
-        asyncio.run(self.runtime.load_after_memory_snapshot())
+        self.runtime.start_loading()
+        await self.runtime.wait_until_loading_complete()
 
     @modal.asgi_app(label="voicelightagent-voice-light")
     def voice_light(self) -> FastAPI:

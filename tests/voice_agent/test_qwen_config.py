@@ -11,8 +11,10 @@ from app.compute.voice.model_constants import (
 from app.compute.voice.qwen_config import (
     MERGED_LANGUAGE_MODEL_NAME_ENVIRONMENT_VARIABLE,
     MERGED_LANGUAGE_MODEL_REVISION_ENVIRONMENT_VARIABLE,
+    QWEN_BACKEND_ENVIRONMENT_VARIABLE,
     QWEN_ENFORCE_EAGER_ENVIRONMENT_VARIABLE,
     QwenAdapterConfiguration,
+    QwenBackend,
     language_model_configuration_from_environment,
 )
 
@@ -62,6 +64,28 @@ def test_language_model_configuration_rejects_invalid_enforce_eager() -> None:
     with pytest.raises(ValueError, match=QWEN_ENFORCE_EAGER_ENVIRONMENT_VARIABLE):
         language_model_configuration_from_environment(
             {QWEN_ENFORCE_EAGER_ENVIRONMENT_VARIABLE: "yes"}
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("vllm", QwenBackend.VLLM), ("TRANSFORMERS", QwenBackend.TRANSFORMERS)],
+)
+def test_language_model_configuration_parses_backend(
+    value: str,
+    expected: QwenBackend,
+) -> None:
+    configuration = language_model_configuration_from_environment(
+        {QWEN_BACKEND_ENVIRONMENT_VARIABLE: value}
+    )
+
+    assert configuration.backend is expected
+
+
+def test_language_model_configuration_rejects_invalid_backend() -> None:
+    with pytest.raises(ValueError, match=QWEN_BACKEND_ENVIRONMENT_VARIABLE):
+        language_model_configuration_from_environment(
+            {QWEN_BACKEND_ENVIRONMENT_VARIABLE: "unknown"}
         )
 
 
