@@ -305,6 +305,7 @@ class GenerationLatency:
     asr_finalization_seconds: float
     turn_ready_at: float
     first_endpoint_at: float | None = None
+    final_vad_endpoint_at: float | None = None
     speculation_started_at: float | None = None
     generation_started_at: float | None = None
     first_language_delta_at: float | None = None
@@ -583,6 +584,7 @@ class VoiceSession:
         self.latest_prediction: InteractionPrediction | None = None
         self.first_endpoint_at: float | None = None
         self.first_endpoint_input_sample_position: int | None = None
+        self.final_vad_endpoint_at: float | None = None
         self.turn_had_invalidated_candidate = False
         self.latest_user_speech_input_sample: int | None = None
         self.next_audio_sequence_number = 0
@@ -790,6 +792,7 @@ class VoiceSession:
 
                 vad_endpoint_detected = not is_speech and previous_chunk_was_speech
                 if is_speech and not previous_chunk_was_speech:
+                    self.final_vad_endpoint_at = None
                     vad_speculation_pending = False
                     await self._invalidate_speculative_candidate(
                         CandidateInvalidationReason.USER_ACTIVITY_RESUMED
@@ -798,18 +801,23 @@ class VoiceSession:
                     speech_understanding,
                     chunk,
                 )
-                if not is_speech and self.first_endpoint_at is None:
-                    self.first_endpoint_at = time.perf_counter()
-                    self.first_endpoint_input_sample_position = self.audio_sample_count
+                if vad_endpoint_detected:
+                    endpoint_at = time.perf_counter()
+                    self.final_vad_endpoint_at = endpoint_at
                     generation = self.active_generation
-                    if generation is not None and generation.latency.first_endpoint is None:
-                        generation.latency.first_endpoint_at = self.first_endpoint_at
-                        generation.latency.first_endpoint = MediaLatencyPoint(
-                            monotonic_time_seconds=self.first_endpoint_at,
-                            input_sample_position=self.audio_sample_count,
-                            output_sample_position=None,
-                            text_offset=None,
-                        )
+                    if generation is not None and generation.speculative:
+                        generation.latency.final_vad_endpoint_at = endpoint_at
+                    if self.first_endpoint_at is None:
+                        self.first_endpoint_at = endpoint_at
+                        self.first_endpoint_input_sample_position = self.audio_sample_count
+                        if generation is not None and generation.latency.first_endpoint is None:
+                            generation.latency.first_endpoint_at = self.first_endpoint_at
+                            generation.latency.first_endpoint = MediaLatencyPoint(
+                                monotonic_time_seconds=self.first_endpoint_at,
+                                input_sample_position=self.audio_sample_count,
+                                output_sample_position=None,
+                                text_offset=None,
+                            )
                 if vad_endpoint_detected and self.policy.vad_speculation_enabled:
                     vad_speculation_pending = True
                 prospective_silent_samples = silent_samples + sample_count
@@ -841,6 +849,7 @@ class VoiceSession:
                     self.latest_prediction = None
                     self.first_endpoint_at = None
                     self.first_endpoint_input_sample_position = None
+                    self.final_vad_endpoint_at = None
                     self.turn_had_invalidated_candidate = False
                     self.latest_user_speech_input_sample = None
                     await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
@@ -878,6 +887,7 @@ class VoiceSession:
                 self.latest_prediction = None
                 self.first_endpoint_at = None
                 self.first_endpoint_input_sample_position = None
+                self.final_vad_endpoint_at = None
                 self.turn_had_invalidated_candidate = False
                 self.latest_user_speech_input_sample = None
         finally:
@@ -1474,6 +1484,7 @@ class VoiceSession:
             created_at=created_at,
         )
         generation.latency.first_endpoint_at = self.first_endpoint_at
+        generation.latency.final_vad_endpoint_at = self.final_vad_endpoint_at
         generation.latency.speculation_started_at = created_at
         if (
             self.first_endpoint_at is not None
@@ -1705,6 +1716,7 @@ class VoiceSession:
         )
         generation.followed_invalidation = self.turn_had_invalidated_candidate
         generation.latency.first_endpoint_at = self.first_endpoint_at
+        generation.latency.final_vad_endpoint_at = self.final_vad_endpoint_at
         generation.latency.turn_committed_at = committed_at
         generation.latency.asr_finalized_at = finalized_at
         if (
@@ -3078,10 +3090,29 @@ class VoiceSession:
         await self._send_event(
             AssistantLatencyEvent(
                 generation_id=generation.generation_id,
-                endpoint_to_turn_commit_ms=(
+                first_vad_endpoint_to_turn_commit_ms=(
                     None
                     if latency.first_endpoint_at is None
                     else _milliseconds_between(latency.first_endpoint_at, turn_committed_at)
+                ),
+                final_vad_endpoint_to_turn_commit_ms=(
+                    None
+                    if latency.final_vad_endpoint_at is None
+                    else _milliseconds_between(latency.final_vad_endpoint_at, turn_committed_at)
+                ),
+                final_vad_endpoint_to_first_audio_send_ms=(
+                    None
+                    if latency.final_vad_endpoint_at is None
+                    else _milliseconds_between(
+                        latency.final_vad_endpoint_at,
+                        latency.first_audio_sent_at,
+                    )
+                ),
+                asr_finalization_ms=latency.asr_finalization_seconds * 1_000,
+                candidate_resolution_ms=(
+                    None
+                    if latency.candidate_promoted_at is None
+                    else _milliseconds_between(turn_committed_at, latency.candidate_promoted_at)
                 ),
                 turn_commit_to_playback_ms=_milliseconds_between(
                     turn_committed_at,
@@ -3395,6 +3426,7 @@ class VoiceSession:
             "first synthesis word",
         )
         first_audio_at = _require_timestamp(latency.first_audio_at, "first audio")
+        turn_committed_at = _require_timestamp(latency.turn_committed_at, "turn commitment")
         synthesis_metrics = latency.synthesis_metrics
         match synthesis_metrics:
             case KyutaiSynthesisFirstAudioMetrics():
@@ -3432,7 +3464,9 @@ class VoiceSession:
                 first_frame_generation_ms = "unknown"
         logger.info(
             "voice first audio latency: session=%s generation=%d "
-            "asr_finalization_ms=%.1f turn_commit_ms=%.1f llm_first_delta_ms=%.1f "
+            "first_vad_endpoint_to_commit_ms=%s final_vad_endpoint_to_commit_ms=%s "
+            "final_vad_endpoint_to_released_audio_ms=%s asr_finalization_ms=%.1f "
+            "candidate_resolution_ms=%s turn_commit_ms=%.1f llm_first_delta_ms=%.1f "
             "first_synthesis_word_ms=%.1f first_word_to_audio_ms=%.1f "
             "generation_to_audio_ms=%.1f tts_backend=%s "
             "tts_worker_first_word_to_audio_ms=%s "
@@ -3441,7 +3475,14 @@ class VoiceSession:
             "tts_prompt_preparation_ms=%s tts_first_frame_generation_ms=%s",
             self.session_id,
             generation.generation_id,
+            _optional_milliseconds_between(latency.first_endpoint_at, turn_committed_at),
+            _optional_milliseconds_between(latency.final_vad_endpoint_at, turn_committed_at),
+            _optional_milliseconds_between(
+                latency.final_vad_endpoint_at,
+                latency.first_audio_sent_at,
+            ),
             latency.asr_finalization_seconds * 1_000,
+            _optional_milliseconds_between(turn_committed_at, latency.candidate_promoted_at),
             _milliseconds_between(latency.turn_ready_at, generation_started_at),
             _milliseconds_between(generation_started_at, first_language_delta_at),
             _milliseconds_between(generation_started_at, first_synthesis_word_at),
@@ -3593,6 +3634,15 @@ def _milliseconds_between(started_at: float, finished_at: float) -> float:
     if finished_at < started_at:
         raise AssertionError("Latency timestamps must increase monotonically.")
     return (finished_at - started_at) * 1_000
+
+
+def _optional_milliseconds_between(
+    started_at: float | None,
+    finished_at: float | None,
+) -> str:
+    if started_at is None or finished_at is None:
+        return "unknown"
+    return f"{_milliseconds_between(started_at, finished_at):.1f}"
 
 
 def _optional_milliseconds(duration_seconds: float | None) -> str:

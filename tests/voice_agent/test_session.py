@@ -2987,7 +2987,11 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
     assert latency.first_browser_playback_ack is not None
     latency_event = latency_events[-1]
     assert latency_event["generation_id"] == 1
-    assert float(latency_event["endpoint_to_turn_commit_ms"]) >= 0
+    assert float(latency_event["first_vad_endpoint_to_turn_commit_ms"]) >= 0
+    assert float(latency_event["final_vad_endpoint_to_turn_commit_ms"]) >= 0
+    assert float(latency_event["final_vad_endpoint_to_first_audio_send_ms"]) >= 0
+    assert float(latency_event["asr_finalization_ms"]) >= 0
+    assert float(latency_event["candidate_resolution_ms"]) >= 0
     assert float(latency_event["turn_commit_to_playback_ms"]) >= 0
     assert float(latency_event["turn_commit_to_first_audio_send_ms"]) >= 0
     assert float(latency_event["generation_to_first_word_ms"]) >= 0
@@ -3044,6 +3048,41 @@ def test_prediction_observed_before_resumed_speech_cannot_start_candidate() -> N
 
     assert sessions[0].generations == {}
     assert language_model.conversations == []
+
+
+def test_latency_separates_first_pause_from_final_vad_endpoint() -> None:
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        policy=SessionPolicy(
+            silence_duration_ms=60,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=False,
+        ),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "assistant.audio.end")
+        send_playback_started(websocket, generation_id=1)
+        latency_events, _ = receive_until(websocket, "assistant.latency")
+        websocket.send_json({"type": "session.stop"})
+
+    latency_event = latency_events[-1]
+    first_pause_ms = float(latency_event["first_vad_endpoint_to_turn_commit_ms"])
+    final_endpoint_ms = float(latency_event["final_vad_endpoint_to_turn_commit_ms"])
+    assert first_pause_ms > final_endpoint_ms
+    assert float(latency_event["final_vad_endpoint_to_first_audio_send_ms"]) >= final_endpoint_ms
 
 
 def test_prediction_beyond_policy_lag_cannot_start_candidate() -> None:

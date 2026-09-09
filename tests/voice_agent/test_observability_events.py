@@ -42,7 +42,11 @@ def test_speech_debug_serialization_distinguishes_heartbeat_from_model_observati
 def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
     event = AssistantLatencyEvent(
         generation_id=4,
-        endpoint_to_turn_commit_ms=480.0,
+        first_vad_endpoint_to_turn_commit_ms=1_480.0,
+        final_vad_endpoint_to_turn_commit_ms=480.0,
+        final_vad_endpoint_to_first_audio_send_ms=990.0,
+        asr_finalization_ms=80.0,
+        candidate_resolution_ms=90.0,
         turn_commit_to_playback_ms=820.0,
         turn_commit_to_first_audio_send_ms=510.0,
         generation_to_first_word_ms=64.0,
@@ -58,7 +62,11 @@ def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
 
     payload = event.model_dump(mode="json")
 
-    assert payload["endpoint_to_turn_commit_ms"] == pytest.approx(480.0)
+    assert payload["first_vad_endpoint_to_turn_commit_ms"] == pytest.approx(1_480.0)
+    assert payload["final_vad_endpoint_to_turn_commit_ms"] == pytest.approx(480.0)
+    assert payload["final_vad_endpoint_to_first_audio_send_ms"] == pytest.approx(990.0)
+    assert payload["asr_finalization_ms"] == pytest.approx(80.0)
+    assert payload["candidate_resolution_ms"] == pytest.approx(90.0)
     assert payload["turn_commit_to_first_audio_send_ms"] == pytest.approx(510.0)
     assert payload["speculative_hidden_work_ms"] == pytest.approx(420.0)
     assert payload["prepared_qwen_token_count"] == 18
@@ -66,10 +74,14 @@ def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
     assert payload["first_tts_pcm_ready_at_commit"] is False
 
 
-def test_assistant_latency_allows_missing_silero_endpoint() -> None:
+def test_assistant_latency_allows_missing_vad_endpoints_and_candidate() -> None:
     event = AssistantLatencyEvent(
         generation_id=1,
-        endpoint_to_turn_commit_ms=None,
+        first_vad_endpoint_to_turn_commit_ms=None,
+        final_vad_endpoint_to_turn_commit_ms=None,
+        final_vad_endpoint_to_first_audio_send_ms=None,
+        asr_finalization_ms=40.0,
+        candidate_resolution_ms=None,
         turn_commit_to_playback_ms=800.0,
         turn_commit_to_first_audio_send_ms=500.0,
         generation_to_first_word_ms=60.0,
@@ -83,7 +95,10 @@ def test_assistant_latency_allows_missing_silero_endpoint() -> None:
         buffered_audio_ms=0.0,
     )
 
-    assert event.endpoint_to_turn_commit_ms is None
+    assert event.first_vad_endpoint_to_turn_commit_ms is None
+    assert event.final_vad_endpoint_to_turn_commit_ms is None
+    assert event.final_vad_endpoint_to_first_audio_send_ms is None
+    assert event.candidate_resolution_ms is None
 
 
 def test_latency_events_reject_negative_durations() -> None:

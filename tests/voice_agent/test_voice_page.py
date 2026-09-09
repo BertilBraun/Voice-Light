@@ -56,6 +56,10 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "assistant.latency"' in script_response.text
     assert 'label: "total"' in script_response.text
     assert 'label: "endpoint"' in script_response.text
+    assert 'label: "first pause"' in script_response.text
+    assert 'label: "end→PCM"' in script_response.text
+    assert 'label: "ASR final"' in script_response.text
+    assert 'label: "candidate"' in script_response.text
     assert 'label: "release"' in script_response.text
     assert 'label: "prepared"' in script_response.text
     assert 'label: "LLM"' in script_response.text

@@ -136,13 +136,42 @@ class ConversationTurn {
 
   setLatencies(latencies) {
     const measurements = [
-      ...(latencies.endpoint_to_turn_commit_ms === null
+      ...(latencies.final_vad_endpoint_to_turn_commit_ms === null
         ? []
         : [
             {
               label: "endpoint",
-              value: latencies.endpoint_to_turn_commit_ms,
-              description: "First Silero speech endpoint to server turn commitment.",
+              value: latencies.final_vad_endpoint_to_turn_commit_ms,
+              description: "Final Silero speech endpoint to server turn commitment.",
+            },
+            {
+              label: "end→PCM",
+              value: latencies.final_vad_endpoint_to_first_audio_send_ms,
+              description: "Final Silero speech endpoint to the first released PCM packet.",
+            },
+          ]),
+      ...(latencies.first_vad_endpoint_to_turn_commit_ms === null
+        ? []
+        : [
+            {
+              label: "first pause",
+              value: latencies.first_vad_endpoint_to_turn_commit_ms,
+              description:
+                "First Silero endpoint in the utterance to commitment; this includes resumed speech.",
+            },
+          ]),
+      {
+        label: "ASR final",
+        value: latencies.asr_finalization_ms,
+        description: "Time spent finalizing the streaming ASR turn.",
+      },
+      ...(latencies.candidate_resolution_ms === null
+        ? []
+        : [
+            {
+              label: "candidate",
+              value: latencies.candidate_resolution_ms,
+              description: "Turn commitment to speculative-candidate promotion.",
             },
           ]),
       {

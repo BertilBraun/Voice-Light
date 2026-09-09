@@ -580,7 +580,11 @@ class AssistantAudioTextBoundaryEvent(FrozenBaseModel):
 class AssistantLatencyEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.ASSISTANT_LATENCY] = VoiceServerEventType.ASSISTANT_LATENCY
     generation_id: int = Field(gt=0)
-    endpoint_to_turn_commit_ms: float | None = Field(default=None, ge=0)
+    first_vad_endpoint_to_turn_commit_ms: float | None = Field(default=None, ge=0)
+    final_vad_endpoint_to_turn_commit_ms: float | None = Field(default=None, ge=0)
+    final_vad_endpoint_to_first_audio_send_ms: float | None = Field(default=None, ge=0)
+    asr_finalization_ms: float = Field(ge=0)
+    candidate_resolution_ms: float | None = Field(default=None, ge=0)
     turn_commit_to_playback_ms: float = Field(ge=0)
     turn_commit_to_first_audio_send_ms: float = Field(ge=0)
     generation_to_first_word_ms: float = Field(ge=0)
