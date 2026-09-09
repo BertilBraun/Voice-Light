@@ -17,11 +17,6 @@ Qwen start concurrently, then the shared search generator and Kyutai start in de
 background loading: `/health/live` can succeed before `/health/ready`, and `/v1/voice` closes with
 retryable code `1013` until every required model is ready.
 
-Modal CPU memory snapshots retain the parent process's global Python and framework imports. Model
-workers and CUDA initialization remain in the normal `@modal.enter` hook after restore. This is
-deliberately different from the reverted GPU snapshot experiment: no subprocess, model, or CUDA
-state is captured.
-
 One persistent Nemotron subprocess owns both streaming RNNT decoding and turn-adapter inference.
 The adapter consumes layer 6/12/18/24 features from the RNNT encoder call and retains incremental
 causal convolution and GRU state. A second Nemotron backbone and rolling waveform re-encoding are
@@ -143,10 +138,12 @@ request completed in 44.792 seconds and the immediately following warm request i
 A live `session.start` WebSocket smoke against the deployed `/v1/voice` route received a validated
 `session.ready` event in 1.022 seconds while warm.
 
-GPU model snapshot attempts were reverted: Modal consistently failed to capture the current
-multi-process GPU stack, including after both vLLM engines entered sleep mode and after vLLM was
-replaced by direct Transformers. The endpoint only snapshots imports in the parent process and
-favors reliable cached model loading over the alpha GPU snapshot path that prevented admission.
+CPU and GPU snapshot attempts were reverted. GPU snapshots consistently failed to capture the
+current multi-process GPU stack, including after both vLLM engines entered sleep mode and after
+vLLM was replaced by direct Transformers. A later import-only CPU snapshot added approximately 30
+seconds of capture-and-restore work before model loading on each newly sampled Modal worker type.
+The endpoint therefore favors reliable cached loading over snapshot paths that prevented or delayed
+admission.
 
 An instrumented deployment after the shared-adapter revision fix measured 46.823 seconds from
 WebSocket connection attempt to session readiness on a cold container. Two immediately following
@@ -164,6 +161,13 @@ two similarly sized bootstrap periods without making Kyutai a third concurrent C
 The historical pre-removal demo is not a like-for-like ten-second baseline: it used main-process
 Transformers Qwen, CosyVoice2 0.5B, and only isolated Nemotron. The current deployment uses isolated
 workers for merged Qwen 1.7B, Nemotron 0.6B plus the adapter, and Kyutai 1.6B.
+
+With staged startup deployed, the first model-loading critical path was 28.847 seconds: 0.171
+seconds for Silero, 12.071/12.587 seconds for concurrent Nemotron/Qwen, then 15.930 seconds for
+Kyutai. A second, slower worker completed the same phases in 42.715 seconds: 0.233 seconds,
+18.840/19.088 seconds concurrently, then 23.145 seconds. Sequential loading at those measured
+second-run stage rates would have taken about 61.5 seconds. The import-only CPU snapshot confounded
+the end-to-end samples by adding about 30 seconds before these phases and was removed.
 
 The same fixed 7-second WAV smoke measured commit-to-first-PCM at 247.09 ms cold and 183.22/224.72
 ms warm. Separate live traces around Kyutai's first word measured 436.6 and 443.0 ms from first word

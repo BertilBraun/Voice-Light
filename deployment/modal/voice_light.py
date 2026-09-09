@@ -62,7 +62,6 @@ MODEL_REPOSITORIES: Final = (
 @dataclass(frozen=True)
 class ModalDeploymentConfiguration:
     gpu: str = "L40S"
-    enable_memory_snapshot: bool = True
     scaledown_window_seconds: int = 1_200
     startup_timeout_seconds: int = 1_800
     function_timeout_seconds: int = 86_400
@@ -186,7 +185,6 @@ def cache_models() -> None:
 
 @app.cls(
     image=image,
-    enable_memory_snapshot=configuration.enable_memory_snapshot,
     env={"HF_HUB_OFFLINE": "1"},
     gpu=configuration.gpu,
     max_containers=1,
