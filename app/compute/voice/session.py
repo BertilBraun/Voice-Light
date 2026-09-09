@@ -168,6 +168,7 @@ class SessionPolicy:
     non_floor_feedback_overlap_threshold: float = 0.82
     overlap_classification_deadline_ms: int = 500
     transcript_free_floor_take_deadline_ms: int = 1_200
+    overlap_finalization_grace_ms: int = 120
     overlap_rearm_silence_ms: int = 160
     vad_speculation_enabled: bool = True
     vad_speculation_debounce_ms: int = 100
@@ -244,6 +245,9 @@ class SessionPolicy:
             "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS",
             1_200,
         )
+        overlap_finalization_grace_ms = _environment_integer(
+            environment, "VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS", 120
+        )
         overlap_rearm_silence_ms = _environment_integer(
             environment,
             "VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS",
@@ -264,6 +268,7 @@ class SessionPolicy:
             non_floor_feedback_overlap_threshold=non_floor_feedback_overlap_threshold,
             overlap_classification_deadline_ms=overlap_classification_deadline_ms,
             transcript_free_floor_take_deadline_ms=(transcript_free_floor_take_deadline_ms),
+            overlap_finalization_grace_ms=overlap_finalization_grace_ms,
             overlap_rearm_silence_ms=overlap_rearm_silence_ms,
             maximum_prediction_lag_ms=maximum_prediction_lag_ms,
         )
@@ -294,6 +299,8 @@ class SessionPolicy:
                 "The transcript-free floor-take deadline must exceed the overlap "
                 "classification deadline."
             )
+        if self.overlap_finalization_grace_ms <= 0:
+            raise ValueError("The overlap finalization grace must be positive.")
         if self.overlap_rearm_silence_ms <= 0:
             raise ValueError("The overlap rearm silence must be positive.")
         if self.tool_timeout_seconds <= 0.0:
@@ -1103,22 +1110,19 @@ class VoiceSession:
         if generation is None or generation.generation_id != overlap.generation_id:
             self.active_user_overlap = None
             return OverlapResolutionKind.NON_FLOOR_TAKING
-        resume_command = self.playback_controller.issue_resume(
-            generation_id=generation.generation_id,
-            causal_event_id=overlap.decision_event_id,
-            causal_source=provisional_decision.causal_source,
-            stream_epoch=overlap.stream_epoch,
-            turn_epoch=overlap.turn_epoch,
-            confidence=provisional_decision.confidence,
-        )
-        generation.continuation_allowed.set()
-        generation.synthesis_budget_available.set()
-        if resume_command is not None:
-            overlap.resume_command_id = resume_command.command_id
-            await self._send_event(resume_command)
         finalization_started_at = time.perf_counter()
+        finalization_task = asyncio.create_task(speech_understanding.finalize_turn())
+        resumed_early = False
         try:
-            finalized_turn = await speech_understanding.finalize_turn()
+            try:
+                finalized_turn = await asyncio.wait_for(
+                    asyncio.shield(finalization_task),
+                    timeout=self.policy.overlap_finalization_grace_ms / 1_000,
+                )
+            except TimeoutError:
+                await self._resume_provisional_overlap(generation, overlap, provisional_decision)
+                resumed_early = True
+                finalized_turn = await finalization_task
             final_text = finalized_turn.text.strip()
             for event in speech_understanding.drain_events():
                 if isinstance(event, TranscriptRevision):
@@ -1180,6 +1184,8 @@ class VoiceSession:
                 finalization_seconds=finalized_at - finalization_started_at,
             )
             return OverlapResolutionKind.NON_FLOOR_TAKING
+        if not resumed_early:
+            await self._resume_provisional_overlap(generation, overlap, final_decision)
         await self._record_overlap_resolution(overlap, final_decision, generation)
         self.active_user_overlap = None
         logger.info(
@@ -1193,6 +1199,26 @@ class VoiceSession:
             provisional_decision.kind,
         )
         return OverlapResolutionKind.NON_FLOOR_TAKING
+
+    async def _resume_provisional_overlap(
+        self,
+        generation: ActiveGeneration,
+        overlap: ActiveUserOverlap,
+        decision: ProvisionalOverlapDecision,
+    ) -> None:
+        resume_command = self.playback_controller.issue_resume(
+            generation_id=generation.generation_id,
+            causal_event_id=overlap.decision_event_id,
+            causal_source=decision.causal_source,
+            stream_epoch=overlap.stream_epoch,
+            turn_epoch=overlap.turn_epoch,
+            confidence=decision.confidence,
+        )
+        generation.continuation_allowed.set()
+        generation.synthesis_budget_available.set()
+        if resume_command is not None:
+            overlap.resume_command_id = resume_command.command_id
+            await self._send_event(resume_command)
 
     async def _record_overlap_resolution(
         self,
