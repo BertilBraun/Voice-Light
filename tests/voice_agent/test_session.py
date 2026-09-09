@@ -817,6 +817,10 @@ class DeterministicTurnPredictionSource:
         self.observations: list[TurnPredictionObservation] = []
         self.closed = False
 
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        del observation
+        return True
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -843,6 +847,10 @@ class DelayedTurnPredictionSource:
         self.observation_count = 0
         self.closed = False
 
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        del observation
+        return True
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -864,6 +872,10 @@ class DelayedTurnPredictionSource:
 class FailingTurnPredictionSource:
     def __init__(self) -> None:
         self.failure_count = 0
+
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        del observation
+        return True
 
     async def predict(
         self,

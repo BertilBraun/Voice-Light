@@ -536,11 +536,17 @@ class CompositeSpeechUnderstandingSession:
             if chunk.silero_evidence.is_speech:
                 self.interaction_observation_started = True
             return
+        observation = TurnPredictionObservation(
+            audio_chunk=chunk,
+            transcript_revision=self.transcript_revisions.latest,
+        )
+        if not self.prediction_source.prediction_expected(observation):
+            return
         if self.prediction_task is None:
             self.prediction_task = asyncio.create_task(self._run_optional_predictor())
         work = _PredictionWork(
             chunk=chunk,
-            transcript_revision=self.transcript_revisions.latest,
+            transcript_revision=observation.transcript_revision,
         )
         if self.prediction_queue.full():
             dropped_observation_count = (

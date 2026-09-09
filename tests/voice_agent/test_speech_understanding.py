@@ -84,10 +84,21 @@ class SourceProvider:
 
 
 class RecordingPredictionSource:
-    def __init__(self, condition_on_transcript: bool) -> None:
+    def __init__(
+        self,
+        condition_on_transcript: bool,
+        expected_sequences: frozenset[int] | None = None,
+    ) -> None:
         self.condition_on_transcript = condition_on_transcript
+        self.expected_sequences = expected_sequences
         self.observations: list[TurnPredictionObservation] = []
         self.closed = False
+
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        return (
+            self.expected_sequences is None
+            or observation.audio_chunk.sequence_number in self.expected_sequences
+        )
 
     async def predict(
         self,
@@ -103,6 +114,10 @@ class RecordingPredictionSource:
 
 
 class FailingPredictionSource:
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        del observation
+        return True
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -119,6 +134,10 @@ class BlockingPredictionSource:
         self.started = asyncio.Event()
         self.cancelled = False
         self.observation_count = 0
+
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        del observation
+        return True
 
     async def predict(
         self,
@@ -223,6 +242,33 @@ def test_optional_predictor_failure_degrades_without_killing_asr() -> None:
         )
         assert "synthetic optional detector failure" in degraded.reason
         assert finalized.text == "hello"
+        await session.close()
+
+    asyncio.run(exercise())
+
+
+def test_prediction_source_cadence_filters_unmatched_audio_frames() -> None:
+    async def exercise() -> None:
+        source = RecordingPredictionSource(
+            condition_on_transcript=False,
+            expected_sequences=frozenset({2, 5}),
+        )
+        provider = create_provider(source)
+        session = provider.create_session(stream_epoch=1)
+
+        for sequence_number in range(6):
+            await session.add_audio(
+                create_chunk(
+                    sequence_number=sequence_number,
+                    stream_epoch=1,
+                    turn_epoch=1,
+                )
+            )
+
+        assert [observation.audio_chunk.sequence_number for observation in source.observations] == [
+            2,
+            5,
+        ]
         await session.close()
 
     asyncio.run(exercise())

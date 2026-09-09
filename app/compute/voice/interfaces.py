@@ -131,6 +131,8 @@ class TurnPredictionObservation:
 
 
 class TurnPredictionSource(Protocol):
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool: ...
+
     async def predict(
         self,
         observation: TurnPredictionObservation,

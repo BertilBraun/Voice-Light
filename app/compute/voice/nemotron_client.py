@@ -260,6 +260,11 @@ class NemotronTurnPredictionSource:
     def __init__(self, transcriber: NemotronStreamingTranscriber) -> None:
         self.transcriber = transcriber
 
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        return self.transcriber.require_active_session().prediction_expected(
+            observation.audio_chunk
+        )
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -334,6 +339,9 @@ class NemotronStreamingSession:
         if self.turn_adapter_error is not None:
             raise RuntimeError(self.turn_adapter_error)
         return self.predictions.pop(observation_id)
+
+    def prediction_expected(self, chunk: CapturedAudioChunk) -> bool:
+        return _observation_id(chunk) in self.expected_prediction_observations
 
     async def finish(self) -> str:
         if self.finished:
