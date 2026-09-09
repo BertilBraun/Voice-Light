@@ -20,6 +20,8 @@ class RecordingComputeRuntime(ComputeRuntime):
         self.events: list[str] = []
         self.parallel_loads_started = asyncio.Event()
         self.parallel_load_count = 0
+        self.parallel_warmups_started = asyncio.Event()
+        self.parallel_warmup_count = 0
 
     async def _load_speech_detector(self) -> None:
         self.events.append("speech_detection")
@@ -37,10 +39,10 @@ class RecordingComputeRuntime(ComputeRuntime):
         self.events.append("speech_synthesis")
 
     async def _warm_streaming_asr(self) -> None:
-        self.events.append("streaming_asr_warmup")
+        await self._record_parallel_warmup("streaming_asr")
 
     async def _warm_language_model(self) -> None:
-        self.events.append("language_model_warmup")
+        await self._record_parallel_warmup("language_model")
 
     async def _warm_speech_synthesizer(self) -> None:
         self.events.append("speech_synthesis_warmup")
@@ -52,6 +54,14 @@ class RecordingComputeRuntime(ComputeRuntime):
             self.parallel_loads_started.set()
         await asyncio.wait_for(self.parallel_loads_started.wait(), timeout=1.0)
         self.events.append(f"{stage_name}_completed")
+
+    async def _record_parallel_warmup(self, stage_name: str) -> None:
+        self.events.append(f"{stage_name}_warmup_started")
+        self.parallel_warmup_count += 1
+        if self.parallel_warmup_count == 2:
+            self.parallel_warmups_started.set()
+        await asyncio.wait_for(self.parallel_warmups_started.wait(), timeout=1.0)
+        self.events.append(f"{stage_name}_warmup_completed")
 
 
 def test_runtime_stages_nemotron_and_qwen_startup_concurrently(tmp_path: Path) -> None:
@@ -69,9 +79,13 @@ def test_runtime_stages_nemotron_and_qwen_startup_concurrently(tmp_path: Path) -
         "language_model_started",
         "language_model_completed",
     }
-    assert events[5:] == [
-        "streaming_asr_warmup",
-        "language_model_warmup",
+    assert set(events[5:9]) == {
+        "streaming_asr_warmup_started",
+        "streaming_asr_warmup_completed",
+        "language_model_warmup_started",
+        "language_model_warmup_completed",
+    }
+    assert events[9:] == [
         "search_summarizer",
         "speech_synthesis",
         "speech_synthesis_warmup",

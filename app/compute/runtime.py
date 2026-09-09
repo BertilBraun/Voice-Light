@@ -151,8 +151,10 @@ class ComputeRuntime:
             self._load_streaming_asr(),
             self._load_speech_synthesizer(),
         )
-        await self._warm_streaming_asr()
-        await self._warm_language_model()
+        await asyncio.gather(
+            self._warm_streaming_asr(),
+            self._warm_language_model(),
+        )
         await self._warm_speech_synthesizer()
         logger.info("all required compute models ready")
 
@@ -233,8 +235,10 @@ class ComputeRuntime:
             self._load_streaming_asr(),
             self._load_language_model(),
         )
-        await self._warm_streaming_asr()
-        await self._warm_language_model()
+        await asyncio.gather(
+            self._warm_streaming_asr(),
+            self._warm_language_model(),
+        )
         await self._load_search_text_generator()
         await self._load_speech_synthesizer()
         await self._warm_speech_synthesizer()
