@@ -519,11 +519,13 @@ for the connection lifetime; each generation owns one text task and one synthesi
 Qwen text and Kyutai audio run as a pipeline: complete words are sent to TTS while Qwen continues
 generating later text.
 
-The browser receives an ephemeral debug observation for each input frame and merges adapter
-evidence back onto the audio observation that caused it. Its rolling 20-second canvas renders
-Silero speech and assistant-audible lanes plus turn-completion, floor-take, and non-floor-feedback
-probability traces. Scalar fields expose the latest probabilities, adapter health, final policy
-decision, and decision latency. These events are deliberately excluded from conversation history.
+The browser receives an ephemeral acoustic debug observation every 80 ms throughout the session,
+including user silence and assistant playback; Silero or playback-state transitions emit
+immediately. Adapter evidence is merged back onto the audio observation that caused it. The rolling
+20-second canvas renders Silero speech and assistant-audible lanes plus turn-completion, floor-take,
+and non-floor-feedback probability traces. Scalar fields expose the latest probabilities, adapter
+health, final policy decision, and decision latency. These events are deliberately excluded from
+conversation history.
 
 Worker exceptions and orchestration failures are logged with session/generation context and sent to
 the development browser as structured `error` events containing `component`, `operation`, optional

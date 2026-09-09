@@ -1112,6 +1112,56 @@ def test_full_session_streams_audio_and_commits_naturally_completed_history() ->
     assert synthesizer.sessions[0] is not synthesizer.sessions[1]
 
 
+def test_speech_debug_continues_during_session_silence_at_eighty_milliseconds() -> None:
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        assert websocket.receive_json()["type"] == "session.ready"
+
+        websocket.send_bytes(SILENCE_CHUNK)
+        first_debug = websocket.receive_json()
+        for _ in range(4):
+            websocket.send_bytes(SILENCE_CHUNK)
+        second_debug = websocket.receive_json()
+        websocket.send_json({"type": "session.stop"})
+
+    assert first_debug["type"] == "speech_understanding.debug"
+    assert first_debug["silero_speech"] is False
+    assert first_debug["assistant_audible"] is False
+    assert first_debug["observed_audio_time_ms"] == 20
+    assert second_debug["type"] == "speech_understanding.debug"
+    assert second_debug["observed_audio_time_ms"] == 100
+
+
+def test_speech_debug_reports_assistant_playback_during_user_silence() -> None:
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        assert websocket.receive_json()["type"] == "session.ready"
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.end")
+        send_playback_started(websocket, generation_id=1)
+        websocket.send_bytes(SILENCE_CHUNK)
+        while True:
+            event = websocket.receive_json()
+            if event["type"] == "speech_understanding.debug" and event["assistant_audible"] is True:
+                assistant_debug = event
+                break
+        websocket.send_json({"type": "session.stop"})
+
+    assert assistant_debug["silero_speech"] is False
+
+
 def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> None:
     language_model = ScriptedWeatherLanguageModel()
     weather_handler = ControlledWeatherHandler()

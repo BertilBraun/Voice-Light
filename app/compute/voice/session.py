@@ -142,6 +142,7 @@ INPUT_SAMPLE_RATE = 16_000
 PCM_BYTES_PER_SAMPLE = 2
 AUDIO_QUEUE_MAX_CHUNKS = 100
 PLAYBACK_STOP_TIMEOUT_SECONDS = 0.25
+SPEECH_DEBUG_INTERVAL_SAMPLES = INPUT_SAMPLE_RATE * 80 // 1_000
 logger = logging.getLogger(__name__)
 
 
@@ -535,6 +536,9 @@ class VoiceSession:
         self.turn_had_invalidated_candidate = False
         self.latest_user_speech_input_sample: int | None = None
         self.next_audio_sequence_number = 0
+        self.last_speech_debug_input_sample: int | None = None
+        self.last_speech_debug_silero_speech: bool | None = None
+        self.last_speech_debug_assistant_audible: bool | None = None
         self.active_user_overlap: ActiveUserOverlap | None = None
         self.user_overlap_traces: list[ActiveUserOverlap] = []
         self.overlap_metrics = OverlapMetrics()
@@ -697,6 +701,7 @@ class VoiceSession:
                     playback_condition=observed_playback_condition,
                 )
                 self.next_audio_sequence_number += 1
+                await self._send_periodic_speech_debug(chunk)
                 if not speech_active:
                     pre_roll_chunks.append(chunk)
                     pre_roll_samples += sample_count
@@ -1161,18 +1166,6 @@ class VoiceSession:
                 component=VoiceComponent.ASR,
                 operation=VoiceOperation.TRANSCRIBE,
             ) from error
-        await self._send_event(
-            SpeechUnderstandingDebugEvent(
-                adapter_status=speech_understanding.turn_adapter_status,
-                silero_speech=chunk.silero_evidence.is_speech,
-                assistant_audible=chunk.playback_condition.assistant_audible,
-                turn_completion_probability=None,
-                floor_take_probability=None,
-                non_floor_feedback_probability=None,
-                inference_latency_ms=None,
-                observed_audio_time_ms=chunk.end_input_sample * 1_000 // INPUT_SAMPLE_RATE,
-            )
-        )
         latest_prediction: InteractionPrediction | None = None
         for event in speech_understanding.drain_events():
             match event:
@@ -1237,6 +1230,36 @@ class VoiceSession:
                             )
                         )
         return latest_prediction
+
+    async def _send_periodic_speech_debug(self, chunk: CapturedAudioChunk) -> None:
+        silero_speech = chunk.silero_evidence.is_speech
+        assistant_audible = chunk.playback_condition.assistant_audible
+        state_changed = (
+            silero_speech != self.last_speech_debug_silero_speech
+            or assistant_audible != self.last_speech_debug_assistant_audible
+        )
+        interval_elapsed = (
+            self.last_speech_debug_input_sample is None
+            or chunk.end_input_sample - self.last_speech_debug_input_sample
+            >= SPEECH_DEBUG_INTERVAL_SAMPLES
+        )
+        if not state_changed and not interval_elapsed:
+            return
+        self.last_speech_debug_input_sample = chunk.end_input_sample
+        self.last_speech_debug_silero_speech = silero_speech
+        self.last_speech_debug_assistant_audible = assistant_audible
+        await self._send_event(
+            SpeechUnderstandingDebugEvent(
+                adapter_status=self.speech_understanding.turn_adapter_status,
+                silero_speech=silero_speech,
+                assistant_audible=assistant_audible,
+                turn_completion_probability=None,
+                floor_take_probability=None,
+                non_floor_feedback_probability=None,
+                inference_latency_ms=None,
+                observed_audio_time_ms=chunk.end_input_sample * 1_000 // INPUT_SAMPLE_RATE,
+            )
+        )
 
     def _prediction_is_applicable(
         self,

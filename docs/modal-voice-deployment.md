@@ -97,8 +97,9 @@ cancellation; strong non-floor-feedback evidence resumes the same generation wit
 the deadline preserves the conservative fallback. The browser debug panel shows Silero state,
 turn completion, floor take, non-floor feedback, policy decision, and decision latency. These are
 ephemeral events and never enter durable audible-only conversation history. Its rolling 20-second
-timeline displays every received acoustic frame and merges causal adapter evidence at Nemotron's
-approximately 169 ms encoder cadence; it does not invent interpolated model predictions.
+timeline advances every 80 ms during user speech, silence, and assistant playback, and merges causal
+adapter evidence at Nemotron's approximately 169 ms encoder cadence; it does not invent
+interpolated model predictions.
 
 ## Validation and measured deployment results
 
