@@ -419,6 +419,7 @@ class VoiceServerEventType(StrEnum):
     SEARCH_DEBUG = "search.debug"
     SPEECH_UNDERSTANDING_DEBUG = "speech_understanding.debug"
     INTERACTION_POLICY_DEBUG = "interaction_policy.debug"
+    INTERACTION_ACTION_DEBUG = "interaction_action.debug"
     ASSISTANT_TEXT_DELTA = "assistant.text.delta"
     ASSISTANT_AUDIO_START = "assistant.audio.start"
     ASSISTANT_AUDIO_END = "assistant.audio.end"
@@ -538,7 +539,16 @@ class InteractionPolicyDebugEvent(FrozenBaseModel):
     decision: OverlapResolutionKind
     reason: str
     decision_latency_ms: float = Field(ge=0.0)
+    first_applicable_prediction_latency_ms: float | None = Field(default=None, ge=0.0)
     causal_source: CausalSource
+
+
+class InteractionActionDebugEvent(FrozenBaseModel):
+    type: Literal[VoiceServerEventType.INTERACTION_ACTION_DEBUG] = (
+        VoiceServerEventType.INTERACTION_ACTION_DEBUG
+    )
+    action: PlaybackCommandAction
+    onset_to_acknowledgement_ms: float = Field(ge=0.0)
 
 
 class AssistantTextDeltaEvent(FrozenBaseModel):
@@ -570,10 +580,18 @@ class AssistantAudioTextBoundaryEvent(FrozenBaseModel):
 class AssistantLatencyEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.ASSISTANT_LATENCY] = VoiceServerEventType.ASSISTANT_LATENCY
     generation_id: int = Field(gt=0)
+    endpoint_to_turn_commit_ms: float | None = Field(default=None, ge=0)
     turn_commit_to_playback_ms: float = Field(ge=0)
+    turn_commit_to_first_audio_send_ms: float = Field(ge=0)
     generation_to_first_word_ms: float = Field(ge=0)
     tts_first_word_to_first_pcm_ms: float = Field(ge=0)
     first_audio_send_to_playback_ms: float = Field(ge=0)
+    speculative_candidate_promoted: bool
+    speculative_hidden_work_ms: float = Field(ge=0)
+    prepared_qwen_token_count: int = Field(ge=0)
+    prepared_word_count: int = Field(ge=0)
+    first_tts_pcm_ready_at_commit: bool
+    buffered_audio_ms: float = Field(ge=0)
 
 
 class PlaybackCommandEvent(FrozenBaseModel):
@@ -634,6 +652,7 @@ VoiceServerEvent = Annotated[
     | SearchDebugEvent
     | SpeechUnderstandingDebugEvent
     | InteractionPolicyDebugEvent
+    | InteractionActionDebugEvent
     | AssistantTextDeltaEvent
     | AssistantAudioBoundaryEvent
     | AssistantAudioTextBoundaryEvent

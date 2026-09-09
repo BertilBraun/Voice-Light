@@ -29,11 +29,14 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'id="debug-floor-take"' in page_response.text
     assert 'id="debug-non-floor"' in page_response.text
     assert 'id="debug-adapter-status"' in page_response.text
+    assert 'id="debug-prediction-latency"' in page_response.text
+    assert 'id="debug-action-latency"' in page_response.text
     assert 'id="interaction-timeline"' in page_response.text
     assert 'message.type === "speech_understanding.debug"' in script_response.text
     assert "updateInteractionEvidence(message)" in script_response.text
     assert "INTERACTION_TIMELINE_DURATION_MS = 20000" in script_response.text
     assert 'message.type === "interaction_policy.debug"' in script_response.text
+    assert 'message.type === "interaction_action.debug"' in script_response.text
     assert "console.table(message.results)" in script_response.text
     assert '"Isolated Qwen summary / main-agent tool result"' in script_response.text
     assert "console.table(message.messages)" in script_response.text
@@ -49,6 +52,9 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "assistant.audio.text_boundary"' in script_response.text
     assert 'message.type === "assistant.latency"' in script_response.text
     assert 'label: "total"' in script_response.text
+    assert 'label: "endpoint"' in script_response.text
+    assert 'label: "release"' in script_response.text
+    assert 'label: "prepared"' in script_response.text
     assert 'label: "LLM"' in script_response.text
     assert 'label: "TTS"' in script_response.text
     assert 'label: "play"' in script_response.text
@@ -69,7 +75,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
     assert "playback-worklet.js?v=4" in script_response.text
-    assert "app.js?v=10" in page_response.text
+    assert "app.js?v=11" in page_response.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text
     assert "local_time_zone: LOCAL_TIME_ZONE" in script_response.text
     assert 'from "./spoken-text-progress.mjs"' in script_response.text

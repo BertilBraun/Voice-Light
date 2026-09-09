@@ -2834,10 +2834,18 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
     assert latency.first_browser_playback_ack is not None
     latency_event = latency_events[-1]
     assert latency_event["generation_id"] == 1
+    assert float(latency_event["endpoint_to_turn_commit_ms"]) >= 0
     assert float(latency_event["turn_commit_to_playback_ms"]) >= 0
+    assert float(latency_event["turn_commit_to_first_audio_send_ms"]) >= 0
     assert float(latency_event["generation_to_first_word_ms"]) >= 0
     assert float(latency_event["tts_first_word_to_first_pcm_ms"]) >= 0
     assert float(latency_event["first_audio_send_to_playback_ms"]) >= 0
+    assert latency_event["speculative_candidate_promoted"] is True
+    assert float(latency_event["speculative_hidden_work_ms"]) >= 0
+    assert int(latency_event["prepared_qwen_token_count"]) >= 0
+    assert int(latency_event["prepared_word_count"]) >= 1
+    assert isinstance(latency_event["first_tts_pcm_ready_at_commit"], bool)
+    assert float(latency_event["buffered_audio_ms"]) >= 0
     assert report.commit_to_first_played_audio_p50_ms is not None
 
 

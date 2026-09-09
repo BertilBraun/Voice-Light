@@ -23,6 +23,8 @@ const debugFloorTake = document.querySelector("#debug-floor-take");
 const debugNonFloor = document.querySelector("#debug-non-floor");
 const debugPolicyDecision = document.querySelector("#debug-policy-decision");
 const debugPolicyLatency = document.querySelector("#debug-policy-latency");
+const debugPredictionLatency = document.querySelector("#debug-prediction-latency");
+const debugActionLatency = document.querySelector("#debug-action-latency");
 const interactionTimeline = document.querySelector("#interaction-timeline");
 
 let socket;
@@ -128,11 +130,25 @@ class ConversationTurn {
 
   setLatencies(latencies) {
     const measurements = [
+      ...(latencies.endpoint_to_turn_commit_ms === null
+        ? []
+        : [
+            {
+              label: "endpoint",
+              value: latencies.endpoint_to_turn_commit_ms,
+              description: "First Silero speech endpoint to server turn commitment.",
+            },
+          ]),
       {
         label: "total",
         value: latencies.turn_commit_to_playback_ms,
         description:
           "Committed user turn to the server receiving the browser's first-rendered-audio acknowledgement.",
+      },
+      {
+        label: "release",
+        value: latencies.turn_commit_to_first_audio_send_ms,
+        description: "Server turn commitment to the first released PCM packet.",
       },
       {
         label: "LLM",
@@ -151,6 +167,17 @@ class ConversationTurn {
           "First PCM packet sent by the server to receipt of the browser's first-rendered-audio acknowledgement.",
       },
     ];
+    if (latencies.speculative_candidate_promoted) {
+      measurements.push({
+        label: "prepared",
+        value: latencies.speculative_hidden_work_ms,
+        description:
+          `${latencies.prepared_qwen_token_count} Qwen tokens, ` +
+          `${latencies.prepared_word_count} TTS words, ` +
+          `${latencies.buffered_audio_ms.toFixed(1)} ms buffered audio; ` +
+          `first PCM ready: ${latencies.first_tts_pcm_ready_at_commit ? "yes" : "no"}.`,
+      });
+    }
     this.latencies.replaceChildren(
       ...measurements.map(({ label, value, description }) => {
         const measurement = document.createElement("span");
@@ -422,6 +449,14 @@ function handleMessage(event) {
   if (message.type === "interaction_policy.debug") {
     debugPolicyDecision.textContent = `${message.decision} · ${message.reason}`;
     debugPolicyLatency.textContent = `${message.decision_latency_ms.toFixed(1)} ms`;
+    debugPredictionLatency.textContent =
+      message.first_applicable_prediction_latency_ms === null
+        ? "none"
+        : `${message.first_applicable_prediction_latency_ms.toFixed(1)} ms`;
+  }
+  if (message.type === "interaction_action.debug") {
+    debugActionLatency.textContent =
+      `${message.action} · ${message.onset_to_acknowledgement_ms.toFixed(1)} ms`;
   }
   if (message.type === "transcript.partial" || message.type === "transcript.final") {
     updateUserDraft(message.text);

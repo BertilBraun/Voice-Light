@@ -85,6 +85,7 @@ from app.compute.voice.schemas import (
     CapturedAudioChunk,
     CausalSource,
     ErrorEvent,
+    InteractionActionDebugEvent,
     InteractionPolicyDebugEvent,
     InteractionPrediction,
     LlmHistoryEvent,
@@ -322,6 +323,27 @@ class GenerationLatency:
     first_final_answer_text: MediaLatencyPoint | None = None
     first_final_answer_pcm: MediaLatencyPoint | None = None
     cancelled_or_invalidated_at: float | None = None
+    commit_readiness: GenerationCommitReadiness | None = None
+
+
+@dataclass(frozen=True)
+class GenerationCommitReadiness:
+    speculative_candidate: bool
+    hidden_work_ms: float
+    qwen_token_count: int
+    synthesis_word_count: int
+    first_tts_pcm_ready: bool
+    buffered_pcm_sample_count: int
+
+    def __post_init__(self) -> None:
+        if self.hidden_work_ms < 0.0:
+            raise ValueError("Hidden generation work cannot be negative.")
+        if self.qwen_token_count < 0:
+            raise ValueError("The prepared Qwen token count cannot be negative.")
+        if self.synthesis_word_count < 0:
+            raise ValueError("The prepared synthesis word count cannot be negative.")
+        if self.buffered_pcm_sample_count < 0:
+            raise ValueError("The buffered PCM sample count cannot be negative.")
 
 
 @dataclass
@@ -391,6 +413,7 @@ class ActiveGeneration:
     invocation_token_counts: dict[int, int] = field(default_factory=dict)
     invocation_ids: list[int] = field(default_factory=list)
     tts_sample_count: int = 0
+    synthesis_word_count: int = 0
     acknowledged_offset: int = 0
     history_index: int | None = None
     boundary_samples: dict[int, int] = field(default_factory=dict)
@@ -433,6 +456,7 @@ class ActiveUserOverlap:
     decision_source_sample_position: int | None = None
     generation_hold_applied: bool = False
     resolution_metrics_recorded: bool = False
+    first_applicable_prediction_monotonic_time_ns: int | None = None
 
 
 class WebSocketPlaybackSink:
@@ -1126,6 +1150,15 @@ class VoiceSession:
                 reason=decision.reason,
                 decision_latency_ms=(decision_time_ns - overlap.onset_monotonic_time_ns)
                 / 1_000_000,
+                first_applicable_prediction_latency_ms=(
+                    None
+                    if overlap.first_applicable_prediction_monotonic_time_ns is None
+                    else (
+                        overlap.first_applicable_prediction_monotonic_time_ns
+                        - overlap.onset_monotonic_time_ns
+                    )
+                    / 1_000_000
+                ),
                 causal_source=decision.causal_source,
             )
         )
@@ -1219,6 +1252,15 @@ class VoiceSession:
                         prediction,
                         current_input_sample=chunk.end_input_sample,
                     ):
+                        overlap = self.active_user_overlap
+                        if (
+                            overlap is not None
+                            and prediction.stamp.input_end_sample >= overlap.onset_input_sample
+                            and overlap.first_applicable_prediction_monotonic_time_ns is None
+                        ):
+                            overlap.first_applicable_prediction_monotonic_time_ns = (
+                                time.perf_counter_ns()
+                            )
                         latest_prediction = prediction
                         await self._send_event(
                             SpeechUnderstandingDebugEvent(
@@ -1456,6 +1498,9 @@ class VoiceSession:
         speech_understanding: SpeechUnderstandingSession,
     ) -> None:
         committed_at = time.perf_counter()
+        generation = self.active_generation
+        if generation is not None and generation.speculative:
+            self._record_generation_commit_readiness(generation, committed_at)
         logger.info("transcription finalization started: session=%s", self.session_id)
         try:
             finalized_turn = await speech_understanding.finalize_turn()
@@ -1553,6 +1598,11 @@ class VoiceSession:
     async def _promote_candidate(self, generation: ActiveGeneration) -> None:
         assert self.active_generation is generation
         promoted_at = time.perf_counter()
+        if generation.latency.commit_readiness is None:
+            self._record_generation_commit_readiness(
+                generation,
+                _require_timestamp(generation.latency.turn_committed_at, "turn commitment"),
+            )
         generation.speculative = False
         self.model_context.commit_turn(generation.model_context_turn)
         for tool in generation.tool_executions:
@@ -1658,6 +1708,14 @@ class VoiceSession:
             input_sample_position=self.audio_sample_count,
             output_sample_position=None,
             text_offset=len(final_text),
+        )
+        generation.latency.commit_readiness = GenerationCommitReadiness(
+            speculative_candidate=False,
+            hidden_work_ms=0.0,
+            qwen_token_count=0,
+            synthesis_word_count=0,
+            first_tts_pcm_ready=False,
+            buffered_pcm_sample_count=0,
         )
         self._transition_generation(generation, CandidateLifecycle.COMMITTED)
         self.model_context.commit_turn(generation.model_context_turn)
@@ -2579,6 +2637,7 @@ class VoiceSession:
         synthesis: SpeechSynthesisSequence,
         word: SynthesisWord,
     ) -> None:
+        generation.synthesis_word_count += 1
         if generation.latency.first_synthesis_word_at is None:
             generation.latency.first_synthesis_word_at = time.perf_counter()
             generation.latency.tts_first_word = MediaLatencyPoint(
@@ -2955,12 +3014,22 @@ class VoiceSession:
                 latency.playback_started_at,
             ),
         )
+        commit_readiness = _require_commit_readiness(latency)
         await self._send_event(
             AssistantLatencyEvent(
                 generation_id=generation.generation_id,
+                endpoint_to_turn_commit_ms=(
+                    None
+                    if latency.first_endpoint_at is None
+                    else _milliseconds_between(latency.first_endpoint_at, turn_committed_at)
+                ),
                 turn_commit_to_playback_ms=_milliseconds_between(
                     turn_committed_at,
                     latency.playback_started_at,
+                ),
+                turn_commit_to_first_audio_send_ms=_milliseconds_between(
+                    turn_committed_at,
+                    latency.first_audio_sent_at,
                 ),
                 generation_to_first_word_ms=_milliseconds_between(
                     _require_timestamp(latency.generation_started_at, "generation start"),
@@ -2977,7 +3046,39 @@ class VoiceSession:
                     latency.first_audio_sent_at,
                     latency.playback_started_at,
                 ),
+                speculative_candidate_promoted=commit_readiness.speculative_candidate,
+                speculative_hidden_work_ms=commit_readiness.hidden_work_ms,
+                prepared_qwen_token_count=commit_readiness.qwen_token_count,
+                prepared_word_count=commit_readiness.synthesis_word_count,
+                first_tts_pcm_ready_at_commit=commit_readiness.first_tts_pcm_ready,
+                buffered_audio_ms=(
+                    commit_readiness.buffered_pcm_sample_count
+                    * 1_000
+                    / self.speech_synthesizer.sample_rate
+                ),
             )
+        )
+
+    @staticmethod
+    def _record_generation_commit_readiness(
+        generation: ActiveGeneration,
+        committed_at: float,
+    ) -> None:
+        generation_started_at = generation.latency.generation_started_at
+        generation.latency.commit_readiness = GenerationCommitReadiness(
+            speculative_candidate=True,
+            hidden_work_ms=(
+                0.0
+                if generation_started_at is None
+                else _milliseconds_between(generation_started_at, committed_at)
+            ),
+            qwen_token_count=generation.qwen_token_count,
+            synthesis_word_count=generation.synthesis_word_count,
+            first_tts_pcm_ready=(
+                generation.latency.first_audio_at is not None
+                and generation.latency.first_audio_at <= committed_at
+            ),
+            buffered_pcm_sample_count=generation.release_gate.buffered_pcm_sample_count,
         )
 
     def _acknowledge_playback(self, event: PlaybackProgressEvent) -> None:
@@ -3032,10 +3133,12 @@ class VoiceSession:
         )
         if disposition is not PlaybackAcknowledgementDisposition.APPLIED:
             return
-        self._record_overlap_acknowledgement(
+        interaction_action_event = self._record_overlap_acknowledgement(
             event,
             received_monotonic_time_ns,
         )
+        if interaction_action_event is not None:
+            await self._send_event(interaction_action_event)
         generation = self.generations.get(event.generation_id)
         if generation is None:
             return
@@ -3063,7 +3166,7 @@ class VoiceSession:
         self,
         event: PlaybackCommandAcknowledgementEvent,
         received_monotonic_time_ns: int,
-    ) -> None:
+    ) -> InteractionActionDebugEvent | None:
         overlap = next(
             (
                 trace
@@ -3079,7 +3182,8 @@ class VoiceSession:
             None,
         )
         if overlap is None:
-            return
+            return None
+        acknowledgement_recorded = False
         if (
             event.command_id == overlap.duck_command_id
             and event.gain_ramp_complete
@@ -3089,6 +3193,7 @@ class VoiceSession:
                 overlap.onset_monotonic_time_ns,
                 received_monotonic_time_ns,
             )
+            acknowledgement_recorded = True
         elif (
             event.command_id == overlap.pause_command_id
             and event.resulting_state is PlaybackState.PAUSED_BUFFERED
@@ -3098,6 +3203,7 @@ class VoiceSession:
                 overlap.onset_monotonic_time_ns,
                 received_monotonic_time_ns,
             )
+            acknowledgement_recorded = True
         elif (
             event.command_id == overlap.resume_command_id
             and not event.resume_rejected
@@ -3108,6 +3214,7 @@ class VoiceSession:
                 received_monotonic_time_ns,
                 overlap.pause_acknowledged_monotonic_time_ns,
             )
+            acknowledgement_recorded = True
         elif event.command_id == overlap.cancel_command_id:
             decision = overlap.decision
             self.overlap_metrics.record_cancel(
@@ -3115,6 +3222,16 @@ class VoiceSession:
                 received_monotonic_time_ns,
                 fast_path=False if decision is None else decision.fast_path,
             )
+            acknowledgement_recorded = True
+        if acknowledgement_recorded:
+            return InteractionActionDebugEvent(
+                action=event.action,
+                onset_to_acknowledgement_ms=(
+                    received_monotonic_time_ns - overlap.onset_monotonic_time_ns
+                )
+                / 1_000_000,
+            )
+        return None
 
     @staticmethod
     def _text_boundary_is_fully_played(
@@ -3439,6 +3556,12 @@ def _require_latency_point(
     if point is None:
         raise AssertionError(f"Missing {label} latency point.")
     return point
+
+
+def _require_commit_readiness(latency: GenerationLatency) -> GenerationCommitReadiness:
+    if latency.commit_readiness is None:
+        raise AssertionError("Missing generation readiness at turn commitment.")
+    return latency.commit_readiness
 
 
 def _environment_float(
