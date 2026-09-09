@@ -281,13 +281,42 @@ The search-provider smoke independently reproduced the missing-secret failure ab
 human microphone run was available during this deployment, so the transport-window and rearm
 latencies remain regression-tested rather than claimed as measured production improvements.
 
+The next deployment made readiness include bounded production-path probes instead of stopping at
+worker construction. Nemotron (including the shared turn adapter) and Qwen warm concurrently after
+their concurrent load; Kyutai then performs one complete synthesis and drain before the WebSocket
+can emit `session.ready`. On the measured cold worker, Nemotron/Qwen loaded in 21.862/22.256 seconds,
+their concurrent probes occupied approximately 7.51 seconds, Kyutai loaded in 27.449 seconds, and
+its final probe took approximately 0.68 seconds. Total application model readiness was 58.048 seconds.
+The scaled-to-zero WebSocket probe reached `session.ready` in 72.858 seconds including scheduling;
+the immediate warm probe took 1.180 seconds. This intentionally moves the previously hidden first
+ASR/LLM/TTS execution cost into readiness. It prevents a misleading ready state, but does not make
+the cold path fast.
+
+Three-way model loading remains disabled because the measured attempt regressed the same startup
+work from 38.647 to 44.924 seconds; eight reserved CPU cores regressed it to 80.462 seconds. Weight
+deserialization itself remained near one second per checkpoint in the latest logs, so the dominant
+cost is isolated Python/framework/CUDA bootstrap rather than redownloading models. The safe current
+parallelism is Nemotron plus Qwen loading, followed by Kyutai, with the Nemotron and Qwen probes also
+running concurrently.
+
+The same deployment no longer exposes the search tool when
+`VOICE_LIGHT_TAVILY_API_KEY` is absent. A current-weather request now produces one immediate truthful
+spoken failure without a generated preamble, failed tool round, or search summarizer invocation.
+Configured search still uses the structured sequential tool path. Tool timing logs now separate
+Qwen tool-syntax buffering, handler execution, and post-tool first PCM; the browser worklet also
+publishes an exact playback clock when a tool preamble drains so later same-generation PCM cannot
+wait on a stale sub-80-ms credit edge. The deployed structured-tool smoke passed all six cases. The
+real-provider smoke still failed before HTTP with the exact missing-secret error, so live weather was
+not claimed. The UTF-8 deployment retry completed in 14.337 seconds with cached image layers.
+
 ## Known limitations
 
-- Staged L40S-class model initialization now measures approximately 28 seconds, with total fresh
-  connection readiness measured at 35.7 seconds. Modal scheduling and fallback GPU selection remain
-  variable; an A100 fallback required 105.341 seconds end to end. Restoring the old approximately
-  ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap or replacing the
-  larger current model stack; cached weights alone cannot remove library initialization. GPU memory
+- The latest truthful cold readiness sample is 72.858 seconds, of which 58.048 seconds was model
+  load plus first-inference warmup. Modal scheduling and fallback GPU selection remain variable; an
+  earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
+  ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap, keeping a warm
+  container (which conflicts with scale-to-zero), or replacing the larger current model stack;
+  cached weights alone cannot remove library initialization. GPU memory
   snapshots remain an alpha, fixed-GPU canary candidate, not a production setting: each fallback
   GPU must prove coherent restoration of all three CUDA subprocesses and at least a 30% readiness
   improvement without first-turn or p95 regression.
