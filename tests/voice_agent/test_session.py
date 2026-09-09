@@ -2951,6 +2951,7 @@ def test_stable_prefix_revision_rejects_candidate_and_uses_new_generation_id() -
         websocket.receive_json()
         websocket.send_bytes(SPEECH_CHUNK)
         websocket.send_bytes(SPEECH_CHUNK)
+        assert language_model.first_delta_produced.wait(timeout=1)
         websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "llm.history")
         wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
