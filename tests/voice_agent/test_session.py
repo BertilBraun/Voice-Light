@@ -130,6 +130,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
             "VOICE_LIGHT_FLOOR_TAKE_THRESHOLD": "0.84",
             "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.86",
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "640",
+            "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS": "1400",
             "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS": "260",
         }
     )
@@ -137,6 +138,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
     assert policy.floor_taking_overlap_threshold == 0.84
     assert policy.non_floor_feedback_overlap_threshold == 0.86
     assert policy.overlap_classification_deadline_ms == 640
+    assert policy.transcript_free_floor_take_deadline_ms == 1_400
     assert policy.maximum_prediction_lag_ms == 260
 
 
@@ -146,6 +148,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_FLOOR_TAKE_THRESHOLD", "1.1"),
         ("VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD", "soon"),
         ("VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS", "0"),
+        ("VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS", "500"),
         ("VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS", "-1"),
     ),
 )
@@ -2154,6 +2157,86 @@ def test_non_floor_taking_overlap_resumes_existing_generation_without_history(
     assert transcriber.sessions[1].finish_count == 1
 
 
+def test_transcript_free_overlap_survives_classification_deadline_and_resumes() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), tuple(None for _ in range(30))),
+        final_texts=("hello agent", ""),
+    )
+    language_model = SlowLanguageModel()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        initial_audio_sample_count = sessions[0].audio_sample_count
+        for _ in range(25):
+            websocket.send_bytes(SPEECH_CHUNK)
+        duck = receive_playback_command(websocket)
+        pause = receive_playback_command(websocket)
+        assert duck.action is PlaybackCommandAction.DUCK
+        assert pause.action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        wait_until(lambda: sessions[0].audio_sample_count >= initial_audio_sample_count + 8_000)
+        assert sessions[0].active_user_overlap is not None
+        assert sessions[0].active_user_overlap.decision is None
+
+        websocket.send_bytes(SILENCE_CHUNK)
+        resume = receive_playback_command(websocket)
+        assert resume.action is PlaybackCommandAction.RESUME
+        assert resume.generation_id == 1
+        assert len(language_model.conversations) == 1
+        assert sessions[0].active_user_overlap is None
+        websocket.send_json({"type": "session.stop"})
+
+
+def test_strong_floor_take_still_cancels_before_transcript_free_deadline() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (None, None)),
+        final_texts=("hello agent", ""),
+    )
+    prediction_source = AssistantAudibleTurnPredictionSource(
+        PredictionDirective(
+            p_user_speech=0.9,
+            p_user_yield=0.0,
+            p_user_interruption=0.9,
+        )
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        SlowLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        cancel = receive_playback_command(websocket)
+        assert cancel.action is PlaybackCommandAction.CANCEL
+        assert sessions[0].active_user_overlap is None
+        websocket.send_json({"type": "session.stop"})
+
+
 def test_bounded_lag_adapter_backchannel_resumes_during_active_speech() -> None:
     transcriber = ScriptedTranscriber(
         partials_by_turn=(("hello", None, None), (None, None)),
@@ -2458,9 +2541,9 @@ def test_final_lexical_interruption_never_resumes_provisional_backchannel() -> N
     }
 
 
-def test_sustained_transcript_free_overlap_yields_at_500_milliseconds() -> None:
+def test_sustained_transcript_free_overlap_yields_at_hard_deadline() -> None:
     transcriber = ScriptedTranscriber(
-        partials_by_turn=(("hello", None, None), tuple(None for _ in range(30))),
+        partials_by_turn=(("hello", None, None), tuple(None for _ in range(70))),
         final_texts=("hello agent", "continued request"),
     )
     sessions: list[VoiceSession] = []
@@ -2479,7 +2562,7 @@ def test_sustained_transcript_free_overlap_yields_at_500_milliseconds() -> None:
         send_playback_started(websocket, 1)
         wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
 
-        for _ in range(25):
+        for _ in range(60):
             websocket.send_bytes(SPEECH_CHUNK)
         assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
         assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY

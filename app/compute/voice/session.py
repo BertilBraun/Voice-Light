@@ -159,6 +159,7 @@ class SessionPolicy:
     floor_taking_overlap_threshold: float = 0.82
     non_floor_feedback_overlap_threshold: float = 0.82
     overlap_classification_deadline_ms: int = 500
+    transcript_free_floor_take_deadline_ms: int = 1_200
     vad_speculation_enabled: bool = True
     vad_speculation_debounce_ms: int = 100
     vad_endpoint_yield_probability: float = 0.7
@@ -229,6 +230,11 @@ class SessionPolicy:
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS",
             500,
         )
+        transcript_free_floor_take_deadline_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS",
+            1_200,
+        )
         maximum_prediction_lag_ms = _environment_integer(
             environment,
             "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS",
@@ -243,6 +249,7 @@ class SessionPolicy:
             floor_taking_overlap_threshold=floor_taking_overlap_threshold,
             non_floor_feedback_overlap_threshold=non_floor_feedback_overlap_threshold,
             overlap_classification_deadline_ms=overlap_classification_deadline_ms,
+            transcript_free_floor_take_deadline_ms=(transcript_free_floor_take_deadline_ms),
             maximum_prediction_lag_ms=maximum_prediction_lag_ms,
         )
 
@@ -267,6 +274,11 @@ class SessionPolicy:
             raise ValueError("The maximum prediction lag cannot be negative.")
         if self.overlap_classification_deadline_ms <= 0:
             raise ValueError("The overlap classification deadline must be positive.")
+        if self.transcript_free_floor_take_deadline_ms <= self.overlap_classification_deadline_ms:
+            raise ValueError(
+                "The transcript-free floor-take deadline must exceed the overlap "
+                "classification deadline."
+            )
         if self.tool_timeout_seconds <= 0.0:
             raise ValueError("The tool timeout must be positive.")
         if self.tool_cancellation_timeout_seconds <= 0.0:
@@ -534,6 +546,9 @@ class VoiceSession:
         self.overlap_policy = overlap_policy or ProvisionalVadTranscriptOverlapPolicy(
             ProvisionalOverlapPolicyConfig(
                 classification_deadline_ms=(policy.overlap_classification_deadline_ms),
+                transcript_free_floor_take_deadline_ms=(
+                    policy.transcript_free_floor_take_deadline_ms
+                ),
                 interruption_probability_threshold=policy.floor_taking_overlap_threshold,
                 non_floor_feedback_probability_threshold=(
                     policy.non_floor_feedback_overlap_threshold

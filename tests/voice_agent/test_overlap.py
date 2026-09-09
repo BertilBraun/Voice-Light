@@ -75,11 +75,26 @@ def test_acknowledgement_prefix_with_continuation_takes_the_floor(transcript: st
     assert decision.kind is OverlapResolutionKind.FLOOR_TAKING
 
 
-def test_active_speech_takes_the_floor_at_the_hard_deadline() -> None:
+def test_transcript_free_active_speech_remains_reversible_at_classification_deadline() -> None:
     policy = ProvisionalVadTranscriptOverlapPolicy(ProvisionalOverlapPolicyConfig())
     decision = policy.classify(
         OverlapEvidence(
             elapsed_ms=500,
+            speech_active=True,
+            transcript="",
+            transcript_event_id=None,
+            interruption_probability=None,
+            interruption_evidence_event_id=None,
+        )
+    )
+    assert decision.kind is OverlapResolutionKind.UNRESOLVED
+
+
+def test_transcript_free_active_speech_takes_the_floor_at_hard_deadline() -> None:
+    policy = ProvisionalVadTranscriptOverlapPolicy(ProvisionalOverlapPolicyConfig())
+    decision = policy.classify(
+        OverlapEvidence(
+            elapsed_ms=1_200,
             speech_active=True,
             transcript="",
             transcript_event_id=None,

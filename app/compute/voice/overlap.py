@@ -53,12 +53,17 @@ class ProvisionalOverlapPolicyConfig:
     )
     acknowledgement_continuation_words: tuple[str, ...] = ("and", "but", "though", "however")
     classification_deadline_ms: int = 500
+    transcript_free_floor_take_deadline_ms: int = 1_200
     interruption_probability_threshold: float = 0.82
     non_floor_feedback_probability_threshold: float = 0.82
 
     def __post_init__(self) -> None:
         if self.classification_deadline_ms <= 0:
             raise ValueError("Overlap classification deadline must be positive.")
+        if self.transcript_free_floor_take_deadline_ms <= self.classification_deadline_ms:
+            raise ValueError(
+                "The transcript-free floor-take deadline must exceed the classification deadline."
+            )
         if not 0.0 <= self.interruption_probability_threshold <= 1.0:
             raise ValueError("Interruption probability threshold must be between zero and one.")
         if not 0.0 <= self.non_floor_feedback_probability_threshold <= 1.0:
@@ -329,8 +334,11 @@ class ProvisionalVadTranscriptOverlapPolicy:
                 causal_event_ids=causal_event_ids,
                 fast_path=False,
             )
-        if evidence.elapsed_ms >= self.config.classification_deadline_ms:
-            if evidence.speech_active:
+        if evidence.speech_active:
+            if (
+                transcript
+                or evidence.elapsed_ms >= self.config.transcript_free_floor_take_deadline_ms
+            ) and evidence.elapsed_ms >= self.config.classification_deadline_ms:
                 return ProvisionalOverlapDecision(
                     kind=OverlapResolutionKind.FLOOR_TAKING,
                     reason=OverlapResolutionReason.SPEECH_DURATION_DEADLINE,
@@ -339,6 +347,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
                     causal_event_ids=causal_event_ids,
                     fast_path=False,
                 )
+        elif evidence.elapsed_ms >= self.config.classification_deadline_ms:
             return ProvisionalOverlapDecision(
                 kind=OverlapResolutionKind.NON_FLOOR_TAKING,
                 reason=OverlapResolutionReason.ACOUSTIC_BURST_ENDED,
