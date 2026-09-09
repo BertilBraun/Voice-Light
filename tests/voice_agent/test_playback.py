@@ -401,11 +401,13 @@ def test_periodic_clock_updates_authoritative_playback_position() -> None:
             rendered_output_sample_position=4_000,
             source_sample_position=2_000,
             queued_source_sample_count=12_000,
+            underrun_count=1,
             output_sample_rate=48_000,
         )
     )
     assert controller.condition.latest_source_sample_position == 2_000
     assert controller.metrics.report().maximum_buffered_source_sample_count == 12_000
+    assert controller.metrics.report().underrun_count == 1
 
     controller.issue_pause(
         generation_id=1,
@@ -424,6 +426,7 @@ def test_periodic_clock_updates_authoritative_playback_position() -> None:
             rendered_output_sample_position=4_100,
             source_sample_position=2_050,
             queued_source_sample_count=11_950,
+            underrun_count=2,
             output_sample_rate=48_000,
         )
     )
@@ -437,7 +440,23 @@ def test_periodic_clock_updates_authoritative_playback_position() -> None:
             rendered_output_sample_position=3_000,
             source_sample_position=1_500,
             queued_source_sample_count=14_000,
+            underrun_count=1,
             output_sample_rate=48_000,
         )
     )
     assert controller.condition.latest_source_sample_position == 2_050
+    assert controller.metrics.report().underrun_count == 2
+
+    assert not controller.record_clock(
+        PlaybackClockEvent(
+            generation_id=1,
+            state=PlaybackState.SPEAKING,
+            browser_monotonic_time_ns=4,
+            rendered_output_sample_position=4_100,
+            source_sample_position=2_050,
+            queued_source_sample_count=11_950,
+            underrun_count=1,
+            output_sample_rate=48_000,
+        )
+    )
+    assert controller.metrics.report().underrun_count == 2

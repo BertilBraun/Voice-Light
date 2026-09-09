@@ -362,6 +362,7 @@ class PlaybackClockEvent(FrozenBaseModel):
     rendered_output_sample_position: int = Field(ge=0)
     source_sample_position: int = Field(ge=0)
     queued_source_sample_count: int = Field(ge=0)
+    underrun_count: int = Field(ge=0)
     output_sample_rate: int = Field(gt=0)
 
 

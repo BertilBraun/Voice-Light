@@ -167,6 +167,37 @@ test("reports the exact source position when a tool preamble drains", () => {
   );
 });
 
+test("counts an active playback underrun only when later audio resumes", () => {
+  const harness = new PlaybackHarness(1_000);
+  harness.enqueue(1, 0, Array.from({ length: 100 }, () => 1));
+  harness.process(100);
+
+  let clocks = harness.messages.filter((message) => message.type === "playback.clock");
+  assert.equal(clocks.at(-1).underrunCount, 0);
+  harness.process(80);
+  assert.equal(
+    harness.messages.filter((message) => message.type === "playback.clock").length,
+    clocks.length,
+  );
+
+  harness.enqueue(1, 100, Array.from({ length: 40 }, () => 1));
+  clocks = harness.messages.filter((message) => message.type === "playback.clock");
+  assert.equal(clocks.at(-1).sourceSamplePosition, 100);
+  assert.equal(clocks.at(-1).queuedSourceSampleCount, 40);
+  assert.equal(clocks.at(-1).underrunCount, 1);
+});
+
+test("does not count the natural final drain as an underrun", () => {
+  const harness = new PlaybackHarness(1_000);
+  harness.enqueue(1, 0, Array.from({ length: 40 }, () => 1));
+  harness.send({ type: "end", generationId: 1 });
+  harness.process(40);
+
+  const clocks = harness.messages.filter((message) => message.type === "playback.clock");
+  assert.equal(clocks.at(-1).underrunCount, 0);
+  assert.equal(harness.processor.state, "completed");
+});
+
 test("coalesces words with the same start sample before acknowledging playback", () => {
   const harness = new PlaybackHarness();
   harness.enqueue(1, 0, [1, 2, 3, 4, 5, 6]);

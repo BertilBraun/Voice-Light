@@ -19,6 +19,7 @@ const connectionStatus = document.querySelector("#connection-status");
 const sessionGuidance = document.querySelector("#session-guidance");
 const vadStatus = document.querySelector("#vad-status");
 const playbackStatus = document.querySelector("#playback-status");
+const playbackUnderruns = document.querySelector("#playback-underruns");
 const conversationHistory = document.querySelector("#conversation-history");
 const conversationEmpty = document.querySelector("#conversation-empty");
 const eventLog = document.querySelector("#event-log");
@@ -354,7 +355,7 @@ async function setupCapture(stream) {
 
 async function setupPlayback(inputSampleRate) {
   playbackContext = new AudioContext();
-  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=6");
+  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=7");
   playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", {
     outputChannelCount: [1],
     processorOptions: { inputSampleRate },
@@ -391,9 +392,11 @@ async function setupPlayback(inputSampleRate) {
           rendered_output_sample_position: data.renderedOutputSamplePosition,
           source_sample_position: data.sourceSamplePosition,
           queued_source_sample_count: data.queuedSourceSampleCount,
+          underrun_count: data.underrunCount,
           output_sample_rate: data.outputSampleRate,
         }));
       }
+      playbackUnderruns.textContent = `underruns ${data.underrunCount}`;
       return;
     }
     if (data.type === "boundary.started") {
@@ -650,6 +653,7 @@ function resetControls() {
   stopButton.disabled = true;
   vadStatus.textContent = "waiting";
   playbackStatus.textContent = "waiting";
+  playbackUnderruns.textContent = "underruns 0";
   debugSilero.textContent = "waiting";
   debugAdapterStatus.textContent = "waiting";
   debugTurnCompletion.textContent = "—";

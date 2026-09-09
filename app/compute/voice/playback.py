@@ -170,6 +170,7 @@ class PlaybackMetricsReport:
     command_to_acknowledgement_p95_ms: float | None
     rendered_output_sample_estimate_error_p95: int | None
     maximum_buffered_source_sample_count: int
+    underrun_count: int
     discarded_source_sample_count: int
     replayed_source_sample_count: int
     skipped_source_sample_count: int
@@ -183,6 +184,7 @@ class PlaybackMetrics:
         self.metrics: list[PlaybackMetric] = []
         self.discarded_source_sample_count = 0
         self.maximum_buffered_source_sample_count = 0
+        self.underrun_count = 0
         self.replayed_source_sample_count = 0
         self.skipped_source_sample_count = 0
 
@@ -194,6 +196,11 @@ class PlaybackMetrics:
             self.maximum_buffered_source_sample_count,
             sample_count,
         )
+
+    def record_underruns(self, count: int) -> None:
+        if count < 0:
+            raise AssertionError("Playback underrun increments cannot be negative.")
+        self.underrun_count += count
 
     def record_acknowledgement(
         self,
@@ -237,6 +244,7 @@ class PlaybackMetrics:
             command_to_acknowledgement_p95_ms=_percentile(latencies, 0.95),
             rendered_output_sample_estimate_error_p95=_percentile(absolute_errors, 0.95),
             maximum_buffered_source_sample_count=self.maximum_buffered_source_sample_count,
+            underrun_count=self.underrun_count,
             discarded_source_sample_count=self.discarded_source_sample_count,
             replayed_source_sample_count=self.replayed_source_sample_count,
             skipped_source_sample_count=self.skipped_source_sample_count,
@@ -254,6 +262,7 @@ class PlaybackController:
         self.next_command_sequence_by_generation: dict[int, int] = {}
         self.latest_acknowledged_command_sequence_by_generation: dict[int, int] = {}
         self.latest_browser_monotonic_time_ns_by_generation: dict[int, int] = {}
+        self.latest_underrun_count_by_generation: dict[int, int] = {}
         self.metrics = PlaybackMetrics()
         self.paused_at_server_monotonic_time_ns: int | None = None
         self.condition = PlaybackCondition(
@@ -291,6 +300,7 @@ class PlaybackController:
         self.next_command_sequence_by_generation[generation_id] = 1
         self.latest_acknowledged_command_sequence_by_generation[generation_id] = 0
         self.latest_browser_monotonic_time_ns_by_generation[generation_id] = 0
+        self.latest_underrun_count_by_generation[generation_id] = 0
         self.paused_at_server_monotonic_time_ns = None
         self._set_condition(
             generation_id=generation_id,
@@ -362,16 +372,20 @@ class PlaybackController:
         latest_browser_time_ns = self.latest_browser_monotonic_time_ns_by_generation[
             event.generation_id
         ]
+        latest_underrun_count = self.latest_underrun_count_by_generation[event.generation_id]
         if (
             event.browser_monotonic_time_ns < latest_browser_time_ns
             or event.rendered_output_sample_position < self.condition.latest_output_sample_position
             or event.source_sample_position < self.condition.latest_source_sample_position
+            or event.underrun_count < latest_underrun_count
         ):
             return False
         self.latest_browser_monotonic_time_ns_by_generation[event.generation_id] = (
             event.browser_monotonic_time_ns
         )
         self.metrics.record_buffered_source_sample_count(event.queued_source_sample_count)
+        self.metrics.record_underruns(event.underrun_count - latest_underrun_count)
+        self.latest_underrun_count_by_generation[event.generation_id] = event.underrun_count
         state = (
             self.condition.state
             if self.condition.authority is PlaybackConditionAuthority.SERVER_ESTIMATED

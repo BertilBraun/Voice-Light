@@ -48,6 +48,9 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.sourceSamplePosition = 0;
     this.renderedOutputSamplePosition = 0;
     this.lastPlaybackClockOutputSamplePosition = 0;
+    this.lastReportedUnderrunCount = 0;
+    this.underrunCount = 0;
+    this.pendingUnderrun = false;
     this.acknowledgedTextOffset = 0;
     this.boundaries = [];
     this.startedBoundary = undefined;
@@ -87,9 +90,15 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     const samples = new Int16Array(data.pcm);
     const expectedStartSample = this.sourceSamplePosition + this.queuedSourceSampleCount;
     if (data.startSample !== expectedStartSample) return;
+    const resumedAfterUnderrun = samples.length > 0 && this.pendingUnderrun;
+    if (resumedAfterUnderrun) {
+      this.pendingUnderrun = false;
+      this.underrunCount += 1;
+    }
     this.chunks.push(samples);
     this.queuedSourceSampleCount += samples.length;
     if (this.state === PlaybackState.IDLE) this.state = PlaybackState.QUEUED;
+    if (resumedAfterUnderrun) this.reportPlaybackClockIfDue(true);
   }
 
   registerBoundary(data) {
@@ -111,6 +120,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
 
   endGeneration(generationId) {
     if (generationId !== this.generationId || TERMINAL_STATES.has(this.state)) return;
+    this.pendingUnderrun = false;
     this.endedGenerationId = generationId;
     this.reportCompletionIfDrained();
   }
@@ -386,6 +396,15 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     } else if (producedAudio && this.state === PlaybackState.QUEUED) {
       this.state = PlaybackState.SPEAKING;
     }
+    if (
+      producedAudio &&
+      this.playbackStarted &&
+      this.queuedSourceSampleCount === 0 &&
+      this.endedGenerationId !== this.generationId &&
+      this.state !== PlaybackState.PAUSED_BUFFERED
+    ) {
+      this.pendingUnderrun = true;
+    }
     this.reportCrossedBoundaries();
     this.reportPlaybackClockIfDue(this.queuedSourceSampleCount === 0);
     this.reportCompletionIfDrained();
@@ -470,15 +489,19 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       1,
       Math.round(this.outputSampleRate * PLAYBACK_CLOCK_INTERVAL_MS / 1000),
     );
+    const underrunCountChanged = this.underrunCount !== this.lastReportedUnderrunCount;
     if (
+      !underrunCountChanged &&
       this.renderedOutputSamplePosition === this.lastPlaybackClockOutputSamplePosition
     ) return;
     if (
       !force &&
+      !underrunCountChanged &&
       this.renderedOutputSamplePosition - this.lastPlaybackClockOutputSamplePosition <
       intervalSampleCount
     ) return;
     this.lastPlaybackClockOutputSamplePosition = this.renderedOutputSamplePosition;
+    this.lastReportedUnderrunCount = this.underrunCount;
     this.port.postMessage({
       type: "playback.clock",
       generationId: this.generationId,
@@ -487,6 +510,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       renderedOutputSamplePosition: this.renderedOutputSamplePosition,
       sourceSamplePosition: this.sourceSamplePosition,
       queuedSourceSampleCount: this.queuedSourceSampleCount,
+      underrunCount: this.underrunCount,
       outputSampleRate: this.outputSampleRate,
     });
   }

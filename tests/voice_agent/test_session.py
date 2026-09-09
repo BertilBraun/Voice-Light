@@ -4008,6 +4008,7 @@ def send_playback_clock(
             rendered_output_sample_position=source_sample_position * 2,
             source_sample_position=source_sample_position,
             queued_source_sample_count=0,
+            underrun_count=0,
             output_sample_rate=48_000,
         ).model_dump_json()
     )
