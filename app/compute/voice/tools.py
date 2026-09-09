@@ -223,6 +223,11 @@ class ToolCallAdmission(StrEnum):
     DUPLICATE = "duplicate"
 
 
+class SearchToolAvailability(StrEnum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass
 class ToolCircuitBreaker:
     successful_calls: list[ToolCall] = field(default_factory=list)
@@ -268,6 +273,9 @@ class ToolExecutor(Protocol):
     @property
     def specifications(self) -> tuple[ToolSpecification, ...]: ...
 
+    @property
+    def search_availability(self) -> SearchToolAvailability: ...
+
     def validate(self, request: SerializedToolCall) -> ToolCall | ToolCallFailure: ...
 
     def configure_session(self, local_time_zone: str) -> None: ...
@@ -280,24 +288,41 @@ class ToolExecutor(Protocol):
 class RuntimeToolRegistry:
     def __init__(
         self,
-        search_handler: SearchToolHandler,
+        search_handler: SearchToolHandler | None,
         calculate_handler: CalculateToolHandler,
         get_time_handler: GetTimeToolHandler,
     ) -> None:
         self.search_handler = search_handler
         self.calculate_handler = calculate_handler
         self.get_time_handler = get_time_handler
-        self._specifications = _tool_specifications()
+        self._specifications = tuple(
+            specification
+            for specification in _tool_specifications()
+            if search_handler is not None or specification.function.name is not ToolName.SEARCH
+        )
         self._search_debug_traces: dict[str, SearchDebugTrace] = {}
 
     @property
     def specifications(self) -> tuple[ToolSpecification, ...]:
         return self._specifications
 
+    @property
+    def search_availability(self) -> SearchToolAvailability:
+        if self.search_handler is None:
+            return SearchToolAvailability.UNAVAILABLE
+        return SearchToolAvailability.AVAILABLE
+
     def validate(self, request: SerializedToolCall) -> ToolCall | ToolCallFailure:
         try:
             match request.name:
                 case ToolName.SEARCH:
+                    if self.search_handler is None:
+                        return ToolCallFailure(
+                            call_id=request.id,
+                            reason=ToolCallFailureReason.UNKNOWN_TOOL,
+                            message="Search is not configured.",
+                            attempted_tool_name=request.name,
+                        )
                     function: ToolCallFunction = SearchToolCallFunction(
                         arguments=SearchArguments.model_validate_json(request.arguments_json)
                     )
@@ -335,7 +360,9 @@ class RuntimeToolRegistry:
         try:
             match call.function:
                 case SearchToolCallFunction(arguments=arguments):
-                    search_output = await self.search_handler(arguments)
+                    search_handler = self.search_handler
+                    assert search_handler is not None
+                    search_output = await search_handler(arguments)
                     match search_output:
                         case str() as result:
                             pass
@@ -394,7 +421,9 @@ class CurrentLocalTimeHandler:
         )
 
 
-def create_runtime_tool_registry(search_handler: SearchToolHandler) -> RuntimeToolRegistry:
+def create_runtime_tool_registry(
+    search_handler: SearchToolHandler | None,
+) -> RuntimeToolRegistry:
     return RuntimeToolRegistry(
         search_handler=search_handler,
         calculate_handler=PythonArithmeticHandler(),

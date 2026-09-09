@@ -126,8 +126,9 @@ from app.compute.voice.schemas import (
 )
 from app.compute.voice.speech_understanding import InteractionPredictionReducer
 from app.compute.voice.synthesis_sequence import SpeechSynthesisSequence
-from app.compute.voice.tool_routing import route_required_search_call
+from app.compute.voice.tool_routing import required_search_reason, route_required_search_call
 from app.compute.voice.tools import (
+    SearchToolAvailability,
     SerializedToolCall,
     ToolCall,
     ToolCallAdmission,
@@ -2063,6 +2064,19 @@ class VoiceSession:
         audible_text_start = 0
         preceding_tool: ToolExecutionJournalEntry | None = None
         recovery_only = False
+        if (
+            self.tool_executor.search_availability is SearchToolAvailability.UNAVAILABLE
+            and required_search_reason(tuple(model_messages)) is not None
+        ):
+            await self._publish_spoken_text(
+                generation,
+                synthesis,
+                word_stream,
+                "I can't access live search right now.",
+            )
+            await self._flush_synthesis_words(generation, synthesis, word_stream)
+            await self._finish_synthesis_input(synthesis)
+            return
         while True:
             tool_calls_allowed = (
                 not recovery_only

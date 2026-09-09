@@ -51,15 +51,7 @@ class RoutedSearchCall:
     reason: SearchRoutingReason
 
 
-def route_required_search_call(
-    messages: tuple[ModelMessage, ...],
-    tools: tuple[ToolSpecification, ...],
-    invocation_id: int,
-) -> RoutedSearchCall | None:
-    if invocation_id <= 0:
-        raise ValueError("The model invocation ID must be positive.")
-    if not any(specification.function.name is ToolName.SEARCH for specification in tools):
-        return None
+def required_search_reason(messages: tuple[ModelMessage, ...]) -> SearchRoutingReason | None:
     latest_user_index = _latest_user_index(messages)
     if latest_user_index is None:
         return None
@@ -68,7 +60,7 @@ def route_required_search_call(
     latest_user = messages[latest_user_index]
     assert isinstance(latest_user, ModelUserMessage)
     if _requires_search(latest_user.content):
-        return _routed_call(invocation_id, latest_user.content, SearchRoutingReason.DIRECT_REQUEST)
+        return SearchRoutingReason.DIRECT_REQUEST
     if _normalized(latest_user.content) not in CONFIRMATIONS:
         return None
     previous_assistant_index = _previous_assistant_index(messages, latest_user_index)
@@ -78,14 +70,41 @@ def route_required_search_call(
     assert isinstance(previous_assistant, ModelAssistantMessage)
     if not _offers_search(previous_assistant.content):
         return None
-    for message in reversed(messages[:previous_assistant_index]):
-        if isinstance(message, ModelUserMessage) and _requires_search(message.content):
-            return _routed_call(
-                invocation_id,
-                message.content,
-                SearchRoutingReason.CONFIRMED_REQUEST,
-            )
+    if any(
+        isinstance(message, ModelUserMessage) and _requires_search(message.content)
+        for message in messages[:previous_assistant_index]
+    ):
+        return SearchRoutingReason.CONFIRMED_REQUEST
     return None
+
+
+def route_required_search_call(
+    messages: tuple[ModelMessage, ...],
+    tools: tuple[ToolSpecification, ...],
+    invocation_id: int,
+) -> RoutedSearchCall | None:
+    if invocation_id <= 0:
+        raise ValueError("The model invocation ID must be positive.")
+    if not any(specification.function.name is ToolName.SEARCH for specification in tools):
+        return None
+    reason = required_search_reason(messages)
+    if reason is None:
+        return None
+    latest_user_index = _latest_user_index(messages)
+    assert latest_user_index is not None
+    latest_user = messages[latest_user_index]
+    assert isinstance(latest_user, ModelUserMessage)
+    if reason is SearchRoutingReason.DIRECT_REQUEST:
+        query = latest_user.content
+    else:
+        previous_assistant_index = _previous_assistant_index(messages, latest_user_index)
+        assert previous_assistant_index is not None
+        query = next(
+            message.content
+            for message in reversed(messages[:previous_assistant_index])
+            if isinstance(message, ModelUserMessage) and _requires_search(message.content)
+        )
+    return _routed_call(invocation_id, query, reason)
 
 
 def _routed_call(

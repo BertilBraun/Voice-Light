@@ -12,6 +12,7 @@ from app.compute.voice.tools import (
     PythonArithmeticHandler,
     RuntimeToolRegistry,
     SearchArguments,
+    SearchToolAvailability,
     SerializedToolCall,
     StandardSearchHandler,
     ToolCall,
@@ -55,6 +56,25 @@ def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
     search_description = specifications[0].function.description
     assert "required for current weather or news" in search_description
     assert "instead of promising a future search" in search_description
+
+
+def test_unconfigured_registry_does_not_expose_or_validate_search() -> None:
+    registry = create_runtime_tool_registry(search_handler=None)
+
+    assert registry.search_availability is SearchToolAvailability.UNAVAILABLE
+    assert tuple(specification.function.name for specification in registry.specifications) == (
+        ToolName.CALCULATE,
+        ToolName.GET_TIME,
+    )
+    outcome = registry.validate(
+        SerializedToolCall(
+            id="call-1",
+            name="search",
+            arguments_json='{"query":"current weather in London"}',
+        )
+    )
+    assert isinstance(outcome, ToolCallFailure)
+    assert outcome.reason is ToolCallFailureReason.UNKNOWN_TOOL
 
 
 def test_search_returns_pipeline_answer() -> None:

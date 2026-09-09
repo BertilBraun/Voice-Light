@@ -92,6 +92,7 @@ from app.compute.voice.tools import (
     ToolLifecycle,
     ToolResultCommitStatus,
     ToolSuccess,
+    create_runtime_tool_registry,
 )
 
 SPEECH_CHUNK = b"\x01\x00" * 320
@@ -1327,6 +1328,37 @@ def test_explicit_weather_request_is_routed_when_qwen_omits_the_call() -> None:
     assert released_text(sink) == (
         "I'll check the weather for you now. London is 12 degrees and lightly cloudy."
     )
+
+
+@pytest.mark.parametrize("location", ("London", "New York"))
+def test_unconfigured_search_returns_immediate_truthful_response_without_model_or_tool_round(
+    location: str,
+) -> None:
+    requested_text = f"What is the current weather in {location}?"
+    language_model = FakeLanguageModel()
+    sink = InMemoryPlaybackSink()
+    tool_executor = create_runtime_tool_registry(search_handler=None)
+    web_app = create_test_app(
+        ScriptedTranscriber(
+            partials_by_turn=((requested_text, None),),
+            final_texts=(requested_text,),
+        ),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        tool_executor=tool_executor,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert language_model.conversations == []
+    assert released_text(sink) == "I can't access live search right now."
 
 
 def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> None:
