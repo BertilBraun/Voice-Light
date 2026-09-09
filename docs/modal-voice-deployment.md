@@ -70,6 +70,7 @@ package. On a Windows console that does not default to UTF-8, set `PYTHONUTF8` f
 $env:PYTHONUTF8 = '1'
 modal run -m deployment.modal.voice_light::cache_models
 modal run -m deployment.modal.voice_light::smoke_tool_use
+modal run -m deployment.modal.voice_light::smoke_search_provider
 modal deploy -m deployment.modal.voice_light
 python -m deployment.modal.smoke_websocket
 ```
@@ -78,6 +79,11 @@ Run the tool-use smoke after prompt, schema, tokenizer, or merged-Qwen changes. 
 production checkpoint on one L40S and requires ordinary speech, calculation, current search,
 explicit search, confirmed-search follow-up, and post-tool continuation cases to emit the expected
 spoken text and structured Hermes calls. It validates model behavior without invoking Tavily.
+
+Run the search-provider smoke after creating or updating the `voice-light-compute` secret. It fails
+before making a request unless that secret contains `VOICE_LIGHT_TAVILY_API_KEY`, then performs a
+real bounded Tavily query. Its JSON output contains only `configured`, `result_count`, and
+`provider_latency_ms`; it never prints the credential or result content.
 
 The deployed endpoints are:
 

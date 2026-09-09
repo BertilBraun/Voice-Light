@@ -135,6 +135,13 @@ image = (
         ),
         copy=True,
     )
+    .add_local_file(
+        str(REPOSITORY_ROOT / "deployment" / "modal" / "smoke_search_provider.py"),
+        remote_path=str(
+            REMOTE_REPOSITORY_ROOT / "deployment" / "modal" / "smoke_search_provider.py"
+        ),
+        copy=True,
+    )
     .run_commands(
         "/.uv/uv sync "
         f"--project={REMOTE_REPOSITORY_ROOT / 'deployment' / 'compute' / 'vllm'} "
@@ -203,6 +210,22 @@ def smoke_tool_use() -> None:
     from deployment.compute.smoke_test_tool_use import main
 
     main()
+
+
+@app.function(
+    image=image,
+    timeout=60,
+    secrets=[compute_secret],
+)
+def smoke_search_provider() -> None:
+    from deployment.modal.smoke_search_provider import (
+        configured_tavily_provider,
+        measure_search_provider,
+    )
+
+    provider = configured_tavily_provider(os.environ, configuration.secret_name)
+    result = asyncio.run(measure_search_provider(provider))
+    print(result.model_dump_json())
 
 
 @app.cls(
