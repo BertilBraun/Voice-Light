@@ -162,7 +162,7 @@ class SessionPolicy:
     vad_speculation_debounce_ms: int = 100
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
-    maximum_prediction_lag_ms: int = 80
+    maximum_prediction_lag_ms: int = 240
     tool_timeout_seconds: float = 30.0
     tool_cancellation_timeout_seconds: float = 0.25
     maximum_tool_rounds: int = 8
@@ -228,6 +228,11 @@ class SessionPolicy:
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS",
             500,
         )
+        maximum_prediction_lag_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS",
+            240,
+        )
         return cls(
             vad_speculation_enabled=vad_speculation_enabled,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
@@ -237,6 +242,7 @@ class SessionPolicy:
             floor_taking_overlap_threshold=floor_taking_overlap_threshold,
             non_floor_feedback_overlap_threshold=non_floor_feedback_overlap_threshold,
             overlap_classification_deadline_ms=overlap_classification_deadline_ms,
+            maximum_prediction_lag_ms=maximum_prediction_lag_ms,
         )
 
     def __post_init__(self) -> None:
@@ -1009,7 +1015,7 @@ class VoiceSession:
                 component=VoiceComponent.ASR,
                 operation=VoiceOperation.TRANSCRIBE,
             ) from error
-        final_decision = self.overlap_policy.classify(
+        transcript_decision = self.overlap_policy.classify(
             OverlapEvidence(
                 elapsed_ms=elapsed_ms,
                 speech_active=False,
@@ -1022,6 +1028,11 @@ class VoiceSession:
                 interruption_probability=None,
                 interruption_evidence_event_id=None,
             )
+        )
+        final_decision = (
+            provisional_decision
+            if transcript_decision.kind is OverlapResolutionKind.NON_FLOOR_TAKING
+            else transcript_decision
         )
         overlap.decision = final_decision
         decision_event_id = str(uuid4())
@@ -1283,7 +1294,8 @@ class VoiceSession:
             return False
         latest_user_speech_input_sample = self.latest_user_speech_input_sample
         if (
-            latest_user_speech_input_sample is not None
+            self.active_user_overlap is None
+            and latest_user_speech_input_sample is not None
             and latest_user_speech_input_sample > observed_through_input_sample
         ):
             logger.info(

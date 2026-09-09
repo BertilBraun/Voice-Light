@@ -43,6 +43,7 @@ from app.compute.voice.interfaces import (
     TurnPredictionObservation,
     TurnPredictionSource,
 )
+from app.compute.voice.overlap import OverlapResolutionReason
 from app.compute.voice.predictive import (
     CandidateInvalidationReason,
     CandidateOutput,
@@ -129,12 +130,14 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
             "VOICE_LIGHT_FLOOR_TAKE_THRESHOLD": "0.84",
             "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.86",
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "640",
+            "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS": "260",
         }
     )
 
     assert policy.floor_taking_overlap_threshold == 0.84
     assert policy.non_floor_feedback_overlap_threshold == 0.86
     assert policy.overlap_classification_deadline_ms == 640
+    assert policy.maximum_prediction_lag_ms == 260
 
 
 @pytest.mark.parametrize(
@@ -143,6 +146,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_FLOOR_TAKE_THRESHOLD", "1.1"),
         ("VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD", "soon"),
         ("VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS", "0"),
+        ("VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS", "-1"),
     ),
 )
 def test_session_policy_rejects_invalid_interaction_configuration(
@@ -803,6 +807,7 @@ class PredictiveTrackingLanguageModel:
 class PredictionDirective:
     p_user_speech: float
     p_user_yield: float
+    p_user_backchannel: float = 0.0
     p_user_interruption: float = 0.0
     confidence: float = 1.0
 
@@ -869,6 +874,32 @@ class DelayedTurnPredictionSource:
         self.release.set()
 
 
+class AssistantAudibleTurnPredictionSource:
+    def __init__(self, directive: PredictionDirective, block_first: bool = False) -> None:
+        self.directive = directive
+        self.block_first = block_first
+        self.observations: list[TurnPredictionObservation] = []
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
+        return observation.audio_chunk.playback_condition.generation_id is not None
+
+    async def predict(
+        self,
+        observation: TurnPredictionObservation,
+    ) -> InteractionPrediction:
+        self.observations.append(observation)
+        self.started.set()
+        if self.block_first and len(self.observations) == 1:
+            await asyncio.to_thread(self.release.wait)
+        return create_test_prediction(observation, self.directive)
+
+    async def close(self) -> None:
+        self.release.set()
+        return
+
+
 class FailingTurnPredictionSource:
     def __init__(self) -> None:
         self.failure_count = 0
@@ -920,7 +951,7 @@ def create_test_prediction(
         ),
         p_user_speech=directive.p_user_speech,
         p_user_yield=directive.p_user_yield,
-        p_user_backchannel=0.0,
+        p_user_backchannel=directive.p_user_backchannel,
         p_user_interruption=directive.p_user_interruption,
         p_turn_completion=directive.p_user_yield,
         p_continuation_pause=directive.p_user_speech,
@@ -2121,6 +2152,81 @@ def test_non_floor_taking_overlap_resumes_existing_generation_without_history(
         websocket.send_json({"type": "session.stop"})
 
     assert transcriber.sessions[1].finish_count == 1
+
+
+def test_bounded_lag_adapter_backchannel_resumes_during_active_speech() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (None, None)),
+        final_texts=("hello agent", "mm-hm"),
+    )
+    language_model = SlowLanguageModel()
+    prediction_source = AssistantAudibleTurnPredictionSource(
+        PredictionDirective(
+            p_user_speech=0.9,
+            p_user_yield=0.0,
+            p_user_backchannel=0.9,
+        ),
+        block_first=True,
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        duck = receive_playback_command(websocket)
+        pause = receive_playback_command(websocket)
+        assert duck.action is PlaybackCommandAction.DUCK
+        assert pause.action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        send_playback_command_acknowledgement(
+            websocket,
+            duck,
+            resulting_state=PlaybackState.DUCKING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+        paused_source_position = pause.requested_boundary_source_sample_position or 1
+        send_playback_command_acknowledgement(
+            websocket,
+            pause,
+            resulting_state=PlaybackState.PAUSED_BUFFERED,
+            pause_result=(
+                PlaybackPauseResult.WORD_BOUNDARY
+                if pause.requested_boundary_source_sample_position is not None
+                else PlaybackPauseResult.FORCED_SAMPLE
+            ),
+            source_sample_position=paused_source_position,
+        )
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert prediction_source.started.wait(timeout=1)
+        for _ in range(5):
+            websocket.send_bytes(SPEECH_CHUNK)
+        prediction_source.release.set()
+        websocket.send_bytes(SPEECH_CHUNK)
+        resume = receive_playback_command(websocket)
+        assert resume.action is PlaybackCommandAction.RESUME
+        assert resume.generation_id == 1
+        assert prediction_source.observations
+        assert sessions[0].user_overlap_traces[-1].decision is not None
+        assert (
+            sessions[0].user_overlap_traces[-1].decision.reason
+            is OverlapResolutionReason.PREDICTED_NON_FLOOR_FEEDBACK
+        )
+        assert len(language_model.conversations) == 1
+        assert all(message.content != "mm-hm" for message in sessions[0].conversation)
+        websocket.send_json({"type": "session.stop"})
 
 
 def test_backchannel_during_tool_wait_preserves_tool_and_resumes_same_generation() -> None:

@@ -433,24 +433,6 @@ class CompositeSpeechUnderstandingSession:
         if self.closed:
             raise RuntimeError("Cannot finalize a closed speech-understanding session.")
         finalized_turn_epoch = self._turn_epoch
-        stale_prediction_count = self.prediction_queue.qsize() + int(self.prediction_in_flight)
-        if stale_prediction_count:
-            self.dropped_prediction_observations += stale_prediction_count
-            assert self.latest_chunk is not None
-            self.event_queue.put_nowait(
-                SpeechUnderstandingDegradedEvent(
-                    stamp=self._chunk_stamp(
-                        self.latest_chunk,
-                        source=CausalSource.TURN_ADAPTER,
-                        model_name=None,
-                        model_revision=None,
-                        conditioned_transcript_revision=self.transcript_revisions.latest,
-                    ),
-                    component=SpeechUnderstandingComponent.STANDALONE_TURN_DETECTOR,
-                    reason=("Optional detector observations became stale when the turn finalized."),
-                    dropped_observation_count=self.dropped_prediction_observations,
-                )
-            )
         await self._stop_optional_predictor()
         while not self.prediction_queue.empty():
             self.prediction_queue.get_nowait()
