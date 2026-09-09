@@ -6,6 +6,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.compute.voice.conversation import (
+    ModelAssistantMessage,
+    ModelMessage,
+    ModelToolMessage,
+    ModelUserMessage,
+)
 from app.compute.voice.hermes_tool_parser import (
     HermesSpokenText,
     HermesToolCallCompleted,
@@ -30,10 +36,12 @@ from app.compute.voice.models import (
     QwenWorkerProcess,
 )
 from app.compute.voice.qwen_config import language_model_configuration_from_environment
+from app.compute.voice.tool_routing import route_required_search_call
 from app.compute.voice.tools import (
     CalculateArguments,
     CalculateToolCallFunction,
     SearchArguments,
+    SerializedToolCall,
     ToolCall,
     ToolCallFailure,
     ToolName,
@@ -65,6 +73,7 @@ class SmokeObservation(FrozenBaseModel):
     generated_text: str
     spoken_text: str
     generated_tools: tuple[str, ...]
+    routed_tools: tuple[str, ...]
     parser_failures: tuple[str, ...]
     passed: bool
 
@@ -120,18 +129,16 @@ def _run_smoke_request(
     spoken_text = "".join(
         event.text for event in parser_events if isinstance(event, HermesSpokenText)
     ).strip()
-    generated_tools = tuple(
-        event.request.name for event in parser_events if isinstance(event, HermesToolCallCompleted)
+    generated_requests = tuple(
+        event.request for event in parser_events if isinstance(event, HermesToolCallCompleted)
     )
     parser_failures = tuple(
         event.failure.message for event in parser_events if isinstance(event, HermesToolCallFailed)
     )
     registry = create_runtime_tool_registry(_unused_search)
-    validated_calls = tuple(
-        registry.validate(event.request)
-        for event in parser_events
-        if isinstance(event, HermesToolCallCompleted)
-    )
+    routed_requests = _routed_requests(smoke_request, generated_requests)
+    effective_requests = (*generated_requests, *routed_requests)
+    validated_calls = tuple(registry.validate(request) for request in effective_requests)
     expected_tools = (
         () if smoke_request.expected_tool is None else (smoke_request.expected_tool.value,)
     )
@@ -142,11 +149,12 @@ def _run_smoke_request(
         case=smoke_request.case,
         generated_text=generated_text,
         spoken_text=spoken_text,
-        generated_tools=generated_tools,
+        generated_tools=tuple(request.name for request in effective_requests),
+        routed_tools=tuple(request.name for request in routed_requests),
         parser_failures=(*parser_failures, *validation_failures),
         passed=(
             bool(spoken_text)
-            and generated_tools == expected_tools
+            and tuple(request.name for request in effective_requests) == expected_tools
             and not parser_failures
             and not validation_failures
         ),
@@ -158,7 +166,7 @@ def _run_worker_smoke_request(
     smoke_request: SmokeRequest,
 ) -> SmokeObservation:
     spoken_parts: list[str] = []
-    generated_tools: list[str] = []
+    generated_requests: list[SerializedToolCall] = []
     failures: list[str] = []
     registry = create_runtime_tool_registry(_unused_search)
     worker.send(smoke_request.command)
@@ -170,7 +178,7 @@ def _run_worker_smoke_request(
             case LlmToolCallStartedEvent():
                 pass
             case LlmToolCallEvent(request=request):
-                generated_tools.append(request.name)
+                generated_requests.append(request)
                 validated_call = registry.validate(request)
                 if isinstance(validated_call, ToolCallFailure):
                     failures.append(validated_call.message)
@@ -186,14 +194,52 @@ def _run_worker_smoke_request(
     expected_tools = (
         () if smoke_request.expected_tool is None else (smoke_request.expected_tool.value,)
     )
+    routed_requests = _routed_requests(smoke_request, tuple(generated_requests))
+    effective_requests = (*generated_requests, *routed_requests)
+    for request in routed_requests:
+        validated_call = registry.validate(request)
+        if isinstance(validated_call, ToolCallFailure):
+            failures.append(validated_call.message)
     return SmokeObservation(
         case=smoke_request.case,
         generated_text=spoken_text,
         spoken_text=spoken_text,
-        generated_tools=tuple(generated_tools),
+        generated_tools=tuple(request.name for request in effective_requests),
+        routed_tools=tuple(request.name for request in routed_requests),
         parser_failures=tuple(failures),
-        passed=(bool(spoken_text) and tuple(generated_tools) == expected_tools and not failures),
+        passed=(
+            bool(spoken_text)
+            and tuple(request.name for request in effective_requests) == expected_tools
+            and not failures
+        ),
     )
+
+
+def _routed_requests(
+    smoke_request: SmokeRequest,
+    generated_requests: tuple[SerializedToolCall, ...],
+) -> tuple[SerializedToolCall, ...]:
+    if generated_requests:
+        return ()
+    routed = route_required_search_call(
+        _model_messages(smoke_request.command),
+        smoke_request.command.tools,
+        smoke_request.command.invocation_id,
+    )
+    return () if routed is None else (routed.request,)
+
+
+def _model_messages(command: StartLlmCommand) -> tuple[ModelMessage, ...]:
+    messages: list[ModelMessage] = []
+    for message in command.messages:
+        match message:
+            case LlmUserMessage(content=content):
+                messages.append(ModelUserMessage(content=content))
+            case LlmAssistantMessage(content=content, tool_calls=tool_calls):
+                messages.append(ModelAssistantMessage(content=content, tool_calls=tool_calls))
+            case LlmToolMessage(tool_call_id=tool_call_id, content=content):
+                messages.append(ModelToolMessage(tool_call_id=tool_call_id, outcome=content))
+    return tuple(messages)
 
 
 async def _unused_search(arguments: SearchArguments) -> str:

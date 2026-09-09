@@ -123,6 +123,7 @@ from app.compute.voice.schemas import (
 )
 from app.compute.voice.speech_understanding import InteractionPredictionReducer
 from app.compute.voice.synthesis_sequence import SpeechSynthesisSequence
+from app.compute.voice.tool_routing import route_required_search_call
 from app.compute.voice.tools import (
     SerializedToolCall,
     ToolCall,
@@ -2214,6 +2215,24 @@ class VoiceSession:
                 generation.generation_id,
                 invocation_id,
             )
+        if tool_request is None and tool_failure is None and tool_calls_allowed:
+            routed_search = route_required_search_call(messages, tools, invocation_id)
+            if routed_search is not None:
+                tool_request = routed_search.request
+                routed_event = LanguageModelToolCall(
+                    invocation_id=invocation_id,
+                    request=tool_request,
+                    cumulative_token_count=generation.invocation_token_counts[invocation_id],
+                )
+                self._record_tool_call_completed(generation, routed_event)
+                logger.warning(
+                    "required search call routed after Qwen omitted it: "
+                    "session=%s generation=%d invocation=%d reason=%s",
+                    self.session_id,
+                    generation.generation_id,
+                    invocation_id,
+                    routed_search.reason,
+                )
         return ModelInvocationResult(
             invocation_id=invocation_id,
             tool_request=tool_request,

@@ -432,6 +432,29 @@ class ScriptedWeatherLanguageModel:
         )
 
 
+class PromiseOnlyWeatherLanguageModel:
+    def __init__(self) -> None:
+        self.requests: list[LanguageModelRequest] = []
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        invocation_id = len(self.requests)
+        text = (
+            "I'll check the weather for you now."
+            if invocation_id == 1
+            else "London is 12 degrees and lightly cloudy."
+        )
+        yield LanguageModelTextDelta(
+            invocation_id=invocation_id,
+            text=text,
+            cumulative_token_count=8,
+        )
+        yield LanguageModelCompleted(invocation_id=invocation_id, cumulative_token_count=8)
+
+
 class SequentialWeatherLanguageModel:
     def __init__(self) -> None:
         self.requests: list[LanguageModelRequest] = []
@@ -1194,6 +1217,45 @@ def test_speech_debug_reports_assistant_playback_during_user_silence() -> None:
         websocket.send_json({"type": "session.stop"})
 
     assert assistant_debug["silero_speech"] is False
+
+
+def test_explicit_weather_request_is_routed_when_qwen_omits_the_call() -> None:
+    requested_text = "Can you make a tool call to check the weather in London for me?"
+    language_model = PromiseOnlyWeatherLanguageModel()
+    weather_handler = ControlledWeatherHandler()
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        ScriptedTranscriber(
+            partials_by_turn=((requested_text, None),),
+            final_texts=(requested_text,),
+        ),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        tool_executor=create_search_registry(weather_handler),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        assert weather_handler.started.wait(timeout=1)
+        weather_handler.release.set()
+        wait_until(
+            lambda: (
+                len(language_model.requests) == 2
+                and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
+            )
+        )
+        websocket.send_json({"type": "session.stop"})
+
+    assert weather_handler.arguments == [SearchArguments(query=requested_text)]
+    tool_message = language_model.requests[1].messages[-1]
+    assert isinstance(tool_message, ModelToolMessage)
+    assert isinstance(tool_message.outcome, ToolSuccess)
+    assert released_text(sink) == (
+        "I'll check the weather for you now. London is 12 degrees and lightly cloudy."
+    )
 
 
 def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> None:
