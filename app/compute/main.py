@@ -64,7 +64,7 @@ def create_compute_app_for_runtime(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         del application
         logger.info("compute server startup initiated")
-        if runtime.loading_task is None:
+        if not runtime.model_loading_started:
             runtime.start_loading()
         try:
             if settings.eager_model_loading:

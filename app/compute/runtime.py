@@ -78,6 +78,7 @@ class ComputeRuntime:
             else create_search_provider(voice_stack_settings.search)
         )
         self.loading_task: asyncio.Task[None] | None = None
+        self.model_loading_started = False
 
     @property
     def ready(self) -> bool:
@@ -105,11 +106,29 @@ class ComputeRuntime:
         self.voice_session_admission.release(lease)
 
     def start_loading(self) -> None:
-        assert self.loading_task is None
+        assert not self.model_loading_started
+        self.model_loading_started = True
         if self.voice_stack_settings is None:
             logger.info("voice stack disabled; batch ASR is ready")
             return
         self.loading_task = asyncio.create_task(self._load_models())
+
+    async def load_before_memory_snapshot(self) -> None:
+        assert not self.model_loading_started
+        assert self.voice_stack_settings is not None
+        self.model_loading_started = True
+        await self._load_language_model()
+        await self._load_search_text_generator()
+        await self.prepare_for_memory_snapshot()
+
+    async def load_after_memory_snapshot(self) -> None:
+        await self.restore_after_memory_snapshot()
+        await self._load_speech_detector()
+        await asyncio.gather(
+            self._load_streaming_asr(),
+            self._load_speech_synthesizer(),
+        )
+        logger.info("all required compute models ready")
 
     async def wait_until_loading_complete(self) -> None:
         if self.loading_task is not None:

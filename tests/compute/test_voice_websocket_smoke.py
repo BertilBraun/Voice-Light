@@ -31,10 +31,12 @@ class FakeComputeRuntime:
         self.voice_session_admission = SingleVoiceSessionAdmission()
         self.waited_for_loading = False
         self.loading_task: bool | None = None
+        self.model_loading_started = False
         self.loading_start_count = 0
 
     def start_loading(self) -> None:
         self.loading_task = True
+        self.model_loading_started = True
         self.loading_start_count += 1
 
     async def wait_until_loading_complete(self) -> None:
