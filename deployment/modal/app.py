@@ -113,7 +113,10 @@ image = (
 )
 
 with image.imports():
-    from app.compute.main import create_app_from_environment
+    from app.compute.config import ComputeSettings
+    from app.compute.main import create_compute_app_for_runtime, create_compute_runtime
+    from app.compute.runtime import ComputeRuntime
+    from app.compute.telemetry import configure_logging
 
 app = modal.App(APPLICATION_NAME)
 compute_secret = modal.Secret.from_name(configuration.secret_name)
@@ -127,7 +130,7 @@ runtime_cache = modal.Volume.from_name(
 )
 
 
-@app.function(
+@app.cls(
     image=image,
     gpu=configuration.gpu,
     max_containers=1,
@@ -144,7 +147,19 @@ runtime_cache = modal.Volume.from_name(
     },
 )
 @modal.concurrent(max_inputs=1)
-@modal.asgi_app()
-def voice_light() -> FastAPI:
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    return create_app_from_environment()
+class VoiceLight:
+    settings: ComputeSettings
+    runtime: ComputeRuntime
+
+    @modal.enter(snap=True)
+    async def load_models(self) -> None:
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        self.settings = ComputeSettings.from_environment(os.environ)
+        configure_logging(self.settings.log_directory)
+        self.runtime = create_compute_runtime(self.settings)
+        self.runtime.start_loading()
+        await self.runtime.wait_until_loading_complete()
+
+    @modal.asgi_app(label="voice-light")
+    def voice_light(self) -> FastAPI:
+        return create_compute_app_for_runtime(self.settings, self.runtime)

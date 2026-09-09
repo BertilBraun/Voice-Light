@@ -43,17 +43,29 @@ logger = logging.getLogger(__name__)
 
 def create_compute_app(settings: ComputeSettings) -> FastAPI:
     configure_logging(settings.log_directory)
-    runtime = ComputeRuntime(
+    runtime = create_compute_runtime(settings)
+    return create_compute_app_for_runtime(settings, runtime)
+
+
+def create_compute_runtime(settings: ComputeSettings) -> ComputeRuntime:
+    return ComputeRuntime(
         voice_stack_settings=settings.voice_stack,
         dataset_audio_cache_directory=settings.dataset_audio_cache_directory,
     )
+
+
+def create_compute_app_for_runtime(
+    settings: ComputeSettings,
+    runtime: ComputeRuntime,
+) -> FastAPI:
     authorizer = BearerTokenAuthorizer(settings.token)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         del application
         logger.info("compute server startup initiated")
-        runtime.start_loading()
+        if runtime.loading_task is None:
+            runtime.start_loading()
         try:
             if settings.eager_model_loading:
                 await runtime.wait_until_loading_complete()

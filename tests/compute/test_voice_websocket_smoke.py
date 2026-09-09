@@ -30,9 +30,12 @@ class FakeComputeRuntime:
         self.voice_ready = self.voice_enabled
         self.voice_session_admission = SingleVoiceSessionAdmission()
         self.waited_for_loading = False
+        self.loading_task: bool | None = None
+        self.loading_start_count = 0
 
     def start_loading(self) -> None:
-        pass
+        self.loading_task = True
+        self.loading_start_count += 1
 
     async def wait_until_loading_complete(self) -> None:
         self.waited_for_loading = True
@@ -116,6 +119,26 @@ def test_eager_model_loading_waits_during_application_lifespan(
         assert client.get("/health/live").status_code == 200
 
     assert runtimes[0].waited_for_loading is True
+
+
+def test_preloaded_runtime_is_not_started_again(tmp_path: Path) -> None:
+    settings = ComputeSettings.from_environment(
+        {
+            "VOICE_LIGHT_COMPUTE_TOKEN": "smoke-token",
+            "VOICE_LIGHT_COMPUTE_LOG_DIR": str(tmp_path / "logs"),
+            "VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR": str(tmp_path / "dataset"),
+        }
+    )
+    runtime = FakeComputeRuntime(
+        settings.voice_stack,
+        settings.dataset_audio_cache_directory,
+    )
+    runtime.start_loading()
+
+    with TestClient(compute_main.create_compute_app_for_runtime(settings, runtime)) as client:
+        assert client.get("/health/live").status_code == 200
+
+    assert runtime.loading_start_count == 1
 
 
 def test_current_voice_websocket_route_smoke(
