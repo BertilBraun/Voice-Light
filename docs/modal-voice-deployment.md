@@ -318,10 +318,27 @@ succeeded with `configured=true`, two bounded results, and 1,978.38 ms provider 
 value was neither logged nor committed. The deployment containing the search secret and speculative
 audio deadlock fix completed in 15.763 seconds with cached layers.
 
+A subsequent human run recorded three empty-transcript overlaps resolved as non-floor-taking in
+216--248 ms, but onset-to-resume reached 811 ms because the session synchronously awaited final ASR
+before sending `RESUME`. The policy now gives final ASR a typed 120 ms grace: prompt meaningful
+lexical material cancels without a false resume, while a slow or empty finalization resumes the same
+generation after the bound and completes classification afterward. Sustained speech and strong
+floor-take evidence retain their existing cancellation paths.
+
+That run also reported zero skipped and zero replayed source samples, while the browser queue
+repeatedly approached the old 500 ms transport ceiling (11,264 of 12,000 samples at 24 kHz). This
+supports playback underrun rather than PCM ordering corruption as the likely periodic crackle cause.
+The deployed transport headroom is now 1,200 ms (57.6 KB PCM); browser-side cancel still immediately
+discards queued audio, and playback still starts with the first frame rather than waiting for a full
+prebuffer. Human listening remains required to confirm that the crackle is gone. This deployment
+completed in 52.165 seconds; its cold and immediately warm readiness probes measured 63.038 and
+1.194 seconds respectively.
+
 ## Known limitations
 
-- The latest truthful cold readiness sample is 72.858 seconds, of which 58.048 seconds was model
-  load plus first-inference warmup. Modal scheduling and fallback GPU selection remain variable; an
+- The latest truthful cold readiness sample is 63.038 seconds; an earlier instrumented sample
+  attributed 58.048 of 72.858 seconds to model load plus first-inference warmup. Modal scheduling
+  and fallback GPU selection remain variable; an
   earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
   ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap, keeping a warm
   container (which conflicts with scale-to-zero), or replacing the larger current model stack;
