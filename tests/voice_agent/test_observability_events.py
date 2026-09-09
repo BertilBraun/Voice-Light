@@ -10,7 +10,33 @@ from app.compute.voice.schemas import (
     InteractionPolicyDebugEvent,
     OverlapResolutionKind,
     PlaybackCommandAction,
+    SpeechUnderstandingDebugEvent,
+    TurnAdapterStatus,
 )
+
+
+def test_speech_debug_serialization_distinguishes_heartbeat_from_model_observation() -> None:
+    heartbeat = SpeechUnderstandingDebugEvent(
+        adapter_status=TurnAdapterStatus.ACTIVE,
+        silero_speech=False,
+        assistant_audible=True,
+        turn_completion_probability=None,
+        floor_take_probability=None,
+        non_floor_feedback_probability=None,
+        inference_latency_ms=None,
+        observed_audio_time_ms=160,
+    )
+    observation = heartbeat.model_copy(
+        update={
+            "turn_completion_probability": 0.7,
+            "floor_take_probability": 0.2,
+            "non_floor_feedback_probability": 0.3,
+            "inference_latency_ms": 22.0,
+        }
+    )
+
+    assert heartbeat.model_dump(mode="json")["turn_completion_probability"] is None
+    assert observation.model_dump(mode="json")["turn_completion_probability"] == pytest.approx(0.7)
 
 
 def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:

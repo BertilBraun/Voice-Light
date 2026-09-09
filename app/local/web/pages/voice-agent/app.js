@@ -1,4 +1,10 @@
 import { SpokenTextProgress } from "./spoken-text-progress.mjs";
+import {
+  INTERACTION_TIMELINE_DURATION_MS,
+  modelObservationSamples,
+  summarizeModelObservationCadence,
+  updateInteractionEvidence as storeInteractionEvidence,
+} from "./interaction-evidence.mjs";
 
 const INPUT_SAMPLE_RATE = 16000;
 const LOCAL_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Etc/UTC";
@@ -25,6 +31,7 @@ const debugPolicyDecision = document.querySelector("#debug-policy-decision");
 const debugPolicyLatency = document.querySelector("#debug-policy-latency");
 const debugPredictionLatency = document.querySelector("#debug-prediction-latency");
 const debugActionLatency = document.querySelector("#debug-action-latency");
+const debugEvidenceCadence = document.querySelector("#debug-evidence-cadence");
 const interactionTimeline = document.querySelector("#interaction-timeline");
 
 let socket;
@@ -42,7 +49,6 @@ let recordingUrl;
 const assistantTurns = new Map();
 const intentionallyClosedSockets = new WeakSet();
 const interactionEvidence = new Map();
-const INTERACTION_TIMELINE_DURATION_MS = 20000;
 
 new ResizeObserver(drawInteractionTimeline).observe(interactionTimeline);
 
@@ -687,30 +693,13 @@ function clearConversationHistory() {
   conversationEmpty.hidden = false;
   conversationHistory.replaceChildren(conversationEmpty);
   interactionEvidence.clear();
+  debugEvidenceCadence.textContent = "no model observations";
   drawInteractionTimeline();
 }
 
 function updateInteractionEvidence(message) {
-  const previous = interactionEvidence.get(message.observed_audio_time_ms);
   const hasModelEvidence = message.turn_completion_probability !== null;
-  interactionEvidence.set(message.observed_audio_time_ms, {
-    audioTimeMs: message.observed_audio_time_ms,
-    sileroSpeech: previous?.sileroSpeech ?? message.silero_speech,
-    assistantAudible: previous?.assistantAudible ?? message.assistant_audible,
-    turnCompletion: hasModelEvidence
-      ? message.turn_completion_probability
-      : previous?.turnCompletion ?? null,
-    floorTake: hasModelEvidence ? message.floor_take_probability : previous?.floorTake ?? null,
-    nonFloorFeedback: hasModelEvidence
-      ? message.non_floor_feedback_probability
-      : previous?.nonFloorFeedback ?? null,
-  });
-  const newestAudioTimeMs = Math.max(...interactionEvidence.keys());
-  for (const audioTimeMs of interactionEvidence.keys()) {
-    if (audioTimeMs < newestAudioTimeMs - INTERACTION_TIMELINE_DURATION_MS) {
-      interactionEvidence.delete(audioTimeMs);
-    }
-  }
+  const newestAudioTimeMs = storeInteractionEvidence(interactionEvidence, message);
   debugAdapterStatus.textContent = message.adapter_status.replaceAll("_", " ");
   if (message.observed_audio_time_ms === newestAudioTimeMs) {
     debugSilero.textContent = message.silero_speech ? "speech" : "silence";
@@ -719,6 +708,18 @@ function updateInteractionEvidence(message) {
     debugTurnCompletion.textContent = formatProbability(message.turn_completion_probability);
     debugFloorTake.textContent = formatProbability(message.floor_take_probability);
     debugNonFloor.textContent = formatProbability(message.non_floor_feedback_probability);
+  }
+  const points = [...interactionEvidence.values()].sort(
+    (left, right) => left.audioTimeMs - right.audioTimeMs,
+  );
+  const cadence = summarizeModelObservationCadence(points);
+  if (cadence === null) {
+    debugEvidenceCadence.textContent = "no model observations";
+  } else {
+    const interval = cadence.medianIntervalMs === null
+      ? "one sample"
+      : `${cadence.medianIntervalMs} ms median`;
+    debugEvidenceCadence.textContent = `${interval} · latest ${cadence.ageMs} ms behind input`;
   }
   drawInteractionTimeline();
 }
@@ -790,20 +791,14 @@ function drawInteractionTimeline() {
 }
 
 function drawProbabilitySeries(context, points, xForTime, top, bottom, field, color) {
-  context.beginPath();
-  let drawing = false;
-  for (const point of points) {
-    const probability = point[field];
-    if (probability === null) continue;
-    const x = xForTime(point.audioTimeMs);
-    const y = bottom - probability * (bottom - top);
-    if (drawing) context.lineTo(x, y);
-    else context.moveTo(x, y);
-    drawing = true;
+  context.fillStyle = color;
+  for (const sample of modelObservationSamples(points, field)) {
+    const x = xForTime(sample.audioTimeMs);
+    const y = bottom - sample.probability * (bottom - top);
+    context.beginPath();
+    context.arc(x, y, 2.5, 0, 2 * Math.PI);
+    context.fill();
   }
-  context.strokeStyle = color;
-  context.lineWidth = 2;
-  context.stroke();
 }
 
 function updateBoundaryProgress(progress) {

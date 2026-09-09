@@ -9,12 +9,14 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     with TestClient(app) as client:
         page_response = client.get("/voice-agent")
         script_response = client.get("/pages/voice-agent/app.js")
+        evidence_response = client.get("/pages/voice-agent/interaction-evidence.mjs")
         progress_response = client.get("/pages/voice-agent/spoken-text-progress.mjs")
         capture_worklet_response = client.get("/pages/voice-agent/capture-worklet.js")
         worklet_response = client.get("/pages/voice-agent/playback-worklet.js")
 
     assert page_response.status_code == 200
     assert progress_response.status_code == 200
+    assert evidence_response.status_code == 200
     assert 'id="conversation-history"' in page_response.text
     assert 'id="conversation-empty"' in page_response.text
     assert 'id="recording-player"' in page_response.text
@@ -31,10 +33,11 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'id="debug-adapter-status"' in page_response.text
     assert 'id="debug-prediction-latency"' in page_response.text
     assert 'id="debug-action-latency"' in page_response.text
+    assert 'id="debug-evidence-cadence"' in page_response.text
     assert 'id="interaction-timeline"' in page_response.text
     assert 'message.type === "speech_understanding.debug"' in script_response.text
     assert "updateInteractionEvidence(message)" in script_response.text
-    assert "INTERACTION_TIMELINE_DURATION_MS = 20000" in script_response.text
+    assert "INTERACTION_TIMELINE_DURATION_MS = 20000" in evidence_response.text
     assert 'message.type === "interaction_policy.debug"' in script_response.text
     assert 'message.type === "interaction_action.debug"' in script_response.text
     assert "console.table(message.results)" in script_response.text
@@ -75,7 +78,9 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
     assert "playback-worklet.js?v=4" in script_response.text
-    assert "app.js?v=11" in page_response.text
+    assert "app.js?v=12" in page_response.text
+    assert "dots are actual model observations; gaps mean no inference" in page_response.text
+    assert "modelObservationSamples(points, field)" in script_response.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text
     assert "local_time_zone: LOCAL_TIME_ZONE" in script_response.text
     assert 'from "./spoken-text-progress.mjs"' in script_response.text
