@@ -450,6 +450,13 @@ inference; ASR and the Silero fallback continue. Process ownership, lazy restart
 lease, and application shutdown remain provider and worker-manager responsibilities; conversation
 and epoch state remain session responsibilities.
 
+The parent schedules prediction work only for audio observations at which the Nemotron encoder
+actually emits a feature step. This preserves the approximately 169 ms encoder cadence without
+putting every browser render quantum into the recurrent queue. The bounded queue holds 64 encoder
+observations, and an individual shared-worker prediction may wait up to five seconds during GPU
+contention. Probability tensors cross the CUDA-to-CPU boundary once per step. A continuity gap still
+degrades the optional adapter instead of silently advancing recurrent state across missing input.
+
 ### Initial GPU evaluation
 
 The cumulative streamer was first evaluated with no additional VAD debounce, then with the
@@ -478,15 +485,17 @@ zero. These are small best-case measurements, not a trained turn-detector evalua
 Runtime readiness has four stages: speech detection, streaming ASR, language model, and speech
 synthesis. Each model worker must emit its typed ready event within 180 seconds or the parent
 terminates it and marks the stage failed. Qwen must continue producing an event within 10 seconds
-during generation and acknowledge cancellation within 2 seconds. Nemotron finalization is bounded
-at 15 seconds. Kyutai generation progress is bounded at 5 seconds and cancellation at 2 seconds.
+during generation. Qwen has two seconds to acknowledge cancellation; after that the parent
+terminates the worker and treats process exit as the stale-generation barrier instead of failing the
+already-cancelled response. Nemotron finalization is bounded at 15 seconds. Kyutai generation
+progress is bounded at 5 seconds and cancellation at 2 seconds.
 
 Nemotron, Qwen, and Kyutai managers grant an exclusive worker lease to one operation. A normal
 terminal event releases the reusable worker. A broken pipe, malformed event, worker exception,
 progress timeout, or cancellation timeout terminates the failed child, clears ownership, and
 releases the lease. Replacement is lazy: the next operation constructs and validates a fresh child,
-so cold model loading cannot delay delivery of the original error. Kyutai validates that a lazily
-restarted worker reports the original output sample rate.
+and a Qwen process terminated at its cancellation deadline counts as a completed cancellation
+barrier. Kyutai validates that a lazily restarted worker reports the original output sample rate.
 
 Within the composite speech-understanding session, ASR is mandatory and authoritative. Any ASR
 send, stream, or finalization failure remains session-fatal and uses the existing Nemotron
@@ -509,6 +518,12 @@ a terminal cancelled, failed, or playback-complete state. Receive and recognitio
 for the connection lifetime; each generation owns one text task and one synthesis-output task.
 Qwen text and Kyutai audio run as a pipeline: complete words are sent to TTS while Qwen continues
 generating later text.
+
+The browser receives an ephemeral debug observation for each input frame and merges adapter
+evidence back onto the audio observation that caused it. Its rolling 20-second canvas renders
+Silero speech and assistant-audible lanes plus turn-completion, floor-take, and non-floor-feedback
+probability traces. Scalar fields expose the latest probabilities, adapter health, final policy
+decision, and decision latency. These events are deliberately excluded from conversation history.
 
 Worker exceptions and orchestration failures are logged with session/generation context and sent to
 the development browser as structured `error` events containing `component`, `operation`, optional

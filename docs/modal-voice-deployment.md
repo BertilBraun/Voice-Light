@@ -96,7 +96,9 @@ onset always causes the immediate reversible duck/pause. Strong floor-take evide
 cancellation; strong non-floor-feedback evidence resumes the same generation without a user turn;
 the deadline preserves the conservative fallback. The browser debug panel shows Silero state,
 turn completion, floor take, non-floor feedback, policy decision, and decision latency. These are
-ephemeral events and never enter durable audible-only conversation history.
+ephemeral events and never enter durable audible-only conversation history. Its rolling 20-second
+timeline displays every received acoustic frame and merges causal adapter evidence at Nemotron's
+approximately 169 ms encoder cadence; it does not invent interpolated model predictions.
 
 ## Validation and measured deployment results
 
@@ -110,9 +112,10 @@ acknowledgements, and audible-only history.
 
 | Command | Result |
 | --- | --- |
-| `ruff format app deployment tests` | 531 files already formatted |
+| `ruff format app deployment tests` | 537 files formatted or already formatted |
 | `ruff check --fix app deployment tests` | all checks passed |
-| combined voice, turn-taking, route smoke, configuration, Modal, and boundary Pytest suites | 483 passed; Kyutai-extra and live-Tavily tests skipped |
+| voice-agent, turn-taking, compute route smoke, configuration, and boundary Pytest suites | 537 passed, 4 skipped |
+| Modal deployment tests (Modal-enabled Python environment) | 4 passed |
 | `node --test tests\browser\*.test.mjs` | 23 passed |
 
 An early deployment that loaded in a background lifespan exposed a Modal-specific idle-suspension
@@ -137,6 +140,21 @@ multi-process GPU stack, including after both vLLM engines entered sleep mode an
 replaced by direct Transformers. The endpoint therefore favors reliable cached loading over an
 alpha snapshot path that prevented admission.
 
+An instrumented deployment after the shared-adapter revision fix measured 46.823 seconds from
+WebSocket connection attempt to session readiness on a cold container. Two immediately following
+warm sessions were ready in 0.763 and 0.816 seconds. The adapter stayed `active` in all three runs:
+the cold run delivered four causal predictions with 23.34 ms median inference latency, and the warm
+runs delivered six predictions each with 21.94 and 23.08 ms medians. No adapter degradation event
+was observed. The checkpoint revision mismatch and raw-input-frame queue overflow found in earlier
+runs are therefore fixed in the deployed endpoint.
+
+The same fixed 7-second WAV smoke measured commit-to-first-PCM at 247.09 ms cold and 183.22/224.72
+ms warm. Separate live traces around Kyutai's first word measured 436.6 and 443.0 ms from first word
+to worker PCM after skipping redundant depformer computation during known delay steps, down from
+963.5--1,035.5 ms in the preceding deployment. The WAV's true-end-to-commit remained 2.56--2.98
+seconds because Nemotron/VAD processed the synthetic clip behind real time; this is not presented
+as TTS latency. The automated client does not render audio, so audible quality remains a human check.
+
 The final deployment command completed in 45.74 seconds with cached dependency layers. Its browser
 smoke reached `Ready to talk`, activated the microphone, streamed 16 kHz PCM, produced Nemotron
 partial/final transcripts, exercised speculative Qwen generations and invalidation/promotion, and
@@ -148,7 +166,8 @@ and the configured-search path were therefore not claimed as live passes.
 
 ## Known limitations
 
-- Sampled sequential cold startup varies from approximately 39 to 80 seconds. Restoring the old
+- Sampled sequential cold startup varies from approximately 39 to 80 seconds; the latest
+  instrumented sample was 46.823 seconds. Restoring the old
   approximately ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap
   or separating the workers into independently snapshot-compatible services; cached weights alone
   cannot remove library initialization.

@@ -129,7 +129,7 @@ async def run_trial(
     connected_at = time.perf_counter()
     observations = TrialObservations()
     send_timing = AudioSendTiming()
-    async with connect(url, max_size=None) as websocket:
+    async with connect(url, max_size=None, open_timeout=180) as websocket:
         await websocket.send(
             SessionStartEvent(input_sample_rate=INPUT_SAMPLE_RATE).model_dump_json()
         )
