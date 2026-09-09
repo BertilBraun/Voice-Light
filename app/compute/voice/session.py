@@ -164,6 +164,7 @@ class SessionPolicy:
     non_floor_feedback_overlap_threshold: float = 0.82
     overlap_classification_deadline_ms: int = 500
     transcript_free_floor_take_deadline_ms: int = 1_200
+    overlap_rearm_silence_ms: int = 160
     vad_speculation_enabled: bool = True
     vad_speculation_debounce_ms: int = 100
     vad_endpoint_yield_probability: float = 0.7
@@ -239,6 +240,11 @@ class SessionPolicy:
             "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS",
             1_200,
         )
+        overlap_rearm_silence_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS",
+            160,
+        )
         maximum_prediction_lag_ms = _environment_integer(
             environment,
             "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS",
@@ -254,6 +260,7 @@ class SessionPolicy:
             non_floor_feedback_overlap_threshold=non_floor_feedback_overlap_threshold,
             overlap_classification_deadline_ms=overlap_classification_deadline_ms,
             transcript_free_floor_take_deadline_ms=(transcript_free_floor_take_deadline_ms),
+            overlap_rearm_silence_ms=overlap_rearm_silence_ms,
             maximum_prediction_lag_ms=maximum_prediction_lag_ms,
         )
 
@@ -283,6 +290,8 @@ class SessionPolicy:
                 "The transcript-free floor-take deadline must exceed the overlap "
                 "classification deadline."
             )
+        if self.overlap_rearm_silence_ms <= 0:
+            raise ValueError("The overlap rearm silence must be positive.")
         if self.tool_timeout_seconds <= 0.0:
             raise ValueError("The tool timeout must be positive.")
         if self.tool_cancellation_timeout_seconds <= 0.0:
@@ -721,6 +730,10 @@ class VoiceSession:
             self.policy.vad_speculation_debounce_ms
         )
         maximum_pre_roll_samples = _milliseconds_to_samples(self.policy.pre_roll_duration_ms)
+        required_overlap_rearm_silent_samples = _milliseconds_to_samples(
+            self.policy.overlap_rearm_silence_ms
+        )
+        overlap_rearm_silent_samples: int | None = None
         try:
             while (pcm_bytes := await self.audio_queue.get()) is not None:
                 sample_count = _pcm_sample_count(pcm_bytes)
@@ -759,6 +772,17 @@ class VoiceSession:
                     pre_roll_samples += sample_count
                     while pre_roll_samples > maximum_pre_roll_samples:
                         pre_roll_samples -= _pcm_sample_count(pre_roll_chunks.popleft().pcm16)
+                    if overlap_rearm_silent_samples is not None:
+                        if is_speech:
+                            overlap_rearm_silent_samples = 0
+                        else:
+                            overlap_rearm_silent_samples += sample_count
+                            if (
+                                overlap_rearm_silent_samples
+                                >= required_overlap_rearm_silent_samples
+                            ):
+                                overlap_rearm_silent_samples = None
+                        continue
                     if not is_speech:
                         continue
                     speech_active = True
@@ -852,6 +876,7 @@ class VoiceSession:
                     self.final_vad_endpoint_at = None
                     self.turn_had_invalidated_candidate = False
                     self.latest_user_speech_input_sample = None
+                    overlap_rearm_silent_samples = 0
                     await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
                     continue
                 if is_speech:

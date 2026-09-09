@@ -131,6 +131,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
             "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.86",
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "640",
             "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS": "1400",
+            "VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS": "180",
             "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS": "260",
         }
     )
@@ -139,6 +140,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
     assert policy.non_floor_feedback_overlap_threshold == 0.86
     assert policy.overlap_classification_deadline_ms == 640
     assert policy.transcript_free_floor_take_deadline_ms == 1_400
+    assert policy.overlap_rearm_silence_ms == 180
     assert policy.maximum_prediction_lag_ms == 260
 
 
@@ -149,6 +151,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD", "soon"),
         ("VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS", "0"),
         ("VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS", "500"),
+        ("VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS", "0"),
         ("VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS", "-1"),
     ),
 )
@@ -2379,6 +2382,79 @@ def test_bounded_lag_adapter_backchannel_resumes_during_active_speech() -> None:
         )
         assert len(language_model.conversations) == 1
         assert all(message.content != "mm-hm" for message in sessions[0].conversation)
+        websocket.send_json({"type": "session.stop"})
+
+
+def test_backchannel_tail_cannot_reopen_overlap_before_clean_silence() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(
+            ("hello", None, None),
+            (None, None),
+            ("stop", None),
+        ),
+        final_texts=("hello agent", "", "stop"),
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        SlowLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        duck = receive_playback_command(websocket)
+        pause = receive_playback_command(websocket)
+        websocket.send_bytes(SILENCE_CHUNK)
+        resume = receive_playback_command(websocket)
+        assert [duck.action, pause.action, resume.action] == [
+            PlaybackCommandAction.DUCK,
+            PlaybackCommandAction.PAUSE_AT_BOUNDARY,
+            PlaybackCommandAction.RESUME,
+        ]
+        send_playback_command_acknowledgement(
+            websocket,
+            resume,
+            resulting_state=PlaybackState.RESUMING,
+            pause_result=PlaybackPauseResult.NOT_REQUESTED,
+            source_sample_position=1,
+        )
+
+        command_count_after_resume = len(sessions[0].playback_controller.command_records)
+        audio_sample_count_after_resume = sessions[0].audio_sample_count
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(
+            lambda: (
+                sessions[0].audio_sample_count
+                >= audio_sample_count_after_resume + len(SPEECH_CHUNK) // 2
+            )
+        )
+        assert len(sessions[0].playback_controller.command_records) == command_count_after_resume
+
+        for _ in range(8):
+            websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(
+            lambda: (
+                sessions[0].audio_sample_count
+                >= audio_sample_count_after_resume + 9 * len(SPEECH_CHUNK) // 2
+            )
+        )
+        assert len(sessions[0].playback_controller.command_records) == command_count_after_resume
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.DUCK
+        assert receive_playback_command(websocket).action is PlaybackCommandAction.PAUSE_AT_BOUNDARY
+        cancel = receive_playback_command(websocket)
+        assert cancel.action is PlaybackCommandAction.CANCEL
+        assert cancel.generation_id == 1
         websocket.send_json({"type": "session.stop"})
 
 
