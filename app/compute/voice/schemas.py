@@ -246,6 +246,12 @@ class TurnAdapterStatus(StrEnum):
     DEGRADED = "degraded"
 
 
+class TurnPredictionDisposition(StrEnum):
+    APPLICABLE = "applicable"
+    REJECTED_STALE = "rejected_stale"
+    REJECTED_SUPERSEDED = "rejected_superseded"
+
+
 class SpeechUnderstandingComponent(StrEnum):
     ASR = "asr"
     STANDALONE_TURN_DETECTOR = "standalone_turn_detector"
@@ -543,6 +549,24 @@ class SpeechUnderstandingDebugEvent(FrozenBaseModel):
     non_floor_feedback_probability: float | None = Field(ge=0.0, le=1.0)
     inference_latency_ms: float | None = Field(ge=0.0)
     observed_audio_time_ms: int = Field(ge=0)
+    prediction_disposition: TurnPredictionDisposition | None = None
+
+    @model_validator(mode="after")
+    def validate_model_observation(self) -> SpeechUnderstandingDebugEvent:
+        probabilities = (
+            self.turn_completion_probability,
+            self.floor_take_probability,
+            self.non_floor_feedback_probability,
+        )
+        has_all_probabilities = all(probability is not None for probability in probabilities)
+        has_no_probabilities = all(probability is None for probability in probabilities)
+        if not has_all_probabilities and not has_no_probabilities:
+            raise ValueError("Speech debug model probabilities must be supplied together.")
+        if has_all_probabilities != (self.prediction_disposition is not None):
+            raise ValueError("Speech debug model evidence requires a prediction disposition.")
+        if has_all_probabilities != (self.inference_latency_ms is not None):
+            raise ValueError("Speech debug model evidence requires inference latency.")
+        return self
 
 
 class InteractionPolicyDebugEvent(FrozenBaseModel):

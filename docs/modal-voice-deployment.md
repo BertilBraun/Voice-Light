@@ -123,8 +123,12 @@ turn completion, floor take, non-floor feedback, policy decision, and decision l
 ephemeral events and never enter durable audible-only conversation history. Its rolling 20-second
 timeline advances every 80 ms during user speech, silence, and assistant playback, and merges causal
 adapter evidence at Nemotron's approximately 169 ms encoder cadence. Probabilities render only as
-timestamped model-sample dots; gaps mean no inference, and the panel reports observed median cadence
-and latest-sample age instead of inventing interpolated predictions.
+timestamped model-sample dots: solid dots were eligible for policy decisions, while hollow dots
+were rejected as stale or superseded. Gaps mean no inference, and the panel reports observed median
+cadence and latest-sample age instead of inventing interpolated predictions. The current shared
+encoder is activated only for a Silero speech turn and its bounded pre-roll; it does not produce
+probabilities throughout assistant-only playback or session silence. Continuous encoder-only
+interaction inference remains a known limitation.
 
 ## Validation and measured deployment results
 

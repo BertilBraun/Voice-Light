@@ -68,15 +68,17 @@
           <div><dt>Decision</dt><dd id="debug-policy-decision">waiting</dd></div>
           <div><dt>Decision latency</dt><dd id="debug-policy-latency">—</dd></div>
           <div><dt>First applicable prediction</dt><dd id="debug-prediction-latency">—</dd></div>
+          <div><dt>Latest model sample</dt><dd id="debug-prediction-disposition">—</dd></div>
           <div><dt>Playback action</dt><dd id="debug-action-latency">—</dd></div>
           <div><dt>Evidence cadence</dt><dd id="debug-evidence-cadence">no model observations</dd></div>
         </dl>
         <div class="interaction-timeline-heading">
-          <p>Last 20 seconds · dots are actual model observations; gaps mean no inference</p>
+          <p>Last 20 seconds · solid dots affect policy; hollow dots were rejected</p>
           <div class="interaction-timeline-legend" aria-hidden="true">
             <span data-series="completion">completion samples</span>
             <span data-series="floor">floor-take samples</span>
             <span data-series="feedback">non-floor samples</span>
+            <span data-series="rejected">hollow = rejected</span>
           </div>
         </div>
         <canvas
@@ -93,6 +95,6 @@
         <ol id="event-log"></ol>
       </details>
     </main>
-    <script type="module" src="/pages/voice-agent/app.js?v=12"></script>
+    <script type="module" src="/pages/voice-agent/app.js?v=13"></script>
   </body>
 </html>

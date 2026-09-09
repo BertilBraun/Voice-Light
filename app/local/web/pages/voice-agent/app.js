@@ -30,6 +30,7 @@ const debugNonFloor = document.querySelector("#debug-non-floor");
 const debugPolicyDecision = document.querySelector("#debug-policy-decision");
 const debugPolicyLatency = document.querySelector("#debug-policy-latency");
 const debugPredictionLatency = document.querySelector("#debug-prediction-latency");
+const debugPredictionDisposition = document.querySelector("#debug-prediction-disposition");
 const debugActionLatency = document.querySelector("#debug-action-latency");
 const debugEvidenceCadence = document.querySelector("#debug-evidence-cadence");
 const interactionTimeline = document.querySelector("#interaction-timeline");
@@ -738,6 +739,7 @@ function clearConversationHistory() {
   conversationHistory.replaceChildren(conversationEmpty);
   interactionEvidence.clear();
   debugEvidenceCadence.textContent = "no model observations";
+  debugPredictionDisposition.textContent = "—";
   drawInteractionTimeline();
 }
 
@@ -752,6 +754,7 @@ function updateInteractionEvidence(message) {
     debugTurnCompletion.textContent = formatProbability(message.turn_completion_probability);
     debugFloorTake.textContent = formatProbability(message.floor_take_probability);
     debugNonFloor.textContent = formatProbability(message.non_floor_feedback_probability);
+    debugPredictionDisposition.textContent = message.prediction_disposition.replaceAll("_", " ");
   }
   const points = [...interactionEvidence.values()].sort(
     (left, right) => left.audioTimeMs - right.audioTimeMs,
@@ -835,13 +838,19 @@ function drawInteractionTimeline() {
 }
 
 function drawProbabilitySeries(context, points, xForTime, top, bottom, field, color) {
-  context.fillStyle = color;
   for (const sample of modelObservationSamples(points, field)) {
     const x = xForTime(sample.audioTimeMs);
     const y = bottom - sample.probability * (bottom - top);
     context.beginPath();
     context.arc(x, y, 2.5, 0, 2 * Math.PI);
-    context.fill();
+    if (sample.disposition === "applicable") {
+      context.fillStyle = color;
+      context.fill();
+    } else {
+      context.strokeStyle = color;
+      context.lineWidth = 1.25;
+      context.stroke();
+    }
   }
 }
 

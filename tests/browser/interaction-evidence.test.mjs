@@ -15,6 +15,7 @@ function debugEvent(audioTimeMs, turnCompletion = null) {
     turn_completion_probability: turnCompletion,
     floor_take_probability: turnCompletion === null ? null : 0.2,
     non_floor_feedback_probability: turnCompletion === null ? null : 0.3,
+    prediction_disposition: turnCompletion === null ? null : "applicable",
   };
 }
 
@@ -26,7 +27,7 @@ test("keeps heartbeat frames distinct from real model observations", () => {
 
   const points = [...evidence.values()];
   assert.deepEqual(modelObservationSamples(points, "turnCompletion"), [
-    { audioTimeMs: 160, probability: 0.7 },
+    { audioTimeMs: 160, probability: 0.7, disposition: "applicable" },
   ]);
   assert.equal(points[2].turnCompletion, null);
   assert.equal(points[2].isModelObservation, false);
@@ -54,4 +55,15 @@ test("preserves a real observation when a heartbeat shares its timestamp", () =>
   const point = evidence.get(160);
   assert.equal(point.isModelObservation, true);
   assert.equal(point.turnCompletion, 0.7);
+});
+
+test("retains rejected model observations with their typed disposition", () => {
+  const evidence = new Map();
+  const rejected = debugEvent(160, 0.7);
+  rejected.prediction_disposition = "rejected_superseded";
+  updateInteractionEvidence(evidence, rejected);
+
+  assert.deepEqual(modelObservationSamples([...evidence.values()], "turnCompletion"), [
+    { audioTimeMs: 160, probability: 0.7, disposition: "rejected_superseded" },
+  ]);
 });

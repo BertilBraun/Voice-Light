@@ -83,9 +83,10 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "new Int16Array(input.length)" in capture_worklet_response.text
     assert "playback-worklet.js?v=5" in script_response.text
     assert 'data.type === "playback.clock"' in script_response.text
-    assert "app.js?v=12" in page_response.text
-    assert "dots are actual model observations; gaps mean no inference" in page_response.text
+    assert "app.js?v=13" in page_response.text
+    assert "solid dots affect policy; hollow dots were rejected" in page_response.text
     assert "modelObservationSamples(points, field)" in script_response.text
+    assert 'sample.disposition === "applicable"' in script_response.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text
     assert "local_time_zone: LOCAL_TIME_ZONE" in script_response.text
     assert 'from "./spoken-text-progress.mjs"' in script_response.text

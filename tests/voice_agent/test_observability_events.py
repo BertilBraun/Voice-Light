@@ -12,6 +12,7 @@ from app.compute.voice.schemas import (
     PlaybackCommandAction,
     SpeechUnderstandingDebugEvent,
     TurnAdapterStatus,
+    TurnPredictionDisposition,
 )
 
 
@@ -32,11 +33,13 @@ def test_speech_debug_serialization_distinguishes_heartbeat_from_model_observati
             "floor_take_probability": 0.2,
             "non_floor_feedback_probability": 0.3,
             "inference_latency_ms": 22.0,
+            "prediction_disposition": TurnPredictionDisposition.REJECTED_SUPERSEDED,
         }
     )
 
     assert heartbeat.model_dump(mode="json")["turn_completion_probability"] is None
     assert observation.model_dump(mode="json")["turn_completion_probability"] == pytest.approx(0.7)
+    assert observation.model_dump(mode="json")["prediction_disposition"] == "rejected_superseded"
 
 
 def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:

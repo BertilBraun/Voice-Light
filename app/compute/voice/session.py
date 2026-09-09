@@ -119,6 +119,7 @@ from app.compute.voice.schemas import (
     TranscriptEvent,
     TranscriptRevision,
     TurnAdapterStatus,
+    TurnPredictionDisposition,
     VoiceServerEvent,
     VoiceServerEventType,
     voice_client_event_adapter,
@@ -1331,20 +1332,11 @@ class VoiceSession:
                     )
                 case _:
                     prediction = self.interaction_prediction_reducer.reduce(event)
-                    if prediction is not None and self._prediction_is_applicable(
-                        prediction,
-                        current_input_sample=chunk.end_input_sample,
-                    ):
-                        overlap = self.active_user_overlap
-                        if (
-                            overlap is not None
-                            and prediction.stamp.input_end_sample >= overlap.onset_input_sample
-                            and overlap.first_applicable_prediction_monotonic_time_ns is None
-                        ):
-                            overlap.first_applicable_prediction_monotonic_time_ns = (
-                                time.perf_counter_ns()
-                            )
-                        latest_prediction = prediction
+                    if prediction is not None:
+                        disposition = self._prediction_disposition(
+                            prediction,
+                            current_input_sample=chunk.end_input_sample,
+                        )
                         await self._send_event(
                             SpeechUnderstandingDebugEvent(
                                 adapter_status=TurnAdapterStatus.ACTIVE,
@@ -1363,8 +1355,21 @@ class VoiceSession:
                                     * 1_000
                                     // INPUT_SAMPLE_RATE
                                 ),
+                                prediction_disposition=disposition,
                             )
                         )
+                        if disposition is not TurnPredictionDisposition.APPLICABLE:
+                            continue
+                        overlap = self.active_user_overlap
+                        if (
+                            overlap is not None
+                            and prediction.stamp.input_end_sample >= overlap.onset_input_sample
+                            and overlap.first_applicable_prediction_monotonic_time_ns is None
+                        ):
+                            overlap.first_applicable_prediction_monotonic_time_ns = (
+                                time.perf_counter_ns()
+                            )
+                        latest_prediction = prediction
         return latest_prediction
 
     async def _send_periodic_speech_debug(self, chunk: CapturedAudioChunk) -> None:
@@ -1397,11 +1402,11 @@ class VoiceSession:
             )
         )
 
-    def _prediction_is_applicable(
+    def _prediction_disposition(
         self,
         prediction: InteractionPrediction,
         current_input_sample: int,
-    ) -> bool:
+    ) -> TurnPredictionDisposition:
         observed_through_input_sample = prediction.stamp.observed_through_input_sample
         if observed_through_input_sample > current_input_sample:
             raise ValueError("Prediction cannot observe beyond received input audio.")
@@ -1416,7 +1421,7 @@ class VoiceSession:
                 lag_samples,
                 maximum_lag_samples,
             )
-            return False
+            return TurnPredictionDisposition.REJECTED_STALE
         latest_user_speech_input_sample = self.latest_user_speech_input_sample
         if (
             self.active_user_overlap is None
@@ -1431,8 +1436,8 @@ class VoiceSession:
                 observed_through_input_sample,
                 latest_user_speech_input_sample,
             )
-            return False
-        return True
+            return TurnPredictionDisposition.REJECTED_SUPERSEDED
+        return TurnPredictionDisposition.APPLICABLE
 
     def _vad_endpoint_prediction(self, chunk: CapturedAudioChunk) -> InteractionPrediction:
         return InteractionPrediction(

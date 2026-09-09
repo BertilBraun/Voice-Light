@@ -3181,6 +3181,13 @@ def test_prediction_observed_before_resumed_speech_cannot_start_candidate() -> N
         prediction_source.release.set()
         assert prediction_source.completed.wait(timeout=1)
         websocket.send_bytes(SILENCE_CHUNK)
+        while True:
+            debug_event = websocket.receive_json()
+            if (
+                debug_event["type"] == "speech_understanding.debug"
+                and debug_event["prediction_disposition"] == "rejected_superseded"
+            ):
+                break
         websocket.send_bytes(SILENCE_CHUNK)
         wait_until(lambda: transcriber.sessions[0].next_partial_index >= 5)
 
@@ -3189,6 +3196,7 @@ def test_prediction_observed_before_resumed_speech_cannot_start_candidate() -> N
 
     assert sessions[0].generations == {}
     assert language_model.conversations == []
+    assert debug_event["turn_completion_probability"] == pytest.approx(0.95)
 
 
 def test_latency_separates_first_pause_from_final_vad_endpoint() -> None:

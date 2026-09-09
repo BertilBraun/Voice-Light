@@ -8,6 +8,9 @@ export function updateInteractionEvidence(evidence, message) {
     sileroSpeech: message.silero_speech,
     assistantAudible: message.assistant_audible,
     isModelObservation: isModelObservation || previous?.isModelObservation || false,
+    predictionDisposition: isModelObservation
+      ? message.prediction_disposition
+      : previous?.predictionDisposition ?? null,
     turnCompletion: isModelObservation
       ? message.turn_completion_probability
       : previous?.turnCompletion ?? null,
@@ -34,6 +37,7 @@ export function modelObservationSamples(points, field) {
     .map((point) => ({
       audioTimeMs: point.audioTimeMs,
       probability: point[field],
+      disposition: point.predictionDisposition,
     }));
 }
 

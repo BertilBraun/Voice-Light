@@ -52,6 +52,8 @@ button:disabled { cursor: default; opacity: .4; }
 .interaction-timeline-legend [data-series="completion"] { --series-color: #66e3a4; }
 .interaction-timeline-legend [data-series="floor"] { --series-color: #ff796f; }
 .interaction-timeline-legend [data-series="feedback"] { --series-color: #77a9ff; }
+.interaction-timeline-legend [data-series="rejected"] { --series-color: #9aa69e; }
+.interaction-timeline-legend [data-series="rejected"]::before { background: transparent; border: 1px solid var(--series-color); box-sizing: border-box; }
 .interaction-timeline { background: #0f1311; border: 1px solid #303a33; border-radius: 10px; display: block; height: 240px; margin-top: 10px; width: 100%; }
 .conversation-heading { align-items: flex-end; border-bottom: 1px solid #29322c; display: flex; gap: 24px; justify-content: space-between; padding: 20px 22px; }
 .conversation-heading .eyebrow { margin: 0 0 6px; }

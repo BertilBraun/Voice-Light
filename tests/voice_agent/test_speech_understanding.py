@@ -180,6 +180,29 @@ def test_first_speech_encoder_boundary_is_not_skipped() -> None:
     asyncio.run(exercise())
 
 
+def test_silent_pre_roll_encoder_boundary_is_consumed() -> None:
+    async def exercise() -> None:
+        source = RecordingPredictionSource(
+            condition_on_transcript=False,
+            expected_sequences=frozenset({0}),
+        )
+        provider = create_provider(source)
+        session = provider.create_session(stream_epoch=1)
+        pre_roll = create_chunk(
+            sequence_number=0,
+            stream_epoch=1,
+            turn_epoch=1,
+            is_speech=False,
+        )
+
+        await session.add_audio(pre_roll)
+
+        assert [observation.audio_chunk for observation in source.observations] == [pre_roll]
+        await session.close()
+
+    asyncio.run(exercise())
+
+
 def test_provider_owns_persistent_resources_and_sessions_own_turn_state() -> None:
     async def exercise() -> None:
         transcriber = RecordingTranscriber(RecordingTranscriptionSession)
@@ -470,6 +493,7 @@ def create_chunk(
     turn_epoch: int,
     playback_state: PlaybackState = PlaybackState.IDLE,
     assistant_audible: bool = False,
+    is_speech: bool = True,
 ) -> CapturedAudioChunk:
     start_sample = sequence_number * 320
     observation_time_ns = sequence_number + 1
@@ -482,7 +506,7 @@ def create_chunk(
         stream_epoch=stream_epoch,
         turn_epoch=turn_epoch,
         silero_evidence=SileroEvidence(
-            is_speech=True,
+            is_speech=is_speech,
             monotonic_time_ns=observation_time_ns,
         ),
         playback_condition=PlaybackCondition(

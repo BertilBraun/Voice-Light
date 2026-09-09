@@ -514,9 +514,7 @@ class CompositeSpeechUnderstandingSession:
     def _enqueue_prediction(self, chunk: CapturedAudioChunk) -> None:
         if self.prediction_source is None or self.optional_predictor_degraded:
             return
-        if not self.interaction_observation_started:
-            if not chunk.silero_evidence.is_speech:
-                return
+        if not self.interaction_observation_started and chunk.silero_evidence.is_speech:
             self.interaction_observation_started = True
             if not chunk.playback_condition.assistant_audible:
                 return
