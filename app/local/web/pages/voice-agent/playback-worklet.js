@@ -387,7 +387,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       this.state = PlaybackState.SPEAKING;
     }
     this.reportCrossedBoundaries();
-    this.reportPlaybackClockIfDue();
+    this.reportPlaybackClockIfDue(this.queuedSourceSampleCount === 0);
     this.reportCompletionIfDrained();
     return true;
   }
@@ -465,12 +465,16 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     }
   }
 
-  reportPlaybackClockIfDue() {
+  reportPlaybackClockIfDue(force) {
     const intervalSampleCount = Math.max(
       1,
       Math.round(this.outputSampleRate * PLAYBACK_CLOCK_INTERVAL_MS / 1000),
     );
     if (
+      this.renderedOutputSamplePosition === this.lastPlaybackClockOutputSamplePosition
+    ) return;
+    if (
+      !force &&
       this.renderedOutputSamplePosition - this.lastPlaybackClockOutputSamplePosition <
       intervalSampleCount
     ) return;

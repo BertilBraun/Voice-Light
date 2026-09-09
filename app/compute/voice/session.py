@@ -2416,6 +2416,21 @@ class VoiceSession:
         tool.execution_started_at = execution_started_at
         if generation.latency.tool_execution_started_at is None:
             generation.latency.tool_execution_started_at = execution_started_at
+        logger.info(
+            "tool execution started: session=%s generation=%d invocation=%d tool=%s "
+            "tool_call_complete_to_execution_ms=%s first_bridge_pcm_to_execution_ms=%s",
+            self.session_id,
+            generation.generation_id,
+            invocation_id,
+            call.function.name,
+            _optional_milliseconds_between(tool.call_completed_at, execution_started_at),
+            _optional_milliseconds_between(
+                None
+                if generation.latency.first_bridge_pcm is None
+                else generation.latency.first_bridge_pcm.monotonic_time_seconds,
+                execution_started_at,
+            ),
+        )
         task = asyncio.create_task(self.tool_executor.execute(call))
         task.add_done_callback(_consume_tool_task_result)
         tool.task = task
@@ -2564,6 +2579,17 @@ class VoiceSession:
         tool.call_started_at = call_started_at
         if generation.latency.tool_call_started_at is None:
             generation.latency.tool_call_started_at = call_started_at
+        logger.info(
+            "tool call buffering started: session=%s generation=%d invocation=%d "
+            "generation_to_tool_call_start_ms=%s",
+            self.session_id,
+            generation.generation_id,
+            event.invocation_id,
+            _optional_milliseconds_between(
+                generation.latency.generation_started_at,
+                call_started_at,
+            ),
+        )
         first_delta_at = generation.latency.first_language_delta_at
         if first_delta_at is not None:
             generation.latency.first_bridge_text = MediaLatencyPoint(
@@ -2627,6 +2653,18 @@ class VoiceSession:
         tool.call_completed_at = call_completed_at
         if generation.latency.tool_call_completed_at is None:
             generation.latency.tool_call_completed_at = call_completed_at
+        logger.info(
+            "tool call buffering completed: session=%s generation=%d invocation=%d "
+            "tool_syntax_buffering_ms=%s generation_to_tool_call_complete_ms=%s",
+            self.session_id,
+            generation.generation_id,
+            event.invocation_id,
+            _optional_milliseconds_between(tool.call_started_at, call_completed_at),
+            _optional_milliseconds_between(
+                generation.latency.generation_started_at,
+                call_completed_at,
+            ),
+        )
 
     def _record_tool_call_failure(
         self,
@@ -2882,11 +2920,29 @@ class VoiceSession:
                         and generation.latency.first_final_answer_pcm is None
                         and event_end_sample > generation.final_answer_first_sample
                     ):
+                        first_final_answer_pcm_at = time.perf_counter()
                         generation.latency.first_final_answer_pcm = MediaLatencyPoint(
-                            monotonic_time_seconds=time.perf_counter(),
+                            monotonic_time_seconds=first_final_answer_pcm_at,
                             input_sample_position=generation.input_audio_sample_position,
                             output_sample_position=generation.final_answer_first_sample,
                             text_offset=generation.final_answer_text_start,
+                        )
+                        preceding_tool = generation.tool_executions[-1]
+                        logger.info(
+                            "post-tool synthesis first audio: session=%s generation=%d "
+                            "invocation=%d tool_call_complete_to_pcm_ms=%s "
+                            "tool_execution_complete_to_pcm_ms=%s",
+                            self.session_id,
+                            generation.generation_id,
+                            preceding_tool.invocation_id,
+                            _optional_milliseconds_between(
+                                preceding_tool.call_completed_at,
+                                first_final_answer_pcm_at,
+                            ),
+                            _optional_milliseconds_between(
+                                preceding_tool.execution_completed_at,
+                                first_final_answer_pcm_at,
+                            ),
                         )
                     if not started:
                         started = True

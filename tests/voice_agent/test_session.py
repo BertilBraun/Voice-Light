@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import struct
 import threading
 import time
@@ -1361,7 +1362,10 @@ def test_unconfigured_search_returns_immediate_truthful_response_without_model_o
     assert released_text(sink) == "I can't access live search right now."
 
 
-def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> None:
+def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.compute.voice.session")
     language_model = ScriptedWeatherLanguageModel()
     weather_handler = ControlledWeatherHandler()
     transcriber = RecordingTranscriber()
@@ -1573,6 +1577,18 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn() -> 
         cumulative_token_count=5,
     )
     assert language_model.second_pass_answer.endswith("in London.")
+    session_log_messages = tuple(
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.compute.voice.session"
+    )
+    for expected_message in (
+        "tool call buffering started:",
+        "tool call buffering completed:",
+        "tool execution started:",
+        "post-tool synthesis first audio:",
+    ):
+        assert any(message.startswith(expected_message) for message in session_log_messages)
 
 
 def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() -> None:
