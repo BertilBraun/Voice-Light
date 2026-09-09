@@ -72,22 +72,6 @@ class StreamingTurnAdapter:
     def reset(self) -> None:
         self.state = None
 
-    def warm_up(self) -> None:
-        parameter = next(self.loaded.adapter.parameters())
-        configuration = self.loaded.training_config.adapter
-        feature_taps = tuple(
-            torch.zeros(
-                1,
-                1,
-                configuration.feature_dimension,
-                device=parameter.device,
-                dtype=parameter.dtype,
-            )
-            for _ in configuration.tap_layer_indices
-        )
-        self.predict(feature_taps, assistant_speaking=False)
-        self.reset()
-
     def predict(
         self,
         feature_taps: tuple[Tensor, ...],

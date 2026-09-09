@@ -81,37 +81,6 @@ def test_streaming_adapter_reset_clears_recurrent_history(tmp_path: Path) -> Non
     assert reset == first
 
 
-def test_streaming_adapter_warmup_does_not_change_first_prediction(tmp_path: Path) -> None:
-    checkpoint = tmp_path / "adapter.pt"
-    training_config = _training_config()
-    adapter = TurnTakingAdapter(training_config.adapter)
-    torch.save(
-        {
-            "optimizer_step": 750,
-            "training_config": training_config.model_dump(mode="json"),
-            "adapter_state": adapter.state_dict(),
-        },
-        checkpoint,
-    )
-    runtime = StreamingTurnAdapter(
-        load_streaming_turn_adapter(
-            checkpoint_path=checkpoint,
-            expected_model_identifier=MODEL_IDENTIFIER,
-            expected_model_revision=MODEL_REVISION,
-            expected_lookahead_tokens=1,
-            device=torch.device("cpu"),
-        )
-    )
-    features = tuple(torch.randn(1, 3, 8) for _ in range(2))
-
-    expected = runtime.predict(features, assistant_speaking=False)
-    runtime.reset()
-    runtime.warm_up()
-    actual = runtime.predict(features, assistant_speaking=False)
-
-    assert actual == expected
-
-
 @pytest.mark.parametrize(
     ("model_identifier", "model_revision", "lookahead_tokens", "expected_message"),
     [
