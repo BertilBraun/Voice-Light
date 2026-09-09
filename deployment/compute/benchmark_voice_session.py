@@ -7,7 +7,7 @@ import struct
 import sys
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,7 +25,9 @@ from app.compute.voice.schemas import (
     SessionStartEvent,
     SessionStopEvent,
     SpeechStateEvent,
+    SpeechUnderstandingDebugEvent,
     TranscriptEvent,
+    TurnAdapterStatus,
     VoiceServerEvent,
     VoiceServerEventType,
 )
@@ -49,6 +51,10 @@ class VoiceTrialResult(FrozenBaseModel):
     true_end_to_first_pcm_ms: float = Field(ge=0.0)
     response_complete_ms: float = Field(ge=0.0)
     speculative_output_before_commit: bool
+    speech_debug_frame_count: int = Field(ge=0)
+    turn_prediction_count: int = Field(ge=0)
+    adapter_statuses: tuple[TurnAdapterStatus, ...]
+    adapter_inference_latency_p50_ms: float | None = Field(default=None, ge=0.0)
 
 
 class VoiceBenchmarkReport(FrozenBaseModel):
@@ -76,6 +82,10 @@ class TrialObservations:
     generation_id: int | None = None
     recognized_text: str = ""
     speculative_output_before_commit: bool = False
+    speech_debug_frame_count: int = 0
+    turn_prediction_count: int = 0
+    adapter_statuses: set[TurnAdapterStatus] = field(default_factory=set)
+    adapter_inference_latencies_ms: list[float] = field(default_factory=list)
 
 
 def read_pcm16_mono(wav_path: Path) -> bytes:
@@ -172,6 +182,15 @@ async def run_trial(
                         case SpeechStateEvent(type=VoiceServerEventType.VAD_STOPPED):
                             if observations.vad_endpoint_at is None:
                                 observations.vad_endpoint_at = now
+                        case SpeechUnderstandingDebugEvent():
+                            observations.speech_debug_frame_count += 1
+                            observations.adapter_statuses.add(event.adapter_status)
+                            if event.turn_completion_probability is not None:
+                                observations.turn_prediction_count += 1
+                                assert event.inference_latency_ms is not None
+                                observations.adapter_inference_latencies_ms.append(
+                                    event.inference_latency_ms
+                                )
                         case TranscriptEvent(type=VoiceServerEventType.TURN_COMMITTED):
                             observations.committed_at = now
                             observations.recognized_text = event.text
@@ -255,6 +274,14 @@ def build_trial_result(
         true_end_to_first_pcm_ms=milliseconds_between(true_end_at, first_pcm_at),
         response_complete_ms=milliseconds_between(committed_at, response_complete_at),
         speculative_output_before_commit=observations.speculative_output_before_commit,
+        speech_debug_frame_count=observations.speech_debug_frame_count,
+        turn_prediction_count=observations.turn_prediction_count,
+        adapter_statuses=tuple(sorted(observations.adapter_statuses)),
+        adapter_inference_latency_p50_ms=(
+            None
+            if not observations.adapter_inference_latencies_ms
+            else percentile(observations.adapter_inference_latencies_ms, 0.50)
+        ),
     )
 
 

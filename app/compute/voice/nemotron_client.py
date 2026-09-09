@@ -106,6 +106,16 @@ class NemotronWorkerProcess:
             if not isinstance(ready_event, AsrWorkerReadyEvent):
                 raise RuntimeError("The Nemotron worker failed to initialize.")
             self.ready_event = ready_event
+            if ready_event.turn_adapter_error is not None:
+                logger.warning(
+                    "Nemotron turn adapter is unavailable: %s",
+                    ready_event.turn_adapter_error,
+                )
+            elif ready_event.turn_adapter_available:
+                logger.info(
+                    "Nemotron turn adapter loaded: checkpoint_sha256=%s",
+                    ready_event.turn_adapter_checkpoint_sha256,
+                )
         except BaseException:
             self.terminate()
             raise
