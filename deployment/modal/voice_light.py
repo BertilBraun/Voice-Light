@@ -25,14 +25,36 @@ MODEL_CACHE_MOUNT: Final = PurePosixPath("/model-cache")
 RUNTIME_CACHE_MOUNT: Final = PurePosixPath("/runtime-cache")
 MERGED_LANGUAGE_MODEL_NAME: Final = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
 MERGED_LANGUAGE_MODEL_REVISION: Final = "557314e1a6839183e61a48833911606a23379d15"
+
+
+@dataclass(frozen=True)
+class ModelRepository:
+    repository_id: str
+    revision: str
+    allowed_files: tuple[str, ...] | None = None
+
+
 MODEL_REPOSITORIES: Final = (
-    (
-        "nvidia/nemotron-speech-streaming-en-0.6b",
-        "ebe59e5a817142986528bbbee5dba8db7b38ed50",
+    ModelRepository(
+        repository_id="nvidia/nemotron-speech-streaming-en-0.6b",
+        revision="ebe59e5a817142986528bbbee5dba8db7b38ed50",
     ),
-    (MERGED_LANGUAGE_MODEL_NAME, MERGED_LANGUAGE_MODEL_REVISION),
-    ("kyutai/tts-1.6b-en_fr", "f65439609986c392cb12df63938abcc550c3fb15"),
-    ("kyutai/tts-voices", "323332d33f997de8394f24a193e1a76df720e01a"),
+    ModelRepository(
+        repository_id=MERGED_LANGUAGE_MODEL_NAME,
+        revision=MERGED_LANGUAGE_MODEL_REVISION,
+    ),
+    ModelRepository(
+        repository_id="kyutai/tts-1.6b-en_fr",
+        revision="f65439609986c392cb12df63938abcc550c3fb15",
+    ),
+    ModelRepository(
+        repository_id="kyutai/tts-voices",
+        revision="323332d33f997de8394f24a193e1a76df720e01a",
+        allowed_files=(
+            "expresso/ex03-ex01_happy_001_channel1_334s.wav",
+            "expresso/ex03-ex01_happy_001_channel1_334s.wav.1e68beda@240.safetensors",
+        ),
+    ),
 )
 
 
@@ -151,8 +173,12 @@ runtime_cache = modal.Volume.from_name(
     volumes={str(MODEL_CACHE_MOUNT): model_cache},
 )
 def cache_models() -> None:
-    for repository_id, revision in MODEL_REPOSITORIES:
-        snapshot_download(repository_id, revision=revision)
+    for repository in MODEL_REPOSITORIES:
+        snapshot_download(
+            repository.repository_id,
+            revision=repository.revision,
+            allow_patterns=repository.allowed_files,
+        )
     model_cache.commit()
 
 

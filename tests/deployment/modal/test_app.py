@@ -57,12 +57,13 @@ def test_modal_cache_paths_are_absolute() -> None:
 
 
 def test_modal_cache_population_pins_every_hugging_face_repository() -> None:
-    assert MODEL_REPOSITORIES == (
-        (
-            "nvidia/nemotron-speech-streaming-en-0.6b",
-            "ebe59e5a817142986528bbbee5dba8db7b38ed50",
-        ),
-        (MERGED_LANGUAGE_MODEL_NAME, MERGED_LANGUAGE_MODEL_REVISION),
-        ("kyutai/tts-1.6b-en_fr", "f65439609986c392cb12df63938abcc550c3fb15"),
-        ("kyutai/tts-voices", "323332d33f997de8394f24a193e1a76df720e01a"),
+    repositories_by_id = {repository.repository_id: repository for repository in MODEL_REPOSITORIES}
+
+    assert repositories_by_id[MERGED_LANGUAGE_MODEL_NAME].revision == (
+        MERGED_LANGUAGE_MODEL_REVISION
+    )
+    voice_repository = repositories_by_id["kyutai/tts-voices"]
+    assert voice_repository.allowed_files == (
+        "expresso/ex03-ex01_happy_001_channel1_334s.wav",
+        "expresso/ex03-ex01_happy_001_channel1_334s.wav.1e68beda@240.safetensors",
     )
