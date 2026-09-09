@@ -5,6 +5,8 @@ from pathlib import PurePosixPath
 from deployment.modal.app import (
     ADAPTER_CHECKPOINT,
     APPLICATION_NAME,
+    MERGED_LANGUAGE_MODEL_NAME,
+    MERGED_LANGUAGE_MODEL_REVISION,
     REMOTE_ADAPTER_CHECKPOINT,
     ModalDeploymentConfiguration,
 )
@@ -30,6 +32,11 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     assert environment["VOICE_LIGHT_TURN_ADAPTER_CHECKPOINT"] == str(REMOTE_ADAPTER_CHECKPOINT)
     assert environment["VOICE_LIGHT_FLOOR_TAKE_THRESHOLD"] == "0.82"
     assert environment["VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD"] == "0.82"
+    assert environment["VOICE_LIGHT_MERGED_LANGUAGE_MODEL_NAME"] == MERGED_LANGUAGE_MODEL_NAME
+    assert (
+        environment["VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION"] == MERGED_LANGUAGE_MODEL_REVISION
+    )
+    assert environment["VOICE_LIGHT_QWEN_ENFORCE_EAGER"] == "true"
 
 
 def test_modal_cache_paths_are_absolute() -> None:

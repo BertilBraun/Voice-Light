@@ -22,6 +22,8 @@ ADAPTER_CHECKPOINT: Final = (
 REMOTE_ADAPTER_CHECKPOINT: Final = PurePosixPath("/opt/voice-light-artifacts/adapter-best.pt")
 MODEL_CACHE_MOUNT: Final = PurePosixPath("/model-cache")
 RUNTIME_CACHE_MOUNT: Final = PurePosixPath("/runtime-cache")
+MERGED_LANGUAGE_MODEL_NAME: Final = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
+MERGED_LANGUAGE_MODEL_REVISION: Final = "557314e1a6839183e61a48833911606a23379d15"
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,8 @@ class ModalDeploymentConfiguration:
             "VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR": str(RUNTIME_CACHE_MOUNT / "dataset-audio"),
             "VOICE_LIGHT_EAGER_MODEL_LOADING": "true",
             "VOICE_LIGHT_FLOOR_TAKE_THRESHOLD": "0.82",
+            "VOICE_LIGHT_MERGED_LANGUAGE_MODEL_NAME": MERGED_LANGUAGE_MODEL_NAME,
+            "VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION": MERGED_LANGUAGE_MODEL_REVISION,
             "VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD": "0.82",
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "500",
             "VOICE_LIGHT_QWEN_ENFORCE_EAGER": "true",
