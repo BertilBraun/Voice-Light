@@ -282,9 +282,11 @@ class ScriptedTranscriber:
         self,
         partials_by_turn: tuple[tuple[str | None, ...], ...],
         final_texts: tuple[str, ...],
+        finish_delay_seconds: float = 0.0,
     ) -> None:
         self.partials_by_turn = partials_by_turn
         self.final_texts = final_texts
+        self.finish_delay_seconds = finish_delay_seconds
         self.sessions: list[ScriptedTranscriptionSession] = []
 
     def start_session(self) -> TranscriptionSession:
@@ -297,15 +299,21 @@ class ScriptedTranscriber:
         final_text = (
             self.final_texts[session_index] if session_index < len(self.final_texts) else ""
         )
-        session = ScriptedTranscriptionSession(partials, final_text)
+        session = ScriptedTranscriptionSession(partials, final_text, self.finish_delay_seconds)
         self.sessions.append(session)
         return session
 
 
 class ScriptedTranscriptionSession:
-    def __init__(self, partials: tuple[str | None, ...], final_text: str) -> None:
+    def __init__(
+        self,
+        partials: tuple[str | None, ...],
+        final_text: str,
+        finish_delay_seconds: float,
+    ) -> None:
         self.partials = partials
         self.final_text = final_text
+        self.finish_delay_seconds = finish_delay_seconds
         self.next_partial_index = 0
         self.finish_count = 0
         self.closed = False
@@ -321,6 +329,7 @@ class ScriptedTranscriptionSession:
 
     async def finish(self) -> str:
         self.finish_count += 1
+        await asyncio.sleep(self.finish_delay_seconds)
         return self.final_text
 
     async def close(self) -> None:
@@ -2440,6 +2449,39 @@ def test_transcript_free_overlap_survives_classification_deadline_and_resumes() 
         assert resume.generation_id == 1
         assert len(language_model.conversations) == 1
         assert sessions[0].active_user_overlap is None
+        websocket.send_json({"type": "session.stop"})
+
+
+def test_false_start_resumes_before_slow_asr_finalization() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (None, None)),
+        final_texts=("hello agent", ""),
+        finish_delay_seconds=0.5,
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        SlowLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+        websocket.send_bytes(SPEECH_CHUNK)
+        receive_playback_command(websocket)
+        receive_playback_command(websocket)
+        websocket.send_bytes(SILENCE_CHUNK)
+
+        resume = receive_playback_command(websocket)
+        assert resume.action is PlaybackCommandAction.RESUME
+        assert transcriber.sessions[1].finish_count == 1
+        assert sessions[0].active_user_overlap is not None
         websocket.send_json({"type": "session.stop"})
 
 

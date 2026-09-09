@@ -1103,6 +1103,19 @@ class VoiceSession:
         if generation is None or generation.generation_id != overlap.generation_id:
             self.active_user_overlap = None
             return OverlapResolutionKind.NON_FLOOR_TAKING
+        resume_command = self.playback_controller.issue_resume(
+            generation_id=generation.generation_id,
+            causal_event_id=overlap.decision_event_id,
+            causal_source=provisional_decision.causal_source,
+            stream_epoch=overlap.stream_epoch,
+            turn_epoch=overlap.turn_epoch,
+            confidence=provisional_decision.confidence,
+        )
+        generation.continuation_allowed.set()
+        generation.synthesis_budget_available.set()
+        if resume_command is not None:
+            overlap.resume_command_id = resume_command.command_id
+            await self._send_event(resume_command)
         finalization_started_at = time.perf_counter()
         try:
             finalized_turn = await speech_understanding.finalize_turn()
@@ -1167,35 +1180,6 @@ class VoiceSession:
                 finalization_seconds=finalized_at - finalization_started_at,
             )
             return OverlapResolutionKind.NON_FLOOR_TAKING
-        active_generation = self.active_generation
-        if (
-            active_generation is not None
-            and active_generation.generation_id == overlap.generation_id
-        ):
-            resume_command = self.playback_controller.issue_resume(
-                generation_id=active_generation.generation_id,
-                causal_event_id=decision_event_id,
-                causal_source=final_decision.causal_source,
-                stream_epoch=overlap.stream_epoch,
-                turn_epoch=overlap.turn_epoch,
-                confidence=final_decision.confidence,
-            )
-            if resume_command is None:
-                cancel_command = await self._request_generation_cancellation(
-                    send_event=True,
-                    causal_event_id=decision_event_id,
-                    causal_source=final_decision.causal_source,
-                    confidence=final_decision.confidence,
-                    tool_invalidation_reason=(ToolInvalidationReason.PLAYBACK_RESUME_REJECTED),
-                )
-                overlap.cancel_command_id = (
-                    None if cancel_command is None else cancel_command.command_id
-                )
-            else:
-                active_generation.continuation_allowed.set()
-                active_generation.synthesis_budget_available.set()
-                overlap.resume_command_id = resume_command.command_id
-                await self._send_event(resume_command)
         await self._record_overlap_resolution(overlap, final_decision, generation)
         self.active_user_overlap = None
         logger.info(
