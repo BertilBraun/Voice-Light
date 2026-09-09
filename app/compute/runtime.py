@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ParamSpec, TypeVar
@@ -11,9 +11,12 @@ from typing import ParamSpec, TypeVar
 from app.compute.asr.models.registry import AsrModelCache
 from app.compute.config import VoiceStackSettings
 from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessionLease
+from app.compute.voice.conversation import ModelUserMessage
 from app.compute.voice.interfaces import (
+    LanguageModelRequest,
     SpeechSynthesizer,
     SpeechUnderstandingProvider,
+    SynthesisWord,
     TextGenerator,
 )
 from app.compute.voice.models import VllmLanguageModel, VllmTextGenerator
@@ -21,12 +24,19 @@ from app.compute.voice.nemotron_client import (
     NemotronStreamingTranscriber,
     NemotronTurnPredictionProvider,
 )
+from app.compute.voice.schemas import (
+    CapturedAudioChunk,
+    PlaybackCondition,
+    PlaybackConditionAuthority,
+    PlaybackState,
+    SileroEvidence,
+)
 from app.compute.voice.search import SearchProvider, create_search_provider
 from app.compute.voice.speech_detection import SileroSpeechDetectorFactory
 from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingProvider
 from app.compute.voice.tts_selection import create_speech_synthesizer
 from app.shared.audio.s3 import S3AudioCache, default_s3_downloader
-from app.shared.compute_api import ModelStage, ModelStageStatus
+from app.shared.compute_api import ModelStage, ModelStageStatus, ModelWarmupStatus
 from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
 logger = logging.getLogger(__name__)
@@ -40,6 +50,9 @@ class MutableModelStage:
     status: ModelStageStatus = ModelStageStatus.PENDING
     load_time_seconds: float | None = None
     error: str | None = None
+    warmup_status: ModelWarmupStatus = ModelWarmupStatus.NOT_REQUIRED
+    warmup_time_seconds: float | None = None
+    warmup_error: str | None = None
 
     def snapshot(self) -> ModelStage:
         return ModelStage(
@@ -47,6 +60,9 @@ class MutableModelStage:
             status=self.status,
             load_time_seconds=self.load_time_seconds,
             error=self.error,
+            warmup_status=self.warmup_status,
+            warmup_time_seconds=self.warmup_time_seconds,
+            warmup_error=self.warmup_error,
         )
 
 
@@ -61,11 +77,17 @@ class ComputeRuntime:
             root=dataset_audio_cache_directory,
             downloader=default_s3_downloader(),
         )
-        self.streaming_asr_stage = MutableModelStage("streaming_asr")
+        self.streaming_asr_stage = MutableModelStage(
+            "streaming_asr", warmup_status=ModelWarmupStatus.PENDING
+        )
         self.speech_detection_stage = MutableModelStage("speech_detection")
-        self.language_model_stage = MutableModelStage("language_model")
+        self.language_model_stage = MutableModelStage(
+            "language_model", warmup_status=ModelWarmupStatus.PENDING
+        )
         self.search_summarizer_stage = MutableModelStage("search_summarizer")
-        self.speech_synthesis_stage = MutableModelStage("speech_synthesis")
+        self.speech_synthesis_stage = MutableModelStage(
+            "speech_synthesis", warmup_status=ModelWarmupStatus.PENDING
+        )
         self.batch_asr_models = AsrModelCache()
         self.voice_session_admission = SingleVoiceSessionAdmission()
         self.speech_understanding_provider: SpeechUnderstandingProvider | None = None
@@ -208,8 +230,11 @@ class ComputeRuntime:
             self._load_streaming_asr(),
             self._load_language_model(),
         )
+        await self._warm_streaming_asr()
+        await self._warm_language_model()
         await self._load_search_text_generator()
         await self._load_speech_synthesizer()
+        await self._warm_speech_synthesizer()
         logger.info(
             "all required compute models ready in %.3f seconds",
             time.perf_counter() - started,
@@ -272,6 +297,97 @@ class ComputeRuntime:
         )
         if model is not None:
             self.speech_synthesizer = model
+
+    async def _warm_streaming_asr(self) -> None:
+        provider = self.speech_understanding_provider
+        if provider is None:
+            return
+        session = provider.create_session(stream_epoch=1)
+
+        async def warm() -> None:
+            try:
+                observed_at = time.monotonic_ns()
+                sample_count = 16_000
+                await session.add_audio(
+                    CapturedAudioChunk(
+                        pcm16=bytes(sample_count * 2),
+                        sequence_number=0,
+                        start_input_sample=0,
+                        end_input_sample=sample_count,
+                        monotonic_observation_time_ns=observed_at,
+                        stream_epoch=1,
+                        turn_epoch=1,
+                        silero_evidence=SileroEvidence(
+                            is_speech=False, monotonic_time_ns=observed_at
+                        ),
+                        playback_condition=PlaybackCondition(
+                            event_id="startup-warmup",
+                            state=PlaybackState.IDLE,
+                            assistant_audible=False,
+                            latest_output_sample_position=0,
+                            latest_source_sample_position=0,
+                            monotonic_time_ns=observed_at,
+                            authority=PlaybackConditionAuthority.SERVER_ESTIMATED,
+                        ),
+                    )
+                )
+                await session.finalize_turn()
+            finally:
+                await session.close()
+
+        await self._timed_warmup(self.streaming_asr_stage, warm)
+
+    async def _warm_language_model(self) -> None:
+        model = self.language_model
+        if model is None:
+            return
+
+        async def warm() -> None:
+            request = LanguageModelRequest(
+                assistant_generation_id=1,
+                messages=(ModelUserMessage(content="Reply only with OK."),),
+                tools=(),
+            )
+            async for _event in model.stream_response(request):
+                pass
+
+        await self._timed_warmup(self.language_model_stage, warm)
+
+    async def _warm_speech_synthesizer(self) -> None:
+        synthesizer = self.speech_synthesizer
+        if synthesizer is None:
+            return
+        session = synthesizer.start_session()
+
+        async def warm() -> None:
+            try:
+                await session.add_word(SynthesisWord(text="Ready.", text_start=0, text_end=6))
+                await session.finish_input()
+                async for _event in session.stream_events():
+                    pass
+            finally:
+                await session.cancel()
+
+        await self._timed_warmup(self.speech_synthesis_stage, warm)
+
+    async def _timed_warmup(
+        self,
+        stage: MutableModelStage,
+        warmup: Callable[[], Awaitable[None]],
+    ) -> None:
+        stage.warmup_status = ModelWarmupStatus.RUNNING
+        started = time.perf_counter()
+        try:
+            await asyncio.wait_for(warmup(), timeout=30.0)
+        except Exception as error:
+            stage.status = ModelStageStatus.FAILED
+            stage.warmup_status = ModelWarmupStatus.FAILED
+            stage.warmup_error = str(error)
+            logger.exception("model warmup failed: %s", stage.name)
+        else:
+            stage.warmup_status = ModelWarmupStatus.READY
+        finally:
+            stage.warmup_time_seconds = time.perf_counter() - started
 
     async def _timed_load(
         self,

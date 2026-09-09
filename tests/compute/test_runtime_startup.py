@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("silero_vad", reason="Compute runtime tests require compute dependencies.")
 
 from app.compute.runtime import ComputeRuntime
+from app.shared.compute_api import ModelStageStatus, ModelWarmupStatus
 
 
 class RecordingComputeRuntime(ComputeRuntime):
@@ -35,6 +36,15 @@ class RecordingComputeRuntime(ComputeRuntime):
     async def _load_speech_synthesizer(self) -> None:
         self.events.append("speech_synthesis")
 
+    async def _warm_streaming_asr(self) -> None:
+        self.events.append("streaming_asr_warmup")
+
+    async def _warm_language_model(self) -> None:
+        self.events.append("language_model_warmup")
+
+    async def _warm_speech_synthesizer(self) -> None:
+        self.events.append("speech_synthesis_warmup")
+
     async def _record_parallel_load(self, stage_name: str) -> None:
         self.events.append(f"{stage_name}_started")
         self.parallel_load_count += 1
@@ -59,4 +69,45 @@ def test_runtime_stages_nemotron_and_qwen_startup_concurrently(tmp_path: Path) -
         "language_model_started",
         "language_model_completed",
     }
-    assert events[5:] == ["search_summarizer", "speech_synthesis"]
+    assert events[5:] == [
+        "streaming_asr_warmup",
+        "language_model_warmup",
+        "search_summarizer",
+        "speech_synthesis",
+        "speech_synthesis_warmup",
+    ]
+
+
+def test_warmup_telemetry_is_ready_only_after_probe(tmp_path: Path) -> None:
+    async def exercise() -> tuple[ModelWarmupStatus, float | None]:
+        runtime = RecordingComputeRuntime(tmp_path / "cache")
+        stage = runtime.language_model_stage
+        stage.status = ModelStageStatus.READY
+
+        async def probe() -> None:
+            assert stage.warmup_status is ModelWarmupStatus.RUNNING
+
+        await runtime._timed_warmup(stage, probe)
+        return stage.warmup_status, stage.warmup_time_seconds
+
+    status, elapsed = asyncio.run(exercise())
+    assert status is ModelWarmupStatus.READY
+    assert elapsed is not None
+
+
+def test_failed_warmup_prevents_readiness(tmp_path: Path) -> None:
+    async def exercise() -> tuple[ModelStageStatus, ModelWarmupStatus, str | None]:
+        runtime = RecordingComputeRuntime(tmp_path / "cache")
+        stage = runtime.language_model_stage
+        stage.status = ModelStageStatus.READY
+
+        async def probe() -> None:
+            raise RuntimeError("probe failed")
+
+        await runtime._timed_warmup(stage, probe)
+        return stage.status, stage.warmup_status, stage.warmup_error
+
+    status, warmup_status, error = asyncio.run(exercise())
+    assert status is ModelStageStatus.FAILED
+    assert warmup_status is ModelWarmupStatus.FAILED
+    assert error == "probe failed"

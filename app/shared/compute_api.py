@@ -25,11 +25,23 @@ class ModelStageStatus(StrEnum):
     FAILED = "failed"
 
 
+class ModelWarmupStatus(StrEnum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    RUNNING = "running"
+    READY = "ready"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+
+
 class ModelStage(FrozenBaseModel):
     name: str
     status: ModelStageStatus
     load_time_seconds: float | None = None
     error: str | None = None
+    warmup_status: ModelWarmupStatus = ModelWarmupStatus.NOT_REQUIRED
+    warmup_time_seconds: float | None = None
+    warmup_error: str | None = None
 
 
 class GpuMemory(FrozenBaseModel):
