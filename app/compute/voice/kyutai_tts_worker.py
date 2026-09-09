@@ -258,6 +258,12 @@ class _KyutaiStreamingGenerator:
             cfg_is_masked_until=None,
             cfg_is_no_text=True,
         )
+        self.initial_depformer_tokens = torch.full(
+            (1, model.lm.dep_q, 1),
+            model.machine.token_ids.zero,
+            dtype=torch.long,
+            device=model.lm.device,
+        )
 
     def start_turn(
         self,
@@ -380,7 +386,13 @@ class _KyutaiStreamingGenerator:
             device=self.model.lm.device,
         )
         language_model_step_started_at = time.perf_counter()
-        frame = self.lm_generation.step(input_tokens)
+        depformer_replacement = (
+            self.initial_depformer_tokens if self.offset < self.model.delay_steps else None
+        )
+        frame = self.lm_generation.step(
+            input_tokens,
+            depformer_replace_tokens=depformer_replacement,
+        )
         self.language_model_step_seconds += time.perf_counter() - language_model_step_started_at
         self.model_step_count += 1
         self.offset += 1
