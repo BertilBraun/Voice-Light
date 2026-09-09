@@ -25,7 +25,7 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     configuration = ModalDeploymentConfiguration()
     environment = configuration.environment()
 
-    assert configuration.gpus == ("L40S", "H100", "A100")
+    assert configuration.gpus == ("L40S", "H100", "A100", "A10")
     assert configuration.scaledown_window_seconds == 1_200
     assert configuration.startup_timeout_seconds == 1_800
     assert environment["VOICE_LIGHT_EAGER_MODEL_LOADING"] == "true"

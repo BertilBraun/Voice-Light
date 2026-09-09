@@ -61,7 +61,7 @@ MODEL_REPOSITORIES: Final = (
 
 @dataclass(frozen=True)
 class ModalDeploymentConfiguration:
-    gpus: tuple[str, ...] = ("L40S", "H100", "A100")
+    gpus: tuple[str, ...] = ("L40S", "H100", "A100", "A10")
     scaledown_window_seconds: int = 1_200
     startup_timeout_seconds: int = 1_800
     function_timeout_seconds: int = 86_400

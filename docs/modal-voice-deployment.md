@@ -9,10 +9,10 @@ registry, search integration, predictive generation, playback controller, Nemotr
 workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
-session. Modal requests L40S first, then allows H100 or A100 when L40S capacity is unavailable. All
-three have sufficient memory and CUDA compatibility for the measured stack; fallbacks reduce
-scheduling stalls but can cost more per second. Modal may scale to zero, has one maximum container,
-and keeps an idle container for 1,200 seconds. Modal sets
+session. Modal requests L40S first, then allows H100, A100, or A10 when preferred capacity is
+unavailable. All four have sufficient memory and CUDA compatibility for the measured stack;
+fallbacks reduce scheduling stalls but have different cost and performance. Modal may scale to
+zero, has one maximum container, and keeps an idle container for 1,200 seconds. Modal sets
 `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
 initialization before Modal marks a cold container ready or admits the first request. Nemotron and
 Qwen start concurrently, then the shared search generator and Kyutai start in dependency order. The
@@ -191,6 +191,12 @@ consumed 81.086 seconds: 0.341 seconds for Silero, 35.431/36.352 seconds for con
 Nemotron/Qwen, then 44.137 seconds for Kyutai. Because this was much slower than sampled L40S
 workers, H100 precedes A100 in the fallback order. The immediately following warm A100 session was
 ready in 1.131 seconds.
+
+An isolated full-stack A10 canary subsequently proved that the last-resort GPU fits without changing
+the runtime: all five model stages reached ready in 31.122 seconds and `nvidia-smi` reported 9,545
+MiB used out of 23,028 MiB. Its stages were 0.111 seconds for Silero, 11.569/12.130 seconds for
+concurrent Nemotron/Qwen, and 18.880 seconds for Kyutai. A10 is therefore the final availability
+fallback, not an assumed fit based on checkpoint size.
 
 After placing H100 ahead of A100, the final deployed cold container completed model initialization
 in 27.940 seconds: 0.091 seconds for Silero, 10.773/11.608 seconds for concurrent Nemotron/Qwen,
