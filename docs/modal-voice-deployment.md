@@ -94,6 +94,7 @@ The deployed starting values are:
 | `VOICE_LIGHT_FLOOR_TAKE_THRESHOLD` | `0.82` | predicted floor take that commits interruption |
 | `VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD` | `0.82` | predicted feedback that resumes the same generation |
 | `VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS` | `500` | conservative unresolved-overlap deadline |
+| `VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS` | `240` | maximum age of causal adapter evidence during active overlap |
 
 The threshold is the evaluated Voice-Light starting point, not a universal calibration. Silero
 onset always causes the immediate reversible duck/pause. Strong floor-take evidence commits
@@ -210,15 +211,19 @@ and the configured-search path were therefore not claimed as live passes.
 
 ## Known limitations
 
-- Sampled sequential cold startup varies from approximately 39 to 80 seconds; the latest
-  instrumented sample was 46.823 seconds. Restoring the old
-  approximately ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap
-  or separating the workers into independently snapshot-compatible services; cached weights alone
-  cannot remove library initialization.
+- Staged L40S-class model initialization now measures approximately 28 seconds, with total fresh
+  connection readiness measured at 35.7 seconds. Modal scheduling and fallback GPU selection remain
+  variable; an A100 fallback required 105.341 seconds end to end. Restoring the old approximately
+  ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap or replacing the
+  larger current model stack; cached weights alone cannot remove library initialization.
 - A live human must provide microphone speech and judge audible output. Automated and agent-run
   checks cannot honestly certify microphone capture, speaker audibility, natural backchannel, or
   interruption perception.
 - Speech-end-to-first-text/audio and live duck, cancellation, and resume latency require a ready
   GPU session plus timestamped real audio; no synthetic result is presented as production proof.
+- The adapter currently catches up from a bounded 300 ms pre-roll after Silero onset. Continuous
+  assistant-playback context requires replacing the high-level RNNT generation loop with one
+  scheduler that owns persistent encoder, decoder, and adapter state; a side encoder loop cannot
+  safely share the private Hugging Face streaming caches and was not added.
 - Real web search requires the account owner to add `VOICE_LIGHT_TAVILY_API_KEY`.
 - Cache preparation works without `HF_TOKEN` but may be rate-limited; serving itself is offline.
