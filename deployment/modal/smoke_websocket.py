@@ -11,6 +11,7 @@ from websockets.asyncio.client import connect
 from app.compute.voice.schemas import SessionReadyEvent, SessionStartEvent
 
 DEFAULT_WEBSOCKET_URL = "wss://bertil-braun-private--voicelightagent-voice-light.modal.run/v1/voice"
+DEFAULT_OPEN_TIMEOUT_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -19,9 +20,11 @@ class SmokeResult:
     ready_seconds: float
 
 
-async def run_smoke(websocket_url: str) -> SmokeResult:
+async def run_smoke(websocket_url: str, open_timeout_seconds: float) -> SmokeResult:
+    if open_timeout_seconds <= 0:
+        raise ValueError("WebSocket open timeout must be positive.")
     started = time.perf_counter()
-    async with connect(websocket_url, open_timeout=30) as websocket:
+    async with connect(websocket_url, open_timeout=open_timeout_seconds) as websocket:
         await websocket.send(
             SessionStartEvent(
                 input_sample_rate=16_000,
@@ -43,8 +46,13 @@ async def run_smoke(websocket_url: str) -> SmokeResult:
 def main(arguments: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default=DEFAULT_WEBSOCKET_URL)
+    parser.add_argument(
+        "--open-timeout-seconds",
+        default=DEFAULT_OPEN_TIMEOUT_SECONDS,
+        type=float,
+    )
     options = parser.parse_args(arguments)
-    result = asyncio.run(run_smoke(options.url))
+    result = asyncio.run(run_smoke(options.url, options.open_timeout_seconds))
     print(f"session_id={result.session_id} ready_seconds={result.ready_seconds:.3f}")
 
 
