@@ -92,19 +92,29 @@ class StreamingTurnAdapter:
                 assistant_condition,
                 self.state,
             )
-        event_probabilities = output.event_logits[0, -1].sigmoid().float().cpu()
-        future_probabilities = output.future_activity_logits[0, -1].sigmoid().float().cpu()
+        probabilities = (
+            torch.cat(
+                (
+                    output.event_logits[0, -1],
+                    output.future_activity_logits[0, -1],
+                    output.yield_logits[0, -1].reshape(1),
+                )
+            )
+            .sigmoid()
+            .float()
+            .cpu()
+        )
         return TurnAdapterProbabilities(
-            turn_completion=float(event_probabilities[0]),
-            continuation_pause=float(event_probabilities[1]),
-            non_floor_feedback=float(event_probabilities[3]),
-            floor_take=float(event_probabilities[4]),
-            user_yield=float(output.yield_logits[0, -1].sigmoid().float().cpu()),
+            turn_completion=float(probabilities[0]),
+            continuation_pause=float(probabilities[1]),
+            non_floor_feedback=float(probabilities[3]),
+            floor_take=float(probabilities[4]),
+            user_yield=float(probabilities[9]),
             future_activity=(
-                float(future_probabilities[0]),
-                float(future_probabilities[1]),
-                float(future_probabilities[2]),
-                float(future_probabilities[3]),
+                float(probabilities[5]),
+                float(probabilities[6]),
+                float(probabilities[7]),
+                float(probabilities[8]),
             ),
         )
 
