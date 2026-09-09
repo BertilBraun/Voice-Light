@@ -518,6 +518,8 @@ class CompositeSpeechUnderstandingSession:
             if not chunk.silero_evidence.is_speech:
                 return
             self.interaction_observation_started = True
+            if not chunk.playback_condition.assistant_audible:
+                return
         observation = TurnPredictionObservation(
             audio_chunk=chunk,
             transcript_revision=self.transcript_revisions.latest,

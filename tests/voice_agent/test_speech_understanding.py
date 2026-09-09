@@ -164,7 +164,13 @@ def test_first_speech_encoder_boundary_is_not_skipped() -> None:
         )
         provider = create_provider(source)
         session = provider.create_session(stream_epoch=1)
-        chunk = create_chunk(sequence_number=0, stream_epoch=1, turn_epoch=1)
+        chunk = create_chunk(
+            sequence_number=0,
+            stream_epoch=1,
+            turn_epoch=1,
+            playback_state=PlaybackState.SPEAKING,
+            assistant_audible=True,
+        )
 
         await session.add_audio(chunk)
 
