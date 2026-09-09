@@ -24,6 +24,7 @@ dependencies = [
     "silero-vad>=6.2.1",
     "torch>=2.13.0",
     "transformers>=5.13.0",
+    "tzdata>=2026.1",
     "uvicorn>=0.30.0",
     "websockets>=15.0.0",
 ]

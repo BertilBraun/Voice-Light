@@ -77,7 +77,6 @@ image = (
         "libsox-dev",
         "pkg-config",
         "sox",
-        "tzdata",
     )
     .uv_sync(".", extras=["compute"], extra_options="--no-group dev")
     .add_local_dir(
