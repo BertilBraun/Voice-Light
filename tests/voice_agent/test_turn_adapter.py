@@ -9,11 +9,12 @@ from app.compute.voice.turn_adapter import (
     StreamingTurnAdapter,
     load_streaming_turn_adapter,
 )
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 from app.training.turn_taking.config import AdapterConfig, TrainingConfig
 from app.training.turn_taking.model import TurnTakingAdapter
 
-MODEL_IDENTIFIER = "nvidia/nemotron-speech-streaming-en-0.6b"
-MODEL_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
+MODEL_IDENTIFIER = NEMOTRON_ASR_MODEL_NAME
+MODEL_REVISION = NEMOTRON_ASR_MODEL_REVISION
 
 
 def test_checkpoint_loading_and_streaming_prediction(tmp_path: Path) -> None:

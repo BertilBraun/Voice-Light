@@ -6,8 +6,9 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from app.shared.base_model import FrozenBaseModel
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
-PINNED_NEMOTRON_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
+PINNED_NEMOTRON_REVISION = NEMOTRON_ASR_MODEL_REVISION
 
 
 class AdapterConfig(FrozenBaseModel):
@@ -156,7 +157,7 @@ def waveform_augmentation_config(
 
 
 class TrainingConfig(FrozenBaseModel):
-    model_identifier: str = "nvidia/nemotron-speech-streaming-en-0.6b"
+    model_identifier: str = NEMOTRON_ASR_MODEL_NAME
     model_revision: str = PINNED_NEMOTRON_REVISION
     sample_rate_hz: int = 16_000
     context_seconds: float = 20.0

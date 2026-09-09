@@ -26,6 +26,7 @@ from app.local.analyses.end_of_turn.detectors.pipecat_smart_turn_v3 import (
 )
 from app.local.training_corpus.export import MaterializedTrainingSample
 from app.local.training_corpus.splits import TrainingCorpusSplit
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_REVISION
 from app.training.turn_taking.backbone import NemotronStreamingBackbone
 from app.training.turn_taking.benchmark_adapters import (
     CandidateAudioProvider,
@@ -151,7 +152,6 @@ from app.training.turn_taking.synthetic_completion_export import (
 )
 
 PINNED_CORPUS_REVISION = "56e68eb8fb1d42159483612f508b9ce27672f724"
-PINNED_NEMOTRON_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
 SMART_TURN_TRAINING_REPOSITORY = "pipecat-ai/smart-turn-data-v3.2-train"
 PINNED_SMART_TURN_TRAINING_REVISION = "e564e2ac567f774d1880aa1db6ce97afb8c519b7"
 IMPLEMENTATION_VERSION = "voice-light-causal-adapters-v1"
@@ -299,7 +299,7 @@ def _add_voice_light_parser(
     parser.add_argument("--hub-repository", default=DEFAULT_HUB_REPOSITORY)
     parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
     parser.add_argument("--hub-cache-directory", type=Path)
-    parser.add_argument("--model-revision", default=PINNED_NEMOTRON_REVISION)
+    parser.add_argument("--model-revision", default=NEMOTRON_ASR_MODEL_REVISION)
     parser.add_argument("--batch-size", type=_positive_int, default=4)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=0)
     parser.add_argument("--validation-lock", type=Path)
@@ -388,7 +388,7 @@ def _add_completion_voice_light_parser(
     parser.add_argument("--hub-revision", default=PINNED_CORPUS_REVISION)
     parser.add_argument("--hub-cache-directory", type=Path)
     parser.add_argument("--local-export-root", type=Path)
-    parser.add_argument("--model-revision", default=PINNED_NEMOTRON_REVISION)
+    parser.add_argument("--model-revision", default=NEMOTRON_ASR_MODEL_REVISION)
     parser.add_argument("--batch-size", type=_positive_int, default=4)
     parser.add_argument("--data-loader-workers", type=_nonnegative_int, default=0)
 

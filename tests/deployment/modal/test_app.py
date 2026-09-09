@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 from deployment.modal.voice_light import (
     ADAPTER_CHECKPOINT,
     APPLICATION_NAME,
@@ -62,6 +63,7 @@ def test_modal_cache_population_pins_every_hugging_face_repository() -> None:
     assert repositories_by_id[MERGED_LANGUAGE_MODEL_NAME].revision == (
         MERGED_LANGUAGE_MODEL_REVISION
     )
+    assert repositories_by_id[NEMOTRON_ASR_MODEL_NAME].revision == NEMOTRON_ASR_MODEL_REVISION
     voice_repository = repositories_by_id["kyutai/tts-voices"]
     assert voice_repository.allowed_files == (
         "expresso/ex03-ex01_happy_001_channel1_334s.wav",

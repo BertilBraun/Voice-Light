@@ -34,10 +34,6 @@ from app.compute.voice.asr_worker_protocol import (
     TurnAdapterPredictionEvent,
     asr_worker_command_adapter,
 )
-from app.compute.voice.model_constants import (
-    NEMOTRON_ASR_MODEL_NAME,
-    NEMOTRON_ASR_MODEL_REVISION,
-)
 from app.compute.voice.schemas import (
     ActivityHorizon,
     CausalSource,
@@ -48,6 +44,7 @@ from app.compute.voice.turn_adapter import (
     StreamingTurnAdapter,
     load_streaming_turn_adapter,
 )
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
 INPUT_SAMPLE_RATE: Final = 16_000
 PCM_BYTES_PER_SAMPLE: Final = 2

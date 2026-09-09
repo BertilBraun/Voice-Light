@@ -16,10 +16,6 @@ from app.compute.voice.interfaces import (
     SpeechUnderstandingProvider,
     TextGenerator,
 )
-from app.compute.voice.model_constants import (
-    NEMOTRON_ASR_MODEL_NAME,
-    NEMOTRON_ASR_MODEL_REVISION,
-)
 from app.compute.voice.models import VllmLanguageModel, VllmTextGenerator
 from app.compute.voice.nemotron_client import (
     NemotronStreamingTranscriber,
@@ -31,6 +27,7 @@ from app.compute.voice.speech_understanding import CompositeSpeechUnderstandingP
 from app.compute.voice.tts_selection import create_speech_synthesizer
 from app.shared.audio.s3 import S3AudioCache, default_s3_downloader
 from app.shared.compute_api import ModelStage, ModelStageStatus
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
 logger = logging.getLogger(__name__)
 ModelType = TypeVar("ModelType")

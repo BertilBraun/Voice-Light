@@ -9,6 +9,7 @@ from typing import Final
 from fastapi import FastAPI
 
 import modal
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
 APPLICATION_NAME: Final = "VoiceLightAgent"
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[2]
@@ -36,8 +37,8 @@ class ModelRepository:
 
 MODEL_REPOSITORIES: Final = (
     ModelRepository(
-        repository_id="nvidia/nemotron-speech-streaming-en-0.6b",
-        revision="ebe59e5a817142986528bbbee5dba8db7b38ed50",
+        repository_id=NEMOTRON_ASR_MODEL_NAME,
+        revision=NEMOTRON_ASR_MODEL_REVISION,
     ),
     ModelRepository(
         repository_id=MERGED_LANGUAGE_MODEL_NAME,

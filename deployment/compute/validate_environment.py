@@ -16,8 +16,6 @@ from app.compute.voice.interfaces import SynthesisWord, SynthesizedAudioChunk
 from app.compute.voice.model_constants import (
     KYUTAI_TTS_MODEL_NAME,
     KYUTAI_TTS_MODEL_REVISION,
-    NEMOTRON_ASR_MODEL_NAME,
-    NEMOTRON_ASR_MODEL_REVISION,
     SEARCH_SUMMARIZER_MODEL_NAME,
     SEARCH_SUMMARIZER_MODEL_REVISION,
 )
@@ -30,6 +28,7 @@ from app.compute.voice.tts_selection import (
     SpeechSynthesisSettings,
     create_speech_synthesizer,
 )
+from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VLLM_PYTHON_PATH = REPOSITORY_ROOT / "deployment/compute/vllm/.venv/bin/python"
