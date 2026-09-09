@@ -9,7 +9,7 @@ registry, search integration, predictive generation, playback controller, Nemotr
 workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
-session. Modal requests L40S first, then allows A100 or H100 when L40S capacity is unavailable. All
+session. Modal requests L40S first, then allows H100 or A100 when L40S capacity is unavailable. All
 three have sufficient memory and CUDA compatibility for the measured stack; fallbacks reduce
 scheduling stalls but can cost more per second. Modal may scale to zero, has one maximum container,
 and keeps an idle container for 1,200 seconds. Modal sets
@@ -176,6 +176,13 @@ One L40S-only cold probe remained queued for more than 120 seconds without Modal
 container. That delay occurred entirely before application or model initialization. The ordered GPU
 fallbacks address this capacity-dependent scheduling component while retaining L40S as the preferred
 cost/performance choice.
+
+The first fallback smoke selected A100-40GB and reached session readiness in 105.341 seconds. Modal
+scheduling and container/global startup consumed approximately 24.3 seconds; model initialization
+consumed 81.086 seconds: 0.341 seconds for Silero, 35.431/36.352 seconds for concurrent
+Nemotron/Qwen, then 44.137 seconds for Kyutai. Because this was much slower than sampled L40S
+workers, H100 precedes A100 in the fallback order. The immediately following warm A100 session was
+ready in 1.131 seconds.
 
 The same fixed 7-second WAV smoke measured commit-to-first-PCM at 247.09 ms cold and 183.22/224.72
 ms warm. Separate live traces around Kyutai's first word measured 436.6 and 443.0 ms from first word
