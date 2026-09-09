@@ -163,6 +163,11 @@ class VoiceLight:
     async def _load_models(self) -> None:
         self.runtime.start_loading()
         await self.runtime.wait_until_loading_complete()
+        await self.runtime.prepare_for_memory_snapshot()
+
+    @modal.enter(snap=False)
+    def restore_models(self) -> None:
+        asyncio.run(self.runtime.restore_after_memory_snapshot())
 
     @modal.asgi_app(label="voicelightagent-voice-light")
     def voice_light(self) -> FastAPI:

@@ -134,6 +134,20 @@ class ComputeRuntime:
             await self.search_provider.close()
         logger.info("compute runtime shutdown complete")
 
+    async def prepare_for_memory_snapshot(self) -> None:
+        language_model = self.require_language_model()
+        search_text_generator = self.require_search_text_generator()
+        await asyncio.to_thread(language_model.sleep)
+        try:
+            await asyncio.to_thread(search_text_generator.sleep)
+        except BaseException:
+            await asyncio.to_thread(language_model.wake)
+            raise
+
+    async def restore_after_memory_snapshot(self) -> None:
+        await asyncio.to_thread(self.require_language_model().wake)
+        await asyncio.to_thread(self.require_search_text_generator().wake)
+
     def require_speech_understanding_provider(self) -> SpeechUnderstandingProvider:
         if self.speech_understanding_provider is None:
             raise RuntimeError("Speech understanding is not ready.")

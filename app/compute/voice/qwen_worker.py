@@ -30,9 +30,13 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerCommand,
     LlmWorkerErrorEvent,
     LlmWorkerEvent,
+    LlmWorkerLifecycleErrorEvent,
     LlmWorkerReadyEvent,
+    LlmWorkerSleepingEvent,
     ShutdownLlmCommand,
+    SleepLlmCommand,
     StartLlmCommand,
+    WakeLlmCommand,
     llm_worker_command_adapter,
 )
 from app.compute.voice.model_constants import (
@@ -105,6 +109,10 @@ class QwenTextRuntime(Protocol):
 
     def close(self) -> None: ...
 
+    async def sleep(self) -> None: ...
+
+    async def wake(self) -> None: ...
+
 
 @dataclass(frozen=True)
 class ActiveWorkerInvocation:
@@ -141,9 +149,38 @@ class QwenWorkerController:
             case CancelLlmCommand():
                 await self._cancel(command)
                 return False
+            case SleepLlmCommand():
+                await self._sleep()
+                return False
+            case WakeLlmCommand():
+                await self._wake()
+                return False
             case ShutdownLlmCommand():
                 await self._shutdown()
                 return True
+
+    async def _sleep(self) -> None:
+        if self.active_invocation is not None:
+            self._send_event(
+                LlmWorkerLifecycleErrorEvent(message="Cannot sleep an active Qwen worker.")
+            )
+            return
+        try:
+            await self.runtime.sleep()
+        except Exception as error:
+            logger.exception("Qwen worker sleep failed")
+            self._send_event(LlmWorkerLifecycleErrorEvent(message=str(error)))
+            return
+        self._send_event(LlmWorkerSleepingEvent())
+
+    async def _wake(self) -> None:
+        try:
+            await self.runtime.wake()
+        except Exception as error:
+            logger.exception("Qwen worker wake failed")
+            self._send_event(LlmWorkerLifecycleErrorEvent(message=str(error)))
+            return
+        self._send_event(LlmWorkerReadyEvent())
 
     def _start(self, command: QwenGenerationCommand) -> None:
         if self.active_invocation is not None:

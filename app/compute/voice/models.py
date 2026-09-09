@@ -45,10 +45,14 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerCommand,
     LlmWorkerErrorEvent,
     LlmWorkerEvent,
+    LlmWorkerLifecycleErrorEvent,
     LlmWorkerMessage,
     LlmWorkerReadyEvent,
+    LlmWorkerSleepingEvent,
     ShutdownLlmCommand,
+    SleepLlmCommand,
     StartLlmCommand,
+    WakeLlmCommand,
     llm_worker_event_adapter,
 )
 from app.compute.voice.model_constants import (
@@ -80,6 +84,10 @@ class QwenWorker(Protocol):
     def read_event(self) -> LlmWorkerEvent: ...
 
     def terminate(self) -> None: ...
+
+    def sleep(self) -> None: ...
+
+    def wake(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -179,6 +187,22 @@ class QwenWorkerProcess:
             return
         self._close_streams()
 
+    def sleep(self) -> None:
+        self.send(SleepLlmCommand())
+        event = self.read_event()
+        if isinstance(event, LlmWorkerLifecycleErrorEvent):
+            raise RuntimeError(f"Qwen worker could not sleep: {event.message}")
+        if not isinstance(event, LlmWorkerSleepingEvent):
+            raise RuntimeError("Qwen worker did not acknowledge sleep.")
+
+    def wake(self) -> None:
+        self.send(WakeLlmCommand())
+        event = self.read_event()
+        if isinstance(event, LlmWorkerLifecycleErrorEvent):
+            raise RuntimeError(f"Qwen worker could not wake: {event.message}")
+        if not isinstance(event, LlmWorkerReadyEvent):
+            raise RuntimeError("Qwen worker did not acknowledge wake.")
+
     def terminate(self) -> None:
         self._signal_process_group(signal.SIGTERM)
         if not self._wait_for_process_group_exit(QWEN_WORKER_STOP_TIMEOUT_SECONDS):
@@ -271,6 +295,20 @@ class RestartingQwenWorkerManager:
         if worker is not None:
             worker.close()
 
+    def sleep(self) -> None:
+        if self.lock.locked():
+            raise RuntimeError("Cannot snapshot an active Qwen worker.")
+        if self.worker is None:
+            raise RuntimeError("Cannot snapshot an unavailable Qwen worker.")
+        self.worker.sleep()
+
+    def wake(self) -> None:
+        if self.lock.locked():
+            raise RuntimeError("Cannot restore an active Qwen worker.")
+        if self.worker is None:
+            raise RuntimeError("Cannot restore an unavailable Qwen worker.")
+        self.worker.wake()
+
 
 class VllmLanguageModel:
     def __init__(
@@ -307,6 +345,12 @@ class VllmLanguageModel:
     def close(self) -> None:
         self.worker_manager.close()
 
+    def sleep(self) -> None:
+        self.worker_manager.sleep()
+
+    def wake(self) -> None:
+        self.worker_manager.wake()
+
 
 class VllmTextGenerator:
     def __init__(
@@ -333,6 +377,12 @@ class VllmTextGenerator:
 
     def close(self) -> None:
         self.worker_manager.close()
+
+    def sleep(self) -> None:
+        self.worker_manager.sleep()
+
+    def wake(self) -> None:
+        self.worker_manager.wake()
 
 
 async def _generate_text(

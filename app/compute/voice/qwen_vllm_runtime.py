@@ -52,6 +52,7 @@ class QwenVllmRuntime:
             max_loras=1,
             max_cpu_loras=1,
             enforce_eager=configuration.enforce_eager,
+            enable_sleep_mode=True,
         )
         self.engine = AsyncLLM.from_engine_args(engine_arguments)
         self.tokenizer = cast(QwenChatTemplateTokenizer, self.engine.get_tokenizer())
@@ -82,6 +83,12 @@ class QwenVllmRuntime:
 
     def close(self) -> None:
         self.engine.shutdown()
+
+    async def sleep(self) -> None:
+        await self.engine.sleep(level=1)
+
+    async def wake(self) -> None:
+        await self.engine.wake_up()
 
 
 def create_lora_request(

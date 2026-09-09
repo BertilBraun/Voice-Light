@@ -15,7 +15,11 @@ from app.compute.voice.llm_worker_protocol import (
     LlmToolMessage,
     LlmUserMessage,
     LlmWorkerEvent,
+    LlmWorkerReadyEvent,
+    LlmWorkerSleepingEvent,
+    SleepLlmCommand,
     StartLlmCommand,
+    WakeLlmCommand,
 )
 from app.compute.voice.qwen_worker import (
     LANGUAGE_MODEL_SYSTEM_PROMPT,
@@ -38,7 +42,8 @@ from app.compute.voice.tools import (
 
 class ImmediateQwenRuntime:
     def __init__(self) -> None:
-        return
+        self.sleep_count = 0
+        self.wake_count = 0
 
     async def stream_text(
         self,
@@ -49,6 +54,12 @@ class ImmediateQwenRuntime:
 
     def close(self) -> None:
         return
+
+    async def sleep(self) -> None:
+        self.sleep_count += 1
+
+    async def wake(self) -> None:
+        self.wake_count += 1
 
 
 class BlockingQwenRuntime:
@@ -65,6 +76,12 @@ class BlockingQwenRuntime:
         await asyncio.Future()
 
     def close(self) -> None:
+        return
+
+    async def sleep(self) -> None:
+        return
+
+    async def wake(self) -> None:
         return
 
 
@@ -291,6 +308,23 @@ def test_terminal_event_means_worker_accepts_next_invocation() -> None:
         )
 
     asyncio.run(run_invocations())
+
+
+def test_worker_sleep_and_wake_are_acknowledged_in_causal_order() -> None:
+    async def transition_worker() -> None:
+        runtime = ImmediateQwenRuntime()
+        controller = RecordingQwenWorkerController()
+        controller.runtime = runtime
+
+        await controller._handle_command(SleepLlmCommand())
+        await controller._handle_command(WakeLlmCommand())
+
+        assert runtime.sleep_count == 1
+        assert runtime.wake_count == 1
+        assert controller.events.get(timeout=1) == LlmWorkerSleepingEvent()
+        assert controller.events.get(timeout=1) == LlmWorkerReadyEvent()
+
+    asyncio.run(transition_worker())
 
 
 def test_text_generation_bypasses_tool_call_parser() -> None:

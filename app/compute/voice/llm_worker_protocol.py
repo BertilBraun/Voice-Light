@@ -20,11 +20,15 @@ class LlmWorkerCommandType(StrEnum):
     START = "start"
     GENERATE_TEXT = "generate_text"
     CANCEL = "cancel"
+    SLEEP = "sleep"
+    WAKE = "wake"
     SHUTDOWN = "shutdown"
 
 
 class LlmWorkerEventType(StrEnum):
     READY = "ready"
+    SLEEPING = "sleeping"
+    LIFECYCLE_ERROR = "lifecycle_error"
     SPOKEN_TEXT_DELTA = "spoken_text_delta"
     TOOL_CALL_STARTED = "tool_call_started"
     TOOL_CALL = "tool_call"
@@ -82,8 +86,21 @@ class ShutdownLlmCommand(FrozenBaseModel):
     type: Literal[LlmWorkerCommandType.SHUTDOWN] = LlmWorkerCommandType.SHUTDOWN
 
 
+class SleepLlmCommand(FrozenBaseModel):
+    type: Literal[LlmWorkerCommandType.SLEEP] = LlmWorkerCommandType.SLEEP
+
+
+class WakeLlmCommand(FrozenBaseModel):
+    type: Literal[LlmWorkerCommandType.WAKE] = LlmWorkerCommandType.WAKE
+
+
 LlmWorkerCommand = Annotated[
-    StartLlmCommand | GenerateTextLlmCommand | CancelLlmCommand | ShutdownLlmCommand,
+    StartLlmCommand
+    | GenerateTextLlmCommand
+    | CancelLlmCommand
+    | SleepLlmCommand
+    | WakeLlmCommand
+    | ShutdownLlmCommand,
     Field(discriminator="type"),
 ]
 llm_worker_command_adapter: TypeAdapter[LlmWorkerCommand] = TypeAdapter(LlmWorkerCommand)
@@ -91,6 +108,15 @@ llm_worker_command_adapter: TypeAdapter[LlmWorkerCommand] = TypeAdapter(LlmWorke
 
 class LlmWorkerReadyEvent(FrozenBaseModel):
     type: Literal[LlmWorkerEventType.READY] = LlmWorkerEventType.READY
+
+
+class LlmWorkerSleepingEvent(FrozenBaseModel):
+    type: Literal[LlmWorkerEventType.SLEEPING] = LlmWorkerEventType.SLEEPING
+
+
+class LlmWorkerLifecycleErrorEvent(FrozenBaseModel):
+    type: Literal[LlmWorkerEventType.LIFECYCLE_ERROR] = LlmWorkerEventType.LIFECYCLE_ERROR
+    message: str
 
 
 class LlmSpokenTextDeltaEvent(FrozenBaseModel):
@@ -140,6 +166,8 @@ class LlmWorkerErrorEvent(FrozenBaseModel):
 
 LlmWorkerEvent = Annotated[
     LlmWorkerReadyEvent
+    | LlmWorkerSleepingEvent
+    | LlmWorkerLifecycleErrorEvent
     | LlmSpokenTextDeltaEvent
     | LlmToolCallStartedEvent
     | LlmToolCallEvent

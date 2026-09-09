@@ -76,6 +76,8 @@ class FakeQwenWorker:
         self.failing_command_type = failing_command_type
         self.commands: list[LlmWorkerCommand] = []
         self.events: queue.Queue[LlmWorkerEvent] = queue.Queue()
+        self.sleep_count = 0
+        self.wake_count = 0
 
     def send(self, command: LlmWorkerCommand) -> None:
         if command.type is self.failing_command_type:
@@ -96,6 +98,12 @@ class FakeQwenWorker:
 
     def terminate(self) -> None:
         return
+
+    def sleep(self) -> None:
+        self.sleep_count += 1
+
+    def wake(self) -> None:
+        self.wake_count += 1
 
 
 class FakeQwenWorkerManager:
