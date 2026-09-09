@@ -118,7 +118,7 @@ The deployed starting values are:
 | `VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS` | `1200` | hard deadline for sustained overlap without transcript evidence |
 | `VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS` | `160` | clean Silero silence required before a resolved backchannel can open another overlap |
 | `VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS` | `240` | maximum age of causal adapter evidence during active overlap |
-| `VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS` | `500` | maximum PCM duration released ahead of browser playback credit |
+| `VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS` | `1200` | maximum PCM duration released ahead of browser playback credit; this absorbs intermittent streaming-TTS cadence without delaying worklet-side cancellation |
 
 The threshold is the evaluated Voice-Light starting point, not a universal calibration. Silero
 onset always causes the immediate reversible duck/pause. Strong floor-take evidence commits

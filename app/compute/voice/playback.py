@@ -33,7 +33,7 @@ class PlaybackPolicyConfig:
     maximum_resumable_paused_age_ms: int = 800
     target_paused_buffer_age_ms: int = 500
     maximum_synthesized_ahead_ms: int = 500
-    maximum_transport_ahead_ms: int = 500
+    maximum_transport_ahead_ms: int = 1_200
     generation_boundary_hold_ms: int = 350
     classification_deadline_ms: int = 500
 

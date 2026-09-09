@@ -1229,12 +1229,17 @@ def test_websocket_pcm_backpressure_keeps_overlap_commands_ahead_of_unsent_audio
         websocket.receive_json()
         send_turn(websocket)
 
-        first_audio: bytes | None = None
-        while first_audio is None:
-            message = websocket.receive()
-            first_audio = message.get("bytes")
-        assert struct.unpack("<III", first_audio[:12]) == (1, 0, 0)
-        assert len(first_audio[12:]) // 2 == 8_000
+        initial_audio: list[bytes] = []
+        while len(initial_audio) < 3:
+            audio = websocket.receive().get("bytes")
+            if audio is not None:
+                initial_audio.append(audio)
+        assert [struct.unpack("<III", audio[:12]) for audio in initial_audio] == [
+            (1, 0, 0),
+            (1, 1, 8_000),
+            (1, 2, 16_000),
+        ]
+        assert all(len(audio[12:]) // 2 == 8_000 for audio in initial_audio)
 
         send_playback_started(websocket, 1)
         wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)

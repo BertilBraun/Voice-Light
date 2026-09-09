@@ -378,6 +378,10 @@ def test_transport_ahead_window_is_configurable_from_environment() -> None:
     assert configuration.maximum_transport_ahead_ms == 640
 
 
+def test_default_transport_ahead_covers_intermittent_streaming_synthesis() -> None:
+    assert PlaybackPolicyConfig().maximum_transport_ahead_ms == 1_200
+
+
 @pytest.mark.parametrize("value", ("soon", "0"))
 def test_transport_ahead_window_rejects_invalid_environment(value: str) -> None:
     with pytest.raises(ValueError, match="transport|TRANSPORT"):
