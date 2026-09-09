@@ -8,9 +8,12 @@
 registry, search integration, predictive generation, playback controller, Nemotron ASR, Qwen
 workers, and Kyutai TTS remain authoritative.
 
-The L40S container admits one Modal input and the compute route separately enforces one live voice
-session. Modal may scale to zero, has one maximum container, and keeps an idle container for 1,200
-seconds. Modal sets `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
+The GPU container admits one Modal input and the compute route separately enforces one live voice
+session. Modal requests L40S first, then allows A100 or H100 when L40S capacity is unavailable. All
+three have sufficient memory and CUDA compatibility for the measured stack; fallbacks reduce
+scheduling stalls but can cost more per second. Modal may scale to zero, has one maximum container,
+and keeps an idle container for 1,200 seconds. Modal sets
+`VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
 initialization before Modal marks a cold container ready or admits the first request. Nemotron and
 Qwen start concurrently, then the shared search generator and Kyutai start in dependency order. The
 1,800-second Modal startup timeout bounds that work. Other provider-neutral deployments retain
@@ -168,6 +171,11 @@ Kyutai. A second, slower worker completed the same phases in 42.715 seconds: 0.2
 18.840/19.088 seconds concurrently, then 23.145 seconds. Sequential loading at those measured
 second-run stage rates would have taken about 61.5 seconds. The import-only CPU snapshot confounded
 the end-to-end samples by adding about 30 seconds before these phases and was removed.
+
+One L40S-only cold probe remained queued for more than 120 seconds without Modal creating a
+container. That delay occurred entirely before application or model initialization. The ordered GPU
+fallbacks address this capacity-dependent scheduling component while retaining L40S as the preferred
+cost/performance choice.
 
 The same fixed 7-second WAV smoke measured commit-to-first-PCM at 247.09 ms cold and 183.22/224.72
 ms warm. Separate live traces around Kyutai's first word measured 436.6 and 443.0 ms from first word
