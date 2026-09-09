@@ -196,8 +196,7 @@ def test_qwen_cancel_timeout_replaces_worker() -> None:
             invocation_id=1,
         )
 
-        with pytest.raises(RuntimeError, match="cancellation timed out"):
-            await session.cancel()
+        await session.cancel()
         await stream.aclose()
 
         assert worker_manager.replacement_count == 1

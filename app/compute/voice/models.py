@@ -542,11 +542,16 @@ class QwenInvocationSession:
                 asyncio.shield(output_task),
                 timeout=self.cancellation_timeout_seconds,
             )
-        except TimeoutError as error:
+        except TimeoutError:
             failure = RuntimeError("Qwen invocation cancellation timed out.")
             await self._fail_worker(failure)
             await self._stop_output_task()
-            raise failure from error
+            logger.warning(
+                "Qwen cancellation exceeded %.3f seconds; the worker was terminated to preserve "
+                "the stale-generation barrier.",
+                self.cancellation_timeout_seconds,
+            )
+            return
         if self.reader_error is not None:
             error = self.reader_error
             await self._fail_worker(error)
