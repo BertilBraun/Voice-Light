@@ -138,6 +138,8 @@ runtime_cache = modal.Volume.from_name(
     gpu=configuration.gpu,
     max_containers=1,
     min_containers=0,
+    enable_memory_snapshot=True,
+    experimental_options={"enable_gpu_snapshot": True},
     scaledown_window=configuration.scaledown_window_seconds,
     startup_timeout=configuration.startup_timeout_seconds,
     timeout=configuration.function_timeout_seconds,
@@ -152,7 +154,7 @@ class VoiceLight:
     settings: ComputeSettings
     runtime: ComputeRuntime
 
-    @modal.enter()
+    @modal.enter(snap=True)
     def load_models(self) -> None:
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         self.settings = ComputeSettings.from_environment(os.environ)

@@ -206,12 +206,10 @@ class ComputeRuntime:
 
     async def _load_models(self) -> None:
         await self._load_speech_detector()
-        await asyncio.gather(
-            self._load_streaming_asr(),
-            self._load_language_model(),
-            self._load_speech_synthesizer(),
-        )
+        await self._load_streaming_asr()
+        await self._load_language_model()
         await self._load_search_text_generator()
+        await self._load_speech_synthesizer()
         logger.info("all required compute models ready")
 
     async def _load_speech_detector(self) -> None:
