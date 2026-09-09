@@ -44,14 +44,17 @@ Create the named secret without putting credentials in the repository:
 ```powershell
 modal secret create voice-light-compute `
   VOICE_LIGHT_COMPUTE_TOKEN='<random bearer token>'
+
+modal secret create voice-light-search `
+  VOICE_LIGHT_TAVILY_API_KEY='<Tavily API key>'
 ```
 
 `VOICE_LIGHT_COMPUTE_TOKEN` protects the HTTP APIs. The browser voice WebSocket is intentionally
 unauthenticated because the page connects directly. Public model downloads work without
-`HF_TOKEN`, but authenticated downloads have higher Hub rate limits. Add `HF_TOKEN` and
-`VOICE_LIGHT_TAVILY_API_KEY` to the same secret in the Modal dashboard when needed. Without the
-Tavily key, the search tool reports its typed unavailable result. Updating a Modal secret restarts
-dependent containers.
+`HF_TOKEN`, but authenticated downloads have higher Hub rate limits. Add `HF_TOKEN` to
+`voice-light-compute` when needed. Tavily is isolated in `voice-light-search`, so updating the
+search credential cannot replace the compute token. Without the Tavily key, the search tool reports
+its typed unavailable result. Updating a Modal secret restarts dependent containers.
 
 The deployment creates or reuses `voice-light-agent-model-cache` for Hugging Face and Torch data
 and `voice-light-runtime-cache` for runtime logs and dataset-audio cache. The adapter checkpoint is
@@ -80,7 +83,7 @@ production checkpoint on one L40S and requires ordinary speech, calculation, cur
 explicit search, confirmed-search follow-up, and post-tool continuation cases to emit the expected
 spoken text and structured Hermes calls. It validates model behavior without invoking Tavily.
 
-Run the search-provider smoke after creating or updating the `voice-light-compute` secret. It fails
+Run the search-provider smoke after creating or updating the `voice-light-search` secret. It fails
 before making a request unless that secret contains `VOICE_LIGHT_TAVILY_API_KEY`, then performs a
 real bounded Tavily query. Its JSON output contains only `configured`, `result_count`, and
 `provider_latency_ms`; it never prints the credential or result content.

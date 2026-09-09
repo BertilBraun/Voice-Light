@@ -65,7 +65,8 @@ class ModalDeploymentConfiguration:
     scaledown_window_seconds: int = 1_200
     startup_timeout_seconds: int = 1_800
     function_timeout_seconds: int = 86_400
-    secret_name: str = "voice-light-compute"
+    compute_secret_name: str = "voice-light-compute"
+    search_secret_name: str = "voice-light-search"
     model_cache_volume_name: str = "voice-light-agent-model-cache"
     runtime_cache_volume_name: str = "voice-light-runtime-cache"
 
@@ -171,7 +172,8 @@ with image.imports():
     from app.compute.telemetry import configure_logging
 
 app = modal.App(APPLICATION_NAME)
-compute_secret = modal.Secret.from_name(configuration.secret_name)
+compute_secret = modal.Secret.from_name(configuration.compute_secret_name)
+search_secret = modal.Secret.from_name(configuration.search_secret_name)
 model_cache = modal.Volume.from_name(
     configuration.model_cache_volume_name,
     create_if_missing=True,
@@ -215,7 +217,7 @@ def smoke_tool_use() -> None:
 @app.function(
     image=image,
     timeout=60,
-    secrets=[compute_secret],
+    secrets=[search_secret],
 )
 def smoke_search_provider() -> None:
     from deployment.modal.smoke_search_provider import (
@@ -223,7 +225,7 @@ def smoke_search_provider() -> None:
         measure_search_provider,
     )
 
-    provider = configured_tavily_provider(os.environ, configuration.secret_name)
+    provider = configured_tavily_provider(os.environ, configuration.search_secret_name)
     result = asyncio.run(measure_search_provider(provider))
     print(result.model_dump_json())
 
@@ -237,7 +239,7 @@ def smoke_search_provider() -> None:
     scaledown_window=configuration.scaledown_window_seconds,
     startup_timeout=configuration.startup_timeout_seconds,
     timeout=configuration.function_timeout_seconds,
-    secrets=[compute_secret],
+    secrets=[compute_secret, search_secret],
     volumes={
         str(MODEL_CACHE_MOUNT): model_cache,
         str(RUNTIME_CACHE_MOUNT): runtime_cache,
