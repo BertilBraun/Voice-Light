@@ -312,6 +312,11 @@ wait on a stale sub-80-ms credit edge. The deployed structured-tool smoke passed
 real-provider smoke still failed before HTTP with the exact missing-secret error, so live weather was
 not claimed. The UTF-8 deployment retry completed in 14.337 seconds with cached image layers.
 
+After separating Tavily into the dedicated `voice-light-search` secret, the real provider smoke
+succeeded with `configured=true`, two bounded results, and 1,978.38 ms provider latency. The secret
+value was neither logged nor committed. The deployment containing the search secret and speculative
+audio deadlock fix completed in 15.763 seconds with cached layers.
+
 ## Known limitations
 
 - The latest truthful cold readiness sample is 72.858 seconds, of which 58.048 seconds was model
@@ -332,5 +337,6 @@ not claimed. The UTF-8 deployment retry completed in 14.337 seconds with cached 
   assistant-playback context requires replacing the high-level RNNT generation loop with one
   scheduler that owns persistent encoder, decoder, and adapter state; a side encoder loop cannot
   safely share the private Hugging Face streaming caches and was not added.
-- Real web search requires the account owner to add `VOICE_LIGHT_TAVILY_API_KEY`.
+- Real web search requires `VOICE_LIGHT_TAVILY_API_KEY` in the separately managed
+  `voice-light-search` Modal secret.
 - Cache preparation works without `HF_TOKEN` but may be rate-limited; serving itself is offline.
