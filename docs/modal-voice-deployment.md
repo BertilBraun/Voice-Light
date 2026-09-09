@@ -273,6 +273,14 @@ The real Modal search-provider smoke failed safely before making an HTTP request
 after one truthful provider failure and rejects an identical repeated successful call, but live
 weather remains unavailable until the account owner supplies that secret and reruns the smoke.
 
+The deployment containing these corrections completed in 56.737 seconds. Its first WebSocket
+probe reached `session.ready` in 64.688 seconds from a scaled-to-zero state; the immediately
+following warm probe was ready in 1.011 seconds. The deployed merged-Qwen smoke passed all six
+ordinary, calculation, search, explicit-search, confirmed-search, and post-tool-continuation cases.
+The search-provider smoke independently reproduced the missing-secret failure above. No post-fix
+human microphone run was available during this deployment, so the transport-window and rearm
+latencies remain regression-tested rather than claimed as measured production improvements.
+
 ## Known limitations
 
 - Staged L40S-class model initialization now measures approximately 28 seconds, with total fresh
