@@ -302,8 +302,9 @@ parallel: Qwen loaded/warmed in 23.422 seconds, Nemotron plus the adapter in 23.
 Kyutai loaded/warmed in 30.204 seconds. Runtime readiness took 30.389 seconds. Modal scheduling,
 image/container startup, and imports added about 14 seconds before the first placement log, for an
 observed click-to-session-ready cold path of about 45.4 seconds. The first cold readiness smoke
-after deploying deterministic conversion routing measured 47.795 seconds. Kyutai deserialization,
-not sequential model loading, is now the application critical path; the failed snapshot canary and
+after deploying deterministic conversion routing measured 47.795 seconds; the final numeric-evidence
+prompt deployment measured 56.765 seconds. Kyutai deserialization, not sequential model loading,
+is now the application critical path; variable Modal scheduling plus the failed snapshot canary and
 scale-to-zero requirement leave the reliable sub-30-second cold-start target unmet.
 
 That user session produced nine played responses with approximately 1.04-second median
