@@ -131,7 +131,11 @@ image = (
         "pkg-config",
         "sox",
     )
-    .uv_sync(".", extras=["compute"], extra_options="--no-group dev")
+    .uv_sync(
+        ".",
+        extras=["compute"],
+        extra_options="--no-group dev --compile-bytecode",
+    )
     .add_local_dir(
         str(REPOSITORY_ROOT / "deployment" / "compute" / "vllm"),
         remote_path=str(REMOTE_REPOSITORY_ROOT / "deployment" / "compute" / "vllm"),

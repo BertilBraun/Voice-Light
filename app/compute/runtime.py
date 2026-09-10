@@ -234,14 +234,14 @@ class ComputeRuntime:
         await asyncio.gather(
             self._load_streaming_asr(),
             self._load_language_model(),
+            self._load_speech_synthesizer(),
         )
         await asyncio.gather(
             self._warm_streaming_asr(),
             self._warm_language_model(),
+            self._warm_speech_synthesizer(),
         )
         await self._load_search_text_generator()
-        await self._load_speech_synthesizer()
-        await self._warm_speech_synthesizer()
         logger.info(
             "all required compute models ready in %.3f seconds",
             time.perf_counter() - started,
@@ -383,6 +383,7 @@ class ComputeRuntime:
         warmup: Callable[[], Awaitable[None]],
     ) -> None:
         stage.warmup_status = ModelWarmupStatus.RUNNING
+        logger.info("model warmup started: %s", stage.name)
         started = time.perf_counter()
         try:
             await asyncio.wait_for(warmup(), timeout=30.0)
@@ -393,6 +394,11 @@ class ComputeRuntime:
             logger.exception("model warmup failed: %s", stage.name)
         else:
             stage.warmup_status = ModelWarmupStatus.READY
+            logger.info(
+                "model warmup completed: %s in %.3f seconds",
+                stage.name,
+                time.perf_counter() - started,
+            )
         finally:
             stage.warmup_time_seconds = time.perf_counter() - started
 
