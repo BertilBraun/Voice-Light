@@ -232,20 +232,32 @@ class ComputeRuntime:
         started = time.perf_counter()
         await self._load_speech_detector()
         await asyncio.gather(
-            self._load_streaming_asr(),
-            self._load_language_model(),
-            self._load_speech_synthesizer(),
-        )
-        await asyncio.gather(
-            self._warm_streaming_asr(),
-            self._warm_language_model(),
-            self._warm_speech_synthesizer(),
+            self._load_and_warm(
+                self._load_streaming_asr,
+                self._warm_streaming_asr,
+            ),
+            self._load_and_warm(
+                self._load_language_model,
+                self._warm_language_model,
+            ),
+            self._load_and_warm(
+                self._load_speech_synthesizer,
+                self._warm_speech_synthesizer,
+            ),
         )
         await self._load_search_text_generator()
         logger.info(
             "all required compute models ready in %.3f seconds",
             time.perf_counter() - started,
         )
+
+    async def _load_and_warm(
+        self,
+        load_model: Callable[[], Awaitable[None]],
+        warm_model: Callable[[], Awaitable[None]],
+    ) -> None:
+        await load_model()
+        await warm_model()
 
     async def _load_speech_detector(self) -> None:
         factory = await self._timed_load(

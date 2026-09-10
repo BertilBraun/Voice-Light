@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -26,6 +27,7 @@ MODEL_CACHE_MOUNT: Final = PurePosixPath("/model-cache")
 RUNTIME_CACHE_MOUNT: Final = PurePosixPath("/runtime-cache")
 MERGED_LANGUAGE_MODEL_NAME: Final = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
 MERGED_LANGUAGE_MODEL_REVISION: Final = "557314e1a6839183e61a48833911606a23379d15"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -266,6 +268,12 @@ class VoiceLight:
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         self.settings = ComputeSettings.from_environment(os.environ)
         configure_logging(self.settings.log_directory)
+        logger.info(
+            "Modal container placement: cloud=%s region=%s task_id=%s",
+            os.environ["MODAL_CLOUD_PROVIDER"],
+            os.environ["MODAL_REGION"],
+            os.environ["MODAL_TASK_ID"],
+        )
         self.runtime = create_compute_runtime(self.settings)
         asyncio.run(self._load_models())
 

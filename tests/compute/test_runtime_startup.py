@@ -20,8 +20,7 @@ class RecordingComputeRuntime(ComputeRuntime):
         self.events: list[str] = []
         self.parallel_loads_started = asyncio.Event()
         self.parallel_load_count = 0
-        self.parallel_warmups_started = asyncio.Event()
-        self.parallel_warmup_count = 0
+        self.early_warmup_started = asyncio.Event()
 
     async def _load_speech_detector(self) -> None:
         self.events.append("speech_detection")
@@ -39,13 +38,13 @@ class RecordingComputeRuntime(ComputeRuntime):
         await self._record_parallel_load("speech_synthesis")
 
     async def _warm_streaming_asr(self) -> None:
-        await self._record_parallel_warmup("streaming_asr")
+        await self._record_warmup("streaming_asr")
 
     async def _warm_language_model(self) -> None:
-        await self._record_parallel_warmup("language_model")
+        await self._record_warmup("language_model")
 
     async def _warm_speech_synthesizer(self) -> None:
-        await self._record_parallel_warmup("speech_synthesis")
+        await self._record_warmup("speech_synthesis")
 
     async def _record_parallel_load(self, stage_name: str) -> None:
         self.events.append(f"{stage_name}_started")
@@ -53,14 +52,15 @@ class RecordingComputeRuntime(ComputeRuntime):
         if self.parallel_load_count == 3:
             self.parallel_loads_started.set()
         await asyncio.wait_for(self.parallel_loads_started.wait(), timeout=1.0)
+        if stage_name == "speech_synthesis":
+            await asyncio.wait_for(self.early_warmup_started.wait(), timeout=1.0)
         self.events.append(f"{stage_name}_completed")
 
-    async def _record_parallel_warmup(self, stage_name: str) -> None:
+    async def _record_warmup(self, stage_name: str) -> None:
         self.events.append(f"{stage_name}_warmup_started")
-        self.parallel_warmup_count += 1
-        if self.parallel_warmup_count == 3:
-            self.parallel_warmups_started.set()
-        await asyncio.wait_for(self.parallel_warmups_started.wait(), timeout=1.0)
+        if stage_name == "streaming_asr":
+            self.early_warmup_started.set()
+        await asyncio.sleep(0)
         self.events.append(f"{stage_name}_warmup_completed")
 
 
@@ -73,23 +73,20 @@ def test_runtime_loads_and_warms_voice_models_concurrently(tmp_path: Path) -> No
     events = asyncio.run(exercise())
 
     assert events[0] == "speech_detection"
-    assert set(events[1:7]) == {
+    assert set(events[1:4]) == {
         "streaming_asr_started",
-        "streaming_asr_completed",
         "language_model_started",
-        "language_model_completed",
         "speech_synthesis_started",
-        "speech_synthesis_completed",
     }
-    assert set(events[7:13]) == {
-        "streaming_asr_warmup_started",
-        "streaming_asr_warmup_completed",
-        "language_model_warmup_started",
-        "language_model_warmup_completed",
-        "speech_synthesis_warmup_started",
-        "speech_synthesis_warmup_completed",
-    }
-    assert events[13:] == ["search_summarizer"]
+    assert events.index("streaming_asr_warmup_started") < events.index("speech_synthesis_completed")
+    for stage_name in ("streaming_asr", "language_model", "speech_synthesis"):
+        assert events.index(f"{stage_name}_completed") < events.index(
+            f"{stage_name}_warmup_started"
+        )
+        assert events.index(f"{stage_name}_warmup_started") < events.index(
+            f"{stage_name}_warmup_completed"
+        )
+    assert events[-1] == "search_summarizer"
 
 
 def test_warmup_telemetry_is_ready_only_after_probe(tmp_path: Path) -> None:
