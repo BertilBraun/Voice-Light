@@ -11,8 +11,10 @@ workers, and Kyutai TTS remain authoritative.
 The GPU container admits one Modal input and the compute route separately enforces one live voice
 session. Modal requests A10 first and falls back only to L40S when A10 capacity is unavailable. The
 measured full stack uses about 9.5 GiB of A10's 23 GiB. A100 and H100 are deliberately excluded from
-the bounded fallback list because they are unnecessarily expensive for this stack. Modal may scale to
-zero, has one maximum container, and keeps an idle container for 120 seconds. Modal sets
+the bounded fallback list because they are unnecessarily expensive for this stack. The endpoint is
+scheduled in Modal's broad `eu` compute region and routed through `eu-west`; this avoids
+latency-dominated global placements while retaining the larger European GPU pool. Modal may scale
+to zero, has one maximum container, and keeps an idle container for 120 seconds. Modal sets
 `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
 initialization before Modal marks a cold container ready or admits the first request. Nemotron,
 Qwen, and Kyutai load and warm concurrently; the shared search generator then aliases Qwen. The

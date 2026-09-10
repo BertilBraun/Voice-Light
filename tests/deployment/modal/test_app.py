@@ -31,6 +31,8 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     environment = configuration.environment()
 
     assert configuration.gpu_options == ("A10", "L40S")
+    assert configuration.compute_regions == ("eu",)
+    assert configuration.routing_region == "eu-west"
     assert configuration.compute_secret_name == "voice-light-compute"
     assert configuration.search_secret_name == "voice-light-search"
     assert configuration.scaledown_window_seconds == 120
