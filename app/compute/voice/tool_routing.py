@@ -82,6 +82,7 @@ def route_required_search_call(
     messages: tuple[ModelMessage, ...],
     tools: tuple[ToolSpecification, ...],
     invocation_id: int,
+    call_id: str | None = None,
 ) -> RoutedSearchCall | None:
     if invocation_id <= 0:
         raise ValueError("The model invocation ID must be positive.")
@@ -104,18 +105,19 @@ def route_required_search_call(
             for message in reversed(messages[:previous_assistant_index])
             if isinstance(message, ModelUserMessage) and _requires_search(message.content)
         )
-    return _routed_call(invocation_id, query, reason)
+    return _routed_call(invocation_id, query, reason, call_id)
 
 
 def _routed_call(
     invocation_id: int,
     query: str,
     reason: SearchRoutingReason,
+    call_id: str | None,
 ) -> RoutedSearchCall:
     arguments = SearchArguments(query=query.strip())
     return RoutedSearchCall(
         request=SerializedToolCall(
-            id=f"qwen-{invocation_id}-routed-search-1",
+            id=call_id or f"qwen-{invocation_id}-routed-search-1",
             name=ToolName.SEARCH,
             arguments_json=arguments.model_dump_json(),
         ),

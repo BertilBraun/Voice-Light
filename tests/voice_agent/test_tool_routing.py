@@ -41,6 +41,18 @@ def test_direct_current_information_request_routes_search(requested_text: str) -
     )
 
 
+def test_routed_search_can_reuse_the_models_started_call_identity() -> None:
+    routed = route_required_search_call(
+        (ModelUserMessage(content="Search for the current weather in London."),),
+        runtime_tool_specifications(),
+        invocation_id=3,
+        call_id="qwen-3-tool-1",
+    )
+
+    assert routed is not None
+    assert routed.request.id == "qwen-3-tool-1"
+
+
 def test_confirmation_routes_the_original_external_information_request() -> None:
     routed = route_required_search_call(
         (

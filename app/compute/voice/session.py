@@ -2298,6 +2298,7 @@ class VoiceSession:
         tool_request: SerializedToolCall | None = None
         tool_failure: ToolCallFailure | None = None
         completed = False
+        routed_at_tool_start = False
         try:
             async with contextlib.aclosing(language_stream):
                 async for event in language_stream:
@@ -2328,6 +2329,32 @@ class VoiceSession:
                                 )
                                 continue
                             self._record_tool_call_started(generation, event)
+                            routed_search = route_required_search_call(
+                                messages,
+                                tools,
+                                invocation_id,
+                                call_id=event.call_id,
+                            )
+                            if routed_search is not None:
+                                tool_request = routed_search.request
+                                self._record_tool_call_completed(
+                                    generation,
+                                    LanguageModelToolCall(
+                                        invocation_id=invocation_id,
+                                        request=tool_request,
+                                        cumulative_token_count=event.cumulative_token_count,
+                                    ),
+                                )
+                                routed_at_tool_start = True
+                                logger.info(
+                                    "required search dispatched at tool-call start: "
+                                    "session=%s generation=%d invocation=%d reason=%s",
+                                    self.session_id,
+                                    generation.generation_id,
+                                    invocation_id,
+                                    routed_search.reason,
+                                )
+                                break
                         case LanguageModelToolCall():
                             self._update_invocation_tokens(generation, event)
                             if not tool_calls_allowed:
@@ -2368,7 +2395,7 @@ class VoiceSession:
                 VoiceOperation.GENERATE_TEXT,
                 "Qwen returned no typed invocation events.",
             )
-        if not completed:
+        if not completed and not routed_at_tool_start:
             logger.warning(
                 "language model stream ended without an explicit completion event: "
                 "session=%s generation=%d invocation=%d",
