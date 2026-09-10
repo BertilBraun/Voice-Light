@@ -168,6 +168,17 @@ def test_calculate_evaluates_basic_python_arithmetic(expression: str, expected: 
     asyncio.run(execute())
 
 
+def test_calculate_evaluates_a_bounded_list_of_arithmetic_expressions() -> None:
+    async def execute() -> None:
+        outcome = await PythonArithmeticHandler()(
+            CalculateArguments(expression="(32 - 32) * 5 / 9, (28 - 32) * 5 / 9")
+        )
+
+        assert outcome == "0.0, -2.2222222222222223"
+
+    asyncio.run(execute())
+
+
 @pytest.mark.parametrize(
     "expression",
     (

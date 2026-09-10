@@ -8,8 +8,15 @@ from app.compute.voice.conversation import (
     ModelToolMessage,
     ModelUserMessage,
 )
-from app.compute.voice.tool_routing import SearchRoutingReason, route_required_search_call
+from app.compute.voice.tool_routing import (
+    CalculationRoutingReason,
+    SearchRoutingReason,
+    route_required_calculation_call,
+    route_required_search_call,
+    temperature_conversion_spoken_result,
+)
 from app.compute.voice.tools import (
+    CalculateArguments,
     SearchArguments,
     ToolName,
     ToolSuccess,
@@ -114,6 +121,75 @@ def test_search_is_not_routed_when_the_schema_is_unavailable() -> None:
             (ModelUserMessage(content="What is the weather?"),),
             tools,
             11,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested_text", "expected_expression"),
+    (
+        ("What's twenty eight Celsius in Kelvin?", "28 + 273.15"),
+        ("Convert 32 Fahrenheit to Celsius.", "(32 - 32) * 5 / 9"),
+        ("What is 301.15 Kelvin in Celsius?", "301.15 - 273.15"),
+    ),
+)
+def test_explicit_temperature_conversion_routes_calculate(
+    requested_text: str,
+    expected_expression: str,
+) -> None:
+    routed = route_required_calculation_call(
+        (ModelUserMessage(content=requested_text),),
+        runtime_tool_specifications(),
+        invocation_id=12,
+    )
+
+    assert routed is not None
+    assert routed.reason is CalculationRoutingReason.EXPLICIT_TEMPERATURE
+    assert routed.request.name == ToolName.CALCULATE
+    assert CalculateArguments.model_validate_json(routed.request.arguments_json) == (
+        CalculateArguments(expression=expected_expression)
+    )
+
+
+def test_contextual_temperature_range_routes_one_calculator_expression_per_value() -> None:
+    routed = route_required_calculation_call(
+        (
+            ModelUserMessage(content="What's the current temperature in New York?"),
+            ModelAssistantMessage(content="The high is 32°F and the low is 28°F."),
+            ModelUserMessage(content="What's that in Celsius?"),
+        ),
+        runtime_tool_specifications(),
+        invocation_id=13,
+        call_id="qwen-13-tool-1",
+    )
+
+    assert routed is not None
+    assert routed.reason is CalculationRoutingReason.CONTEXTUAL_TEMPERATURE
+    assert routed.request.id == "qwen-13-tool-1"
+    arguments = CalculateArguments.model_validate_json(routed.request.arguments_json)
+    assert arguments.expression == "(32 - 32) * 5 / 9, (28 - 32) * 5 / 9"
+    assert (
+        temperature_conversion_spoken_result(routed.conversion, "0.0, -2.2222222222222223")
+        == "32 degrees fahrenheit is 0 degrees celsius, and 28 degrees fahrenheit is -2.22 "
+        "degrees celsius."
+    )
+
+
+@pytest.mark.parametrize(
+    "requested_text",
+    (
+        "Tell me a story.",
+        "It is 28 Celsius today.",
+        "Is 32 Fahrenheit cold?",
+    ),
+)
+def test_non_conversion_request_is_not_routed_to_calculate(requested_text: str) -> None:
+    assert (
+        route_required_calculation_call(
+            (ModelUserMessage(content=requested_text),),
+            runtime_tool_specifications(),
+            14,
         )
         is None
     )

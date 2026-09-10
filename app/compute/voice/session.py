@@ -126,7 +126,13 @@ from app.compute.voice.schemas import (
 )
 from app.compute.voice.speech_understanding import InteractionPredictionReducer
 from app.compute.voice.synthesis_sequence import SpeechSynthesisSequence
-from app.compute.voice.tool_routing import required_search_reason, route_required_search_call
+from app.compute.voice.tool_routing import (
+    TemperatureConversion,
+    required_search_reason,
+    route_required_calculation_call,
+    route_required_search_call,
+    temperature_conversion_spoken_result,
+)
 from app.compute.voice.tools import (
     SearchToolAvailability,
     SerializedToolCall,
@@ -481,6 +487,7 @@ class ModelInvocationResult:
     invocation_id: int
     tool_request: SerializedToolCall | None
     tool_failure: ToolCallFailure | None
+    temperature_conversion: TemperatureConversion | None
 
 
 @dataclass
@@ -2414,6 +2421,25 @@ class VoiceSession:
                     *generation.model_context_prefix,
                     *generation.model_context_turn.messages(),
                 ]
+                if result.temperature_conversion is not None and isinstance(
+                    tool_outcome, ToolSuccess
+                ):
+                    audible_text_start = len(generation.response_text)
+                    generation.final_answer_text_start = audible_text_start
+                    self._record_first_final_answer_text(generation)
+                    await self._publish_spoken_text(
+                        generation,
+                        synthesis,
+                        word_stream,
+                        " "
+                        + temperature_conversion_spoken_result(
+                            result.temperature_conversion,
+                            tool_outcome.result,
+                        ),
+                    )
+                    await self._flush_synthesis_words(generation, synthesis, word_stream)
+                    await self._finish_synthesis_input(synthesis)
+                    return
             generation.model_messages = tuple(model_messages)
             await generation.continuation_allowed.wait()
             if not self._tool_anchors_are_current(generation, result.invocation_id):
@@ -2469,6 +2495,7 @@ class VoiceSession:
         tool_failure: ToolCallFailure | None = None
         completed = False
         routed_at_tool_start = False
+        temperature_conversion: TemperatureConversion | None = None
         try:
             async with contextlib.aclosing(language_stream):
                 async for event in language_stream:
@@ -2523,6 +2550,33 @@ class VoiceSession:
                                     generation.generation_id,
                                     invocation_id,
                                     routed_search.reason,
+                                )
+                                break
+                            routed_calculation = route_required_calculation_call(
+                                messages,
+                                tools,
+                                invocation_id,
+                                call_id=event.call_id,
+                            )
+                            if routed_calculation is not None:
+                                tool_request = routed_calculation.request
+                                temperature_conversion = routed_calculation.conversion
+                                self._record_tool_call_completed(
+                                    generation,
+                                    LanguageModelToolCall(
+                                        invocation_id=invocation_id,
+                                        request=tool_request,
+                                        cumulative_token_count=event.cumulative_token_count,
+                                    ),
+                                )
+                                routed_at_tool_start = True
+                                logger.info(
+                                    "required calculation dispatched at tool-call start: "
+                                    "session=%s generation=%d invocation=%d reason=%s",
+                                    self.session_id,
+                                    generation.generation_id,
+                                    invocation_id,
+                                    routed_calculation.reason,
                                 )
                                 break
                         case LanguageModelToolCall():
@@ -2591,10 +2645,34 @@ class VoiceSession:
                     invocation_id,
                     routed_search.reason,
                 )
+            else:
+                routed_calculation = route_required_calculation_call(
+                    messages,
+                    tools,
+                    invocation_id,
+                )
+                if routed_calculation is not None:
+                    tool_request = routed_calculation.request
+                    temperature_conversion = routed_calculation.conversion
+                    routed_event = LanguageModelToolCall(
+                        invocation_id=invocation_id,
+                        request=tool_request,
+                        cumulative_token_count=generation.invocation_token_counts[invocation_id],
+                    )
+                    self._record_tool_call_completed(generation, routed_event)
+                    logger.warning(
+                        "required calculation call routed after Qwen omitted it: "
+                        "session=%s generation=%d invocation=%d reason=%s",
+                        self.session_id,
+                        generation.generation_id,
+                        invocation_id,
+                        routed_calculation.reason,
+                    )
         return ModelInvocationResult(
             invocation_id=invocation_id,
             tool_request=tool_request,
             tool_failure=tool_failure,
+            temperature_conversion=temperature_conversion,
         )
 
     async def _publish_spoken_text(

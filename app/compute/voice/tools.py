@@ -18,6 +18,7 @@ from app.shared.base_model import FrozenBaseModel
 MAXIMUM_ABSOLUTE_INTEGER_RESULT = 10**100
 MAXIMUM_ABSOLUTE_FLOAT_RESULT = 1e100
 MAXIMUM_ABSOLUTE_EXPONENT = 100
+MAXIMUM_CALCULATION_RESULTS = 8
 
 
 class ToolName(StrEnum):
@@ -399,6 +400,10 @@ class StandardSearchHandler:
 class PythonArithmeticHandler:
     async def __call__(self, arguments: CalculateArguments) -> str:
         expression = ast.parse(arguments.expression, mode="eval")
+        if isinstance(expression.body, ast.Tuple):
+            if not 1 < len(expression.body.elts) <= MAXIMUM_CALCULATION_RESULTS:
+                raise ValueError("A calculation list must contain between two and eight results.")
+            return ", ".join(str(_evaluate_arithmetic(item)) for item in expression.body.elts)
         return str(_evaluate_arithmetic(expression.body))
 
 

@@ -571,6 +571,28 @@ class SlowToolSyntaxWeatherLanguageModel:
         yield LanguageModelCompleted(invocation_id=invocation_id, cumulative_token_count=10)
 
 
+class SlowToolSyntaxCalculationLanguageModel:
+    def __init__(self) -> None:
+        self.requests: list[LanguageModelRequest] = []
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        yield LanguageModelTextDelta(
+            invocation_id=1,
+            text="Let me convert that.",
+            cumulative_token_count=4,
+        )
+        yield LanguageModelToolCallStarted(
+            invocation_id=1,
+            call_id="qwen-1-tool-1",
+            cumulative_token_count=5,
+        )
+        await asyncio.Event().wait()
+
+
 class SequentialWeatherLanguageModel:
     def __init__(self) -> None:
         self.requests: list[LanguageModelRequest] = []
@@ -1539,6 +1561,34 @@ def test_required_search_dispatches_before_qwen_finishes_tool_syntax() -> None:
 
     assert weather_handler.arguments == [SearchArguments(query=requested_text)]
     assert released_text(sink) == ("Let me check that. London is 12 degrees and lightly cloudy.")
+
+
+def test_temperature_conversion_dispatches_early_and_uses_deterministic_spoken_result() -> None:
+    requested_text = "What is thirty two Fahrenheit in Celsius?"
+    language_model = SlowToolSyntaxCalculationLanguageModel()
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        ScriptedTranscriber(
+            partials_by_turn=((requested_text, None),),
+            final_texts=(requested_text,),
+        ),
+        language_model,
+        RecordingSpeechSynthesizer(),
+        playback_sink=sink,
+        tool_executor=create_runtime_tool_registry(search_handler=None),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert len(language_model.requests) == 1
+    assert released_text(sink) == (
+        "Let me convert that. 32 degrees fahrenheit is 0 degrees celsius."
+    )
 
 
 @pytest.mark.parametrize("location", ("London", "New York"))
