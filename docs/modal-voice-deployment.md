@@ -352,6 +352,22 @@ returned two bounded results in 2,286.85 ms. The benchmark simulates immediate p
 only a browser microphone run can establish the deployed audible underrun count and confirm whether
 the larger transport window removed the reported crackle.
 
+A subsequent human session exposed ten confirmed playback underruns, concentrated around spoken
+tool preambles, with zero skipped, replayed, or discarded samples. Same-generation PCM now applies
+a five-millisecond tail ramp when an active queue truly drains and a five-millisecond attack only
+when audio resumes after a confirmed underrun; contiguous chunks and immediate cancellation are
+unchanged. The same trace proved a separate terminal-playback race: two overlaps started after the
+server generation had completed and then vanished without either resolution or promotion. An
+overlap that outlives resumable assistant playback now finalizes and commits through the normal
+user-turn path, including when ASR had no partial before producing a multiword final.
+
+Four searches in that session completed successfully, while a fifth failed after the provider's
+three-second HTTP timeout without receiving a response. The canonical typed Tavily timeout is now
+five seconds and failure logs include only the safe exception type. The deployment containing all
+three fixes completed in 42.393 seconds. Its scaled-to-zero WebSocket readiness smoke completed in
+55.942 seconds, and a real configured Tavily smoke returned two results in 290.89 ms. Audible
+tool-boundary quality and the terminal-overlap repair still require a refreshed human browser run.
+
 ## Known limitations
 
 - The latest truthful cold readiness sample is 56.317 seconds; an earlier instrumented sample
