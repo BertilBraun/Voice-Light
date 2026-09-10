@@ -61,7 +61,7 @@ MODEL_REPOSITORIES: Final = (
 
 @dataclass(frozen=True)
 class ModalDeploymentConfiguration:
-    gpus: tuple[str, ...] = ("L40S", "A10", "A100")
+    gpu: str = "A10"
     scaledown_window_seconds: int = 1_200
     startup_timeout_seconds: int = 1_800
     function_timeout_seconds: int = 86_400
@@ -235,7 +235,7 @@ def smoke_search_provider() -> None:
 @app.cls(
     image=image,
     env={"HF_HUB_OFFLINE": "1"},
-    gpu=list(configuration.gpus),
+    gpu=configuration.gpu,
     max_containers=1,
     min_containers=0,
     scaledown_window=configuration.scaledown_window_seconds,

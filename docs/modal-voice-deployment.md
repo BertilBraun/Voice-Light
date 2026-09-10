@@ -9,9 +9,9 @@ registry, search integration, predictive generation, playback controller, Nemotr
 workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
-session. Modal requests L40S first, then allows A10 or A100 when preferred capacity is
-unavailable. All three have sufficient memory and CUDA compatibility for the measured stack;
-fallbacks reduce scheduling stalls but have different cost and performance. Modal may scale to
+session. Modal requests one A10 GPU. The measured full stack uses about 9.5 GiB of its 23 GiB,
+so a more expensive fallback is unnecessary. Pinning the GPU makes cost predictable at the expense
+of waiting when A10 capacity is unavailable. Modal may scale to
 zero, has one maximum container, and keeps an idle container for 1,200 seconds. Modal sets
 `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
 initialization before Modal marks a cold container ready or admits the first request. Nemotron and
