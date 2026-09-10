@@ -12,7 +12,7 @@ The GPU container admits one Modal input and the compute route separately enforc
 session. Modal requests one A10 GPU. The measured full stack uses about 9.5 GiB of its 23 GiB,
 so a more expensive fallback is unnecessary. Pinning the GPU makes cost predictable at the expense
 of waiting when A10 capacity is unavailable. Modal may scale to
-zero, has one maximum container, and keeps an idle container for 1,200 seconds. Modal sets
+zero, has one maximum container, and keeps an idle container for 120 seconds. Modal sets
 `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
 initialization before Modal marks a cold container ready or admits the first request. Nemotron and
 Qwen start concurrently, then the shared search generator and Kyutai start in dependency order. The

@@ -28,7 +28,7 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     assert configuration.gpu == "A10"
     assert configuration.compute_secret_name == "voice-light-compute"
     assert configuration.search_secret_name == "voice-light-search"
-    assert configuration.scaledown_window_seconds == 1_200
+    assert configuration.scaledown_window_seconds == 120
     assert configuration.startup_timeout_seconds == 1_800
     assert environment["VOICE_LIGHT_EAGER_MODEL_LOADING"] == "true"
     assert environment["VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS"] == "1200"

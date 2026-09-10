@@ -62,7 +62,7 @@ MODEL_REPOSITORIES: Final = (
 @dataclass(frozen=True)
 class ModalDeploymentConfiguration:
     gpu: str = "A10"
-    scaledown_window_seconds: int = 1_200
+    scaledown_window_seconds: int = 120
     startup_timeout_seconds: int = 1_800
     function_timeout_seconds: int = 86_400
     compute_secret_name: str = "voice-light-compute"
