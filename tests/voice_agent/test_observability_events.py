@@ -50,6 +50,12 @@ def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
         final_vad_endpoint_to_first_audio_send_ms=990.0,
         asr_finalization_ms=80.0,
         candidate_resolution_ms=90.0,
+        speculation_start_relative_to_first_vad_endpoint_ms=4.0,
+        speculation_start_relative_to_final_vad_endpoint_ms=-120.0,
+        speculation_start_to_turn_commit_ms=420.0,
+        speculation_start_to_first_qwen_word_ms=64.0,
+        speculation_start_to_first_tts_pcm_ms=494.0,
+        first_qwen_word_ready_at_commit=True,
         turn_commit_to_playback_ms=820.0,
         turn_commit_to_first_audio_send_ms=510.0,
         generation_to_first_word_ms=64.0,
@@ -70,6 +76,12 @@ def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
     assert payload["final_vad_endpoint_to_first_audio_send_ms"] == pytest.approx(990.0)
     assert payload["asr_finalization_ms"] == pytest.approx(80.0)
     assert payload["candidate_resolution_ms"] == pytest.approx(90.0)
+    assert payload["speculation_start_relative_to_first_vad_endpoint_ms"] == pytest.approx(4.0)
+    assert payload["speculation_start_relative_to_final_vad_endpoint_ms"] == pytest.approx(-120.0)
+    assert payload["speculation_start_to_turn_commit_ms"] == pytest.approx(420.0)
+    assert payload["speculation_start_to_first_qwen_word_ms"] == pytest.approx(64.0)
+    assert payload["speculation_start_to_first_tts_pcm_ms"] == pytest.approx(494.0)
+    assert payload["first_qwen_word_ready_at_commit"] is True
     assert payload["turn_commit_to_first_audio_send_ms"] == pytest.approx(510.0)
     assert payload["speculative_hidden_work_ms"] == pytest.approx(420.0)
     assert payload["prepared_qwen_token_count"] == 18
@@ -85,6 +97,12 @@ def test_assistant_latency_allows_missing_vad_endpoints_and_candidate() -> None:
         final_vad_endpoint_to_first_audio_send_ms=None,
         asr_finalization_ms=40.0,
         candidate_resolution_ms=None,
+        speculation_start_relative_to_first_vad_endpoint_ms=None,
+        speculation_start_relative_to_final_vad_endpoint_ms=None,
+        speculation_start_to_turn_commit_ms=None,
+        speculation_start_to_first_qwen_word_ms=None,
+        speculation_start_to_first_tts_pcm_ms=None,
+        first_qwen_word_ready_at_commit=False,
         turn_commit_to_playback_ms=800.0,
         turn_commit_to_first_audio_send_ms=500.0,
         generation_to_first_word_ms=60.0,

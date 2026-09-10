@@ -270,6 +270,13 @@ class PredictiveMetricsReport:
     hidden_tts_samples: int
     wasted_qwen_tokens: int
     wasted_tts_samples: int
+    candidate_start_relative_to_first_endpoint_p50_ms: float | None
+    candidate_start_relative_to_final_endpoint_p50_ms: float | None
+    candidate_start_to_commit_p50_ms: float | None
+    candidate_start_to_first_qwen_word_p50_ms: float | None
+    candidate_start_to_first_tts_pcm_p50_ms: float | None
+    qwen_word_ready_at_commit_rate: float
+    tts_pcm_ready_at_commit_rate: float
     no_candidate_latency_p50_ms: float | None
     post_invalidation_latency_p50_ms: float | None
 
@@ -290,6 +297,14 @@ class PredictiveMetrics:
         self.hidden_tts_samples = 0
         self.wasted_qwen_tokens = 0
         self.wasted_tts_samples = 0
+        self.candidate_start_relative_to_first_endpoint_ms: list[float] = []
+        self.candidate_start_relative_to_final_endpoint_ms: list[float] = []
+        self.candidate_start_to_commit_ms: list[float] = []
+        self.candidate_start_to_first_qwen_word_ms: list[float] = []
+        self.candidate_start_to_first_tts_pcm_ms: list[float] = []
+        self.promoted_candidate_timing_count = 0
+        self.qwen_word_ready_at_commit_count = 0
+        self.tts_pcm_ready_at_commit_count = 0
 
     def record_candidate_created(self) -> None:
         self.candidate_count += 1
@@ -334,6 +349,39 @@ class PredictiveMetrics:
 
     def record_first_release(self, commit_at: float, release_at: float) -> None:
         self.commit_to_released_pcm_ms.append(_milliseconds_between(commit_at, release_at))
+
+    def record_promoted_candidate_timing(
+        self,
+        *,
+        speculation_started_at: float,
+        first_endpoint_at: float | None,
+        final_endpoint_at: float | None,
+        committed_at: float,
+        first_qwen_word_at: float,
+        first_tts_pcm_at: float,
+        qwen_word_ready_at_commit: bool,
+        tts_pcm_ready_at_commit: bool,
+    ) -> None:
+        self.promoted_candidate_timing_count += 1
+        if first_endpoint_at is not None:
+            self.candidate_start_relative_to_first_endpoint_ms.append(
+                _signed_milliseconds_between(first_endpoint_at, speculation_started_at)
+            )
+        if final_endpoint_at is not None:
+            self.candidate_start_relative_to_final_endpoint_ms.append(
+                _signed_milliseconds_between(final_endpoint_at, speculation_started_at)
+            )
+        self.candidate_start_to_commit_ms.append(
+            _milliseconds_between(speculation_started_at, committed_at)
+        )
+        self.candidate_start_to_first_qwen_word_ms.append(
+            _milliseconds_between(speculation_started_at, first_qwen_word_at)
+        )
+        self.candidate_start_to_first_tts_pcm_ms.append(
+            _milliseconds_between(speculation_started_at, first_tts_pcm_at)
+        )
+        self.qwen_word_ready_at_commit_count += int(qwen_word_ready_at_commit)
+        self.tts_pcm_ready_at_commit_count += int(tts_pcm_ready_at_commit)
 
     def report(self) -> PredictiveMetricsReport:
         invalidated_count = sum(self.invalidations.values())
@@ -393,6 +441,34 @@ class PredictiveMetrics:
             hidden_tts_samples=self.hidden_tts_samples,
             wasted_qwen_tokens=self.wasted_qwen_tokens,
             wasted_tts_samples=self.wasted_tts_samples,
+            candidate_start_relative_to_first_endpoint_p50_ms=_percentile(
+                self.candidate_start_relative_to_first_endpoint_ms,
+                0.50,
+            ),
+            candidate_start_relative_to_final_endpoint_p50_ms=_percentile(
+                self.candidate_start_relative_to_final_endpoint_ms,
+                0.50,
+            ),
+            candidate_start_to_commit_p50_ms=_percentile(
+                self.candidate_start_to_commit_ms,
+                0.50,
+            ),
+            candidate_start_to_first_qwen_word_p50_ms=_percentile(
+                self.candidate_start_to_first_qwen_word_ms,
+                0.50,
+            ),
+            candidate_start_to_first_tts_pcm_p50_ms=_percentile(
+                self.candidate_start_to_first_tts_pcm_ms,
+                0.50,
+            ),
+            qwen_word_ready_at_commit_rate=_rate(
+                self.qwen_word_ready_at_commit_count,
+                self.promoted_candidate_timing_count,
+            ),
+            tts_pcm_ready_at_commit_rate=_rate(
+                self.tts_pcm_ready_at_commit_count,
+                self.promoted_candidate_timing_count,
+            ),
             no_candidate_latency_p50_ms=_percentile(
                 self.no_candidate_latency_ms,
                 0.50,
@@ -459,6 +535,10 @@ def _milliseconds_between(start_at: float, end_at: float) -> float:
     if end_at < start_at:
         raise AssertionError("Metrics timestamps must increase monotonically.")
     return (end_at - start_at) * 1_000
+
+
+def _signed_milliseconds_between(origin_at: float, event_at: float) -> float:
+    return (event_at - origin_at) * 1_000
 
 
 def _rate(numerator: int, denominator: int) -> float:

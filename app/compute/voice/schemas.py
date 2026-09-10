@@ -623,6 +623,12 @@ class AssistantLatencyEvent(FrozenBaseModel):
     final_vad_endpoint_to_first_audio_send_ms: float | None = Field(default=None, ge=0)
     asr_finalization_ms: float = Field(ge=0)
     candidate_resolution_ms: float | None = Field(default=None, ge=0)
+    speculation_start_relative_to_first_vad_endpoint_ms: float | None = None
+    speculation_start_relative_to_final_vad_endpoint_ms: float | None = None
+    speculation_start_to_turn_commit_ms: float | None = Field(default=None, ge=0)
+    speculation_start_to_first_qwen_word_ms: float | None = Field(default=None, ge=0)
+    speculation_start_to_first_tts_pcm_ms: float | None = Field(default=None, ge=0)
+    first_qwen_word_ready_at_commit: bool
     turn_commit_to_playback_ms: float = Field(ge=0)
     turn_commit_to_first_audio_send_ms: float = Field(ge=0)
     generation_to_first_word_ms: float = Field(ge=0)

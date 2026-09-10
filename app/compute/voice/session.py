@@ -3325,68 +3325,117 @@ class VoiceSession:
             ),
         )
         commit_readiness = _require_commit_readiness(latency)
-        await self._send_event(
-            AssistantLatencyEvent(
-                generation_id=generation.generation_id,
-                first_vad_endpoint_to_turn_commit_ms=(
-                    None
-                    if latency.first_endpoint_at is None
-                    else _milliseconds_between(latency.first_endpoint_at, turn_committed_at)
-                ),
-                final_vad_endpoint_to_turn_commit_ms=(
-                    None
-                    if latency.final_vad_endpoint_at is None
-                    else _milliseconds_between(latency.final_vad_endpoint_at, turn_committed_at)
-                ),
-                final_vad_endpoint_to_first_audio_send_ms=(
-                    None
-                    if latency.final_vad_endpoint_at is None
-                    else _milliseconds_between(
-                        latency.final_vad_endpoint_at,
-                        latency.first_audio_sent_at,
-                    )
-                ),
-                asr_finalization_ms=latency.asr_finalization_seconds * 1_000,
-                candidate_resolution_ms=(
-                    None
-                    if latency.candidate_promoted_at is None
-                    else _milliseconds_between(turn_committed_at, latency.candidate_promoted_at)
-                ),
-                turn_commit_to_playback_ms=_milliseconds_between(
-                    turn_committed_at,
-                    latency.playback_started_at,
-                ),
-                turn_commit_to_first_audio_send_ms=_milliseconds_between(
-                    turn_committed_at,
-                    latency.first_audio_sent_at,
-                ),
-                generation_to_first_word_ms=_milliseconds_between(
-                    _require_timestamp(latency.generation_started_at, "generation start"),
-                    _require_latency_point(
-                        latency.qwen_first_complete_word,
-                        "first complete language-model word",
-                    ).monotonic_time_seconds,
-                ),
-                tts_first_word_to_first_pcm_ms=_milliseconds_between(
-                    _require_timestamp(latency.first_synthesis_word_at, "first synthesis word"),
-                    _require_timestamp(latency.first_audio_at, "first audio"),
-                ),
-                first_audio_send_to_playback_ms=_milliseconds_between(
-                    latency.first_audio_sent_at,
-                    latency.playback_started_at,
-                ),
-                speculative_candidate_promoted=commit_readiness.speculative_candidate,
-                speculative_hidden_work_ms=commit_readiness.hidden_work_ms,
-                prepared_qwen_token_count=commit_readiness.qwen_token_count,
-                prepared_word_count=commit_readiness.synthesis_word_count,
-                first_tts_pcm_ready_at_commit=commit_readiness.first_tts_pcm_ready,
-                buffered_audio_ms=(
-                    commit_readiness.buffered_pcm_sample_count
-                    * 1_000
-                    / self.speech_synthesizer.sample_rate
-                ),
+        speculation_started_at = latency.speculation_started_at
+        first_qwen_word_at = _require_latency_point(
+            latency.qwen_first_complete_word,
+            "first complete language-model word",
+        ).monotonic_time_seconds
+        first_tts_pcm_at = _require_timestamp(latency.first_audio_at, "first audio")
+        if commit_readiness.speculative_candidate:
+            assert speculation_started_at is not None
+            self.predictive_metrics.record_promoted_candidate_timing(
+                speculation_started_at=speculation_started_at,
+                first_endpoint_at=latency.first_endpoint_at,
+                final_endpoint_at=latency.final_vad_endpoint_at,
+                committed_at=turn_committed_at,
+                first_qwen_word_at=first_qwen_word_at,
+                first_tts_pcm_at=first_tts_pcm_at,
+                qwen_word_ready_at_commit=first_qwen_word_at <= turn_committed_at,
+                tts_pcm_ready_at_commit=commit_readiness.first_tts_pcm_ready,
             )
+        latency_event = AssistantLatencyEvent(
+            generation_id=generation.generation_id,
+            first_vad_endpoint_to_turn_commit_ms=(
+                None
+                if latency.first_endpoint_at is None
+                else _milliseconds_between(latency.first_endpoint_at, turn_committed_at)
+            ),
+            final_vad_endpoint_to_turn_commit_ms=(
+                None
+                if latency.final_vad_endpoint_at is None
+                else _milliseconds_between(latency.final_vad_endpoint_at, turn_committed_at)
+            ),
+            final_vad_endpoint_to_first_audio_send_ms=(
+                None
+                if latency.final_vad_endpoint_at is None
+                else _milliseconds_between(
+                    latency.final_vad_endpoint_at,
+                    latency.first_audio_sent_at,
+                )
+            ),
+            asr_finalization_ms=latency.asr_finalization_seconds * 1_000,
+            candidate_resolution_ms=(
+                None
+                if latency.candidate_promoted_at is None
+                else _milliseconds_between(turn_committed_at, latency.candidate_promoted_at)
+            ),
+            speculation_start_relative_to_first_vad_endpoint_ms=(
+                None
+                if speculation_started_at is None or latency.first_endpoint_at is None
+                else (speculation_started_at - latency.first_endpoint_at) * 1_000
+            ),
+            speculation_start_relative_to_final_vad_endpoint_ms=(
+                None
+                if speculation_started_at is None or latency.final_vad_endpoint_at is None
+                else (speculation_started_at - latency.final_vad_endpoint_at) * 1_000
+            ),
+            speculation_start_to_turn_commit_ms=(
+                None
+                if speculation_started_at is None
+                else _milliseconds_between(speculation_started_at, turn_committed_at)
+            ),
+            speculation_start_to_first_qwen_word_ms=(
+                None
+                if speculation_started_at is None
+                else _milliseconds_between(speculation_started_at, first_qwen_word_at)
+            ),
+            speculation_start_to_first_tts_pcm_ms=(
+                None
+                if speculation_started_at is None
+                else _milliseconds_between(speculation_started_at, first_tts_pcm_at)
+            ),
+            first_qwen_word_ready_at_commit=(
+                speculation_started_at is not None and first_qwen_word_at <= turn_committed_at
+            ),
+            turn_commit_to_playback_ms=_milliseconds_between(
+                turn_committed_at,
+                latency.playback_started_at,
+            ),
+            turn_commit_to_first_audio_send_ms=_milliseconds_between(
+                turn_committed_at,
+                latency.first_audio_sent_at,
+            ),
+            generation_to_first_word_ms=_milliseconds_between(
+                _require_timestamp(latency.generation_started_at, "generation start"),
+                first_qwen_word_at,
+            ),
+            tts_first_word_to_first_pcm_ms=_milliseconds_between(
+                _require_timestamp(latency.first_synthesis_word_at, "first synthesis word"),
+                first_tts_pcm_at,
+            ),
+            first_audio_send_to_playback_ms=_milliseconds_between(
+                latency.first_audio_sent_at,
+                latency.playback_started_at,
+            ),
+            speculative_candidate_promoted=commit_readiness.speculative_candidate,
+            speculative_hidden_work_ms=commit_readiness.hidden_work_ms,
+            prepared_qwen_token_count=commit_readiness.qwen_token_count,
+            prepared_word_count=commit_readiness.synthesis_word_count,
+            first_tts_pcm_ready_at_commit=commit_readiness.first_tts_pcm_ready,
+            buffered_audio_ms=(
+                commit_readiness.buffered_pcm_sample_count
+                * 1_000
+                / self.speech_synthesizer.sample_rate
+            ),
         )
+        await self._send_event(latency_event)
+        if commit_readiness.speculative_candidate:
+            logger.info(
+                "speculative candidate timing: session=%s generation=%d event=%r",
+                self.session_id,
+                generation.generation_id,
+                latency_event,
+            )
 
     @staticmethod
     def _record_generation_commit_readiness(

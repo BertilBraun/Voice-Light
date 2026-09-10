@@ -219,6 +219,16 @@ def test_predictive_metrics_report_hits_waste_and_latency_buckets() -> None:
         followed_invalidation=True,
     )
     metrics.record_first_release(commit_at=1.0, release_at=1.15)
+    metrics.record_promoted_candidate_timing(
+        speculation_started_at=0.8,
+        first_endpoint_at=0.85,
+        final_endpoint_at=0.95,
+        committed_at=1.0,
+        first_qwen_word_at=0.9,
+        first_tts_pcm_at=1.1,
+        qwen_word_ready_at_commit=True,
+        tts_pcm_ready_at_commit=False,
+    )
 
     report = metrics.report()
 
@@ -226,6 +236,13 @@ def test_predictive_metrics_report_hits_waste_and_latency_buckets() -> None:
     assert report.invalidation_rate == 1.0
     assert report.wasted_qwen_tokens == 4
     assert report.wasted_tts_samples == 480
+    assert report.candidate_start_relative_to_first_endpoint_p50_ms == pytest.approx(-50.0)
+    assert report.candidate_start_relative_to_final_endpoint_p50_ms == pytest.approx(-150.0)
+    assert report.candidate_start_to_commit_p50_ms == pytest.approx(200.0)
+    assert report.candidate_start_to_first_qwen_word_p50_ms == pytest.approx(100.0)
+    assert report.candidate_start_to_first_tts_pcm_p50_ms == pytest.approx(300.0)
+    assert report.qwen_word_ready_at_commit_rate == 1.0
+    assert report.tts_pcm_ready_at_commit_rate == 0.0
     assert report.commit_to_first_played_audio_p50_ms == pytest.approx(200.0)
     assert report.commit_to_first_released_pcm_p50_ms == pytest.approx(150.0)
     assert report.commit_to_first_released_pcm_p90_ms == pytest.approx(150.0)
