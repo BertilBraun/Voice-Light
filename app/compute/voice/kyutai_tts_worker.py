@@ -264,6 +264,15 @@ class _KyutaiStreamingGenerator:
             dtype=torch.long,
             device=model.lm.device,
         )
+        missing_codebooks = model.lm.n_q - model.lm.dep_q
+        self.input_tokens = torch.full(
+            (1, missing_codebooks, 1),
+            model.machine.token_ids.zero,
+            dtype=torch.long,
+            device=model.lm.device,
+        )
+        # Moshi's delayed cache first contains a complete audio frame at this offset.
+        self.first_decodable_offset = max(model.lm.delays) + model.delay_steps + 1
 
     def start_turn(
         self,
@@ -378,26 +387,19 @@ class _KyutaiStreamingGenerator:
     def _step(self) -> None:
         if self.cancellation_event.is_set():
             return
-        missing_codebooks = self.model.lm.n_q - self.model.lm.dep_q
-        input_tokens = torch.full(
-            (1, missing_codebooks, 1),
-            self.model.machine.token_ids.zero,
-            dtype=torch.long,
-            device=self.model.lm.device,
-        )
         language_model_step_started_at = time.perf_counter()
         depformer_replacement = (
             self.initial_depformer_tokens if self.offset < self.model.delay_steps else None
         )
         frame = self.lm_generation.step(
-            input_tokens,
+            self.input_tokens,
             depformer_replace_tokens=depformer_replacement,
         )
         self.language_model_step_seconds += time.perf_counter() - language_model_step_started_at
         self.model_step_count += 1
         self.offset += 1
         self._emit_new_boundaries()
-        if frame is None or not bool((frame != -1).all()):
+        if frame is None or self.offset < self.first_decodable_offset:
             return
         mimi_decode_started_at = time.perf_counter()
         pcm = self.model.mimi.decode(frame[:, 1:, :]).cpu().float().numpy()
