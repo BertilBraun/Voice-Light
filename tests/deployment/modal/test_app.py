@@ -25,7 +25,7 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     configuration = ModalDeploymentConfiguration()
     environment = configuration.environment()
 
-    assert configuration.gpus == ("L40S", "H100", "A10", "A100")
+    assert configuration.gpus == ("L40S", "A10", "A100")
     assert configuration.compute_secret_name == "voice-light-compute"
     assert configuration.search_secret_name == "voice-light-search"
     assert configuration.scaledown_window_seconds == 1_200
