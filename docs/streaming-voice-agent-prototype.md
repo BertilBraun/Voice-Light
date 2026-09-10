@@ -368,6 +368,8 @@ An applicable adapter sample that remains below both speculative thresholds does
 VAD endpoint fallback. The adapter evidence is evaluated first; if it creates no candidate, the
 same already-observed endpoint starts a VAD-anchored candidate. This preserves causal ordering while
 allowing substantially more private TTS work than waiting for the final turn commitment.
+Later adapter hold evidence can delay commitment but cannot discard a VAD-anchored candidate;
+actual resumed Silero speech remains the authoritative invalidation signal after that endpoint.
 
 Candidate output passes through a private release gate. Text deltas, word boundaries, PCM bytes,
 and their original offsets are retained in production order but are not sent to the browser and do

@@ -1569,7 +1569,11 @@ class VoiceSession:
                 await self._invalidate_speculative_candidate(
                     CandidateInvalidationReason.FLOOR_TAKING_OVERLAP
                 )
-            elif prediction.p_user_speech >= self.policy.decisive_hold_threshold:
+            elif (
+                generation.causal_prediction is not None
+                and generation.causal_prediction.stamp.source is not CausalSource.SILERO_VAD
+                and prediction.p_user_speech >= self.policy.decisive_hold_threshold
+            ):
                 await self._invalidate_speculative_candidate(
                     CandidateInvalidationReason.PREDICTION_RETURNED_TO_HOLD
                 )
