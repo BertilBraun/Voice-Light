@@ -13,8 +13,16 @@ import modal
 from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
 APPLICATION_NAME: Final = "VoiceLightAgent"
-REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[2]
 REMOTE_REPOSITORY_ROOT: Final = PurePosixPath("/opt/voice-light")
+
+
+def repository_root(module_path: Path, local: bool) -> Path:
+    if not local:
+        return Path(REMOTE_REPOSITORY_ROOT)
+    return module_path.parents[2]
+
+
+REPOSITORY_ROOT: Final = repository_root(Path(__file__).resolve(), modal.is_local())
 ADAPTER_CHECKPOINT: Final = (
     REPOSITORY_ROOT
     / ".cache"

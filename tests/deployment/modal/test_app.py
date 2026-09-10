@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 from deployment.modal.voice_light import (
@@ -11,7 +11,12 @@ from deployment.modal.voice_light import (
     MODEL_REPOSITORIES,
     REMOTE_ADAPTER_CHECKPOINT,
     ModalDeploymentConfiguration,
+    repository_root,
 )
+
+
+def test_remote_import_uses_packaged_repository_root() -> None:
+    assert repository_root(Path("/root/voice_light.py"), local=False) == Path("/opt/voice-light")
 
 
 def test_adapter_checkpoint_is_packaged_from_expected_backup() -> None:
