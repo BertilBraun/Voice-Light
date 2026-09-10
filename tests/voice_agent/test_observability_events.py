@@ -21,6 +21,7 @@ def test_speech_debug_serialization_distinguishes_heartbeat_from_model_observati
         adapter_status=TurnAdapterStatus.ACTIVE,
         silero_speech=False,
         assistant_audible=True,
+        user_yield_probability=None,
         turn_completion_probability=None,
         floor_take_probability=None,
         non_floor_feedback_probability=None,
@@ -29,6 +30,7 @@ def test_speech_debug_serialization_distinguishes_heartbeat_from_model_observati
     )
     observation = heartbeat.model_copy(
         update={
+            "user_yield_probability": 0.8,
             "turn_completion_probability": 0.7,
             "floor_take_probability": 0.2,
             "non_floor_feedback_probability": 0.3,
@@ -38,6 +40,7 @@ def test_speech_debug_serialization_distinguishes_heartbeat_from_model_observati
     )
 
     assert heartbeat.model_dump(mode="json")["turn_completion_probability"] is None
+    assert observation.model_dump(mode="json")["user_yield_probability"] == pytest.approx(0.8)
     assert observation.model_dump(mode="json")["turn_completion_probability"] == pytest.approx(0.7)
     assert observation.model_dump(mode="json")["prediction_disposition"] == "rejected_superseded"
 

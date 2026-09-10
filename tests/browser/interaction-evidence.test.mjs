@@ -12,6 +12,7 @@ function debugEvent(audioTimeMs, turnCompletion = null) {
     observed_audio_time_ms: audioTimeMs,
     silero_speech: false,
     assistant_audible: true,
+    user_yield_probability: turnCompletion === null ? null : 0.8,
     turn_completion_probability: turnCompletion,
     floor_take_probability: turnCompletion === null ? null : 0.2,
     non_floor_feedback_probability: turnCompletion === null ? null : 0.3,
@@ -28,6 +29,9 @@ test("keeps heartbeat frames distinct from real model observations", () => {
   const points = [...evidence.values()];
   assert.deepEqual(modelObservationSamples(points, "turnCompletion"), [
     { audioTimeMs: 160, probability: 0.7, disposition: "applicable" },
+  ]);
+  assert.deepEqual(modelObservationSamples(points, "userYield"), [
+    { audioTimeMs: 160, probability: 0.8, disposition: "applicable" },
   ]);
   assert.equal(points[2].turnCompletion, null);
   assert.equal(points[2].isModelObservation, false);

@@ -63,6 +63,7 @@
         <dl>
           <div><dt>Adapter</dt><dd id="debug-adapter-status">waiting</dd></div>
           <div><dt>Silero</dt><dd id="debug-silero">waiting</dd></div>
+          <div><dt>User yield (commit input)</dt><dd id="debug-user-yield">—</dd></div>
           <div><dt>Turn completion</dt><dd id="debug-turn-completion">—</dd></div>
           <div><dt>Floor take</dt><dd id="debug-floor-take">—</dd></div>
           <div><dt>Non-floor feedback</dt><dd id="debug-non-floor">—</dd></div>
@@ -76,6 +77,7 @@
         <div class="interaction-timeline-heading">
           <p>Last 20 seconds · solid dots affect policy; hollow dots were rejected</p>
           <div class="interaction-timeline-legend" aria-hidden="true">
+            <span data-series="yield">user-yield samples</span>
             <span data-series="completion">completion samples</span>
             <span data-series="floor">floor-take samples</span>
             <span data-series="feedback">non-floor samples</span>
@@ -96,6 +98,6 @@
         <ol id="event-log"></ol>
       </details>
     </main>
-    <script type="module" src="/pages/voice-agent/app.js?v=18"></script>
+    <script type="module" src="/pages/voice-agent/app.js?v=19"></script>
   </body>
 </html>

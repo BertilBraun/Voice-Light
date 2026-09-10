@@ -11,6 +11,9 @@ export function updateInteractionEvidence(evidence, message) {
     predictionDisposition: isModelObservation
       ? message.prediction_disposition
       : previous?.predictionDisposition ?? null,
+    userYield: isModelObservation
+      ? message.user_yield_probability
+      : previous?.userYield ?? null,
     turnCompletion: isModelObservation
       ? message.turn_completion_probability
       : previous?.turnCompletion ?? null,

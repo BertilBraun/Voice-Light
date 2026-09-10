@@ -546,6 +546,7 @@ class SpeechUnderstandingDebugEvent(FrozenBaseModel):
     adapter_status: TurnAdapterStatus
     silero_speech: bool
     assistant_audible: bool
+    user_yield_probability: float | None = Field(ge=0.0, le=1.0)
     turn_completion_probability: float | None = Field(ge=0.0, le=1.0)
     floor_take_probability: float | None = Field(ge=0.0, le=1.0)
     non_floor_feedback_probability: float | None = Field(ge=0.0, le=1.0)
@@ -556,6 +557,7 @@ class SpeechUnderstandingDebugEvent(FrozenBaseModel):
     @model_validator(mode="after")
     def validate_model_observation(self) -> SpeechUnderstandingDebugEvent:
         probabilities = (
+            self.user_yield_probability,
             self.turn_completion_probability,
             self.floor_take_probability,
             self.non_floor_feedback_probability,

@@ -49,6 +49,7 @@ button:disabled { cursor: default; opacity: .4; }
 .interaction-timeline-legend { display: flex; flex-wrap: wrap; gap: 12px; }
 .interaction-timeline-legend span { color: #9aa69e; font-size: 11px; }
 .interaction-timeline-legend span::before { background: var(--series-color); border-radius: 50%; content: ""; display: inline-block; height: 7px; margin-right: 5px; width: 7px; }
+.interaction-timeline-legend [data-series="yield"] { --series-color: #e7bf5f; }
 .interaction-timeline-legend [data-series="completion"] { --series-color: #66e3a4; }
 .interaction-timeline-legend [data-series="floor"] { --series-color: #ff796f; }
 .interaction-timeline-legend [data-series="feedback"] { --series-color: #77a9ff; }

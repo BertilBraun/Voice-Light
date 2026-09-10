@@ -26,6 +26,7 @@ const conversationEmpty = document.querySelector("#conversation-empty");
 const eventLog = document.querySelector("#event-log");
 const debugAdapterStatus = document.querySelector("#debug-adapter-status");
 const debugSilero = document.querySelector("#debug-silero");
+const debugUserYield = document.querySelector("#debug-user-yield");
 const debugTurnCompletion = document.querySelector("#debug-turn-completion");
 const debugFloorTake = document.querySelector("#debug-floor-take");
 const debugNonFloor = document.querySelector("#debug-non-floor");
@@ -764,6 +765,7 @@ function updateInteractionEvidence(message) {
     debugSilero.textContent = message.silero_speech ? "speech" : "silence";
   }
   if (hasModelEvidence) {
+    debugUserYield.textContent = formatProbability(message.user_yield_probability);
     debugTurnCompletion.textContent = formatProbability(message.turn_completion_probability);
     debugFloorTake.textContent = formatProbability(message.floor_take_probability);
     debugNonFloor.textContent = formatProbability(message.non_floor_feedback_probability);
@@ -848,6 +850,7 @@ function drawInteractionTimeline() {
       context.fillRect(x - frameWidth, assistantLaneTop, frameWidth, laneHeight);
     }
   }
+  drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "userYield", "#e7bf5f");
   drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "turnCompletion", "#66e3a4");
   drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "floorTake", "#ff796f");
   drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "nonFloorFeedback", "#77a9ff");
