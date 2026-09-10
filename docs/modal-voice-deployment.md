@@ -325,6 +325,17 @@ capture frames can be processed faster than real time, while the displayed endpo
 processing timestamp. A browser-origin true acoustic-end timestamp remains a known telemetry
 limitation.
 
+A subsequent five-turn European browser session measured end-of-speech-to-first-PCM at 681--1,658
+ms (1,219 ms median and 1,121 ms mean) and end-of-speech-to-browser-playback acknowledgement at
+852--1,808 ms (1,377 ms median and 1,284 ms mean). The model path itself remained stable: Qwen first
+text took 93--143 ms and ordinary Kyutai first PCM took 547--600 ms. Speculation was promoted on two
+of the five turns; those two reached playback in 852 and 905 ms. The other turns spent 800--865 ms
+from commitment to first PCM because transcript revisions invalidated private work or the adapter
+returned to hold. Pending-silence candidates now compare normalized lexical words during revisions,
+so capitalization, punctuation, and spacing corrections preserve work while changed or appended
+intent still invalidates it. The deployment smoke for that revision reached `session.ready` from a
+cold connection in 45.564 seconds.
+
 One L40S-only cold probe remained queued for more than 120 seconds without Modal creating a
 container. That delay occurred entirely before application or model initialization. The ordered GPU
 fallbacks address this capacity-dependent scheduling component while retaining L40S as the preferred

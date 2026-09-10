@@ -360,8 +360,9 @@ at the independent speculative confidence floor starts at most one Qwen/TTS
 candidate, anchored to the immutable conversation snapshot, revision ID, prediction, input sample
 position, and monotonic creation time. Trained predictions use the stable prefix. The VAD endpoint
 uses the complete current `stable_prefix + volatile_suffix` text. A later change to how that same
-text is divided between the two fields does not invalidate the VAD candidate; a change to their
-normalized concatenation does. Speculation does not call `finish()`—Nemotron remains open until the
+text is divided between the two fields, or a capitalization, spacing, or punctuation-only revision,
+does not invalidate the VAD candidate; a change to its normalized lexical request does. Speculation
+does not call `finish()`—Nemotron remains open until the
 high-confidence prediction rule or guarded silence commitment fires.
 
 Prediction evidence may prepare private output immediately, but it cannot commit a normal user turn
