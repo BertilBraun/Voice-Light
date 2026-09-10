@@ -359,6 +359,9 @@ class CompositeSpeechUnderstandingSession:
         )
         self.prediction_task: asyncio.Task[None] | None = None
         self.prediction_in_flight = False
+        self.pending_prediction_count = 0
+        self.predictions_settled = asyncio.Event()
+        self.predictions_settled.set()
         self.optional_predictor_degraded = False
         self.dropped_prediction_observations = 0
         self.active_status_emitted = False
@@ -538,6 +541,9 @@ class CompositeSpeechUnderstandingSession:
             self.optional_predictor_degraded = True
             while not self.prediction_queue.empty():
                 self.prediction_queue.get_nowait()
+            self.pending_prediction_count = int(self.prediction_in_flight)
+            if self.pending_prediction_count == 0:
+                self.predictions_settled.set()
             if self.prediction_task is not None and not self.prediction_task.done():
                 self.prediction_task.cancel()
             self.prediction_in_flight = False
@@ -560,6 +566,18 @@ class CompositeSpeechUnderstandingSession:
             )
             return
         self.prediction_queue.put_nowait(work)
+        self.pending_prediction_count += 1
+        self.predictions_settled.clear()
+
+    async def settle_predictions(self, timeout_seconds: float) -> None:
+        if timeout_seconds <= 0.0:
+            raise ValueError("Prediction settlement timeout must be positive.")
+        if self.optional_predictor_degraded or self.pending_prediction_count == 0:
+            return
+        try:
+            await asyncio.wait_for(self.predictions_settled.wait(), timeout_seconds)
+        except TimeoutError:
+            return
 
     async def _run_optional_predictor(self) -> None:
         assert self.prediction_source is not None
@@ -621,6 +639,9 @@ class CompositeSpeechUnderstandingSession:
                 return
             finally:
                 self.prediction_in_flight = False
+                self.pending_prediction_count -= 1
+                if self.pending_prediction_count == 0:
+                    self.predictions_settled.set()
 
     async def _stop_optional_predictor(self) -> None:
         task = self.prediction_task

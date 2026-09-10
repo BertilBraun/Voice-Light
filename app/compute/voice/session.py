@@ -169,6 +169,7 @@ class SessionPolicy:
     overlap_classification_deadline_ms: int = 500
     transcript_free_floor_take_deadline_ms: int = 1_200
     overlap_finalization_grace_ms: int = 120
+    overlap_prediction_settle_ms: int = 80
     overlap_rearm_silence_ms: int = 160
     vad_speculation_enabled: bool = True
     vad_speculation_debounce_ms: int = 100
@@ -248,6 +249,9 @@ class SessionPolicy:
         overlap_finalization_grace_ms = _environment_integer(
             environment, "VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS", 120
         )
+        overlap_prediction_settle_ms = _environment_integer(
+            environment, "VOICE_LIGHT_OVERLAP_PREDICTION_SETTLE_MS", 80
+        )
         overlap_rearm_silence_ms = _environment_integer(
             environment,
             "VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS",
@@ -269,6 +273,7 @@ class SessionPolicy:
             overlap_classification_deadline_ms=overlap_classification_deadline_ms,
             transcript_free_floor_take_deadline_ms=(transcript_free_floor_take_deadline_ms),
             overlap_finalization_grace_ms=overlap_finalization_grace_ms,
+            overlap_prediction_settle_ms=overlap_prediction_settle_ms,
             overlap_rearm_silence_ms=overlap_rearm_silence_ms,
             maximum_prediction_lag_ms=maximum_prediction_lag_ms,
         )
@@ -301,6 +306,8 @@ class SessionPolicy:
             )
         if self.overlap_finalization_grace_ms <= 0:
             raise ValueError("The overlap finalization grace must be positive.")
+        if self.overlap_prediction_settle_ms <= 0:
+            raise ValueError("The overlap prediction settle time must be positive.")
         if self.overlap_rearm_silence_ms <= 0:
             raise ValueError("The overlap rearm silence must be positive.")
         if self.tool_timeout_seconds <= 0.0:
@@ -858,6 +865,10 @@ class VoiceSession:
                     vad_speculation_pending = False
                     await self._invalidate_speculative_candidate(
                         CandidateInvalidationReason.USER_ACTIVITY_RESUMED
+                    )
+                if vad_endpoint_detected and self.active_user_overlap is not None:
+                    await speech_understanding.settle_predictions(
+                        self.policy.overlap_prediction_settle_ms / 1_000
                     )
                 prediction = await self._add_speech_understanding_audio(
                     speech_understanding,

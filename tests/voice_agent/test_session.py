@@ -135,6 +135,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
             "VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS": "640",
             "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS": "1400",
             "VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS": "135",
+            "VOICE_LIGHT_OVERLAP_PREDICTION_SETTLE_MS": "90",
             "VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS": "180",
             "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS": "260",
         }
@@ -145,6 +146,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
     assert policy.overlap_classification_deadline_ms == 640
     assert policy.transcript_free_floor_take_deadline_ms == 1_400
     assert policy.overlap_finalization_grace_ms == 135
+    assert policy.overlap_prediction_settle_ms == 90
     assert policy.overlap_rearm_silence_ms == 180
     assert policy.maximum_prediction_lag_ms == 260
 
