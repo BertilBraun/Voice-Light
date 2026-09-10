@@ -261,6 +261,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
             evidence.non_floor_feedback_probability is not None
             and evidence.non_floor_feedback_probability
             >= self.config.non_floor_feedback_probability_threshold
+            and not evidence.speech_active
         ):
             return ProvisionalOverlapDecision(
                 kind=OverlapResolutionKind.NON_FLOOR_TAKING,

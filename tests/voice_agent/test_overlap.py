@@ -123,7 +123,7 @@ def test_transcript_free_active_speech_takes_the_floor_at_hard_deadline() -> Non
     assert decision.kind is OverlapResolutionKind.FLOOR_TAKING
 
 
-def test_strong_non_floor_feedback_prediction_resumes_before_deadline() -> None:
+def test_strong_non_floor_feedback_prediction_waits_for_speech_end() -> None:
     policy = ProvisionalVadTranscriptOverlapPolicy(ProvisionalOverlapPolicyConfig())
 
     decision = policy.classify(
@@ -139,6 +139,23 @@ def test_strong_non_floor_feedback_prediction_resumes_before_deadline() -> None:
         )
     )
 
+    assert decision.kind is OverlapResolutionKind.UNRESOLVED
+
+
+def test_strong_non_floor_feedback_prediction_resumes_at_speech_end() -> None:
+    policy = ProvisionalVadTranscriptOverlapPolicy(ProvisionalOverlapPolicyConfig())
+    decision = policy.classify(
+        OverlapEvidence(
+            elapsed_ms=240,
+            speech_active=False,
+            transcript="",
+            transcript_event_id=None,
+            interruption_probability=0.1,
+            interruption_evidence_event_id="prediction-1",
+            non_floor_feedback_probability=0.9,
+            non_floor_feedback_evidence_event_id="prediction-1",
+        )
+    )
     assert decision.kind is OverlapResolutionKind.NON_FLOOR_TAKING
     assert decision.fast_path
 

@@ -2578,7 +2578,7 @@ def test_strong_floor_take_still_cancels_before_transcript_free_deadline() -> No
         websocket.send_json({"type": "session.stop"})
 
 
-def test_bounded_lag_adapter_backchannel_resumes_during_active_speech() -> None:
+def test_bounded_lag_adapter_backchannel_resumes_after_speech_end() -> None:
     transcriber = ScriptedTranscriber(
         partials_by_turn=(("hello", None, None), (None, None)),
         final_texts=("hello agent", "mm-hm"),
@@ -2639,6 +2639,8 @@ def test_bounded_lag_adapter_backchannel_resumes_during_active_speech() -> None:
             websocket.send_bytes(SPEECH_CHUNK)
         prediction_source.release.set()
         websocket.send_bytes(SPEECH_CHUNK)
+        assert sessions[0].active_user_overlap is not None
+        websocket.send_bytes(SILENCE_CHUNK)
         resume = receive_playback_command(websocket)
         assert resume.action is PlaybackCommandAction.RESUME
         assert resume.generation_id == 1
