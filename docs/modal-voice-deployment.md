@@ -114,6 +114,13 @@ valid PCM, restored readiness improves by at least 30%, and first-turn and p95 l
 regress. Redeploying code or changing GPU configuration invalidates prior snapshots; changing a
 mounted Volume does not, so model-cache changes require an explicit canary redeploy.
 
+The 2026-09-10 canary did not produce a restorable snapshot. The first capture loaded and warmed
+all models in 24.432 seconds, then Modal reported `Failed to create memory snapshot`. Its automatic
+retry loaded in 49.059 seconds and exceeded the default memory request during capture. A bounded
+retry with 64 GiB of container memory again failed snapshot creation, retried model initialization,
+and never completed the WebSocket handshake within 300 seconds. The canary application was stopped
+after each attempt. Production therefore keeps snapshots disabled.
+
 The deployed endpoints are:
 
 - HTTPS base: `https://bertil-braun-private--voicelightagent-voice-light.modal.run`
