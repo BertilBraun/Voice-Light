@@ -180,11 +180,38 @@ test("counts an active playback underrun only when later audio resumes", () => {
     clocks.length,
   );
 
-  harness.enqueue(1, 100, Array.from({ length: 40 }, () => 1));
+  harness.enqueue(1, 100, Array.from({ length: 40 }, () => 10_000));
   clocks = harness.messages.filter((message) => message.type === "playback.clock");
   assert.equal(clocks.at(-1).sourceSamplePosition, 100);
   assert.equal(clocks.at(-1).queuedSourceSampleCount, 40);
   assert.equal(clocks.at(-1).underrunCount, 1);
+  assert.deepEqual(harness.process(5), [2_000, 4_000, 6_000, 8_000, 10_000]);
+});
+
+test("does not ramp uninterrupted PCM chunk boundaries", () => {
+  const harness = new PlaybackHarness(1_000);
+  harness.enqueue(1, 0, [10_000, 10_000]);
+  harness.enqueue(1, 2, [10_000, 10_000]);
+
+  assert.deepEqual(harness.process(4), [10_000, 10_000, 10_000, 10_000]);
+});
+
+test("ramps the final five milliseconds before an active queue drains", () => {
+  const harness = new PlaybackHarness(1_000);
+  harness.enqueue(1, 0, Array.from({ length: 10 }, () => 10_000));
+
+  assert.deepEqual(harness.process(10), [
+    10_000,
+    10_000,
+    10_000,
+    10_000,
+    10_000,
+    10_000,
+    8_000,
+    6_000,
+    4_000,
+    2_000,
+  ]);
 });
 
 test("does not count the natural final drain as an underrun", () => {
@@ -420,10 +447,10 @@ test("pause racing with end-of-stream completes terminally", () => {
 });
 
 test("one generation accepts final-answer audio after a drained tool gap", () => {
-  const harness = new PlaybackHarness();
+  const harness = new PlaybackHarness(1_000);
   harness.boundary(1, 4, 0);
   harness.boundary(1, 9, 2);
-  harness.enqueue(1, 0, [1, 2, 3, 4]);
+  harness.enqueue(1, 0, [10_000, 10_000, 10_000, 10_000]);
   const rendered = harness.process(4);
 
   assert.equal(harness.processor.generationId, 1);
@@ -435,12 +462,27 @@ test("one generation accepts final-answer audio after a drained tool gap", () =>
 
   harness.boundary(1, 15, 4);
   harness.boundary(1, 20, 6);
-  harness.enqueue(1, 4, [5, 6, 7, 8]);
+  harness.enqueue(1, 4, Array.from({ length: 10 }, () => 10_000));
   harness.send({ type: "end", generationId: 1 });
-  rendered.push(...harness.process(4));
+  rendered.push(...harness.process(10));
 
-  assert.deepEqual(rendered, [1, 2, 3, 4, 5, 6, 7, 8]);
-  assert.equal(harness.processor.sourceSamplePosition, 8);
+  assert.deepEqual(rendered, [
+    10_000,
+    10_000,
+    10_000,
+    10_000,
+    2_000,
+    4_000,
+    6_000,
+    8_000,
+    10_000,
+    10_000,
+    8_000,
+    6_000,
+    4_000,
+    2_000,
+  ]);
+  assert.equal(harness.processor.sourceSamplePosition, 14);
   assert.equal(harness.processor.state, "completed");
   assert.equal(
     harness.messages.filter((message) => message.type === "playback.started").length,

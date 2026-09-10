@@ -81,11 +81,11 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'case "playback.command":' in worklet_response.text
     assert "PlaybackState.PAUSED_BUFFERED" in worklet_response.text
     assert "new Int16Array(input.length)" in capture_worklet_response.text
-    assert "playback-worklet.js?v=7" in script_response.text
+    assert "playback-worklet.js?v=8" in script_response.text
     assert 'data.type === "playback.clock"' in script_response.text
     assert "underrun_count: data.underrunCount" in script_response.text
     assert 'id="playback-underruns"' in page_response.text
-    assert "app.js?v=15" in page_response.text
+    assert "app.js?v=16" in page_response.text
     assert "solid dots affect policy; hollow dots were rejected" in page_response.text
     assert "modelObservationSamples(points, field)" in script_response.text
     assert 'sample.disposition === "applicable"' in script_response.text

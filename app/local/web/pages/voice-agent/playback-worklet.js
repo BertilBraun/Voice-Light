@@ -26,6 +26,7 @@ const PauseResult = Object.freeze({
 const TERMINAL_STATES = new Set([PlaybackState.CANCELLED, PlaybackState.COMPLETED]);
 const MAX_RETAINED_COMMANDS = 256;
 const PLAYBACK_CLOCK_INTERVAL_MS = 80;
+const PLAYBACK_DISCONTINUITY_RAMP_MS = 5;
 
 class PcmPlaybackProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -33,6 +34,10 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.inputSampleRate = options.processorOptions.inputSampleRate;
     this.inputSamplesPerOutputSample = this.inputSampleRate / sampleRate;
     this.outputSampleRate = sampleRate;
+    this.drainRampSourceSampleCount = Math.max(
+      1,
+      Math.round(this.inputSampleRate * PLAYBACK_DISCONTINUITY_RAMP_MS / 1000),
+    );
     this.cancelledGenerationId = -1;
     this.processedCommandIds = [];
     this.commandAcknowledgements = new Map();
@@ -51,6 +56,9 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.lastReportedUnderrunCount = 0;
     this.underrunCount = 0;
     this.pendingUnderrun = false;
+    this.underrunResumeRampSampleCount = 0;
+    this.underrunResumeRampRenderedSampleCount = 0;
+    this.drainRampArmed = false;
     this.acknowledgedTextOffset = 0;
     this.boundaries = [];
     this.startedBoundary = undefined;
@@ -94,9 +102,17 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     if (resumedAfterUnderrun) {
       this.pendingUnderrun = false;
       this.underrunCount += 1;
+      this.underrunResumeRampSampleCount = Math.max(
+        1,
+        Math.round(this.outputSampleRate * PLAYBACK_DISCONTINUITY_RAMP_MS / 1000),
+      );
+      this.underrunResumeRampRenderedSampleCount = 0;
     }
     this.chunks.push(samples);
     this.queuedSourceSampleCount += samples.length;
+    if (this.queuedSourceSampleCount >= this.drainRampSourceSampleCount) {
+      this.drainRampArmed = true;
+    }
     if (this.state === PlaybackState.IDLE) this.state = PlaybackState.QUEUED;
     if (resumedAfterUnderrun) this.reportPlaybackClockIfDue(true);
   }
@@ -360,7 +376,9 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       const upperSample = this.sampleAt(lowerIndex + 1) ?? lowerSample;
       output[outputIndex] =
         ((lowerSample * (1 - fraction) + upperSample * fraction) / 0x8000) *
-        this.nextGain();
+        this.nextGain() *
+        this.nextDrainGain() *
+        this.nextUnderrunResumeGain();
       producedAudio = true;
       this.renderedOutputSamplePosition += 1;
       this.sourceFraction += this.inputSamplesPerOutputSample;
@@ -418,6 +436,26 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       remainingIndex -= chunk.length;
     }
     return undefined;
+  }
+
+  nextUnderrunResumeGain() {
+    if (
+      this.underrunResumeRampRenderedSampleCount >=
+      this.underrunResumeRampSampleCount
+    ) return 1;
+    this.underrunResumeRampRenderedSampleCount += 1;
+    return (
+      this.underrunResumeRampRenderedSampleCount /
+      this.underrunResumeRampSampleCount
+    );
+  }
+
+  nextDrainGain() {
+    if (!this.drainRampArmed) return 1;
+    return Math.min(
+      this.queuedSourceSampleCount / this.drainRampSourceSampleCount,
+      1,
+    );
   }
 
   consumeSourceSamples(count) {
