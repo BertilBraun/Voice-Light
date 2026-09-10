@@ -39,6 +39,15 @@ narrow typed router supplies the missing `search` call. The call still passes th
 schema validator, tool journal, configured provider, and sequential Qwen continuation; post-tool
 rounds cannot route again.
 
+Temperature conversion is deliberately narrower and deterministic. Explicit or contextual
+Celsius/Fahrenheit/Kelvin requests are converted into bounded calculator expressions, including
+adjacent weather ranges such as a Fahrenheit high and low. Once Qwen emits the tool-call start
+marker, the router reuses that call identity and dispatches without waiting for the remaining JSON
+syntax. The exact labeled calculator result is spoken without a second Qwen interpretation round.
+This both prevents unit hallucinations and removes the measured calculator JSON-tail and
+post-result contention from that path. Other arithmetic continues through the ordinary structured
+calculator flow.
+
 ## Account configuration
 
 Create the named secret without putting credentials in the repository:
@@ -286,6 +295,34 @@ candidate started only 6.421 ms before the authoritative Silero endpoint, reache
 in 125.373 ms and first Kyutai PCM in 701.631 ms, then released PCM 270.147 ms after commitment. This
 proves the early trigger is operational, but transcript churn prevented a material lead on this
 utterance; the theoretical 160--220 ms gain is not claimed as an achieved result.
+
+The 2026-09-10 European user session immediately before deterministic conversion routing landed on
+AWS `eu-north-1`. All three model loads began within two milliseconds, confirming that startup was
+parallel: Qwen loaded/warmed in 23.422 seconds, Nemotron plus the adapter in 23.876 seconds, and
+Kyutai loaded/warmed in 30.204 seconds. Runtime readiness took 30.389 seconds. Modal scheduling,
+image/container startup, and imports added about 14 seconds before the first placement log, for an
+observed click-to-session-ready cold path of about 45.4 seconds. The first cold readiness smoke
+after deploying deterministic conversion routing measured 47.795 seconds. Kyutai deserialization,
+not sequential model loading, is now the application critical path; the failed snapshot canary and
+scale-to-zero requirement leave the reliable sub-30-second cold-start target unmet.
+
+That user session produced nine played responses with approximately 1.04-second median
+Silero-endpoint-to-PCM and 1.16-second median endpoint-to-playback. Individual PCM-send-to-browser
+playback acknowledgements were healthy at 94--174 ms. Ordinary Kyutai first PCM took 0.52--0.66
+seconds, while two calculator turns rose to 1.36 and 1.63 seconds under shared-GPU worker
+contention. All seven calculator executions themselves succeeded in under one millisecond, but the
+old path spent 0.74--1.37 seconds completing model-authored tool JSON and 2.42--4.42 seconds reaching
+post-tool PCM. This is the failure addressed by deterministic temperature routing; it is not a
+general Kyutai first-frame speedup.
+
+Predictive generation in the same session created 24 candidates and promoted six. A Qwen word was
+ready at commitment for 60% of promoted candidates, but TTS PCM was ready for none; median candidate
+start was only 11.6 ms before the final Silero endpoint and median candidate-to-PCM was 855 ms.
+Consequently, the current speculative policy usually hides part of Qwen but not Kyutai. The UI's
+20--24 ms endpoint readings on two turns do not bypass the 240 ms media-sample guard: queued 8 ms
+capture frames can be processed faster than real time, while the displayed endpoint uses a server
+processing timestamp. A browser-origin true acoustic-end timestamp remains a known telemetry
+limitation.
 
 One L40S-only cold probe remained queued for more than 120 seconds without Modal creating a
 container. That delay occurred entirely before application or model initialization. The ordered GPU
