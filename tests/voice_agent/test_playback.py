@@ -98,7 +98,10 @@ def test_control_commands_reconcile_server_estimates_with_browser_truth() -> Non
 
 
 def test_pause_deadline_uses_browser_rendered_output_sample_rate() -> None:
-    controller = PlaybackController(24_000, PlaybackPolicyConfig(pause_deadline_ms=120))
+    controller = PlaybackController(
+        24_000,
+        PlaybackPolicyConfig(duck_ramp_duration_ms=100, pause_deadline_ms=120),
+    )
     controller.replace_generation(1)
     controller.record_started(_started_event(1))
     pause = controller.issue_pause(
@@ -380,6 +383,39 @@ def test_transport_ahead_window_is_configurable_from_environment() -> None:
 
 def test_default_transport_ahead_covers_intermittent_streaming_synthesis() -> None:
     assert PlaybackPolicyConfig().maximum_transport_ahead_ms == 1_200
+
+
+def test_default_overlap_gain_ramps_are_perceptually_asymmetric() -> None:
+    configuration = PlaybackPolicyConfig()
+
+    assert configuration.duck_ramp_duration_ms == 450
+    assert configuration.pause_deadline_ms == 500
+    assert configuration.resume_ramp_duration_ms == 450
+    assert configuration.cancel_ramp_duration_ms == 100
+
+
+def test_pause_deadline_cannot_precede_duck_ramp() -> None:
+    with pytest.raises(ValueError, match="pause|duck"):
+        PlaybackPolicyConfig(duck_ramp_duration_ms=451, pause_deadline_ms=450)
+
+
+def test_cancel_command_serializes_terminal_fade() -> None:
+    controller = PlaybackController(24_000, PlaybackPolicyConfig(cancel_ramp_duration_ms=80))
+    controller.replace_generation(1)
+    controller.record_started(_started_event(1))
+
+    command = controller.issue_cancel(
+        generation_id=1,
+        causal_event_id="floor-take-1",
+        causal_source=CausalSource.FLOOR_POLICY,
+        stream_epoch=1,
+        turn_epoch=1,
+        confidence=0.9,
+    )
+
+    assert command.target_gain == 0.0
+    assert command.gain_ramp_duration_ms == 80
+    assert command.model_dump(mode="json")["gain_ramp_duration_ms"] == 80
 
 
 @pytest.mark.parametrize("value", ("soon", "0"))

@@ -27,9 +27,10 @@ from app.compute.voice.schemas import (
 @dataclass(frozen=True)
 class PlaybackPolicyConfig:
     duck_decibels: float = -18.0
-    duck_ramp_duration_ms: int = 25
-    pause_deadline_ms: int = 120
-    resume_ramp_duration_ms: int = 25
+    duck_ramp_duration_ms: int = 450
+    pause_deadline_ms: int = 500
+    resume_ramp_duration_ms: int = 450
+    cancel_ramp_duration_ms: int = 100
     maximum_resumable_paused_age_ms: int = 800
     target_paused_buffer_age_ms: int = 500
     maximum_synthesized_ahead_ms: int = 500
@@ -59,6 +60,7 @@ class PlaybackPolicyConfig:
             self.duck_ramp_duration_ms,
             self.pause_deadline_ms,
             self.resume_ramp_duration_ms,
+            self.cancel_ramp_duration_ms,
             self.maximum_resumable_paused_age_ms,
             self.target_paused_buffer_age_ms,
             self.maximum_synthesized_ahead_ms,
@@ -70,6 +72,8 @@ class PlaybackPolicyConfig:
             raise ValueError("Playback policy durations must be positive.")
         if self.generation_boundary_hold_ms >= self.classification_deadline_ms:
             raise ValueError("Generation must be held before overlap classification expires.")
+        if self.pause_deadline_ms < self.duck_ramp_duration_ms:
+            raise ValueError("Playback cannot pause before the reversible duck ramp completes.")
         if self.target_paused_buffer_age_ms > self.maximum_resumable_paused_age_ms:
             raise ValueError("The target paused-buffer age cannot exceed the resume limit.")
 
@@ -514,6 +518,8 @@ class PlaybackController:
             stream_epoch=stream_epoch,
             turn_epoch=turn_epoch,
             confidence=confidence,
+            target_gain=0.0,
+            gain_ramp_duration_ms=self.config.cancel_ramp_duration_ms,
             estimated_state=PlaybackState.CANCELLED,
         )
 

@@ -72,6 +72,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     this.pausedAtBrowserTimeMs = undefined;
     this.pendingGainCommand = undefined;
     this.pendingResumeCommand = undefined;
+    this.pendingCancelCommand = undefined;
   }
 
   handleMessage(data) {
@@ -143,6 +144,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
 
   replaceGeneration(generationId) {
     if (generationId <= this.generationId) return;
+    this.finishPendingCancelCommand(false);
     if (this.generationId > 0 && !TERMINAL_STATES.has(this.state)) {
       this.cancelledGenerationId = Math.max(this.cancelledGenerationId, this.generationId);
     }
@@ -256,18 +258,21 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
   }
 
   applyCancel(command) {
-    const discardedSourceSampleCount = this.discardQueuedAudio();
-    this.state = PlaybackState.CANCELLED;
+    const shouldFade =
+      this.queuedSourceSampleCount > 0 &&
+      (this.state === PlaybackState.SPEAKING ||
+        this.state === PlaybackState.DUCKING ||
+        this.state === PlaybackState.RESUMING ||
+        this.state === PlaybackState.DRAINING_TO_BOUNDARY);
     this.cancelledGenerationId = Math.max(this.cancelledGenerationId, command.generationId);
     this.endedGenerationId = -1;
     this.settleSupersededCommands();
-    this.acknowledgeCommand(
-      command,
-      PauseResult.NOT_REQUESTED,
-      this.gainRamp === undefined,
-      false,
-      discardedSourceSampleCount,
-    );
+    this.pendingCancelCommand = command;
+    this.state = PlaybackState.DUCKING;
+    this.beginGainRamp(command.targetGain, command.gainRampDurationMs);
+    if (!shouldFade || this.gainRamp === undefined) {
+      this.finishPendingCancelCommand(this.gainRamp === undefined);
+    }
   }
 
   settleSupersededCommands() {
@@ -316,6 +321,7 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
       this.currentGain = this.gainRamp.targetGain;
       this.gainRamp = undefined;
       this.finishPendingGainCommand(true);
+      this.finishPendingCancelCommand(true);
       if (this.state === PlaybackState.RESUMING && !this.pendingResumeCommand) {
         this.state = PlaybackState.SPEAKING;
       }
@@ -336,8 +342,25 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
     );
   }
 
+  finishPendingCancelCommand(gainRampComplete) {
+    if (!this.pendingCancelCommand) return;
+    const command = this.pendingCancelCommand;
+    this.pendingCancelCommand = undefined;
+    const discardedSourceSampleCount = this.discardQueuedAudio();
+    this.gainRamp = undefined;
+    this.state = PlaybackState.CANCELLED;
+    this.acknowledgeCommand(
+      command,
+      PauseResult.NOT_REQUESTED,
+      gainRampComplete,
+      false,
+      discardedSourceSampleCount,
+    );
+  }
+
   pauseIfDue() {
     if (!this.pauseRequest || this.state !== PlaybackState.DRAINING_TO_BOUNDARY) return false;
+    if (this.pendingGainCommand || this.gainRamp) return false;
     const boundaryPosition = this.pauseRequest.boundarySourceSamplePosition;
     const boundaryReached =
       boundaryPosition !== null && this.sourceSamplePosition >= boundaryPosition;
@@ -399,6 +422,9 @@ class PcmPlaybackProcessor extends AudioWorkletProcessor {
         );
         if (this.gainRamp === undefined) this.state = PlaybackState.SPEAKING;
       }
+    }
+    if (this.pendingCancelCommand && this.queuedSourceSampleCount === 0) {
+      this.finishPendingCancelCommand(false);
     }
     if (producedAudio && !this.playbackStarted) {
       this.playbackStarted = true;

@@ -363,20 +363,25 @@ test("duck ramps gain and duplicate commands do not apply the ramp twice", () =>
   );
 });
 
-test("cancel while ducking prevents all later rendering", () => {
+test("cancel fades briefly, rejects new audio, then discards the buffer", () => {
   const harness = new PlaybackHarness(1_000);
-  harness.enqueue(1, 0, Array.from({ length: 20 }, (_, index) => index + 1));
-  harness.process(2);
-  harness.command("duck", 1, "duck", {
-    targetGain: 0.1258925,
-    gainRampDurationMs: 20,
+  harness.enqueue(1, 0, Array.from({ length: 200 }, () => 10_000));
+  harness.process(1);
+  harness.command("cancel", 1, "cancel", {
+    targetGain: 0,
+    gainRampDurationMs: 100,
   });
-  harness.process(2);
-  const stoppedAt = harness.processor.renderedOutputSamplePosition;
-  harness.command("cancel", 1, "cancel");
-  assert.deepEqual(harness.process(16), Array.from({ length: 16 }, () => 0));
-  assert.equal(harness.processor.renderedOutputSamplePosition, stoppedAt);
+  harness.enqueue(1, 200, [10_000, 10_000]);
+  const fade = harness.process(100);
+
+  assert.equal(harness.processor.renderedOutputSamplePosition, 101);
+  assert.ok(fade[0] > fade[98]);
+  assert.equal(fade[99], 0);
   assert.equal(harness.processor.state, "cancelled");
+  const acknowledgement = harness.acknowledgement("cancel");
+  assert.equal(acknowledgement.gainRampComplete, true);
+  assert.equal(acknowledgement.discardedSourceSampleCount, 100);
+  assert.deepEqual(harness.process(16), Array.from({ length: 16 }, () => 0));
 });
 
 test("cancel while paused discards buffered audio and rejects later audio", () => {
@@ -387,11 +392,31 @@ test("cancel while paused discards buffered audio and rejects later audio", () =
     renderedOutputSampleDeadline: 2,
   });
   harness.process(4);
-  harness.command("cancel", 1, "cancel");
+  harness.command("cancel", 1, "cancel", {
+    targetGain: 0,
+    gainRampDurationMs: 100,
+  });
   const acknowledgement = harness.acknowledgement("cancel");
   assert.equal(acknowledgement.discardedSourceSampleCount, 4);
   harness.enqueue(1, 2, [7, 8]);
   assert.equal(harness.processor.queuedSourceSampleCount, 0);
+});
+
+test("a replacement generation settles a pending terminal fade", () => {
+  const harness = new PlaybackHarness(1_000);
+  harness.enqueue(1, 0, Array.from({ length: 200 }, () => 10_000));
+  harness.process(1);
+  harness.command("cancel", 1, "cancel", {
+    targetGain: 0,
+    gainRampDurationMs: 100,
+  });
+  harness.process(20);
+
+  harness.enqueue(2, 0, [5_000, 5_000]);
+
+  assert.equal(harness.acknowledgement("cancel").resultingState, "cancelled");
+  assert.equal(harness.processor.generationId, 2);
+  assert.deepEqual(harness.process(2), [5_000, 5_000]);
 });
 
 test("commands for replaced generations cannot affect current playback", () => {
@@ -424,10 +449,34 @@ test("duplicate pause resume and cancel commands are idempotent", () => {
   harness.process(1);
   harness.command("resume", 1, "resume", resume);
   assert.equal(harness.processor.sourceSamplePosition, 2);
-  harness.command("cancel", 1, "cancel");
+  const cancel = { targetGain: 0, gainRampDurationMs: 100 };
+  harness.command("cancel", 1, "cancel", cancel);
+  harness.process(4);
   const discarded = harness.acknowledgement("cancel").discardedSourceSampleCount;
-  harness.command("cancel", 1, "cancel");
+  harness.command("cancel", 1, "cancel", cancel);
   assert.equal(harness.acknowledgement("cancel").discardedSourceSampleCount, discarded);
+});
+
+test("pause waits for the reversible duck ramp instead of cutting it short", () => {
+  const harness = new PlaybackHarness(1_000);
+  harness.enqueue(1, 0, Array.from({ length: 100 }, () => 10_000));
+  harness.process(1);
+  harness.command("duck", 1, "duck", {
+    targetGain: 0.1258925,
+    gainRampDurationMs: 20,
+  });
+  harness.command("pause", 1, "pause_at_boundary", {
+    requestedBoundarySourceSamplePosition: null,
+    renderedOutputSampleDeadline: 4,
+  });
+
+  harness.process(19);
+  assert.equal(harness.processor.state, "draining_to_boundary");
+  assert.equal(harness.acknowledgement("pause"), undefined);
+  harness.process(2);
+  assert.equal(harness.processor.state, "paused_buffered");
+  assert.equal(harness.acknowledgement("duck").gainRampComplete, true);
+  assert.equal(harness.acknowledgement("pause").gainRampComplete, true);
 });
 
 test("pause racing with end-of-stream completes terminally", () => {

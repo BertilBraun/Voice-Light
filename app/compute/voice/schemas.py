@@ -672,7 +672,8 @@ class PlaybackCommandEvent(FrozenBaseModel):
                         "Resume commands require a target gain, ramp duration, and maximum age."
                     )
             case PlaybackCommandAction.CANCEL:
-                pass
+                if self.target_gain != 0.0 or self.gain_ramp_duration_ms is None:
+                    raise ValueError("Cancel commands require a terminal fade to silence.")
         return self
 
 
