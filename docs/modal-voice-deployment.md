@@ -150,7 +150,8 @@ The deployed starting values are:
 | `VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS` | `500` | conservative unresolved-overlap deadline |
 | `VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS` | `120` | maximum wait for a prompt final transcript before an empty provisional overlap resumes |
 | `VOICE_LIGHT_OVERLAP_PREDICTION_SETTLE_MS` | `80` | bounded wait at speech end for adapter evidence already queued or in flight |
-| `VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS` | `1200` | hard deadline for sustained overlap without transcript evidence |
+| `VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS` | `900` | hard deadline for sustained overlap without transcript evidence |
+| `VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS` | `240` | minimum post-endpoint silence before adapter evidence may commit a normal turn |
 | `VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS` | `160` | clean Silero silence required before a resolved backchannel can open another overlap |
 | `VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS` | `240` | maximum age of causal adapter evidence during active overlap |
 | `VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS` | `1200` | maximum PCM duration released ahead of browser playback credit; this absorbs intermittent streaming-TTS cadence without delaying worklet-side cancellation |

@@ -364,6 +364,11 @@ text is divided between the two fields does not invalidate the VAD candidate; a 
 normalized concatenation does. Speculation does not call `finish()`—Nemotron remains open until the
 high-confidence prediction rule or guarded silence commitment fires.
 
+Prediction evidence may prepare private output immediately, but it cannot commit a normal user turn
+until 240 ms of post-endpoint silence has elapsed. This minimum also applies when an overlap
+outlives the assistant generation, preventing a tentative natural pause from becoming an immediate
+new turn while preserving the hidden Qwen/TTS work.
+
 Silero exposes a typed, single-pass probability and pending-silence duration alongside its
 authoritative speech state. After 80 ms of low-probability silence, usable ASR text may start a
 private candidate even though Silero remains speech-active for its full 250 ms endpoint window.

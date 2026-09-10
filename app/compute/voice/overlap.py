@@ -53,7 +53,7 @@ class ProvisionalOverlapPolicyConfig:
     )
     acknowledgement_continuation_words: tuple[str, ...] = ("and", "but", "though", "however")
     classification_deadline_ms: int = 500
-    transcript_free_floor_take_deadline_ms: int = 1_200
+    transcript_free_floor_take_deadline_ms: int = 900
     interruption_probability_threshold: float = 0.82
     non_floor_feedback_probability_threshold: float = 0.82
 

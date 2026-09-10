@@ -102,6 +102,7 @@ SPEECH_CHUNK = b"\x01\x00" * 320
 SILENCE_CHUNK = b"\x00\x00" * 320
 DEFAULT_TEST_POLICY = SessionPolicy(
     silence_duration_ms=40,
+    minimum_normal_turn_commit_silence_ms=20,
     pre_roll_duration_ms=20,
     vad_speculation_enabled=False,
 )
@@ -136,6 +137,14 @@ def test_session_policy_reads_pending_silence_speculation_window() -> None:
     policy = SessionPolicy.from_environment({"VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS": "96"})
 
     assert policy.pending_silence_speculation_ms == 96
+
+
+def test_session_policy_reads_normal_turn_commit_silence() -> None:
+    policy = SessionPolicy.from_environment(
+        {"VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS": "280"}
+    )
+
+    assert policy.minimum_normal_turn_commit_silence_ms == 280
 
 
 def test_session_policy_reads_latency_first_speculation_configuration() -> None:
@@ -196,6 +205,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY", "1.1"),
         ("VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE", "-0.1"),
         ("VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS", "0"),
+        ("VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS", "0"),
     ),
 )
 def test_session_policy_rejects_invalid_interaction_configuration(
@@ -1369,6 +1379,7 @@ def test_speculative_release_does_not_block_playback_clocks_behind_microphone_au
         created_sessions=sessions,
         policy=SessionPolicy(
             silence_duration_ms=40,
+            minimum_normal_turn_commit_silence_ms=20,
             pre_roll_duration_ms=20,
             vad_speculation_enabled=True,
         ),
@@ -2693,6 +2704,10 @@ def test_multiword_turn_commits_when_playback_completes_during_onset() -> None:
         wait_until(lambda: sessions[0].active_generation is None)
         websocket.send_bytes(SPEECH_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: sessions[0].active_user_overlap is not None)
+        assert len(language_model.conversations) == 1
+        for _ in range(12):
+            websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "assistant.text.delta")
 
         assert len(language_model.conversations) == 2
@@ -2704,6 +2719,52 @@ def test_multiword_turn_commits_when_playback_completes_during_onset() -> None:
             in sessions[0].conversation
         )
         websocket.send_json({"type": "session.stop"})
+
+
+def test_prediction_prepares_candidate_but_waits_for_normal_turn_commit_silence() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", "hello", None, None, None),),
+        final_texts=("hello",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        tuple(PredictionDirective(p_user_speech=0.0, p_user_yield=0.95) for _ in range(20))
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        created_sessions=sessions,
+        policy=SessionPolicy(
+            silence_duration_ms=500,
+            minimum_normal_turn_commit_silence_ms=240,
+            pre_roll_duration_ms=20,
+        ),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+        candidate = sessions[0].active_generation
+        assert candidate is not None
+        assert candidate.speculative is True
+        assert transcriber.sessions[0].finish_count == 0
+
+        for _ in range(10):
+            websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: sessions[0].audio_sample_count >= 3_840)
+        assert candidate.speculative is True
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "llm.history")
+        websocket.send_json({"type": "session.stop"})
+
+    assert candidate.speculative is False
+    assert transcriber.sessions[0].finish_count == 1
 
 
 def test_strong_floor_take_still_cancels_before_transcript_free_deadline() -> None:

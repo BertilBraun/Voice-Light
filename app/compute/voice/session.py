@@ -169,7 +169,8 @@ class SessionPolicy:
     floor_taking_overlap_threshold: float = 0.82
     non_floor_feedback_overlap_threshold: float = 0.82
     overlap_classification_deadline_ms: int = 500
-    transcript_free_floor_take_deadline_ms: int = 1_200
+    transcript_free_floor_take_deadline_ms: int = 900
+    minimum_normal_turn_commit_silence_ms: int = 240
     overlap_finalization_grace_ms: int = 120
     overlap_prediction_settle_ms: int = 80
     overlap_rearm_silence_ms: int = 160
@@ -252,7 +253,12 @@ class SessionPolicy:
         transcript_free_floor_take_deadline_ms = _environment_integer(
             environment,
             "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS",
-            1_200,
+            900,
+        )
+        minimum_normal_turn_commit_silence_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS",
+            240,
         )
         overlap_finalization_grace_ms = _environment_integer(
             environment, "VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS", 120
@@ -309,6 +315,7 @@ class SessionPolicy:
             non_floor_feedback_overlap_threshold=non_floor_feedback_overlap_threshold,
             overlap_classification_deadline_ms=overlap_classification_deadline_ms,
             transcript_free_floor_take_deadline_ms=(transcript_free_floor_take_deadline_ms),
+            minimum_normal_turn_commit_silence_ms=(minimum_normal_turn_commit_silence_ms),
             overlap_finalization_grace_ms=overlap_finalization_grace_ms,
             overlap_prediction_settle_ms=overlap_prediction_settle_ms,
             overlap_rearm_silence_ms=overlap_rearm_silence_ms,
@@ -347,6 +354,8 @@ class SessionPolicy:
                 "The transcript-free floor-take deadline must exceed the overlap "
                 "classification deadline."
             )
+        if self.minimum_normal_turn_commit_silence_ms <= 0:
+            raise ValueError("The minimum normal-turn commit silence must be positive.")
         if self.overlap_finalization_grace_ms <= 0:
             raise ValueError("The overlap finalization grace must be positive.")
         if self.overlap_prediction_settle_ms <= 0:
@@ -546,6 +555,7 @@ class ActiveUserOverlap:
     generation_hold_applied: bool = False
     resolution_metrics_recorded: bool = False
     first_applicable_prediction_monotonic_time_ns: int | None = None
+    final_endpoint_input_sample: int | None = None
 
 
 class WebSocketPlaybackSink:
@@ -814,6 +824,9 @@ class VoiceSession:
         pre_roll_chunks: deque[CapturedAudioChunk] = deque()
         pre_roll_samples = 0
         required_silent_samples = _milliseconds_to_samples(self.policy.silence_duration_ms)
+        required_normal_turn_commit_silent_samples = _milliseconds_to_samples(
+            self.policy.minimum_normal_turn_commit_silence_ms
+        )
         required_vad_speculation_debounce_samples = _milliseconds_to_samples(
             self.policy.vad_speculation_debounce_ms
         )
@@ -1027,6 +1040,7 @@ class VoiceSession:
                 previous_chunk_was_speech = False
                 prediction_commits = (
                     prediction is not None
+                    and silent_samples >= required_normal_turn_commit_silent_samples
                     and prediction.confidence >= self.policy.minimum_prediction_confidence
                     and prediction.p_user_yield >= self.policy.commitment_yield_threshold
                 )
@@ -1148,6 +1162,10 @@ class VoiceSession:
         elapsed_ms = (
             max(current_input_sample - overlap.onset_input_sample, 0) * 1_000 // INPUT_SAMPLE_RATE
         )
+        if speech_active_now:
+            overlap.final_endpoint_input_sample = None
+        elif overlap.final_endpoint_input_sample is None:
+            overlap.final_endpoint_input_sample = current_input_sample
         generation = self.generations[overlap.generation_id]
         if (
             elapsed_ms >= self.playback_controller.config.generation_boundary_hold_ms
@@ -1200,6 +1218,16 @@ class VoiceSession:
             self.playback_condition.latest_source_sample_position
         )
         if decision.kind is OverlapResolutionKind.NON_FLOOR_TAKING:
+            active_generation = self.active_generation
+            overlap_outlived_generation = (
+                active_generation is None
+                or active_generation.generation_id != overlap.generation_id
+            )
+            if overlap_outlived_generation and not self._normal_turn_commit_silence_elapsed(
+                overlap,
+                current_input_sample,
+            ):
+                return OverlapResolutionKind.UNRESOLVED
             return await self._finalize_non_floor_taking_overlap(
                 speech_understanding,
                 overlap,
@@ -1209,6 +1237,19 @@ class VoiceSession:
         await self._record_overlap_resolution(overlap, decision, generation)
         await self._promote_overlap_to_user_turn(overlap, decision, transcript)
         return decision.kind
+
+    def _normal_turn_commit_silence_elapsed(
+        self,
+        overlap: ActiveUserOverlap,
+        current_input_sample: int,
+    ) -> bool:
+        endpoint_input_sample = overlap.final_endpoint_input_sample
+        if endpoint_input_sample is None:
+            return False
+        required_silence_samples = _milliseconds_to_samples(
+            self.policy.minimum_normal_turn_commit_silence_ms
+        )
+        return current_input_sample - endpoint_input_sample >= required_silence_samples
 
     async def _finalize_non_floor_taking_overlap(
         self,

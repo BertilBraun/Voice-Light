@@ -31,7 +31,8 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     assert configuration.scaledown_window_seconds == 120
     assert configuration.startup_timeout_seconds == 1_800
     assert environment["VOICE_LIGHT_EAGER_MODEL_LOADING"] == "true"
-    assert environment["VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS"] == "1200"
+    assert environment["VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS"] == "900"
+    assert environment["VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS"] == "240"
     assert environment["VOICE_LIGHT_VOICE_STACK_ENABLED"] == "true"
     assert environment["VOICE_LIGHT_TTS_BACKEND"] == "kyutai"
     assert environment["VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS"] == "1"
