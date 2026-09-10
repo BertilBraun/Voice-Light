@@ -102,7 +102,7 @@ Deploying this module creates or updates only the canary application:
 ```powershell
 modal deploy -m deployment.modal.voice_light_snapshot_canary
 python -m deployment.modal.smoke_websocket `
-  --url wss://bertil-braun-private--voicelightagent-voice-light-snapshot-canary.modal.run/v1/voice `
+  --url wss://bertil-braun-private--voicelightagent-voice-light-snapsh-7572b5.modal.run/v1/voice `
   --open-timeout-seconds 300
 ```
 
@@ -261,6 +261,20 @@ Kyutai. A second, slower worker completed the same phases in 42.715 seconds: 0.2
 18.840/19.088 seconds concurrently, then 23.145 seconds. Sequential loading at those measured
 second-run stage rates would have taken about 61.5 seconds. The import-only CPU snapshot confounded
 the end-to-end samples by adding about 30 seconds before these phases and was removed.
+
+On 2026-09-10, loading and warming Nemotron, Qwen, and Kyutai concurrently produced fixed-A10
+runtime readiness samples of 35.235, 22.357, and 32.489 seconds. The corresponding cold WebSocket
+`session.ready` samples were 66.312, 35.124, and 55.836 seconds. This improves materially on the
+immediately preceding 51.812-second runtime and 99.257-second end-to-end sample, but does not meet a
+reliable 30-second cold-start target. After enabling the bounded A10-to-L40S fallback, one additional
+cold production smoke was ready in 35.662 seconds with 22.997 seconds inside `ComputeRuntime`.
+
+That production smoke also exercised pending-silence speculation with recorded microphone audio.
+Two early candidates were correctly invalidated when Nemotron revised the transcript. The promoted
+candidate started only 6.421 ms before the authoritative Silero endpoint, reached its first Qwen word
+in 125.373 ms and first Kyutai PCM in 701.631 ms, then released PCM 270.147 ms after commitment. This
+proves the early trigger is operational, but transcript churn prevented a material lead on this
+utterance; the theoretical 160--220 ms gain is not claimed as an achieved result.
 
 One L40S-only cold probe remained queued for more than 120 seconds without Modal creating a
 container. That delay occurred entirely before application or model initialization. The ordered GPU
@@ -448,16 +462,16 @@ a pre-playback false start.
 
 ## Known limitations
 
-- The latest truthful cold readiness sample is 56.317 seconds; an earlier instrumented sample
-  attributed 58.048 of 72.858 seconds to model load plus first-inference warmup. Modal scheduling
+- The latest truthful cold readiness sample is 35.662 seconds, while the three fixed-A10 samples
+  immediately before it ranged from 35.124 to 66.312 seconds. Modal scheduling, host performance,
   and fallback GPU selection remain variable; an
   earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
   ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap, keeping a warm
   container (which conflicts with scale-to-zero), or replacing the larger current model stack;
-  cached weights alone cannot remove library initialization. GPU memory
-  snapshots remain an alpha, fixed-GPU canary candidate, not a production setting: each fallback
-  GPU must prove coherent restoration of all three CUDA subprocesses and at least a 30% readiness
-  improvement without first-turn or p95 regression.
+  cached weights alone cannot remove library initialization. GPU memory snapshots remain an alpha
+  experiment, not a production setting: the fixed-A10 canary failed capture even with a 64 GiB
+  memory request. Retesting requires a relevant Modal compatibility change or consolidation of the
+  three CUDA subprocesses, followed by coherent restoration and first-turn validation.
 - A live human must provide microphone speech and judge audible output. Automated and agent-run
   checks cannot honestly certify microphone capture, speaker audibility, natural backchannel, or
   interruption perception.
