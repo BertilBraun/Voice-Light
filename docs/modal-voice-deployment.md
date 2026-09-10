@@ -121,6 +121,12 @@ The deployed starting values are:
 | `VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS` | `160` | clean Silero silence required before a resolved backchannel can open another overlap |
 | `VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS` | `240` | maximum age of causal adapter evidence during active overlap |
 | `VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS` | `1200` | maximum PCM duration released ahead of browser playback credit; this absorbs intermittent streaming-TTS cadence without delaying worklet-side cancellation |
+| `VOICE_LIGHT_SPECULATIVE_YIELD_THRESHOLD` | `0.55` | adapter yield probability that may start a private candidate |
+| `VOICE_LIGHT_SPECULATIVE_TURN_COMPLETION_THRESHOLD` | `0.55` | adapter completion probability that may independently start a private candidate |
+| `VOICE_LIGHT_SPECULATIVE_MINIMUM_CONFIDENCE` | `0.60` | minimum adapter confidence for either speculative trigger |
+| `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS` | `0` | additional silence after Silero's causal endpoint before the VAD fallback starts |
+| `VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY` | `0.70` | synthetic yield evidence assigned to the causal VAD endpoint |
+| `VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE` | `0.70` | confidence assigned to the causal VAD endpoint evidence |
 
 The threshold is the evaluated Voice-Light starting point, not a universal calibration. Silero
 onset always causes the immediate reversible duck/pause. Strong floor-take evidence commits
@@ -136,6 +142,12 @@ cadence and latest-sample age instead of inventing interpolated predictions. The
 encoder is activated only for a Silero speech turn and its bounded pre-roll; it does not produce
 probabilities throughout assistant-only playback or session silence. Continuous encoder-only
 interaction inference remains a known limitation.
+
+The latency-first speculative values deliberately spend more hidden Qwen/TTS compute. Candidate
+text and PCM remain private until the final transcript passes the causal promotion checks. For an
+A/B baseline, set `VOICE_LIGHT_VAD_SPECULATION_ENABLED=false`. To retain speculation with the prior
+conservative adapter gate, set both speculative probability thresholds to `0.65` and speculative
+minimum confidence to `0.70`.
 
 The browser sends authoritative playback-clock credit every 80 ms. PCM release waits outside the
 WebSocket send lock once the configured transport window is full, so duck, pause, resume, and cancel

@@ -160,7 +160,9 @@ class SessionPolicy:
     # This silence begins after Silero's configured 250 ms end-of-speech decision.
     silence_duration_ms: int = 500
     pre_roll_duration_ms: int = 300
-    speculative_yield_threshold: float = 0.65
+    speculative_yield_threshold: float = 0.55
+    speculative_turn_completion_threshold: float = 0.55
+    speculative_minimum_confidence: float = 0.6
     commitment_yield_threshold: float = 0.9
     minimum_prediction_confidence: float = 0.7
     decisive_hold_threshold: float = 0.65
@@ -262,7 +264,35 @@ class SessionPolicy:
             "VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS",
             240,
         )
+        speculative_yield_threshold = _environment_float(
+            environment,
+            "VOICE_LIGHT_SPECULATIVE_YIELD_THRESHOLD",
+            0.55,
+        )
+        speculative_turn_completion_threshold = _environment_float(
+            environment,
+            "VOICE_LIGHT_SPECULATIVE_TURN_COMPLETION_THRESHOLD",
+            0.55,
+        )
+        speculative_minimum_confidence = _environment_float(
+            environment,
+            "VOICE_LIGHT_SPECULATIVE_MINIMUM_CONFIDENCE",
+            0.6,
+        )
+        vad_endpoint_yield_probability = _environment_float(
+            environment,
+            "VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY",
+            0.7,
+        )
+        vad_endpoint_confidence = _environment_float(
+            environment,
+            "VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE",
+            0.7,
+        )
         return cls(
+            speculative_yield_threshold=speculative_yield_threshold,
+            speculative_turn_completion_threshold=(speculative_turn_completion_threshold),
+            speculative_minimum_confidence=speculative_minimum_confidence,
             vad_speculation_enabled=vad_speculation_enabled,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
             tool_timeout_seconds=tool_timeout_seconds,
@@ -276,11 +306,15 @@ class SessionPolicy:
             overlap_prediction_settle_ms=overlap_prediction_settle_ms,
             overlap_rearm_silence_ms=overlap_rearm_silence_ms,
             maximum_prediction_lag_ms=maximum_prediction_lag_ms,
+            vad_endpoint_yield_probability=vad_endpoint_yield_probability,
+            vad_endpoint_confidence=vad_endpoint_confidence,
         )
 
     def __post_init__(self) -> None:
         thresholds = (
             self.speculative_yield_threshold,
+            self.speculative_turn_completion_threshold,
+            self.speculative_minimum_confidence,
             self.commitment_yield_threshold,
             self.minimum_prediction_confidence,
             self.decisive_hold_threshold,
@@ -874,6 +908,7 @@ class VoiceSession:
                     speech_understanding,
                     chunk,
                 )
+                prediction_handled = False
                 if vad_endpoint_detected:
                     endpoint_at = time.perf_counter()
                     self.final_vad_endpoint_at = endpoint_at
@@ -895,16 +930,22 @@ class VoiceSession:
                     vad_speculation_pending = True
                 prospective_silent_samples = silent_samples + sample_count
                 if (
-                    prediction is None
-                    and vad_speculation_pending
+                    vad_speculation_pending
                     and not is_speech
                     and prospective_silent_samples >= required_vad_speculation_debounce_samples
                 ):
-                    prediction = self._vad_endpoint_prediction(chunk)
+                    if prediction is not None:
+                        self.latest_prediction = prediction
+                        await self._handle_prediction(prediction)
+                        prediction_handled = True
+                    if self.active_generation is None:
+                        prediction = self._vad_endpoint_prediction(chunk)
+                        prediction_handled = False
                     vad_speculation_pending = False
                 if prediction is not None:
                     self.latest_prediction = prediction
-                    await self._handle_prediction(prediction)
+                    if not prediction_handled:
+                        await self._handle_prediction(prediction)
                     if self.active_generation is not None:
                         vad_speculation_pending = False
                 overlap_resolution = await self._evaluate_active_overlap(
@@ -1540,8 +1581,11 @@ class VoiceSession:
             self.active_generation is None
             and revision is not None
             and prompted_text
-            and prediction.confidence >= self.policy.minimum_prediction_confidence
-            and prediction.p_user_yield >= self.policy.speculative_yield_threshold
+            and prediction.confidence >= self.policy.speculative_minimum_confidence
+            and (
+                prediction.p_user_yield >= self.policy.speculative_yield_threshold
+                or prediction.p_turn_completion >= self.policy.speculative_turn_completion_threshold
+            )
         ):
             await self._start_speculative_candidate(revision, prediction)
 

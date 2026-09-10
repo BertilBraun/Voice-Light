@@ -346,7 +346,8 @@ origin to hide that unmeasured path.
 and interaction-evidence events and does not know whether they came from separate processes or one
 integrated inference step. No turn-taking checkpoint or canned predictor is required. By default,
 Silero's first inactive decision arms a causal
-`InteractionPrediction`. After a sample-counted 100 ms debounce, the session starts speculation
+`InteractionPrediction`. With the deployed zero-millisecond additional debounce, the session starts
+speculation on that first causal endpoint
 while ASR remains open and the existing additional 500 ms silence guard continues toward
 commitment. The debounce lets Nemotron publish trailing text without blocking audio ingestion and
 is configurable through `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS`.
@@ -354,13 +355,19 @@ is configurable through `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS`.
 this early start to retain the original non-speculative path as a measurable baseline.
 
 Incremental ASR snapshots are tracked as a monotonic revision lineage with a stable prefix and
-volatile suffix. Crossing the configurable speculative yield threshold starts at most one Qwen/TTS
+volatile suffix. Crossing either the configurable speculative yield or turn-completion threshold
+at the independent speculative confidence floor starts at most one Qwen/TTS
 candidate, anchored to the immutable conversation snapshot, revision ID, prediction, input sample
 position, and monotonic creation time. Trained predictions use the stable prefix. The VAD endpoint
 uses the complete current `stable_prefix + volatile_suffix` text. A later change to how that same
 text is divided between the two fields does not invalidate the VAD candidate; a change to their
 normalized concatenation does. Speculation does not call `finish()`—Nemotron remains open until the
 high-confidence prediction rule or guarded silence commitment fires.
+
+An applicable adapter sample that remains below both speculative thresholds does not suppress the
+VAD endpoint fallback. The adapter evidence is evaluated first; if it creates no candidate, the
+same already-observed endpoint starts a VAD-anchored candidate. This preserves causal ordering while
+allowing substantially more private TTS work than waiting for the final turn commitment.
 
 Candidate output passes through a private release gate. Text deltas, word boundaries, PCM bytes,
 and their original offsets are retained in production order but are not sent to the browser and do

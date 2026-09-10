@@ -131,6 +131,24 @@ def test_session_policy_has_no_extra_vad_speculation_debounce_by_default() -> No
     assert SessionPolicy.from_environment({}).vad_speculation_debounce_ms == 0
 
 
+def test_session_policy_reads_latency_first_speculation_configuration() -> None:
+    policy = SessionPolicy.from_environment(
+        {
+            "VOICE_LIGHT_SPECULATIVE_YIELD_THRESHOLD": "0.51",
+            "VOICE_LIGHT_SPECULATIVE_TURN_COMPLETION_THRESHOLD": "0.53",
+            "VOICE_LIGHT_SPECULATIVE_MINIMUM_CONFIDENCE": "0.57",
+            "VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY": "0.74",
+            "VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE": "0.76",
+        }
+    )
+
+    assert policy.speculative_yield_threshold == 0.51
+    assert policy.speculative_turn_completion_threshold == 0.53
+    assert policy.speculative_minimum_confidence == 0.57
+    assert policy.vad_endpoint_yield_probability == 0.74
+    assert policy.vad_endpoint_confidence == 0.76
+
+
 def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
     policy = SessionPolicy.from_environment(
         {
@@ -165,6 +183,11 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS", "0"),
         ("VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS", "0"),
         ("VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS", "-1"),
+        ("VOICE_LIGHT_SPECULATIVE_YIELD_THRESHOLD", "-0.1"),
+        ("VOICE_LIGHT_SPECULATIVE_TURN_COMPLETION_THRESHOLD", "soon"),
+        ("VOICE_LIGHT_SPECULATIVE_MINIMUM_CONFIDENCE", "1.1"),
+        ("VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY", "1.1"),
+        ("VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE", "-0.1"),
     ),
 )
 def test_session_policy_rejects_invalid_interaction_configuration(
@@ -894,6 +917,7 @@ class PredictionDirective:
     p_user_backchannel: float = 0.0
     p_user_interruption: float = 0.0
     confidence: float = 1.0
+    p_turn_completion: float | None = None
 
 
 class DeterministicTurnPredictionSource:
@@ -1037,7 +1061,11 @@ def create_test_prediction(
         p_user_yield=directive.p_user_yield,
         p_user_backchannel=directive.p_user_backchannel,
         p_user_interruption=directive.p_user_interruption,
-        p_turn_completion=directive.p_user_yield,
+        p_turn_completion=(
+            directive.p_user_yield
+            if directive.p_turn_completion is None
+            else directive.p_turn_completion
+        ),
         p_continuation_pause=directive.p_user_speech,
         future_user_activity_horizons=(),
         assistant_playback_state=chunk.playback_condition.state,
@@ -3463,6 +3491,98 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
     assert isinstance(latency_event["first_tts_pcm_ready_at_commit"], bool)
     assert float(latency_event["buffered_audio_ms"]) >= 0
     assert report.commit_to_first_played_audio_p50_ms is not None
+
+
+def test_turn_completion_evidence_starts_hidden_tts_before_vad_endpoint() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent", "hello agent", "hello agent", None),),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(
+                p_user_speech=0.4,
+                p_user_yield=0.2,
+                p_turn_completion=0.2,
+            ),
+            PredictionDirective(
+                p_user_speech=0.1,
+                p_user_yield=0.4,
+                p_turn_completion=0.7,
+            ),
+            PredictionDirective(
+                p_user_speech=0.1,
+                p_user_yield=0.4,
+                p_turn_completion=0.7,
+            ),
+        )
+    )
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        playback_sink=sink,
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+        candidate = sessions[0].active_generation
+        assert candidate is not None
+        wait_until(lambda: candidate.tts_sample_count > 0)
+        websocket.send_json({"type": "session.stop"})
+
+    assert candidate.causal_prediction is not None
+    assert candidate.causal_prediction.p_user_yield == 0.4
+    assert candidate.causal_prediction.p_turn_completion == 0.7
+    assert candidate.latency.final_vad_endpoint_at is None
+    assert sink.outputs == []
+
+
+def test_adapter_hold_at_vad_endpoint_does_not_suppress_endpoint_speculation() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent", "hello agent", None),),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    prediction_source = DeterministicTurnPredictionSource(
+        (
+            PredictionDirective(p_user_speech=0.7, p_user_yield=0.2),
+            PredictionDirective(p_user_speech=0.6, p_user_yield=0.3),
+        )
+    )
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        turn_prediction_source=prediction_source,
+        created_sessions=sessions,
+        policy=SessionPolicy(silence_duration_ms=100, pre_roll_duration_ms=20),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+        candidate = sessions[0].active_generation
+        assert candidate is not None
+        websocket.send_json({"type": "session.stop"})
+
+    assert candidate.causal_prediction is not None
+    assert candidate.causal_prediction.stamp.source is CausalSource.SILERO_VAD
+    assert candidate.latency.final_vad_endpoint_at is not None
 
 
 def test_prediction_observed_before_resumed_speech_cannot_start_candidate() -> None:
