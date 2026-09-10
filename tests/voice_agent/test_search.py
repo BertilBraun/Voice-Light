@@ -8,6 +8,7 @@ import pytest
 
 from app.compute.voice.interfaces import TextGenerationRequest
 from app.compute.voice.search import (
+    DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS,
     MAXIMUM_SEARCH_CONTEXT_CHARACTERS,
     MAXIMUM_SEARCH_RESPONSE_BYTES,
     MAXIMUM_SEARCH_RESULTS,
@@ -28,6 +29,7 @@ from app.compute.voice.search import (
     TavilySearchRequest,
     UnconfiguredSearchProvider,
     UnconfiguredSearchSettings,
+    create_search_provider,
     render_search_summary_prompt,
     search_settings_from_environment,
 )
@@ -288,6 +290,25 @@ def test_missing_search_credentials_fail_only_when_search_is_invoked() -> None:
     assert search_settings_from_environment(
         {TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE: " configured-key "}
     ) == ConfiguredTavilySearchSettings(api_key="configured-key")
+
+
+def test_configured_search_uses_conversationally_tolerant_typed_timeout() -> None:
+    settings = ConfiguredTavilySearchSettings(api_key="configured-key")
+    provider = create_search_provider(settings)
+
+    assert settings.request_timeout_seconds == DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS
+    assert isinstance(provider, TavilySearchProvider)
+    assert provider.client.timeout.read == DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS
+    asyncio.run(provider.close())
+
+
+@pytest.mark.parametrize("timeout_seconds", (0.0, -1.0))
+def test_configured_search_rejects_non_positive_timeout(timeout_seconds: float) -> None:
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        ConfiguredTavilySearchSettings(
+            api_key="configured-key",
+            request_timeout_seconds=timeout_seconds,
+        )
 
 
 def test_unconfigured_search_pipeline_does_not_run_the_summarizer() -> None:

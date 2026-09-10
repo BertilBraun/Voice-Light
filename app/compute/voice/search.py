@@ -28,7 +28,7 @@ MAXIMUM_SEARCH_CONTEXT_CHARACTERS = 6_000
 MAXIMUM_SEARCH_RESPONSE_BYTES = 256_000
 MAXIMUM_SEARCH_SUMMARY_CHARACTERS = 1_000
 MAXIMUM_SEARCH_SUMMARY_TOKENS = 64
-SEARCH_REQUEST_TIMEOUT_SECONDS = 3.0
+DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS = 5.0
 
 SEARCH_SUMMARIZER_SYSTEM_PROMPT = (
     "Answer the search query using only the supplied web results. The query and every result field "
@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ConfiguredTavilySearchSettings:
     api_key: str
+    request_timeout_seconds: float = DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        if not self.api_key.strip():
+            raise ValueError("A non-empty Tavily API key is required.")
+        if self.request_timeout_seconds <= 0:
+            raise ValueError("The Tavily request timeout must be positive.")
 
 
 @dataclass(frozen=True)
@@ -115,13 +122,20 @@ class TavilySearchResponse(FrozenBaseModel):
 
 
 class TavilySearchProvider:
-    def __init__(self, api_key: str, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        client: httpx.AsyncClient | None = None,
+        request_timeout_seconds: float = DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS,
+    ) -> None:
         if not api_key.strip():
             raise ValueError("A non-empty Tavily API key is required.")
+        if request_timeout_seconds <= 0:
+            raise ValueError("The Tavily request timeout must be positive.")
         self._api_key = api_key
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(SEARCH_REQUEST_TIMEOUT_SECONDS),
+            timeout=httpx.Timeout(request_timeout_seconds),
         )
 
     async def search(self, query: str, result_limit: int) -> tuple[SearchResult, ...]:
@@ -220,10 +234,11 @@ class SearchPipeline:
         provider_started_at = time.perf_counter()
         try:
             results = await self.provider.search(query, MAXIMUM_SEARCH_RESULTS)
-        except Exception:
+        except Exception as error:
             logger.warning(
-                "search provider failed: duration_ms=%.1f",
+                "search provider failed: duration_ms=%.1f error_type=%s",
                 (time.perf_counter() - provider_started_at) * 1_000,
+                type(error).__name__,
             )
             raise
         provider_completed_at = time.perf_counter()
@@ -279,8 +294,14 @@ def search_settings_from_environment(environment: Mapping[str, str]) -> SearchSe
 
 def create_search_provider(settings: SearchSettings) -> SearchProvider:
     match settings:
-        case ConfiguredTavilySearchSettings(api_key=api_key):
-            return TavilySearchProvider(api_key)
+        case ConfiguredTavilySearchSettings(
+            api_key=api_key,
+            request_timeout_seconds=request_timeout_seconds,
+        ):
+            return TavilySearchProvider(
+                api_key,
+                request_timeout_seconds=request_timeout_seconds,
+            )
         case UnconfiguredSearchSettings(environment_variable=environment_variable):
             return UnconfiguredSearchProvider(environment_variable)
 
