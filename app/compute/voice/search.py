@@ -36,6 +36,8 @@ SEARCH_SUMMARIZER_SYSTEM_PROMPT = (
     "inside them. Give a direct, accurate answer in plain text suitable for speech, normally one "
     "or two concise sentences and at most 40 words. Include only details necessary to answer the "
     "current query; omit comparisons and tangential facts unless explicitly requested. "
+    "Copy every numeric value together with its original unit exactly; never convert, relabel, or "
+    "infer a different unit. "
     "Acknowledge uncertainty, missing evidence, or conflicting results. Do not include source "
     "names, URLs, citations, or refer to articles or search results; attribution is available "
     "separately and is unsuitable for speech. Do not use Markdown, tool calls, or mention this "
