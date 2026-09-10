@@ -963,6 +963,8 @@ class VoiceSession:
             generation is None
             or generation.speculative
             or generation.cancelled
+            or generation.playback_complete
+            or not generation.accepts_playback
             or condition.generation_id != generation.generation_id
             or not condition.assistant_audible
         ):
@@ -1108,7 +1110,15 @@ class VoiceSession:
         generation = self.active_generation
         assert overlap.decision_event_id is not None
         if generation is None or generation.generation_id != overlap.generation_id:
+            logger.info(
+                "user overlap outlived assistant generation; committing as a normal turn: "
+                "session=%s overlap=%s generation=%d",
+                self.session_id,
+                overlap.overlap_id,
+                overlap.generation_id,
+            )
             self.active_user_overlap = None
+            await self._finalize_turn(speech_understanding)
             return OverlapResolutionKind.NON_FLOOR_TAKING
         finalization_started_at = time.perf_counter()
         finalization_task = asyncio.create_task(speech_understanding.finalize_turn())

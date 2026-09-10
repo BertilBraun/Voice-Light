@@ -2493,6 +2493,53 @@ def test_false_start_resumes_before_slow_asr_finalization() -> None:
         websocket.send_json({"type": "session.stop"})
 
 
+def test_multiword_turn_commits_when_playback_completes_during_onset() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(
+            ("hello", None, None),
+            (None, None, None),
+        ),
+        final_texts=("hello agent", "tell me another story"),
+    )
+    language_model = FakeLanguageModel()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.start")
+        receive_until(websocket, "assistant.audio.end")
+        send_playback_started(websocket, 1)
+        wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        receive_playback_command(websocket)
+        receive_playback_command(websocket)
+        assert sessions[0].active_user_overlap is not None
+        send_playback_complete(websocket, 1)
+        wait_until(lambda: sessions[0].active_generation is None)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        receive_until(websocket, "assistant.text.delta")
+
+        assert len(language_model.conversations) == 2
+        assert (
+            ConversationMessage(
+                role=ConversationRole.USER,
+                content="tell me another story",
+            )
+            in sessions[0].conversation
+        )
+        websocket.send_json({"type": "session.stop"})
+
+
 def test_strong_floor_take_still_cancels_before_transcript_free_deadline() -> None:
     transcriber = ScriptedTranscriber(
         partials_by_turn=(("hello", None, None), (None, None)),
