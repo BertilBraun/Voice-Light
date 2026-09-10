@@ -10,7 +10,9 @@ from websockets.asyncio.client import connect
 
 from app.compute.voice.schemas import SessionReadyEvent, SessionStartEvent
 
-DEFAULT_WEBSOCKET_URL = "wss://bertil-braun-private--voicelightagent-voice-light.modal.run/v1/voice"
+DEFAULT_WEBSOCKET_URL = (
+    "wss://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run/v1/voice"
+)
 DEFAULT_OPEN_TIMEOUT_SECONDS = 120.0
 
 

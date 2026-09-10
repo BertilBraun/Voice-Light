@@ -125,8 +125,8 @@ after each attempt. Production therefore keeps snapshots disabled.
 
 The deployed endpoints are:
 
-- HTTPS base: `https://bertil-braun-private--voicelightagent-voice-light.modal.run`
-- voice WebSocket: `wss://bertil-braun-private--voicelightagent-voice-light.modal.run/v1/voice`
+- HTTPS base: `https://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run`
+- voice WebSocket: `wss://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run/v1/voice`
 - Modal dashboard: `https://modal.com/apps/bertil-braun-private/main/deployed/VoiceLightAgent`
 
 Serve the browser locally, then put the WebSocket URL in the endpoint field or query string:
@@ -137,7 +137,7 @@ python -m app.local.server
 ```
 
 ```text
-http://127.0.0.1:8000/voice-agent?compute=wss%3A%2F%2Fbertil-braun-private--voicelightagent-voice-light.modal.run%2Fv1%2Fvoice
+http://127.0.0.1:8000/voice-agent?compute=wss%3A%2F%2Fbertil-braun-private--voicelightagent-voice-light.eu-west.modal.run%2Fv1%2Fvoice
 ```
 
 ## Turn-policy configuration
@@ -271,6 +271,14 @@ runtime readiness samples of 35.235, 22.357, and 32.489 seconds. The correspondi
 immediately preceding 51.812-second runtime and 99.257-second end-to-end sample, but does not meet a
 reliable 30-second cold-start target. After enabling the bounded A10-to-L40S fallback, one additional
 cold production smoke was ready in 35.662 seconds with 22.997 seconds inside `ComputeRuntime`.
+
+The first placement-instrumented global cold start landed in `ap-northeast-2`: independent
+load-then-warm chains reached runtime readiness in 39.049 seconds and the client received
+`session.ready` in 67.346 seconds. The production endpoint was then constrained to broad European
+compute and `eu-west` routing. Its first cold worker landed in `eu-frankfurt-1`, reached runtime
+readiness in 26.773 seconds, and delivered `session.ready` in 37.115 seconds. The independent chains
+allowed Nemotron's 3.651-second warmup to overlap the remaining Qwen and Kyutai loading. These are
+single cold observations, not percentiles; end-to-end readiness still misses the sub-30-second goal.
 
 That production smoke also exercised pending-silence speculation with recorded microphone audio.
 Two early candidates were correctly invalidated when Nemotron revised the transcript. The promoted
