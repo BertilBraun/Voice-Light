@@ -388,7 +388,7 @@ none had TTS PCM buffered at commit. The best observed component combination was
 consistent sub-800-ms result requires improvements in at least two stages rather than relabeling or
 one queue adjustment.
 
-Overlap playback now uses asymmetric gain envelopes. Unresolved overlap fades toward -18 dB over
+Overlap playback now uses asymmetric gain envelopes. Unresolved overlap fades toward -15 dB over
 450 ms and returns to full gain over 450 ms when classified as a backchannel. The fallback pause is
 500 ms so it cannot truncate the reversible fade. A committed interruption cancels server
 generation and rejects new PCM immediately, while at most 100 ms of already buffered browser audio

@@ -298,9 +298,9 @@ Playback, generation, speech understanding, and durable history remain separate:
 
 The temporary policy behaves as follows:
 
-- the first positive Silero observation during audible playback issues a 25 ms ramp to -18 dB and a
-  pause request for the next known word boundary, capped by a rendered-output deadline 120 ms after
-  the latest browser checkpoint;
+- the first positive Silero observation during audible playback issues a 450 ms ramp to -15 dB and
+  a pause request for the next known word boundary; the 500 ms rendered-output deadline cannot cut
+  the reversible fade short;
 - a transcript-free burst, configured closed acknowledgement, or short laughter that has ended is
   ephemeral and resumes the exact first unplayed sample;
 - `how`, `what`, explicit stop/repetition language, `no`, `wait`, `actually`, and other meaningful
@@ -311,10 +311,11 @@ The temporary policy behaves as follows:
 The browser states are `IDLE`, `QUEUED`, `SPEAKING`, `DUCKING`, `PAUSED_BUFFERED`, `RESUMING`,
 `DRAINING_TO_BOUNDARY`, `CANCELLED`, and `COMPLETED`. A paused generation does not advance either
 playback cursor. Resume preserves the resampler fraction and begins at the exact first unplayed
-source sample. Cancellation clears queued PCM and permanently raises the rejected-generation
-watermark. Terminal generations cannot reactivate, older-generation commands cannot affect a
-replacement, and repeated command IDs return the cached acknowledgement without applying the
-operation again.
+source sample. Committed cancellation immediately rejects new PCM, renders at most a 100 ms fade
+to silence from already buffered audio, then clears the remainder and permanently raises the
+rejected-generation watermark. Terminal generations cannot reactivate. Older-generation commands
+cannot affect a replacement, and repeated command IDs return the cached acknowledgement without
+applying the operation again.
 
 The initial budgets are 500 ms target paused-buffer age, 800 ms absolute resume age, 500 ms maximum
 synthesized-ahead audio, a generation hold at 350 ms, and mandatory resume or cancellation at

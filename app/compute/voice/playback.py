@@ -26,7 +26,7 @@ from app.compute.voice.schemas import (
 
 @dataclass(frozen=True)
 class PlaybackPolicyConfig:
-    duck_decibels: float = -18.0
+    duck_decibels: float = -15.0
     duck_ramp_duration_ms: int = 450
     pause_deadline_ms: int = 500
     resume_ramp_duration_ms: int = 450

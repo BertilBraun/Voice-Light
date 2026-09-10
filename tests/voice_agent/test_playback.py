@@ -388,6 +388,8 @@ def test_default_transport_ahead_covers_intermittent_streaming_synthesis() -> No
 def test_default_overlap_gain_ramps_are_perceptually_asymmetric() -> None:
     configuration = PlaybackPolicyConfig()
 
+    assert configuration.duck_decibels == -15.0
+    assert configuration.duck_gain == pytest.approx(0.177827941)
     assert configuration.duck_ramp_duration_ms == 450
     assert configuration.pause_deadline_ms == 500
     assert configuration.resume_ramp_duration_ms == 450
