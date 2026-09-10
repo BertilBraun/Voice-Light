@@ -172,7 +172,7 @@ class SessionPolicy:
     overlap_prediction_settle_ms: int = 80
     overlap_rearm_silence_ms: int = 160
     vad_speculation_enabled: bool = True
-    vad_speculation_debounce_ms: int = 100
+    vad_speculation_debounce_ms: int = 0
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
     maximum_prediction_lag_ms: int = 240
@@ -195,7 +195,7 @@ class SessionPolicy:
                     "VOICE_LIGHT_VAD_SPECULATION_ENABLED must be either 'true' or 'false'."
                 )
         debounce_value = environment.get("VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS")
-        vad_speculation_debounce_ms = 100
+        vad_speculation_debounce_ms = 0
         if debounce_value is not None:
             try:
                 vad_speculation_debounce_ms = int(debounce_value)

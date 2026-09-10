@@ -127,6 +127,10 @@ def test_session_policy_reads_vad_speculation_debounce() -> None:
     assert policy.vad_speculation_debounce_ms == 75
 
 
+def test_session_policy_has_no_extra_vad_speculation_debounce_by_default() -> None:
+    assert SessionPolicy.from_environment({}).vad_speculation_debounce_ms == 0
+
+
 def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
     policy = SessionPolicy.from_environment(
         {
@@ -3568,7 +3572,6 @@ def test_first_vad_endpoint_speculates_during_commitment_silence() -> None:
             silence_duration_ms=60,
             pre_roll_duration_ms=20,
             vad_speculation_enabled=True,
-            vad_speculation_debounce_ms=40,
         ),
         playback_sink=sink,
         created_sessions=sessions,
@@ -3579,18 +3582,14 @@ def test_first_vad_endpoint_speculates_during_commitment_silence() -> None:
         websocket.receive_json()
         websocket.send_bytes(SPEECH_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
-        assert language_model.completed_count == 0
-        assert transcriber.sessions[0].finish_count == 0
-
-        websocket.send_bytes(SILENCE_CHUNK)
         wait_until(lambda: language_model.completed_count == 1)
-
         assert transcriber.sessions[0].finish_count == 0
         assert sink.outputs == []
         candidate = sessions[0].generations[1]
         assert candidate.causal_prediction is not None
         assert candidate.causal_prediction.stamp.source is CausalSource.SILERO_VAD
 
+        websocket.send_bytes(SILENCE_CHUNK)
         websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
         wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
