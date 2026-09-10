@@ -190,6 +190,31 @@ def test_vad_candidate_uses_combined_transcript_across_prefix_resegmentation() -
     )
 
 
+@pytest.mark.parametrize(
+    ("prompted_text", "revised_stable_prefix", "revised_volatile_suffix"),
+    (
+        ("what time is it", "What time is it", "?"),
+        ("Hello New York", "hello ", "new york."),
+        ("temperature in  New York", "temperature in ", "New York"),
+    ),
+)
+def test_vad_candidate_survives_nonsemantic_transcript_revision(
+    prompted_text: str,
+    revised_stable_prefix: str,
+    revised_volatile_suffix: str,
+) -> None:
+    assert (
+        candidate_revision_invalidation_reason(
+            source=CausalSource.SILERO_PENDING_SILENCE,
+            stable_prefix="",
+            prompted_text=prompted_text,
+            revised_stable_prefix=revised_stable_prefix,
+            revised_volatile_suffix=revised_volatile_suffix,
+        )
+        is None
+    )
+
+
 def test_trained_candidate_remains_anchored_to_stable_prefix() -> None:
     assert (
         candidate_revision_invalidation_reason(

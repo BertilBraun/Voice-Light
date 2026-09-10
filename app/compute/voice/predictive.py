@@ -502,7 +502,7 @@ def candidate_revision_invalidation_reason(
     match source:
         case CausalSource.SILERO_PENDING_SILENCE | CausalSource.SILERO_VAD:
             revised_text = f"{revised_stable_prefix}{revised_volatile_suffix}".strip()
-            if revised_text != prompted_text:
+            if _semantic_words(revised_text) != _semantic_words(prompted_text):
                 return CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
         case _:
             if not revised_stable_prefix.startswith(stable_prefix):
