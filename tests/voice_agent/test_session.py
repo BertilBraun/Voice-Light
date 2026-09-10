@@ -2202,7 +2202,7 @@ def test_user_cancellation_while_tool_runs_discards_late_result() -> None:
         first_tool = sessions[0].generations[1].tool_executions[0]
         assert first_tool.lifecycle is ToolLifecycle.CANCELLED
         assert first_tool.result_commit_status is ToolResultCommitStatus.DISCARDED
-        assert first_tool.invalidation_reason is ToolInvalidationReason.USER_ACTIVITY
+        assert first_tool.invalidation_reason is ToolInvalidationReason.RESPONSE_REQUIRING_OVERLAP
         assert isinstance(first_tool.outcome, ToolExecutionFailure)
         assert first_tool.outcome.reason is ToolExecutionFailureReason.CANCELLED
         assert sessions[0].generations[1].model_context_turn.staged_tool_call is None
@@ -2249,7 +2249,7 @@ def test_cancellation_during_later_tool_round_keeps_earlier_committed_exchange()
         assert first_tool.lifecycle is ToolLifecycle.SUCCEEDED
         assert second_tool.result_commit_status is ToolResultCommitStatus.DISCARDED
         assert second_tool.lifecycle is ToolLifecycle.CANCELLED
-        assert second_tool.invalidation_reason is ToolInvalidationReason.USER_ACTIVITY
+        assert second_tool.invalidation_reason is ToolInvalidationReason.RESPONSE_REQUIRING_OVERLAP
         assert isinstance(second_tool.outcome, ToolExecutionFailure)
         assert second_tool.outcome.reason is ToolExecutionFailureReason.CANCELLED
         assert generation.model_context_turn.staged_tool_call is None
@@ -2562,6 +2562,48 @@ def test_false_start_resumes_before_slow_asr_finalization() -> None:
         assert transcriber.sessions[1].finish_count == 1
         assert sessions[0].active_user_overlap is not None
         websocket.send_json({"type": "session.stop"})
+
+
+def test_empty_onset_before_first_audio_preserves_pending_generation() -> None:
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello", None, None), (None, None)),
+        final_texts=("hello agent", ""),
+    )
+    language_model = PredictiveTrackingLanguageModel(initial_delay_seconds=0.25)
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        created_sessions=sessions,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        assert language_model.generation_started.wait(timeout=1)
+        generation = sessions[0].active_generation
+        assert generation is not None
+        assert sessions[0].playback_condition.state is PlaybackState.QUEUED
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: sessions[0].active_user_overlap is not None)
+        assert sessions[0].active_generation is generation
+        assert not generation.continuation_allowed.is_set()
+        websocket.send_bytes(SILENCE_CHUNK)
+
+        events, _ = receive_until(websocket, "assistant.audio.start")
+        assert sessions[0].active_generation is generation
+        assert generation.continuation_allowed.is_set()
+        assert language_model.cancelled_count == 0
+        assert language_model.conversations == [
+            (ConversationMessage(role=ConversationRole.USER, content="hello agent"),)
+        ]
+        assert all(event["type"] != "playback.command" for event in events)
+        websocket.send_json({"type": "session.stop"})
+
+    assert transcriber.sessions[1].finish_count == 1
 
 
 def test_multiword_turn_commits_when_playback_completes_during_onset() -> None:

@@ -488,8 +488,8 @@ class ActiveUserOverlap:
     onset_monotonic_time_ns: int
     stream_epoch: int
     turn_epoch: int
-    duck_command_id: str
-    pause_command_id: str
+    duck_command_id: str | None
+    pause_command_id: str | None
     synthesized_source_sample_count_at_onset: int
     resume_command_id: str | None = None
     cancel_command_id: str | None = None
@@ -977,36 +977,39 @@ class VoiceSession:
             or generation.playback_complete
             or not generation.accepts_playback
             or condition.generation_id != generation.generation_id
-            or not condition.assistant_audible
         ):
             return False
         onset_event_id = str(uuid4())
         overlap_id = str(uuid4())
-        next_boundary = min(
-            (
-                boundary_sample
-                for boundary_sample in generation.boundary_samples.values()
-                if boundary_sample > condition.latest_source_sample_position
-            ),
-            default=None,
-        )
-        duck_command = self.playback_controller.issue_duck(
-            generation_id=generation.generation_id,
-            causal_event_id=onset_event_id,
-            causal_source=CausalSource.SILERO_VAD,
-            stream_epoch=chunk.stream_epoch,
-            turn_epoch=chunk.turn_epoch,
-            confidence=1.0,
-        )
-        pause_command = self.playback_controller.issue_pause(
-            generation_id=generation.generation_id,
-            causal_event_id=onset_event_id,
-            causal_source=CausalSource.SILERO_VAD,
-            stream_epoch=chunk.stream_epoch,
-            turn_epoch=chunk.turn_epoch,
-            confidence=1.0,
-            requested_boundary_source_sample_position=next_boundary,
-        )
+        duck_command: PlaybackCommandEvent | None = None
+        pause_command: PlaybackCommandEvent | None = None
+        next_boundary: int | None = None
+        if condition.output_sample_rate is not None:
+            next_boundary = min(
+                (
+                    boundary_sample
+                    for boundary_sample in generation.boundary_samples.values()
+                    if boundary_sample > condition.latest_source_sample_position
+                ),
+                default=None,
+            )
+            duck_command = self.playback_controller.issue_duck(
+                generation_id=generation.generation_id,
+                causal_event_id=onset_event_id,
+                causal_source=CausalSource.SILERO_VAD,
+                stream_epoch=chunk.stream_epoch,
+                turn_epoch=chunk.turn_epoch,
+                confidence=1.0,
+            )
+            pause_command = self.playback_controller.issue_pause(
+                generation_id=generation.generation_id,
+                causal_event_id=onset_event_id,
+                causal_source=CausalSource.SILERO_VAD,
+                stream_epoch=chunk.stream_epoch,
+                turn_epoch=chunk.turn_epoch,
+                confidence=1.0,
+                requested_boundary_source_sample_position=next_boundary,
+            )
         self.active_user_overlap = ActiveUserOverlap(
             overlap_id=overlap_id,
             generation_id=generation.generation_id,
@@ -1015,24 +1018,30 @@ class VoiceSession:
             onset_monotonic_time_ns=chunk.monotonic_observation_time_ns,
             stream_epoch=chunk.stream_epoch,
             turn_epoch=chunk.turn_epoch,
-            duck_command_id=duck_command.command_id,
-            pause_command_id=pause_command.command_id,
+            duck_command_id=None if duck_command is None else duck_command.command_id,
+            pause_command_id=None if pause_command is None else pause_command.command_id,
             synthesized_source_sample_count_at_onset=generation.tts_sample_count,
         )
+        if not condition.assistant_audible:
+            generation.continuation_allowed.clear()
+            generation.synthesis_budget_available.clear()
+            self.active_user_overlap.generation_hold_applied = True
         assert self.active_user_overlap is not None
         self.user_overlap_traces.append(self.active_user_overlap)
         self.overlap_metrics.record_started()
-        await self._send_event(duck_command)
-        await self._send_event(pause_command)
+        if duck_command is not None and pause_command is not None:
+            await self._send_event(duck_command)
+            await self._send_event(pause_command)
         logger.info(
             "user overlap started: session=%s overlap=%s generation=%d input_sample=%d "
-            "duck_command=%s pause_command=%s boundary_sample=%s",
+            "assistant_audible=%s duck_command=%s pause_command=%s boundary_sample=%s",
             self.session_id,
             overlap_id,
             generation.generation_id,
             chunk.start_input_sample,
-            duck_command.command_id,
-            pause_command.command_id,
+            condition.assistant_audible,
+            None if duck_command is None else duck_command.command_id,
+            None if pause_command is None else pause_command.command_id,
             next_boundary,
         )
         return True
@@ -2463,10 +2472,10 @@ class VoiceSession:
                 )
             )
         for word in word_stream.add_text(text_delta):
-            self._record_first_qwen_complete_word(generation, word)
-            await self._add_synthesis_word(generation, synthesis, word)
             if not generation.continuation_allowed.is_set():
                 await generation.continuation_allowed.wait()
+            self._record_first_qwen_complete_word(generation, word)
+            await self._add_synthesis_word(generation, synthesis, word)
 
     async def _flush_synthesis_words(
         self,

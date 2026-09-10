@@ -303,6 +303,9 @@ The temporary policy behaves as follows:
   the reversible fade short;
 - a transcript-free burst, configured closed acknowledgement, or short laughter that has ended is
   ephemeral and resumes the exact first unplayed sample;
+- an onset before the first assistant sample is audible provisionally holds generation instead of
+  cancelling it; an empty final transcript releases that same generation, while lexical speech
+  follows the normal interruption path;
 - `how`, `what`, explicit stop/repetition language, `no`, `wait`, `actually`, and other meaningful
   non-acknowledgement lexical material take the response-required fast path;
 - an acknowledgement followed by more material, including `yeah, but`, takes the floor;

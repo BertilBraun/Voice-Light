@@ -395,6 +395,11 @@ generation and rejects new PCM immediately, while at most 100 ms of already buff
 fades to silence before its exact played position is acknowledged and the remainder is discarded.
 Paused or idle cancellation remains immediate.
 
+A detected onset before the first assistant sample is audible holds the pending generation rather
+than cancelling it immediately. If ASR finalizes that onset without text, the same generation is
+released; lexical speech still commits an interruption. This avoids leaving the session idle after
+a pre-playback false start.
+
 ## Known limitations
 
 - The latest truthful cold readiness sample is 56.317 seconds; an earlier instrumented sample
