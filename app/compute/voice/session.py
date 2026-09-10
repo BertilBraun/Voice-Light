@@ -134,6 +134,7 @@ from app.compute.voice.tool_routing import (
     temperature_conversion_spoken_result,
 )
 from app.compute.voice.tools import (
+    CalculateToolCallFunction,
     SearchToolAvailability,
     SerializedToolCall,
     ToolCall,
@@ -1766,12 +1767,13 @@ class VoiceSession:
         generation.task = asyncio.create_task(self._run_generation(generation))
         logger.info(
             "speculative candidate created: session=%s generation=%d revision=%d "
-            "input_sample=%d confidence=%.3f",
+            "input_sample=%d confidence=%.3f source=%s",
             self.session_id,
             generation.generation_id,
             revision.revision_id,
             revision.audio_sample_position,
             prediction.confidence,
+            prediction.stamp.source,
         )
 
     @staticmethod
@@ -2803,6 +2805,17 @@ class VoiceSession:
             )
         if isinstance(outcome, ToolSuccess):
             tool.lifecycle = ToolLifecycle.SUCCEEDED
+            match call.function:
+                case CalculateToolCallFunction(arguments=arguments):
+                    logger.info(
+                        "calculator trace: session=%s generation=%d expression=%r result=%r",
+                        self.session_id,
+                        generation.generation_id,
+                        arguments.expression,
+                        outcome.result,
+                    )
+                case _:
+                    pass
             logger.info(
                 "tool execution completed: session=%s generation=%d tool=%s "
                 "status=success duration_ms=%.1f",
