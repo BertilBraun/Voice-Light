@@ -116,6 +116,7 @@ The deployed starting values are:
 | `VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD` | `0.82` | predicted feedback that resumes the same generation |
 | `VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS` | `500` | conservative unresolved-overlap deadline |
 | `VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS` | `120` | maximum wait for a prompt final transcript before an empty provisional overlap resumes |
+| `VOICE_LIGHT_OVERLAP_PREDICTION_SETTLE_MS` | `80` | bounded wait at speech end for adapter evidence already queued or in flight |
 | `VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS` | `1200` | hard deadline for sustained overlap without transcript evidence |
 | `VOICE_LIGHT_OVERLAP_REARM_SILENCE_MS` | `160` | clean Silero silence required before a resolved backchannel can open another overlap |
 | `VOICE_LIGHT_MAXIMUM_PREDICTION_LAG_MS` | `240` | maximum age of causal adapter evidence during active overlap |
@@ -367,6 +368,16 @@ five seconds and failure logs include only the safe exception type. The deployme
 three fixes completed in 42.393 seconds. Its scaled-to-zero WebSocket readiness smoke completed in
 55.942 seconds, and a real configured Tavily smoke returned two results in 290.89 ms. Audible
 tool-boundary quality and the terminal-overlap repair still require a refreshed human browser run.
+
+The following human session showed that five of six overlaps were prematurely accepted as
+non-floor feedback after only 256--432 ms while Silero still reported active speech. Their empty
+early ASR finals reset the turn and discarded the remaining words. Non-floor model evidence is now
+provisional until VAD speech end; strong floor-take and meaningful partial lexical evidence remain
+immediate. At speech end the session waits at most 80 ms for adapter work already queued or in
+flight before using the acoustic fallback, preserving causal attribution without depending on task
+scheduling. Required search requests now dispatch when Qwen emits the typed tool-call-start event,
+instead of waiting another measured 1.22--1.51 seconds for redundant search JSON to finish. Other
+tools and ambiguous requests still require complete structured arguments.
 
 ## Known limitations
 

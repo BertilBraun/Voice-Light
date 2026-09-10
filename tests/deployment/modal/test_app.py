@@ -39,6 +39,7 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     assert environment["VOICE_LIGHT_FLOOR_TAKE_THRESHOLD"] == "0.82"
     assert environment["VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD"] == "0.82"
     assert environment["VOICE_LIGHT_OVERLAP_FINALIZATION_GRACE_MS"] == "120"
+    assert environment["VOICE_LIGHT_OVERLAP_PREDICTION_SETTLE_MS"] == "80"
     assert environment["VOICE_LIGHT_MAXIMUM_TRANSPORT_AHEAD_MS"] == "1200"
     assert environment["VOICE_LIGHT_MERGED_LANGUAGE_MODEL_NAME"] == MERGED_LANGUAGE_MODEL_NAME
     assert (
