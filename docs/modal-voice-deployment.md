@@ -88,6 +88,32 @@ before making a request unless that secret contains `VOICE_LIGHT_TAVILY_API_KEY`
 real bounded Tavily query. Its JSON output contains only `configured`, `result_count`, and
 `provider_latency_ms`; it never prints the credential or result content.
 
+### GPU memory snapshot canary
+
+`deployment.modal.voice_light_snapshot_canary` is a separate fixed-A10 deployment for testing
+Modal's alpha GPU memory snapshots without changing the production `VoiceLightAgent` application,
+autoscaler, or endpoint. It reuses the production image, secrets, cache Volumes, environment, model
+configuration, and ASGI application. Unlike production, it loads and warms the complete voice stack
+inside `@modal.enter(snap=True)` and enables both CPU and GPU snapshot capture. A post-snapshot enter
+hook refuses admission when the restored runtime does not report every voice stage ready.
+
+Deploying this module creates or updates only the canary application:
+
+```powershell
+modal deploy -m deployment.modal.voice_light_snapshot_canary
+python -m deployment.modal.smoke_websocket `
+  --url wss://bertil-braun-private--voicelightagent-voice-light-snapshot-canary.modal.run/v1/voice `
+  --open-timeout-seconds 300
+```
+
+The first few cold invocations may create snapshots rather than restore them. In the Modal
+Containers view, distinguish snapshot-creation starts from restored starts and compare multiple
+restored `session.ready` measurements with the production fixed-A10 baseline. Do not promote the
+canary unless all three CUDA subprocesses restore coherently, a complete WebSocket turn produces
+valid PCM, restored readiness improves by at least 30%, and first-turn and p95 latency do not
+regress. Redeploying code or changing GPU configuration invalidates prior snapshots; changing a
+mounted Volume does not, so model-cache changes require an explicit canary redeploy.
+
 The deployed endpoints are:
 
 - HTTPS base: `https://bertil-braun-private--voicelightagent-voice-light.modal.run`
