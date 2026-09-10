@@ -85,7 +85,10 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'data.type === "playback.clock"' in script_response.text
     assert "underrun_count: data.underrunCount" in script_response.text
     assert 'id="playback-underruns"' in page_response.text
-    assert "app.js?v=17" in page_response.text
+    assert "app.js?v=18" in page_response.text
+    assert 'message.type !== "speech_understanding.debug"' in script_response.text
+    assert "MAX_EVENT_LOG_ENTRIES = 200" in script_response.text
+    assert "scheduleInteractionTimelineDraw" in script_response.text
     assert "solid dots affect policy; hollow dots were rejected" in page_response.text
     assert "modelObservationSamples(points, field)" in script_response.text
     assert 'sample.disposition === "applicable"' in script_response.text

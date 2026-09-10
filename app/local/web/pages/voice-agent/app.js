@@ -9,6 +9,7 @@ import {
 const INPUT_SAMPLE_RATE = 16000;
 const LOCAL_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Etc/UTC";
 const ENDPOINT_STORAGE_KEY = "voice-light-compute-voice-endpoint";
+const MAX_EVENT_LOG_ENTRIES = 200;
 const endpointInput = document.querySelector("#endpoint-url");
 const startButton = document.querySelector("#start-button");
 const stopButton = document.querySelector("#stop-button");
@@ -51,8 +52,9 @@ let recordingUrl;
 const assistantTurns = new Map();
 const intentionallyClosedSockets = new WeakSet();
 const interactionEvidence = new Map();
+let interactionTimelineFrame;
 
-new ResizeObserver(drawInteractionTimeline).observe(interactionTimeline);
+new ResizeObserver(scheduleInteractionTimelineDraw).observe(interactionTimeline);
 
 class ConversationTurn {
   constructor(role, state) {
@@ -492,7 +494,7 @@ function handleMessage(event) {
     return;
   }
   const message = JSON.parse(event.data);
-  logEvent(message);
+  if (message.type !== "speech_understanding.debug") logEvent(message);
   if (message.type === "vad.started") vadStatus.textContent = "speaking";
   if (message.type === "vad.stopped") {
     vadStatus.textContent = "thinking";
@@ -714,7 +716,14 @@ function writeAscii(view, offset, text) {
   }
 }
 function setConnection(state, text, guidance) { connectionStatus.dataset.state = state; connectionStatus.textContent = text; sessionGuidance.dataset.state = state; sessionGuidance.textContent = guidance; }
-function logEvent(message) { const item = document.createElement("li"); item.textContent = `${new Date().toLocaleTimeString()} ${message.type}`; eventLog.prepend(item); }
+function logEvent(message) {
+  const item = document.createElement("li");
+  item.textContent = `${new Date().toLocaleTimeString()} ${message.type}`;
+  eventLog.prepend(item);
+  while (eventLog.childElementCount > MAX_EVENT_LOG_ENTRIES) {
+    eventLog.lastElementChild.remove();
+  }
+}
 
 function updateUserDraft(text) {
   if (!activeUserTurn) activeUserTurn = new ConversationTurn("user", "transcribing");
@@ -744,7 +753,7 @@ function clearConversationHistory() {
   interactionEvidence.clear();
   debugEvidenceCadence.textContent = "no model observations";
   debugPredictionDisposition.textContent = "—";
-  drawInteractionTimeline();
+  scheduleInteractionTimelineDraw();
 }
 
 function updateInteractionEvidence(message) {
@@ -772,15 +781,25 @@ function updateInteractionEvidence(message) {
       : `${cadence.medianIntervalMs} ms median`;
     debugEvidenceCadence.textContent = `${interval} · latest ${cadence.ageMs} ms behind input`;
   }
-  drawInteractionTimeline();
+  scheduleInteractionTimelineDraw();
+}
+
+function scheduleInteractionTimelineDraw() {
+  if (interactionTimelineFrame !== undefined) return;
+  interactionTimelineFrame = requestAnimationFrame(() => {
+    interactionTimelineFrame = undefined;
+    drawInteractionTimeline();
+  });
 }
 
 function drawInteractionTimeline() {
   const width = Math.max(interactionTimeline.clientWidth, 320);
   const height = interactionTimeline.clientHeight;
   const pixelRatio = window.devicePixelRatio || 1;
-  interactionTimeline.width = Math.round(width * pixelRatio);
-  interactionTimeline.height = Math.round(height * pixelRatio);
+  const backingWidth = Math.round(width * pixelRatio);
+  const backingHeight = Math.round(height * pixelRatio);
+  if (interactionTimeline.width !== backingWidth) interactionTimeline.width = backingWidth;
+  if (interactionTimeline.height !== backingHeight) interactionTimeline.height = backingHeight;
   const context = interactionTimeline.getContext("2d");
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   context.clearRect(0, 0, width, height);
