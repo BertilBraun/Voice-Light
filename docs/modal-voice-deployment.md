@@ -379,6 +379,22 @@ scheduling. Required search requests now dispatch when Qwen emits the typed tool
 instead of waiting another measured 1.22--1.51 seconds for redundant search JSON to finish. Other
 tools and ambiguous requests still require complete structured arguments.
 
+The next 12-turn human trace measured the user-perceived speech-end-to-first-rendered-audio path as
+`endpoint + total`, equivalently `end-to-PCM + play`. Its median was 1,801 ms, p95 was 2,007 ms,
+and range was 961--2,007 ms. Median component times were 469 ms for endpoint commitment, 162 ms for
+the first complete Qwen word, 635 ms from that word to Kyutai PCM, and 279 ms from server PCM send
+to browser rendering. Four speculative hits had a 1,152 ms median versus 1,877 ms for misses, but
+none had TTS PCM buffered at commit. The best observed component combination was still 898 ms, so a
+consistent sub-800-ms result requires improvements in at least two stages rather than relabeling or
+one queue adjustment.
+
+Overlap playback now uses asymmetric gain envelopes. Unresolved overlap fades toward -18 dB over
+450 ms and returns to full gain over 450 ms when classified as a backchannel. The fallback pause is
+500 ms so it cannot truncate the reversible fade. A committed interruption cancels server
+generation and rejects new PCM immediately, while at most 100 ms of already buffered browser audio
+fades to silence before its exact played position is acknowledged and the remainder is discarded.
+Paused or idle cancellation remains immediate.
+
 ## Known limitations
 
 - The latest truthful cold readiness sample is 56.317 seconds; an earlier instrumented sample
