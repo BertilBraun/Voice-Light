@@ -9,13 +9,13 @@ registry, search integration, predictive generation, playback controller, Nemotr
 workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
-session. Modal requests one A10 GPU. The measured full stack uses about 9.5 GiB of its 23 GiB,
-so a more expensive fallback is unnecessary. Pinning the GPU makes cost predictable at the expense
-of waiting when A10 capacity is unavailable. Modal may scale to
+session. Modal requests A10 first and falls back only to L40S when A10 capacity is unavailable. The
+measured full stack uses about 9.5 GiB of A10's 23 GiB. A100 and H100 are deliberately excluded from
+the bounded fallback list because they are unnecessarily expensive for this stack. Modal may scale to
 zero, has one maximum container, and keeps an idle container for 120 seconds. Modal sets
 `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
-initialization before Modal marks a cold container ready or admits the first request. Nemotron and
-Qwen start concurrently, then the shared search generator and Kyutai start in dependency order. The
+initialization before Modal marks a cold container ready or admits the first request. Nemotron,
+Qwen, and Kyutai load and warm concurrently; the shared search generator then aliases Qwen. The
 1,800-second Modal startup timeout bounds that work. Other provider-neutral deployments retain
 background loading: `/health/live` can succeed before `/health/ready`, and `/v1/voice` closes with
 retryable code `1013` until every required model is ready.
