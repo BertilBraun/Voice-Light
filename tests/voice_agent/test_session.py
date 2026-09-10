@@ -32,6 +32,7 @@ from app.compute.voice.interfaces import (
     LanguageModelToolCall,
     LanguageModelToolCallFailure,
     LanguageModelToolCallStarted,
+    SpeechDetectionObservation,
     SpeechDetector,
     SpeechSynthesisSession,
     SpeechSynthesizer,
@@ -131,6 +132,12 @@ def test_session_policy_has_no_extra_vad_speculation_debounce_by_default() -> No
     assert SessionPolicy.from_environment({}).vad_speculation_debounce_ms == 0
 
 
+def test_session_policy_reads_pending_silence_speculation_window() -> None:
+    policy = SessionPolicy.from_environment({"VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS": "96"})
+
+    assert policy.pending_silence_speculation_ms == 96
+
+
 def test_session_policy_reads_latency_first_speculation_configuration() -> None:
     policy = SessionPolicy.from_environment(
         {
@@ -188,6 +195,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_SPECULATIVE_MINIMUM_CONFIDENCE", "1.1"),
         ("VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY", "1.1"),
         ("VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE", "-0.1"),
+        ("VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS", "0"),
     ),
 )
 def test_session_policy_rejects_invalid_interaction_configuration(
@@ -261,14 +269,31 @@ def test_session_policy_rejects_nonpositive_tool_timeouts(environment_name: str)
 
 
 class FakeSpeechDetector:
-    def process_audio(self, pcm_bytes: bytes) -> bool:
-        return any(pcm_bytes)
+    def process_audio(self, pcm_bytes: bytes) -> SpeechDetectionObservation:
+        is_speech = any(pcm_bytes)
+        return SpeechDetectionObservation(
+            is_speech=is_speech,
+            speech_probability=1.0 if is_speech else 0.0,
+            pending_silence_samples=0,
+        )
 
 
 class FailingSpeechDetector:
-    def process_audio(self, pcm_bytes: bytes) -> bool:
+    def process_audio(self, pcm_bytes: bytes) -> SpeechDetectionObservation:
         del pcm_bytes
         raise RuntimeError("synthetic VAD failure")
+
+
+class ScriptedSpeechDetector:
+    def __init__(self, observations: tuple[SpeechDetectionObservation, ...]) -> None:
+        self.observations = observations
+        self.next_observation_index = 0
+
+    def process_audio(self, pcm_bytes: bytes) -> SpeechDetectionObservation:
+        del pcm_bytes
+        observation = self.observations[self.next_observation_index]
+        self.next_observation_index += 1
+        return observation
 
 
 DEFAULT_TEST_SPEECH_DETECTOR = FakeSpeechDetector()
@@ -3546,6 +3571,99 @@ def test_turn_completion_evidence_starts_hidden_tts_before_vad_endpoint() -> Non
     assert candidate.causal_prediction.p_turn_completion == 0.7
     assert candidate.latency.final_vad_endpoint_at is None
     assert sink.outputs == []
+
+
+def test_pending_silence_starts_hidden_tts_before_authoritative_vad_endpoint() -> None:
+    speech_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.9,
+        pending_silence_samples=0,
+    )
+    pending_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.1,
+        pending_silence_samples=1_536,
+    )
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent", "hello agent", "hello agent"),),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        speech_detector=ScriptedSpeechDetector(
+            (speech_observation, speech_observation, pending_observation)
+        ),
+        playback_sink=sink,
+        created_sessions=sessions,
+        policy=SessionPolicy(pending_silence_speculation_ms=80),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+        candidate = sessions[0].active_generation
+        assert candidate is not None
+        wait_until(lambda: candidate.tts_sample_count > 0)
+        websocket.send_json({"type": "session.stop"})
+
+    assert candidate.causal_prediction is not None
+    assert candidate.causal_prediction.stamp.source is CausalSource.SILERO_PENDING_SILENCE
+    assert candidate.latency.final_vad_endpoint_at is None
+    assert sink.outputs == []
+
+
+def test_speech_recovery_discards_pending_silence_candidate() -> None:
+    speech_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.9,
+        pending_silence_samples=0,
+    )
+    pending_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.1,
+        pending_silence_samples=1_536,
+    )
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent", "hello agent", "hello agent", "hello agent"),),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel(block=True)
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        speech_detector=ScriptedSpeechDetector(
+            (speech_observation, speech_observation, pending_observation, speech_observation)
+        ),
+        created_sessions=sessions,
+        policy=SessionPolicy(pending_silence_speculation_ms=80),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: language_model.generation_started.is_set())
+        candidate = sessions[0].active_generation
+        assert candidate is not None
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: candidate.cancelled)
+        websocket.send_json({"type": "session.stop"})
+
+    assert candidate.invalidation_reason is CandidateInvalidationReason.USER_ACTIVITY_RESUMED
+    assert sessions[0].active_generation is None
 
 
 def test_adapter_hold_at_vad_endpoint_does_not_suppress_endpoint_speculation() -> None:

@@ -364,6 +364,12 @@ text is divided between the two fields does not invalidate the VAD candidate; a 
 normalized concatenation does. Speculation does not call `finish()`—Nemotron remains open until the
 high-confidence prediction rule or guarded silence commitment fires.
 
+Silero exposes a typed, single-pass probability and pending-silence duration alongside its
+authoritative speech state. After 80 ms of low-probability silence, usable ASR text may start a
+private candidate even though Silero remains speech-active for its full 250 ms endpoint window.
+Recovered speech probability invalidates that candidate immediately. This early compute signal does
+not emit a VAD endpoint, stop the user turn, or shorten the independent commitment guard.
+
 An applicable adapter sample that remains below both speculative thresholds does not suppress the
 VAD endpoint fallback. The adapter evidence is evaluated first; if it creates no candidate, the
 same already-observed endpoint starts a VAD-anchored candidate. This preserves causal ordering while

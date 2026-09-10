@@ -124,6 +124,7 @@ The deployed starting values are:
 | `VOICE_LIGHT_SPECULATIVE_YIELD_THRESHOLD` | `0.55` | adapter yield probability that may start a private candidate |
 | `VOICE_LIGHT_SPECULATIVE_TURN_COMPLETION_THRESHOLD` | `0.55` | adapter completion probability that may independently start a private candidate |
 | `VOICE_LIGHT_SPECULATIVE_MINIMUM_CONFIDENCE` | `0.60` | minimum adapter confidence for either speculative trigger |
+| `VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS` | `80` | low-probability Silero silence that starts a private candidate before the authoritative endpoint |
 | `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS` | `0` | additional silence after Silero's causal endpoint before the VAD fallback starts |
 | `VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY` | `0.70` | synthetic yield evidence assigned to the causal VAD endpoint |
 | `VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE` | `0.70` | confidence assigned to the causal VAD endpoint evidence |

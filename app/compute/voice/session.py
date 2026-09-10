@@ -174,6 +174,7 @@ class SessionPolicy:
     overlap_prediction_settle_ms: int = 80
     overlap_rearm_silence_ms: int = 160
     vad_speculation_enabled: bool = True
+    pending_silence_speculation_ms: int = 80
     vad_speculation_debounce_ms: int = 0
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
@@ -205,6 +206,11 @@ class SessionPolicy:
                 raise ValueError(
                     "VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS must be an integer."
                 ) from error
+        pending_silence_speculation_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS",
+            80,
+        )
         tool_timeout_value = environment.get("VOICE_LIGHT_TOOL_TIMEOUT_SECONDS")
         tool_timeout_seconds = 30.0
         if tool_timeout_value is not None:
@@ -294,6 +300,7 @@ class SessionPolicy:
             speculative_turn_completion_threshold=(speculative_turn_completion_threshold),
             speculative_minimum_confidence=speculative_minimum_confidence,
             vad_speculation_enabled=vad_speculation_enabled,
+            pending_silence_speculation_ms=pending_silence_speculation_ms,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
             tool_timeout_seconds=tool_timeout_seconds,
             tool_cancellation_timeout_seconds=tool_cancellation_timeout_seconds,
@@ -329,6 +336,8 @@ class SessionPolicy:
             raise ValueError("The speculative threshold cannot exceed the commitment threshold.")
         if self.vad_speculation_debounce_ms < 0:
             raise ValueError("The VAD speculation debounce cannot be negative.")
+        if self.pending_silence_speculation_ms <= 0:
+            raise ValueError("The pending-silence speculation window must be positive.")
         if self.maximum_prediction_lag_ms < 0:
             raise ValueError("The maximum prediction lag cannot be negative.")
         if self.overlap_classification_deadline_ms <= 0:
@@ -808,6 +817,9 @@ class VoiceSession:
         required_vad_speculation_debounce_samples = _milliseconds_to_samples(
             self.policy.vad_speculation_debounce_ms
         )
+        required_pending_silence_speculation_samples = _milliseconds_to_samples(
+            self.policy.pending_silence_speculation_ms
+        )
         maximum_pre_roll_samples = _milliseconds_to_samples(self.policy.pre_roll_duration_ms)
         required_overlap_rearm_silent_samples = _milliseconds_to_samples(
             self.policy.overlap_rearm_silence_ms
@@ -820,7 +832,7 @@ class VoiceSession:
                 self.audio_sample_count += sample_count
                 observation_time_ns = time.perf_counter_ns()
                 try:
-                    is_speech = self.speech_detector.process_audio(pcm_bytes)
+                    speech_detection = self.speech_detector.process_audio(pcm_bytes)
                 except Exception as error:
                     raise VoiceComponentError(
                         VoiceComponent.SPEECH_DETECTION,
@@ -839,11 +851,12 @@ class VoiceSession:
                     stream_epoch=speech_understanding.stream_epoch,
                     turn_epoch=speech_understanding.turn_epoch,
                     silero_evidence=SileroEvidence(
-                        is_speech=is_speech,
+                        is_speech=speech_detection.is_speech,
                         monotonic_time_ns=observation_time_ns,
                     ),
                     playback_condition=observed_playback_condition,
                 )
+                is_speech = speech_detection.is_speech
                 self.next_audio_sequence_number += 1
                 await self._send_periodic_speech_debug(chunk)
                 if not speech_active:
@@ -909,6 +922,38 @@ class VoiceSession:
                     chunk,
                 )
                 prediction_handled = False
+                generation = self.active_generation
+                if (
+                    is_speech
+                    and speech_detection.pending_silence_samples == 0
+                    and generation is not None
+                    and generation.speculative
+                    and generation.causal_prediction is not None
+                    and generation.causal_prediction.stamp.source
+                    is CausalSource.SILERO_PENDING_SILENCE
+                ):
+                    await self._invalidate_speculative_candidate(
+                        CandidateInvalidationReason.USER_ACTIVITY_RESUMED
+                    )
+                if (
+                    self.policy.vad_speculation_enabled
+                    and is_speech
+                    and speech_detection.pending_silence_samples
+                    >= required_pending_silence_speculation_samples
+                    and self.active_generation is None
+                ):
+                    if prediction is not None:
+                        self.latest_prediction = prediction
+                        await self._handle_prediction(prediction)
+                        prediction_handled = True
+                    if self.active_generation is None:
+                        pending_prediction = self._silero_prediction(
+                            chunk,
+                            source=CausalSource.SILERO_PENDING_SILENCE,
+                            model_name="silero-vad-pending-silence",
+                        )
+                        self.latest_prediction = pending_prediction
+                        await self._handle_prediction(pending_prediction)
                 if vad_endpoint_detected:
                     endpoint_at = time.perf_counter()
                     self.final_vad_endpoint_at = endpoint_at
@@ -939,7 +984,11 @@ class VoiceSession:
                         await self._handle_prediction(prediction)
                         prediction_handled = True
                     if self.active_generation is None:
-                        prediction = self._vad_endpoint_prediction(chunk)
+                        prediction = self._silero_prediction(
+                            chunk,
+                            source=CausalSource.SILERO_VAD,
+                            model_name="silero-vad",
+                        )
                         prediction_handled = False
                     vad_speculation_pending = False
                 if prediction is not None:
@@ -1527,7 +1576,12 @@ class VoiceSession:
             return TurnPredictionDisposition.REJECTED_SUPERSEDED
         return TurnPredictionDisposition.APPLICABLE
 
-    def _vad_endpoint_prediction(self, chunk: CapturedAudioChunk) -> InteractionPrediction:
+    def _silero_prediction(
+        self,
+        chunk: CapturedAudioChunk,
+        source: CausalSource,
+        model_name: str,
+    ) -> InteractionPrediction:
         return InteractionPrediction(
             stamp=TraceStamp(
                 event_id=str(uuid4()),
@@ -1547,8 +1601,8 @@ class VoiceSession:
                 output_sample_position=chunk.playback_condition.latest_output_sample_position,
                 conditioned_transcript_revision_id=None,
                 conditioned_playback_event_id=chunk.playback_condition.event_id,
-                source=CausalSource.SILERO_VAD,
-                model_name="silero-vad",
+                source=source,
+                model_name=model_name,
                 model_revision=None,
             ),
             p_user_speech=0.0,
@@ -1571,7 +1625,8 @@ class VoiceSession:
                 )
             elif (
                 generation.causal_prediction is not None
-                and generation.causal_prediction.stamp.source is not CausalSource.SILERO_VAD
+                and generation.causal_prediction.stamp.source
+                not in (CausalSource.SILERO_PENDING_SILENCE, CausalSource.SILERO_VAD)
                 and prediction.p_user_speech >= self.policy.decisive_hold_threshold
             ):
                 await self._invalidate_speculative_candidate(
@@ -1673,7 +1728,10 @@ class VoiceSession:
         revision: TranscriptRevision,
         prediction: InteractionPrediction,
     ) -> str:
-        if prediction.stamp.source is CausalSource.SILERO_VAD:
+        if prediction.stamp.source in (
+            CausalSource.SILERO_PENDING_SILENCE,
+            CausalSource.SILERO_VAD,
+        ):
             return f"{revision.stable_prefix}{revision.volatile_suffix}".strip()
         return revision.stable_prefix.strip()
 

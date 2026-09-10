@@ -16,8 +16,23 @@ from app.compute.voice.schemas import (
 from app.compute.voice.tools import SerializedToolCall, ToolCallFailure, ToolSpecification
 
 
+@dataclass(frozen=True)
+class SpeechDetectionObservation:
+    is_speech: bool
+    speech_probability: float | None
+    pending_silence_samples: int
+
+    def __post_init__(self) -> None:
+        if self.speech_probability is not None and not 0.0 <= self.speech_probability <= 1.0:
+            raise ValueError("Speech probability must be between zero and one.")
+        if self.pending_silence_samples < 0:
+            raise ValueError("Pending silence samples cannot be negative.")
+        if not self.is_speech and self.pending_silence_samples != 0:
+            raise ValueError("Inactive speech cannot retain pending silence.")
+
+
 class SpeechDetector(Protocol):
-    def process_audio(self, pcm_bytes: bytes) -> bool: ...
+    def process_audio(self, pcm_bytes: bytes) -> SpeechDetectionObservation: ...
 
 
 class TranscriptionSession(Protocol):

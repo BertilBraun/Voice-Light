@@ -500,7 +500,7 @@ def candidate_revision_invalidation_reason(
     revised_volatile_suffix: str,
 ) -> CandidateInvalidationReason | None:
     match source:
-        case CausalSource.SILERO_VAD:
+        case CausalSource.SILERO_PENDING_SILENCE | CausalSource.SILERO_VAD:
             revised_text = f"{revised_stable_prefix}{revised_volatile_suffix}".strip()
             if revised_text != prompted_text:
                 return CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED

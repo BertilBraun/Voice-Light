@@ -19,6 +19,7 @@ from app.shared.base_model import FrozenBaseModel
 
 class CausalSource(StrEnum):
     ENERGY_VAD = "energy_vad"
+    SILERO_PENDING_SILENCE = "silero_pending_silence"
     SILERO_VAD = "silero_vad"
     NEMOTRON_ASR = "nemotron_asr"
     TURN_ADAPTER = "turn_adapter"
