@@ -196,6 +196,9 @@ The deployed starting values are:
 | `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS` | `0` | additional silence after Silero's causal endpoint before the VAD fallback starts |
 | `VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY` | `0.70` | synthetic yield evidence assigned to the causal VAD endpoint |
 | `VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE` | `0.70` | confidence assigned to the causal VAD endpoint evidence |
+| `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED` | `true` | pause Transformers Qwen at a token boundary when Kyutai has enough queued text but no PCM |
+| `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT` | `11` | conservative English-word runway before yielding shared-GPU time to Kyutai |
+| `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS` | `400` | safety deadline that resumes Qwen even if first PCM has not arrived |
 
 The threshold is the evaluated Voice-Light starting point, not a universal calibration. Silero
 onset always causes the immediate reversible duck/pause. Strong floor-take evidence commits
@@ -629,6 +632,23 @@ Production remains at 32 codebooks because the small first-frame gain does not j
 speech-quality loss. The 570--650 ms Kyutai latency in the following full voice trace is instead
 consistent with GPU contention from concurrent Qwen inference; controlled Qwen/TTS scheduling is
 the next latency experiment.
+
+The controlled scheduling experiment is now deployed on the Transformers production backend.
+After 11 complete synthesis words have been submitted without first PCM, the session sends a typed
+pause for the current Qwen worker invocation. The logits processor blocks between tokens so Kyutai
+can use the shared GPU; first PCM resumes Qwen immediately, while a 400 ms timeout and generation
+cleanup prevent deadlock. Short responses and tool preambles that produce PCM before the threshold
+are unchanged. The static 11-word runway is conservative for ordinary English text, but source
+words are not identical to Kyutai tokenizer entries, so the timeout remains required.
+
+Deployment of commit `67e1026e` completed successfully. A scaled-to-zero WebSocket reached
+`session.ready` in 35.590 seconds. In a recorded multi-turn microphone trace, the yield fired at 11
+words and first PCM resumed Qwen after 104.2 ms rather than reaching the timeout. A separate warm
+three-trial clipped-microphone smoke measured commit-to-first-PCM at 607.68, 614.09, and 663.75 ms
+(614.09 ms median, 663.75 ms p90). Those trials used a short tool preamble and reached PCM before
+the yield threshold, so they validate the unchanged fast path rather than proving an A/B latency
+gain. A fresh human run with long non-tool responses is still needed to judge audible quality and
+the shared-GPU benefit across varied generations.
 
 ## Known limitations
 
