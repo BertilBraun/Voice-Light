@@ -23,6 +23,7 @@ from app.compute.voice.tools import (
     ToolExecutionFailure,
     ToolExecutionFailureReason,
     ToolName,
+    ToolResultDelivery,
     ToolSuccess,
     create_runtime_tool_registry,
     runtime_tool_specifications,
@@ -137,6 +138,17 @@ def test_tool_circuit_breaker_rejects_only_identical_successful_calls() -> None:
 
     assert circuit_breaker.admit(repeated_call) is ToolCallAdmission.DUPLICATE
     assert circuit_breaker.admit(distinct_call) is ToolCallAdmission.ALLOWED
+
+
+def test_internal_tool_result_delivery_is_not_serialized_for_qwen() -> None:
+    outcome = ToolSuccess(
+        call_id="call-1",
+        tool_name=ToolName.SEARCH,
+        result="London is cloudy.",
+        delivery=ToolResultDelivery.DIRECT_SPEECH,
+    )
+
+    assert "delivery" not in outcome.model_dump_json()
 
 
 @pytest.mark.parametrize(

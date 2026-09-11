@@ -1909,12 +1909,8 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
         send_turn(websocket)
         receive_until(websocket, "llm.history")
         debug_events, _ = receive_until(websocket, "search.debug")
-        wait_until(
-            lambda: (
-                len(language_model.requests) == 2
-                and any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs)
-            )
-        )
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        generation = sessions[0].generations[1]
         websocket.send_json({"type": "session.stop"})
 
     search_debug_event = debug_events[-1]
@@ -1922,8 +1918,9 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
     assert search_debug_event["summarizer_system_prompt"] == summary_prompt_marker
     assert raw_result_marker in search_debug_event["summarizer_user_prompt"]
     assert search_debug_event["summary"] == final_tool_result
-    continuation_messages = language_model.requests[1].messages
-    serialized_messages = repr(continuation_messages)
+    assert len(language_model.requests) == 1
+    assert len(generation.model_context_turn.committed_tool_exchanges) == 1
+    serialized_messages = repr(generation.model_context_turn.messages())
     assert final_tool_result in serialized_messages
     assert raw_result_marker not in serialized_messages
     assert summary_prompt_marker not in serialized_messages
@@ -1931,6 +1928,7 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
         raw_result_marker not in message.content and summary_prompt_marker not in message.content
         for message in sessions[0].conversation
     )
+    assert released_text(sink) == f"Let me check that. {final_tool_result}"
 
 
 def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn() -> None:

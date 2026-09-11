@@ -148,6 +148,7 @@ from app.compute.voice.tools import (
     ToolInvalidationReason,
     ToolLifecycle,
     ToolResultCommitStatus,
+    ToolResultDelivery,
     ToolSpecification,
     ToolSuccess,
     tool_failure_spoken_response,
@@ -2423,6 +2424,23 @@ class VoiceSession:
                     *generation.model_context_prefix,
                     *generation.model_context_turn.messages(),
                 ]
+                generation.model_messages = tuple(model_messages)
+                if (
+                    isinstance(tool_outcome, ToolSuccess)
+                    and tool_outcome.delivery is ToolResultDelivery.DIRECT_SPEECH
+                ):
+                    audible_text_start = len(generation.response_text)
+                    generation.final_answer_text_start = audible_text_start
+                    self._record_first_final_answer_text(generation)
+                    await self._publish_spoken_text(
+                        generation,
+                        synthesis,
+                        word_stream,
+                        " " + tool_outcome.result,
+                    )
+                    await self._flush_synthesis_words(generation, synthesis, word_stream)
+                    await self._finish_synthesis_input(synthesis)
+                    return
                 if result.temperature_conversion is not None and isinstance(
                     tool_outcome, ToolSuccess
                 ):

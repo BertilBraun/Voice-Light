@@ -63,6 +63,11 @@ class ToolResultCommitStatus(StrEnum):
     DISCARDED = "discarded"
 
 
+class ToolResultDelivery(StrEnum):
+    MODEL_CONTINUATION = "model_continuation"
+    DIRECT_SPEECH = "direct_speech"
+
+
 class ToolInvalidationReason(StrEnum):
     USER_ACTIVITY = "user_activity"
     RESPONSE_REQUIRING_OVERLAP = "response_requiring_overlap"
@@ -202,6 +207,10 @@ class ToolSuccess(FrozenBaseModel):
     call_id: str
     tool_name: ToolName
     result: str
+    delivery: ToolResultDelivery = Field(
+        default=ToolResultDelivery.MODEL_CONTINUATION,
+        exclude=True,
+    )
 
 
 class ToolExecutionFailure(FrozenBaseModel):
@@ -358,6 +367,7 @@ class RuntimeToolRegistry:
         return self._search_debug_traces.pop(call_id, None)
 
     async def execute(self, call: ToolCall) -> ToolSuccess | ToolExecutionFailure:
+        delivery = ToolResultDelivery.MODEL_CONTINUATION
         try:
             match call.function:
                 case SearchToolCallFunction(arguments=arguments):
@@ -369,6 +379,7 @@ class RuntimeToolRegistry:
                             pass
                         case SearchToolOutput(result=result, debug_trace=debug_trace):
                             self._search_debug_traces[call.id] = debug_trace
+                            delivery = ToolResultDelivery.DIRECT_SPEECH
                 case CalculateToolCallFunction(arguments=arguments):
                     result = await self.calculate_handler(arguments)
                 case GetTimeToolCallFunction():
@@ -386,6 +397,7 @@ class RuntimeToolRegistry:
             call_id=call.id,
             tool_name=call.function.name,
             result=result,
+            delivery=delivery,
         )
 
 
