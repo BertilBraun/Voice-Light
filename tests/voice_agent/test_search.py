@@ -94,6 +94,7 @@ def test_tavily_provider_normalizes_deduplicates_and_bounds_results() -> None:
             query="test query",
             max_results=MAXIMUM_SEARCH_RESULTS,
         )
+        assert TavilySearchRequest.model_validate_json(request.content).search_depth == "ultra-fast"
         return httpx.Response(
             200,
             json={

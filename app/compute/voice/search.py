@@ -106,7 +106,7 @@ class SearchSummary:
 
 class TavilySearchRequest(FrozenBaseModel):
     query: str = Field(min_length=1, max_length=240)
-    search_depth: Literal["basic"] = "basic"
+    search_depth: Literal["ultra-fast"] = "ultra-fast"
     max_results: int = Field(ge=1, le=MAXIMUM_SEARCH_RESULTS)
     include_answer: Literal[False] = False
     include_raw_content: Literal[False] = False
