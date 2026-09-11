@@ -485,9 +485,11 @@ def candidate_final_invalidation_reason(
     prompted_text: str,
     final_text: str,
 ) -> CandidateInvalidationReason | None:
-    if not final_text.startswith(stable_prefix):
+    stable_words = _semantic_words(stable_prefix)
+    final_words = _semantic_words(final_text)
+    if final_words[: len(stable_words)] != stable_words:
         return CandidateInvalidationReason.FINAL_PREFIX_CHANGED
-    if _semantic_words(prompted_text) != _semantic_words(final_text):
+    if _semantic_words(prompted_text) != final_words:
         return CandidateInvalidationReason.MATERIAL_REQUEST_CHANGE
     return None
 
@@ -499,15 +501,18 @@ def candidate_revision_invalidation_reason(
     revised_stable_prefix: str,
     revised_volatile_suffix: str,
 ) -> CandidateInvalidationReason | None:
+    revised_text = f"{revised_stable_prefix}{revised_volatile_suffix}".strip()
+    if _semantic_words(revised_text) == _semantic_words(prompted_text):
+        return None
     match source:
         case CausalSource.SILERO_PENDING_SILENCE | CausalSource.SILERO_VAD:
-            revised_text = f"{revised_stable_prefix}{revised_volatile_suffix}".strip()
-            if _semantic_words(revised_text) != _semantic_words(prompted_text):
-                return CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
+            return CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
         case _:
-            if not revised_stable_prefix.startswith(stable_prefix):
+            stable_words = _semantic_words(stable_prefix)
+            revised_stable_words = _semantic_words(revised_stable_prefix)
+            if revised_stable_words[: len(stable_words)] != stable_words:
                 return CandidateInvalidationReason.STABLE_PREFIX_REVISED
-    return None
+            return CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
 
 
 def _stable_common_prefix(previous_text: str, current_text: str) -> str:
@@ -528,7 +533,15 @@ def _stable_common_prefix(previous_text: str, current_text: str) -> str:
 
 
 def _semantic_words(text: str) -> tuple[str, ...]:
-    return tuple(re.findall(r"\w+", text.casefold()))
+    without_apostrophes = re.sub(
+        (
+            r"['\N{LEFT SINGLE QUOTATION MARK}"
+            r"\N{RIGHT SINGLE QUOTATION MARK}\N{MODIFIER LETTER APOSTROPHE}]"
+        ),
+        "",
+        text.casefold(),
+    )
+    return tuple(re.findall(r"\w+", without_apostrophes))
 
 
 def _milliseconds_between(start_at: float, end_at: float) -> float:

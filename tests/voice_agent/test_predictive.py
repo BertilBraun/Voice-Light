@@ -85,11 +85,13 @@ def test_transcript_revision_retains_stable_prefix_across_volatile_changes() -> 
 
     first = update_transcript(tracker, "book a", sequence_number=0)
     anchored = update_transcript(tracker, "book a", sequence_number=1)
-    extended = update_transcript(tracker, "book a table", sequence_number=2)
-    revised_suffix = update_transcript(tracker, "book a train", sequence_number=3)
+    timing_only = update_transcript(tracker, "book a", sequence_number=2)
+    extended = update_transcript(tracker, "book a table", sequence_number=3)
+    revised_suffix = update_transcript(tracker, "book a train", sequence_number=4)
 
     assert first is not None
     assert anchored is not None
+    assert timing_only is anchored
     assert anchored.stable_prefix == "book a"
     assert extended is not None
     assert extended.stable_prefix == "book a"
@@ -167,6 +169,36 @@ def test_final_candidate_validation_is_conservative() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "final_text",
+    (
+        "what TIME is it",
+        "  What   time is it?  ",
+        "What time is it...",
+    ),
+)
+def test_final_candidate_survives_presentation_only_revision(final_text: str) -> None:
+    assert (
+        candidate_final_invalidation_reason(
+            stable_prefix="What time is it",
+            prompted_text="What time is it",
+            final_text=final_text,
+        )
+        is None
+    )
+
+
+def test_final_candidate_survives_asr_apostrophe_revision() -> None:
+    assert (
+        candidate_final_invalidation_reason(
+            stable_prefix="dont stop",
+            prompted_text="dont stop",
+            final_text="don't stop!",
+        )
+        is None
+    )
+
+
 def test_vad_candidate_uses_combined_transcript_across_prefix_resegmentation() -> None:
     assert (
         candidate_revision_invalidation_reason(
@@ -225,6 +257,53 @@ def test_trained_candidate_remains_anchored_to_stable_prefix() -> None:
             revised_volatile_suffix="a table",
         )
         is CandidateInvalidationReason.STABLE_PREFIX_REVISED
+    )
+
+
+@pytest.mark.parametrize(
+    ("revised_stable_prefix", "revised_volatile_suffix"),
+    (
+        ("Book a table", "?"),
+        ("book  a ", "table."),
+        ("book a table...", ""),
+    ),
+)
+def test_trained_candidate_survives_presentation_only_revision(
+    revised_stable_prefix: str,
+    revised_volatile_suffix: str,
+) -> None:
+    assert (
+        candidate_revision_invalidation_reason(
+            source=CausalSource.TURN_ADAPTER,
+            stable_prefix="book a table",
+            prompted_text="book a table",
+            revised_stable_prefix=revised_stable_prefix,
+            revised_volatile_suffix=revised_volatile_suffix,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("revised_stable_prefix", "revised_volatile_suffix"),
+    (
+        ("book a table", " tomorrow"),
+        ("book a ", "train"),
+    ),
+)
+def test_trained_candidate_rejects_lexical_revision(
+    revised_stable_prefix: str,
+    revised_volatile_suffix: str,
+) -> None:
+    assert (
+        candidate_revision_invalidation_reason(
+            source=CausalSource.TURN_ADAPTER,
+            stable_prefix="book a table",
+            prompted_text="book a table",
+            revised_stable_prefix=revised_stable_prefix,
+            revised_volatile_suffix=revised_volatile_suffix,
+        )
+        is not None
     )
 
 
