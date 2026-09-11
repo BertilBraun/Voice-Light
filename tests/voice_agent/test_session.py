@@ -517,6 +517,32 @@ class ScriptedWeatherLanguageModel:
         )
 
 
+class ToolOnlyWeatherLanguageModel:
+    def __init__(self) -> None:
+        self.requests: list[LanguageModelRequest] = []
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        self.requests.append(request)
+        yield LanguageModelToolCallStarted(
+            invocation_id=1,
+            call_id="qwen-1-tool-1",
+            cumulative_token_count=1,
+        )
+        yield LanguageModelToolCall(
+            invocation_id=1,
+            request=SerializedToolCall(
+                id="qwen-1-tool-1",
+                name="search",
+                arguments_json='{"query":"current weather in London"}',
+            ),
+            cumulative_token_count=10,
+        )
+        yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=11)
+
+
 class PromiseOnlyWeatherLanguageModel:
     def __init__(self) -> None:
         self.requests: list[LanguageModelRequest] = []
@@ -1888,7 +1914,7 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
                 user_prompt=f"Summarize {raw_result_marker}",
             )
 
-    language_model = ScriptedWeatherLanguageModel()
+    language_model = ToolOnlyWeatherLanguageModel()
     sessions: list[VoiceSession] = []
     sink = InMemoryPlaybackSink()
     search_handler = StandardSearchHandler(
@@ -1929,7 +1955,7 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
         raw_result_marker not in message.content and summary_prompt_marker not in message.content
         for message in sessions[0].conversation
     )
-    assert released_text(sink) == f"Let me check that. {final_tool_result}"
+    assert released_text(sink) == f"Let me look that up. {final_tool_result}"
     assert len(synthesizer.sessions) == 1
     assert synthesizer.sessions[0].finished
 

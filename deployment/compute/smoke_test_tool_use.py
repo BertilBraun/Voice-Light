@@ -153,7 +153,7 @@ def _run_smoke_request(
         routed_tools=tuple(request.name for request in routed_requests),
         parser_failures=(*parser_failures, *validation_failures),
         passed=(
-            bool(spoken_text)
+            (bool(spoken_text) or smoke_request.expected_tool is not None)
             and tuple(request.name for request in effective_requests) == expected_tools
             and not parser_failures
             and not validation_failures
@@ -208,7 +208,7 @@ def _run_worker_smoke_request(
         routed_tools=tuple(request.name for request in routed_requests),
         parser_failures=tuple(failures),
         passed=(
-            bool(spoken_text)
+            (bool(spoken_text) or smoke_request.expected_tool is not None)
             and tuple(request.name for request in effective_requests) == expected_tools
             and not failures
         ),

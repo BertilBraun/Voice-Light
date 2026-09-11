@@ -147,6 +147,7 @@ from app.compute.voice.tools import (
     ToolExecutor,
     ToolInvalidationReason,
     ToolLifecycle,
+    ToolName,
     ToolResultCommitStatus,
     ToolResultDelivery,
     ToolSpecification,
@@ -2361,6 +2362,18 @@ class VoiceSession:
                     assistant_message = ModelAssistantMessage(content=audible_content)
                 else:
                     tool_call = validated_call
+                    if not audible_content:
+                        await self._publish_spoken_text(
+                            generation,
+                            synthesis,
+                            word_stream,
+                            _tool_bridge(validated_call.function.name),
+                        )
+                        await self._flush_synthesis_words(generation, synthesis, word_stream)
+                        audible_text_end = len(generation.response_text)
+                        audible_content = generation.response_text[
+                            audible_text_start:audible_text_end
+                        ].strip()
                     assistant_message = ModelAssistantMessage(
                         content=audible_content,
                         tool_calls=(tool_call,),
@@ -4183,6 +4196,16 @@ def _consume_tool_task_result(
 
 def _milliseconds_to_samples(duration_ms: int) -> int:
     return duration_ms * INPUT_SAMPLE_RATE // 1_000
+
+
+def _tool_bridge(tool_name: ToolName) -> str:
+    match tool_name:
+        case ToolName.SEARCH:
+            return "Let me look that up."
+        case ToolName.CALCULATE:
+            return "Let me calculate that."
+        case ToolName.GET_TIME:
+            return "Let me check the time."
 
 
 def _milliseconds_between(started_at: float, finished_at: float) -> float:

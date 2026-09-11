@@ -65,6 +65,20 @@ def test_tool_use_smoke_rejects_wrong_tool() -> None:
     assert observation.generated_tools == (ToolName.SEARCH,)
 
 
+def test_tool_use_smoke_accepts_a_valid_tool_call_without_model_bridge() -> None:
+    smoke_request = next(
+        request for request in _smoke_requests() if request.case is SmokeCase.SEARCH
+    )
+
+    observation = _run_smoke_request(
+        '<tool_call>{"name":"search","arguments":{"query":"current weather Berlin"}}</tool_call>',
+        smoke_request,
+    )
+
+    assert observation.passed
+    assert observation.spoken_text == ""
+
+
 def test_tool_use_smoke_uses_merged_model_environment() -> None:
     model_name = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
     model_revision = "7eab893e17e3ed8ba40d9c3585dfbb7de17d2c2e"
