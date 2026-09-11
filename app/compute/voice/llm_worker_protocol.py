@@ -20,6 +20,8 @@ class LlmWorkerCommandType(StrEnum):
     START = "start"
     GENERATE_TEXT = "generate_text"
     CANCEL = "cancel"
+    PAUSE = "pause"
+    RESUME = "resume"
     SLEEP = "sleep"
     WAKE = "wake"
     SHUTDOWN = "shutdown"
@@ -82,6 +84,16 @@ class CancelLlmCommand(FrozenBaseModel):
     invocation_id: int = Field(gt=0)
 
 
+class PauseLlmCommand(FrozenBaseModel):
+    type: Literal[LlmWorkerCommandType.PAUSE] = LlmWorkerCommandType.PAUSE
+    invocation_id: int = Field(gt=0)
+
+
+class ResumeLlmCommand(FrozenBaseModel):
+    type: Literal[LlmWorkerCommandType.RESUME] = LlmWorkerCommandType.RESUME
+    invocation_id: int = Field(gt=0)
+
+
 class ShutdownLlmCommand(FrozenBaseModel):
     type: Literal[LlmWorkerCommandType.SHUTDOWN] = LlmWorkerCommandType.SHUTDOWN
 
@@ -98,6 +110,8 @@ LlmWorkerCommand = Annotated[
     StartLlmCommand
     | GenerateTextLlmCommand
     | CancelLlmCommand
+    | PauseLlmCommand
+    | ResumeLlmCommand
     | SleepLlmCommand
     | WakeLlmCommand
     | ShutdownLlmCommand,

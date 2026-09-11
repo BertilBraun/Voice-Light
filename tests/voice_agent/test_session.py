@@ -27,6 +27,7 @@ from app.compute.voice.interfaces import (
     LanguageModel,
     LanguageModelCompleted,
     LanguageModelEvent,
+    LanguageModelFlowControl,
     LanguageModelRequest,
     LanguageModelTextDelta,
     LanguageModelToolCall,
@@ -145,6 +146,20 @@ def test_session_policy_reads_pending_silence_speculation_window() -> None:
     assert policy.adapter_first_speculation_window_ms == 64
 
 
+def test_session_policy_reads_qwen_first_audio_yield_configuration() -> None:
+    policy = SessionPolicy.from_environment(
+        {
+            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED": "true",
+            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT": "13",
+            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS": "275",
+        }
+    )
+
+    assert policy.qwen_first_audio_yield_enabled
+    assert policy.qwen_first_audio_yield_word_count == 13
+    assert policy.qwen_first_audio_yield_timeout_ms == 275
+
+
 def test_session_policy_reads_normal_turn_commit_silence() -> None:
     policy = SessionPolicy.from_environment(
         {"VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS": "280"}
@@ -213,6 +228,8 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS", "0"),
         ("VOICE_LIGHT_ADAPTER_FIRST_SPECULATION_WINDOW_MS", "-1"),
         ("VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS", "0"),
+        ("VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT", "0"),
+        ("VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS", "0"),
     ),
 )
 def test_session_policy_rejects_invalid_interaction_configuration(
@@ -223,12 +240,19 @@ def test_session_policy_rejects_invalid_interaction_configuration(
         SessionPolicy.from_environment({name: value})
 
 
-def test_session_policy_rejects_invalid_vad_speculation_switch() -> None:
+@pytest.mark.parametrize(
+    "environment_name",
+    (
+        "VOICE_LIGHT_VAD_SPECULATION_ENABLED",
+        "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED",
+    ),
+)
+def test_session_policy_rejects_invalid_boolean_switch(environment_name: str) -> None:
     with pytest.raises(
         ValueError,
-        match="VOICE_LIGHT_VAD_SPECULATION_ENABLED",
+        match=environment_name,
     ):
-        SessionPolicy.from_environment({"VOICE_LIGHT_VAD_SPECULATION_ENABLED": "sometimes"})
+        SessionPolicy.from_environment({environment_name: "sometimes"})
 
 
 @pytest.mark.parametrize(
@@ -446,6 +470,51 @@ class FakeLanguageModel:
             invocation_id=1,
         )
         yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=9)
+
+
+class RecordingLanguageModelFlowControl:
+    def __init__(self) -> None:
+        self.paused_generation_ids: list[int] = []
+        self.resumed_generation_ids: list[int] = []
+
+    async def pause_generation(self, assistant_generation_id: int) -> None:
+        self.paused_generation_ids.append(assistant_generation_id)
+
+    async def resume_generation(self, assistant_generation_id: int) -> None:
+        self.resumed_generation_ids.append(assistant_generation_id)
+
+
+class FlowControlledLanguageModel(RecordingLanguageModelFlowControl):
+    def __init__(self) -> None:
+        super().__init__()
+        self.generation_allowed = asyncio.Event()
+        self.generation_allowed.set()
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        del request
+        yield LanguageModelTextDelta(
+            text="One two three four ",
+            cumulative_token_count=4,
+            invocation_id=1,
+        )
+        await self.generation_allowed.wait()
+        yield LanguageModelTextDelta(
+            text="five six seven eight.",
+            cumulative_token_count=8,
+            invocation_id=1,
+        )
+        yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=8)
+
+    async def pause_generation(self, assistant_generation_id: int) -> None:
+        await super().pause_generation(assistant_generation_id)
+        self.generation_allowed.clear()
+
+    async def resume_generation(self, assistant_generation_id: int) -> None:
+        await super().resume_generation(assistant_generation_id)
+        self.generation_allowed.set()
 
 
 class SplitWordLanguageModel:
@@ -1964,6 +2033,70 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn(
         "post-tool synthesis first audio:",
     ):
         assert any(message.startswith(expected_message) for message in session_log_messages)
+
+
+def test_qwen_yields_after_tts_runway_and_resumes_on_first_pcm() -> None:
+    flow_control = RecordingLanguageModelFlowControl()
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        LookaheadSpeechSynthesizer(lookahead_word_count=100),
+        policy=SessionPolicy(
+            silence_duration_ms=40,
+            minimum_normal_turn_commit_silence_ms=20,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=False,
+            qwen_first_audio_yield_enabled=True,
+            qwen_first_audio_yield_word_count=3,
+            qwen_first_audio_yield_timeout_ms=1_000,
+        ),
+        playback_sink=sink,
+        language_model_flow_control=flow_control,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert flow_control.paused_generation_ids == [1]
+    assert flow_control.resumed_generation_ids == [1]
+
+
+def test_qwen_yield_timeout_resumes_generation_without_first_pcm() -> None:
+    language_model = FlowControlledLanguageModel()
+    sink = InMemoryPlaybackSink()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        language_model,
+        LookaheadSpeechSynthesizer(lookahead_word_count=100),
+        policy=SessionPolicy(
+            silence_duration_ms=40,
+            minimum_normal_turn_commit_silence_ms=20,
+            pre_roll_duration_ms=20,
+            vad_speculation_enabled=False,
+            qwen_first_audio_yield_enabled=True,
+            qwen_first_audio_yield_word_count=3,
+            qwen_first_audio_yield_timeout_ms=20,
+        ),
+        playback_sink=sink,
+        language_model_flow_control=language_model,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "llm.history")
+        wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
+        websocket.send_json({"type": "session.stop"})
+
+    assert language_model.paused_generation_ids == [1]
+    assert language_model.resumed_generation_ids == [1]
 
 
 def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() -> None:
@@ -4812,6 +4945,7 @@ def create_test_app(
     playback_sink: PlaybackSink | None = None,
     created_sessions: list[VoiceSession] | None = None,
     tool_executor: ToolExecutor | None = None,
+    language_model_flow_control: LanguageModelFlowControl | None = None,
 ) -> FastAPI:
     web_app = FastAPI()
 
@@ -4836,6 +4970,7 @@ def create_test_app(
             speech_synthesizer=speech_synthesizer,
             policy=policy,
             tool_executor=tool_executor or create_search_registry(UnconfiguredTestSearchHandler()),
+            language_model_flow_control=language_model_flow_control,
             playback_sink=playback_sink,
         )
         if created_sessions is not None:

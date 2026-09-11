@@ -50,6 +50,8 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerMessage,
     LlmWorkerReadyEvent,
     LlmWorkerSleepingEvent,
+    PauseLlmCommand,
+    ResumeLlmCommand,
     ShutdownLlmCommand,
     SleepLlmCommand,
     StartLlmCommand,
@@ -331,6 +333,7 @@ class VllmLanguageModel:
                 component_name="Qwen language model",
             ),
         )
+        self.active_sessions: dict[int, QwenInvocationSession] = {}
 
     async def stream_response(
         self,
@@ -342,11 +345,25 @@ class VllmLanguageModel:
             progress_timeout_seconds=QWEN_GENERATION_PROGRESS_TIMEOUT_SECONDS,
             cancellation_timeout_seconds=QWEN_CANCELLATION_TIMEOUT_SECONDS,
         )
+        generation_id = request.assistant_generation_id
+        self.active_sessions[generation_id] = session
         try:
             async for event in session.stream_events():
                 yield event
         finally:
             await session.cancel()
+            if self.active_sessions.get(generation_id) is session:
+                del self.active_sessions[generation_id]
+
+    async def pause_generation(self, assistant_generation_id: int) -> None:
+        session = self.active_sessions.get(assistant_generation_id)
+        if session is not None:
+            await session.pause()
+
+    async def resume_generation(self, assistant_generation_id: int) -> None:
+        session = self.active_sessions.get(assistant_generation_id)
+        if session is not None:
+            await session.resume()
 
     async def generate_text(self, request: TextGenerationRequest) -> str:
         return await _generate_text(self.worker_manager, request)
@@ -559,6 +576,18 @@ class QwenInvocationSession:
             raise error
         await self._finalize_worker(replace=False)
         await self._stop_output_task()
+
+    async def pause(self) -> None:
+        worker = self.worker
+        if worker is None or self.worker_finalized:
+            return
+        worker.send(PauseLlmCommand(invocation_id=self._require_invocation_id()))
+
+    async def resume(self) -> None:
+        worker = self.worker
+        if worker is None or self.worker_finalized:
+            return
+        worker.send(ResumeLlmCommand(invocation_id=self._require_invocation_id()))
 
     async def _ensure_started(self) -> None:
         async with self.start_lock:

@@ -33,6 +33,8 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerLifecycleErrorEvent,
     LlmWorkerReadyEvent,
     LlmWorkerSleepingEvent,
+    PauseLlmCommand,
+    ResumeLlmCommand,
     ShutdownLlmCommand,
     SleepLlmCommand,
     StartLlmCommand,
@@ -110,6 +112,10 @@ class QwenTextRuntime(Protocol):
 
     def close(self) -> None: ...
 
+    def pause(self, invocation_id: int) -> None: ...
+
+    def resume(self, invocation_id: int) -> None: ...
+
     async def sleep(self) -> None: ...
 
     async def wake(self) -> None: ...
@@ -149,6 +155,12 @@ class QwenWorkerController:
                 return False
             case CancelLlmCommand():
                 await self._cancel(command)
+                return False
+            case PauseLlmCommand():
+                self._pause(command)
+                return False
+            case ResumeLlmCommand():
+                self._resume(command)
                 return False
             case SleepLlmCommand():
                 await self._sleep()
@@ -211,6 +223,28 @@ class QwenWorkerController:
             return
         active_invocation.task.cancel()
         await active_invocation.task
+
+    def _pause(self, command: PauseLlmCommand) -> None:
+        if not self._is_active(command.invocation_id):
+            logger.warning(
+                "ignoring Qwen pause for inactive invocation: invocation=%d",
+                command.invocation_id,
+            )
+            return
+        self.runtime.pause(command.invocation_id)
+
+    def _resume(self, command: ResumeLlmCommand) -> None:
+        if not self._is_active(command.invocation_id):
+            logger.warning(
+                "ignoring Qwen resume for inactive invocation: invocation=%d",
+                command.invocation_id,
+            )
+            return
+        self.runtime.resume(command.invocation_id)
+
+    def _is_active(self, invocation_id: int) -> bool:
+        active_invocation = self.active_invocation
+        return active_invocation is not None and active_invocation.invocation_id == invocation_id
 
     async def _shutdown(self) -> None:
         active_invocation = self.active_invocation

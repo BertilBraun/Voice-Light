@@ -27,6 +27,8 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerCommandType,
     LlmWorkerErrorEvent,
     LlmWorkerEvent,
+    PauseLlmCommand,
+    ResumeLlmCommand,
     StartLlmCommand,
 )
 from app.compute.voice.model_constants import (
@@ -134,6 +136,41 @@ class FakeQwenWorkerManager:
 class BoundedTextLanguageModel(VllmLanguageModel):
     def __init__(self, worker_manager: FakeQwenWorkerManager) -> None:
         self.worker_manager = worker_manager
+        self.active_sessions: dict[int, QwenInvocationSession] = {}
+
+
+def test_language_model_routes_flow_control_to_current_worker_invocation() -> None:
+    async def run_invocation() -> None:
+        worker = FakeQwenWorker(
+            start_events=(
+                LlmSpokenTextDeltaEvent(
+                    invocation_id=1,
+                    text="One two three ",
+                    cumulative_token_count=3,
+                ),
+            )
+        )
+        model = BoundedTextLanguageModel(FakeQwenWorkerManager(worker))
+        response_stream = model.stream_response(REQUEST)
+
+        assert isinstance(await anext(response_stream), LanguageModelTextDelta)
+        await model.pause_generation(REQUEST.assistant_generation_id)
+        await model.resume_generation(REQUEST.assistant_generation_id)
+        await response_stream.aclose()
+
+        assert [
+            type(command)
+            for command in worker.commands
+            if isinstance(command, PauseLlmCommand | ResumeLlmCommand)
+        ] == [PauseLlmCommand, ResumeLlmCommand]
+        assert [
+            command.invocation_id
+            for command in worker.commands
+            if isinstance(command, PauseLlmCommand | ResumeLlmCommand)
+        ] == [1, 1]
+        assert model.active_sessions == {}
+
+    asyncio.run(run_invocation())
 
 
 def test_qwen_worker_exception_is_typed_and_worker_is_replaced() -> None:

@@ -17,9 +17,12 @@ from app.compute.voice.llm_worker_protocol import (
     LlmWorkerEvent,
     LlmWorkerReadyEvent,
     LlmWorkerSleepingEvent,
+    PauseLlmCommand,
+    ResumeLlmCommand,
     SleepLlmCommand,
     StartLlmCommand,
     WakeLlmCommand,
+    llm_worker_command_adapter,
 )
 from app.compute.voice.qwen_worker import (
     LANGUAGE_MODEL_SYSTEM_PROMPT,
@@ -46,6 +49,8 @@ class ImmediateQwenRuntime:
     def __init__(self) -> None:
         self.sleep_count = 0
         self.wake_count = 0
+        self.paused_invocations: list[int] = []
+        self.resumed_invocations: list[int] = []
 
     async def stream_text(
         self,
@@ -57,6 +62,12 @@ class ImmediateQwenRuntime:
     def close(self) -> None:
         return
 
+    def pause(self, invocation_id: int) -> None:
+        self.paused_invocations.append(invocation_id)
+
+    def resume(self, invocation_id: int) -> None:
+        self.resumed_invocations.append(invocation_id)
+
     async def sleep(self) -> None:
         self.sleep_count += 1
 
@@ -67,6 +78,8 @@ class ImmediateQwenRuntime:
 class BlockingQwenRuntime:
     def __init__(self) -> None:
         self.waiting = asyncio.Event()
+        self.paused_invocations: list[int] = []
+        self.resumed_invocations: list[int] = []
 
     async def stream_text(
         self,
@@ -79,6 +92,12 @@ class BlockingQwenRuntime:
 
     def close(self) -> None:
         return
+
+    def pause(self, invocation_id: int) -> None:
+        self.paused_invocations.append(invocation_id)
+
+    def resume(self, invocation_id: int) -> None:
+        self.resumed_invocations.append(invocation_id)
 
     async def sleep(self) -> None:
         return
@@ -355,6 +374,41 @@ def test_worker_sleep_and_wake_are_acknowledged_in_causal_order() -> None:
         assert controller.events.get(timeout=1) == LlmWorkerReadyEvent()
 
     asyncio.run(transition_worker())
+
+
+def test_pause_and_resume_commands_round_trip_through_typed_protocol() -> None:
+    assert llm_worker_command_adapter.validate_json(
+        PauseLlmCommand(invocation_id=7).model_dump_json()
+    ) == PauseLlmCommand(invocation_id=7)
+    assert llm_worker_command_adapter.validate_json(
+        ResumeLlmCommand(invocation_id=7).model_dump_json()
+    ) == ResumeLlmCommand(invocation_id=7)
+
+
+def test_worker_forwards_pause_and_resume_only_to_the_active_invocation() -> None:
+    async def control_generation() -> None:
+        runtime = BlockingQwenRuntime()
+        controller = RecordingQwenWorkerController()
+        controller.runtime = runtime
+        controller._start(
+            GenerateTextLlmCommand(
+                invocation_id=8,
+                system_prompt="Summarize.",
+                user_prompt="Results.",
+                max_new_tokens=20,
+            )
+        )
+        await runtime.waiting.wait()
+
+        await controller._handle_command(PauseLlmCommand(invocation_id=9))
+        await controller._handle_command(PauseLlmCommand(invocation_id=8))
+        await controller._handle_command(ResumeLlmCommand(invocation_id=8))
+
+        assert runtime.paused_invocations == [8]
+        assert runtime.resumed_invocations == [8]
+        await controller._cancel(CancelLlmCommand(invocation_id=8))
+
+    asyncio.run(control_generation())
 
 
 def test_text_generation_bypasses_tool_call_parser() -> None:

@@ -60,6 +60,9 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     )
     assert environment["VOICE_LIGHT_QWEN_ENFORCE_EAGER"] == "true"
     assert environment["VOICE_LIGHT_QWEN_BACKEND"] == "transformers"
+    assert environment["VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED"] == "true"
+    assert environment["VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT"] == "11"
+    assert environment["VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS"] == "400"
     assert environment["VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH"] == "false"
 
 

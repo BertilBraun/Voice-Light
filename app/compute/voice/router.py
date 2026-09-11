@@ -42,6 +42,7 @@ async def run_voice_session(
             speech_detector=runtime.require_speech_detector_factory().create(),
             speech_understanding_provider=runtime.require_speech_understanding_provider(),
             language_model=language_model,
+            language_model_flow_control=language_model,
             speech_synthesizer=runtime.require_speech_synthesizer(),
             policy=SessionPolicy.from_environment(os.environ),
             playback_policy=PlaybackPolicyConfig.from_environment(os.environ),

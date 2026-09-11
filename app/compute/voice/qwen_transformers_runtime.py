@@ -36,14 +36,42 @@ class QwenTransformersTokenizer(QwenChatTemplateTokenizer, Protocol):
     def encode(self, text: str, *, add_special_tokens: bool) -> list[int]: ...
 
 
-class CancellationLogitsProcessor(LogitsProcessor):
-    def __init__(self, cancellation_event: threading.Event, eos_token_id: int) -> None:
-        self.cancellation_event = cancellation_event
+class GenerationFlowControl:
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.paused = False
+        self.cancelled = False
+
+    def pause(self) -> None:
+        with self.condition:
+            self.paused = True
+
+    def resume(self) -> None:
+        with self.condition:
+            self.paused = False
+            self.condition.notify_all()
+
+    def cancel(self) -> None:
+        with self.condition:
+            self.cancelled = True
+            self.paused = False
+            self.condition.notify_all()
+
+    def wait_until_ready(self) -> bool:
+        with self.condition:
+            while self.paused and not self.cancelled:
+                self.condition.wait()
+            return not self.cancelled
+
+
+class GenerationFlowControlLogitsProcessor(LogitsProcessor):
+    def __init__(self, flow_control: GenerationFlowControl, eos_token_id: int) -> None:
+        self.flow_control = flow_control
         self.eos_token_id = eos_token_id
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         del input_ids
-        if not self.cancellation_event.is_set():
+        if self.flow_control.wait_until_ready():
             return scores
         cancelled_scores = torch.full_like(scores, -torch.inf)
         cancelled_scores[:, self.eos_token_id] = 0.0
@@ -53,6 +81,12 @@ class CancellationLogitsProcessor(LogitsProcessor):
 @dataclass
 class GenerationThreadState:
     error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class ActiveTransformersGeneration:
+    invocation_id: int
+    flow_control: GenerationFlowControl
 
 
 class QwenTransformersRuntime:
@@ -77,11 +111,14 @@ class QwenTransformersRuntime:
         ).to("cuda")
         self.model.eval()
         self.sampling = configuration.sampling
+        self.active_generation: ActiveTransformersGeneration | None = None
 
     async def stream_text(
         self,
         command: QwenGenerationCommand,
     ) -> AsyncIterator[GeneratedTextDelta]:
+        if self.active_generation is not None:
+            raise RuntimeError("The Transformers Qwen runtime already has an active generation.")
         prompt = render_qwen_prompt(self.tokenizer, command)
         model_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         streamer = TextIteratorStreamer(
@@ -89,15 +126,17 @@ class QwenTransformersRuntime:
             skip_prompt=True,
             skip_special_tokens=True,
         )
-        cancellation_event = threading.Event()
-        cancellation_processor = CancellationLogitsProcessor(
-            cancellation_event,
+        flow_control = GenerationFlowControl()
+        flow_control_processor = GenerationFlowControlLogitsProcessor(
+            flow_control,
             self.tokenizer.eos_token_id,
         )
+        active_generation = ActiveTransformersGeneration(command.invocation_id, flow_control)
+        self.active_generation = active_generation
         thread_state = GenerationThreadState()
         generation_thread = threading.Thread(
             target=self._generate,
-            args=(command, model_inputs, streamer, cancellation_processor, thread_state),
+            args=(command, model_inputs, streamer, flow_control_processor, thread_state),
             daemon=True,
             name=f"qwen-transformers-{command.invocation_id}",
         )
@@ -119,15 +158,17 @@ class QwenTransformersRuntime:
             if thread_state.error is not None:
                 raise thread_state.error
         finally:
-            cancellation_event.set()
+            flow_control.cancel()
             await asyncio.shield(asyncio.to_thread(generation_thread.join))
+            if self.active_generation is active_generation:
+                self.active_generation = None
 
     def _generate(
         self,
         command: QwenGenerationCommand,
         model_inputs: BatchEncoding,
         streamer: TextIteratorStreamer,
-        cancellation_processor: CancellationLogitsProcessor,
+        flow_control_processor: GenerationFlowControlLogitsProcessor,
         thread_state: GenerationThreadState,
     ) -> None:
         try:
@@ -138,7 +179,7 @@ class QwenTransformersRuntime:
                             input_ids=model_inputs.input_ids,
                             attention_mask=model_inputs.attention_mask,
                             streamer=streamer,
-                            logits_processor=LogitsProcessorList([cancellation_processor]),
+                            logits_processor=LogitsProcessorList([flow_control_processor]),
                             max_new_tokens=256,
                             do_sample=True,
                             temperature=self.sampling.temperature,
@@ -150,7 +191,7 @@ class QwenTransformersRuntime:
                             input_ids=model_inputs.input_ids,
                             attention_mask=model_inputs.attention_mask,
                             streamer=streamer,
-                            logits_processor=LogitsProcessorList([cancellation_processor]),
+                            logits_processor=LogitsProcessorList([flow_control_processor]),
                             max_new_tokens=max_new_tokens,
                             do_sample=False,
                         )
@@ -161,6 +202,18 @@ class QwenTransformersRuntime:
     def close(self) -> None:
         del self.model
         torch.cuda.empty_cache()
+
+    def pause(self, invocation_id: int) -> None:
+        self._active_flow_control(invocation_id).pause()
+
+    def resume(self, invocation_id: int) -> None:
+        self._active_flow_control(invocation_id).resume()
+
+    def _active_flow_control(self, invocation_id: int) -> GenerationFlowControl:
+        active_generation = self.active_generation
+        if active_generation is None or active_generation.invocation_id != invocation_id:
+            raise ValueError(f"No active Transformers generation for invocation {invocation_id}.")
+        return active_generation.flow_control
 
     async def sleep(self) -> None:
         raise RuntimeError("The Transformers Qwen backend does not support memory snapshots.")

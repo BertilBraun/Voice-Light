@@ -31,6 +31,7 @@ from app.compute.voice.interfaces import (
     LanguageModel,
     LanguageModelCompleted,
     LanguageModelFailed,
+    LanguageModelFlowControl,
     LanguageModelRequest,
     LanguageModelTextDelta,
     LanguageModelToolCall,
@@ -187,6 +188,9 @@ class SessionPolicy:
     vad_speculation_enabled: bool = True
     pending_silence_speculation_ms: int = 80
     adapter_first_speculation_window_ms: int = 80
+    qwen_first_audio_yield_enabled: bool = False
+    qwen_first_audio_yield_word_count: int = 11
+    qwen_first_audio_yield_timeout_ms: int = 400
     vad_speculation_debounce_ms: int = 0
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
@@ -227,6 +231,21 @@ class SessionPolicy:
             environment,
             "VOICE_LIGHT_ADAPTER_FIRST_SPECULATION_WINDOW_MS",
             80,
+        )
+        qwen_first_audio_yield_enabled = _environment_boolean(
+            environment,
+            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED",
+            False,
+        )
+        qwen_first_audio_yield_word_count = _environment_integer(
+            environment,
+            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT",
+            11,
+        )
+        qwen_first_audio_yield_timeout_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS",
+            400,
         )
         tool_timeout_value = environment.get("VOICE_LIGHT_TOOL_TIMEOUT_SECONDS")
         tool_timeout_seconds = 30.0
@@ -324,6 +343,9 @@ class SessionPolicy:
             vad_speculation_enabled=vad_speculation_enabled,
             pending_silence_speculation_ms=pending_silence_speculation_ms,
             adapter_first_speculation_window_ms=adapter_first_speculation_window_ms,
+            qwen_first_audio_yield_enabled=qwen_first_audio_yield_enabled,
+            qwen_first_audio_yield_word_count=qwen_first_audio_yield_word_count,
+            qwen_first_audio_yield_timeout_ms=qwen_first_audio_yield_timeout_ms,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
             tool_timeout_seconds=tool_timeout_seconds,
             tool_cancellation_timeout_seconds=tool_cancellation_timeout_seconds,
@@ -364,6 +386,10 @@ class SessionPolicy:
             raise ValueError("The pending-silence speculation window must be positive.")
         if self.adapter_first_speculation_window_ms < 0:
             raise ValueError("The adapter-first speculation window cannot be negative.")
+        if self.qwen_first_audio_yield_word_count <= 0:
+            raise ValueError("The Qwen first-audio yield word count must be positive.")
+        if self.qwen_first_audio_yield_timeout_ms <= 0:
+            raise ValueError("The Qwen first-audio yield timeout must be positive.")
         if self.maximum_prediction_lag_ms < 0:
             raise ValueError("The maximum prediction lag cannot be negative.")
         if self.overlap_classification_deadline_ms <= 0:
@@ -396,6 +422,12 @@ class SessionLifecycle(StrEnum):
     FAILED = "failed"
     STOPPING = "stopping"
     CLOSED = "closed"
+
+
+class QwenFirstAudioYieldEndReason(StrEnum):
+    FIRST_PCM = "first_pcm"
+    TIMEOUT = "timeout"
+    GENERATION_ENDED = "generation_ended"
 
 
 @dataclass
@@ -550,6 +582,10 @@ class ActiveGeneration:
     tool_executions: list[ToolExecutionJournalEntry] = field(default_factory=list)
     final_answer_text_start: int | None = None
     final_answer_first_sample: int | None = None
+    qwen_first_audio_yield_active: bool = False
+    qwen_first_audio_yield_started_at: float | None = None
+    qwen_first_audio_yield_task: asyncio.Task[None] | None = None
+    qwen_first_audio_yield_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass
@@ -652,6 +688,7 @@ class VoiceSession:
         speech_synthesizer: SpeechSynthesizer,
         policy: SessionPolicy,
         tool_executor: ToolExecutor,
+        language_model_flow_control: LanguageModelFlowControl | None = None,
         playback_sink: PlaybackSink | None = None,
         playback_policy: PlaybackPolicyConfig | None = None,
         overlap_policy: ProvisionalVadTranscriptOverlapPolicy | None = None,
@@ -660,6 +697,7 @@ class VoiceSession:
         self.speech_detector = speech_detector
         self.speech_understanding = speech_understanding_provider.create_session(stream_epoch=1)
         self.language_model = language_model
+        self.language_model_flow_control = language_model_flow_control
         self.speech_synthesizer = speech_synthesizer
         self.policy = policy
         self.tool_executor = tool_executor
@@ -720,6 +758,8 @@ class VoiceSession:
         self.active_user_overlap: ActiveUserOverlap | None = None
         self.user_overlap_traces: list[ActiveUserOverlap] = []
         self.overlap_metrics = OverlapMetrics()
+        if policy.qwen_first_audio_yield_enabled and language_model_flow_control is None:
+            raise ValueError("Qwen first-audio yielding requires language-model flow control.")
 
     @property
     def playback_condition(self) -> PlaybackCondition:
@@ -2204,6 +2244,11 @@ class VoiceSession:
             raise
         except Exception as error:
             await self._handle_generation_failure(generation, error)
+        finally:
+            await self._resume_qwen_first_audio_yield(
+                generation,
+                QwenFirstAudioYieldEndReason.GENERATION_ENDED,
+            )
 
     async def _handle_generation_failure(
         self,
@@ -3269,6 +3314,85 @@ class VoiceSession:
                 VoiceOperation.STREAM_SYNTHESIS,
                 str(error),
             ) from error
+        await asyncio.sleep(0)
+        if (
+            self.policy.qwen_first_audio_yield_enabled
+            and generation.synthesis_word_count == self.policy.qwen_first_audio_yield_word_count
+            and generation.latency.first_audio_at is None
+        ):
+            await self._start_qwen_first_audio_yield(generation)
+
+    async def _start_qwen_first_audio_yield(self, generation: ActiveGeneration) -> None:
+        flow_control = self.language_model_flow_control
+        assert flow_control is not None
+        async with generation.qwen_first_audio_yield_lock:
+            if generation.latency.first_audio_at is not None:
+                return
+            generation.qwen_first_audio_yield_active = True
+            generation.qwen_first_audio_yield_started_at = time.perf_counter()
+            try:
+                await flow_control.pause_generation(generation.generation_id)
+            except Exception:
+                generation.qwen_first_audio_yield_active = False
+                generation.qwen_first_audio_yield_started_at = None
+                logger.exception(
+                    "Qwen first-audio yield could not start: session=%s generation=%d",
+                    self.session_id,
+                    generation.generation_id,
+                )
+                return
+            generation.qwen_first_audio_yield_task = asyncio.create_task(
+                self._expire_qwen_first_audio_yield(generation),
+                name=f"qwen-first-audio-yield-{generation.generation_id}",
+            )
+        logger.info(
+            "Qwen yielded for first TTS audio: session=%s generation=%d words=%d timeout_ms=%d",
+            self.session_id,
+            generation.generation_id,
+            generation.synthesis_word_count,
+            self.policy.qwen_first_audio_yield_timeout_ms,
+        )
+
+    async def _expire_qwen_first_audio_yield(self, generation: ActiveGeneration) -> None:
+        await asyncio.sleep(self.policy.qwen_first_audio_yield_timeout_ms / 1_000)
+        await self._resume_qwen_first_audio_yield(
+            generation,
+            QwenFirstAudioYieldEndReason.TIMEOUT,
+        )
+
+    async def _resume_qwen_first_audio_yield(
+        self,
+        generation: ActiveGeneration,
+        reason: QwenFirstAudioYieldEndReason,
+    ) -> None:
+        async with generation.qwen_first_audio_yield_lock:
+            if not generation.qwen_first_audio_yield_active:
+                return
+            generation.qwen_first_audio_yield_active = False
+            timeout_task = generation.qwen_first_audio_yield_task
+            generation.qwen_first_audio_yield_task = None
+            if timeout_task is not None and timeout_task is not asyncio.current_task():
+                timeout_task.cancel()
+            flow_control = self.language_model_flow_control
+            assert flow_control is not None
+            try:
+                await flow_control.resume_generation(generation.generation_id)
+            except Exception:
+                logger.exception(
+                    "Qwen first-audio yield could not end: session=%s generation=%d reason=%s",
+                    self.session_id,
+                    generation.generation_id,
+                    reason,
+                )
+            started_at = generation.qwen_first_audio_yield_started_at
+            assert started_at is not None
+        logger.info(
+            "Qwen first-audio yield ended: session=%s generation=%d reason=%s duration_ms=%.1f",
+            self.session_id,
+            generation.generation_id,
+            reason,
+            (time.perf_counter() - started_at) * 1_000,
+        )
 
     @staticmethod
     def _record_first_qwen_complete_word(
@@ -3372,6 +3496,10 @@ class VoiceSession:
                     if not started:
                         started = True
                         generation.latency.first_audio_at = time.perf_counter()
+                        await self._resume_qwen_first_audio_yield(
+                            generation,
+                            QwenFirstAudioYieldEndReason.FIRST_PCM,
+                        )
                         generation.latency.tts_first_pcm = MediaLatencyPoint(
                             monotonic_time_seconds=generation.latency.first_audio_at,
                             input_sample_position=generation.input_audio_sample_position,
@@ -4343,6 +4471,23 @@ def _environment_integer(
         return int(value)
     except ValueError as error:
         raise ValueError(f"{name} must be an integer.") from error
+
+
+def _environment_boolean(
+    environment: Mapping[str, str],
+    name: str,
+    default: bool,
+) -> bool:
+    value = environment.get(name)
+    if value is None:
+        return default
+    match value.strip().casefold():
+        case "true":
+            return True
+        case "false":
+            return False
+        case _:
+            raise ValueError(f"{name} must be either 'true' or 'false'.")
 
 
 def _component_error(
