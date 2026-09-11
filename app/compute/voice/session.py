@@ -186,6 +186,7 @@ class SessionPolicy:
     overlap_rearm_silence_ms: int = 160
     vad_speculation_enabled: bool = True
     pending_silence_speculation_ms: int = 80
+    adapter_first_speculation_window_ms: int = 80
     vad_speculation_debounce_ms: int = 0
     vad_endpoint_yield_probability: float = 0.7
     vad_endpoint_confidence: float = 0.7
@@ -220,6 +221,11 @@ class SessionPolicy:
         pending_silence_speculation_ms = _environment_integer(
             environment,
             "VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS",
+            80,
+        )
+        adapter_first_speculation_window_ms = _environment_integer(
+            environment,
+            "VOICE_LIGHT_ADAPTER_FIRST_SPECULATION_WINDOW_MS",
             80,
         )
         tool_timeout_value = environment.get("VOICE_LIGHT_TOOL_TIMEOUT_SECONDS")
@@ -317,6 +323,7 @@ class SessionPolicy:
             speculative_minimum_confidence=speculative_minimum_confidence,
             vad_speculation_enabled=vad_speculation_enabled,
             pending_silence_speculation_ms=pending_silence_speculation_ms,
+            adapter_first_speculation_window_ms=adapter_first_speculation_window_ms,
             vad_speculation_debounce_ms=vad_speculation_debounce_ms,
             tool_timeout_seconds=tool_timeout_seconds,
             tool_cancellation_timeout_seconds=tool_cancellation_timeout_seconds,
@@ -355,6 +362,8 @@ class SessionPolicy:
             raise ValueError("The VAD speculation debounce cannot be negative.")
         if self.pending_silence_speculation_ms <= 0:
             raise ValueError("The pending-silence speculation window must be positive.")
+        if self.adapter_first_speculation_window_ms < 0:
+            raise ValueError("The adapter-first speculation window cannot be negative.")
         if self.maximum_prediction_lag_ms < 0:
             raise ValueError("The maximum prediction lag cannot be negative.")
         if self.overlap_classification_deadline_ms <= 0:
@@ -402,6 +411,7 @@ class GenerationLatency:
     first_audio_at: float | None = None
     first_audio_sent_at: float | None = None
     turn_committed_at: float | None = None
+    turn_commit_causal_source: CausalSource | None = None
     asr_finalized_at: float | None = None
     candidate_promoted_at: float | None = None
     candidate_invalidated_at: float | None = None
@@ -844,6 +854,10 @@ class VoiceSession:
         required_pending_silence_speculation_samples = _milliseconds_to_samples(
             self.policy.pending_silence_speculation_ms
         )
+        required_silero_pending_silence_speculation_samples = _milliseconds_to_samples(
+            self.policy.pending_silence_speculation_ms
+            + self.policy.adapter_first_speculation_window_ms
+        )
         maximum_pre_roll_samples = _milliseconds_to_samples(self.policy.pre_roll_duration_ms)
         required_overlap_rearm_silent_samples = _milliseconds_to_samples(
             self.policy.overlap_rearm_silence_ms
@@ -970,7 +984,11 @@ class VoiceSession:
                         self.latest_prediction = prediction
                         await self._handle_prediction(prediction)
                         prediction_handled = True
-                    if self.active_generation is None:
+                    if (
+                        self.active_generation is None
+                        and speech_detection.pending_silence_samples
+                        >= required_silero_pending_silence_speculation_samples
+                    ):
                         pending_prediction = self._silero_prediction(
                             chunk,
                             source=CausalSource.SILERO_PENDING_SILENCE,
@@ -1070,7 +1088,18 @@ class VoiceSession:
                 silent_samples = 0
                 vad_speculation_pending = False
                 await self._send_speech_state(VoiceServerEventType.VAD_STOPPED)
-                await self._finalize_turn(speech_understanding)
+                commit_source = (
+                    prediction.stamp.source if prediction_commits else CausalSource.SILERO_VAD
+                )
+                logger.info(
+                    "normal turn commitment selected: session=%s source=%s "
+                    "prediction_commit=%s silence_commit=%s",
+                    self.session_id,
+                    commit_source,
+                    prediction_commits,
+                    silence_commits,
+                )
+                await self._finalize_turn(speech_understanding, commit_source)
                 self.latest_transcript_revision = None
                 self.interaction_prediction_reducer.reset_turn()
                 self.latest_prediction = None
@@ -1280,7 +1309,10 @@ class VoiceSession:
                 overlap.generation_id,
             )
             self.active_user_overlap = None
-            await self._finalize_turn(speech_understanding)
+            await self._finalize_turn(
+                speech_understanding,
+                provisional_decision.causal_source,
+            )
             return OverlapResolutionKind.NON_FLOOR_TAKING
         finalization_started_at = time.perf_counter()
         finalization_task = asyncio.create_task(speech_understanding.finalize_turn())
@@ -1359,6 +1391,7 @@ class VoiceSession:
                 committed_at=finalization_started_at,
                 finalized_at=finalized_at,
                 finalization_seconds=finalized_at - finalization_started_at,
+                commit_causal_source=final_decision.causal_source,
             )
             return OverlapResolutionKind.NON_FLOOR_TAKING
         if not resumed_early:
@@ -1434,6 +1467,17 @@ class VoiceSession:
                 ),
                 causal_source=decision.causal_source,
             )
+        )
+        logger.info(
+            "user overlap decision: session=%s overlap=%s generation=%d decision=%s "
+            "reason=%s source=%s latency_ms=%.1f",
+            self.session_id,
+            overlap.overlap_id,
+            overlap.generation_id,
+            decision.kind,
+            decision.reason,
+            decision.causal_source,
+            (decision_time_ns - overlap.onset_monotonic_time_ns) / 1_000_000,
         )
 
     async def _promote_overlap_to_user_turn(
@@ -1794,6 +1838,7 @@ class VoiceSession:
     async def _finalize_turn(
         self,
         speech_understanding: SpeechUnderstandingSession,
+        commit_causal_source: CausalSource,
     ) -> None:
         committed_at = time.perf_counter()
         generation = self.active_generation
@@ -1835,6 +1880,7 @@ class VoiceSession:
             committed_at=committed_at,
             finalized_at=finalized_at,
             finalization_seconds=finalization_seconds,
+            commit_causal_source=commit_causal_source,
         )
 
     async def _commit_finalized_user_turn(
@@ -1843,6 +1889,7 @@ class VoiceSession:
         committed_at: float,
         finalized_at: float,
         finalization_seconds: float,
+        commit_causal_source: CausalSource,
     ) -> None:
         await self._send_transcript(VoiceServerEventType.TRANSCRIPT_FINAL, final_text)
         generation = self.active_generation
@@ -1869,6 +1916,7 @@ class VoiceSession:
             generation.latency.turn_committed_at = committed_at
             generation.latency.asr_finalized_at = finalized_at
             generation.latency.asr_finalization_seconds = finalization_seconds
+            generation.latency.turn_commit_causal_source = commit_causal_source
             generation.latency.turn_commitment = MediaLatencyPoint(
                 monotonic_time_seconds=committed_at,
                 input_sample_position=self.audio_sample_count,
@@ -1890,6 +1938,7 @@ class VoiceSession:
             finalization_seconds=finalization_seconds,
             committed_at=committed_at,
             finalized_at=finalized_at,
+            commit_causal_source=commit_causal_source,
         )
         self.next_user_turn_id += 1
 
@@ -1975,6 +2024,7 @@ class VoiceSession:
         finalization_seconds: float,
         committed_at: float,
         finalized_at: float,
+        commit_causal_source: CausalSource,
     ) -> None:
         assert self.active_generation is None
         created_at = time.perf_counter()
@@ -2002,6 +2052,7 @@ class VoiceSession:
         generation.latency.final_vad_endpoint_at = self.final_vad_endpoint_at
         generation.latency.turn_committed_at = committed_at
         generation.latency.asr_finalized_at = finalized_at
+        generation.latency.turn_commit_causal_source = commit_causal_source
         if (
             self.first_endpoint_at is not None
             and self.first_endpoint_input_sample_position is not None
@@ -3623,6 +3674,7 @@ class VoiceSession:
             )
         latency_event = AssistantLatencyEvent(
             generation_id=generation.generation_id,
+            turn_commit_causal_source=_require_turn_commit_causal_source(latency),
             first_vad_endpoint_to_turn_commit_ms=(
                 None
                 if latency.first_endpoint_at is None
@@ -4257,6 +4309,12 @@ def _require_commit_readiness(latency: GenerationLatency) -> GenerationCommitRea
     if latency.commit_readiness is None:
         raise AssertionError("Missing generation readiness at turn commitment.")
     return latency.commit_readiness
+
+
+def _require_turn_commit_causal_source(latency: GenerationLatency) -> CausalSource:
+    if latency.turn_commit_causal_source is None:
+        raise AssertionError("Missing turn-commit causal source.")
+    return latency.turn_commit_causal_source
 
 
 def _environment_float(

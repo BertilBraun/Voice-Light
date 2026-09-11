@@ -48,6 +48,7 @@ def test_speech_debug_serialization_distinguishes_heartbeat_from_model_observati
 def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
     event = AssistantLatencyEvent(
         generation_id=4,
+        turn_commit_causal_source=CausalSource.TURN_ADAPTER,
         first_vad_endpoint_to_turn_commit_ms=1_480.0,
         final_vad_endpoint_to_turn_commit_ms=480.0,
         final_vad_endpoint_to_first_audio_send_ms=990.0,
@@ -75,6 +76,7 @@ def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
     payload = event.model_dump(mode="json")
 
     assert payload["first_vad_endpoint_to_turn_commit_ms"] == pytest.approx(1_480.0)
+    assert payload["turn_commit_causal_source"] == "turn_adapter"
     assert payload["final_vad_endpoint_to_turn_commit_ms"] == pytest.approx(480.0)
     assert payload["final_vad_endpoint_to_first_audio_send_ms"] == pytest.approx(990.0)
     assert payload["asr_finalization_ms"] == pytest.approx(80.0)
@@ -95,6 +97,7 @@ def test_assistant_latency_serializes_endpoint_and_commit_readiness() -> None:
 def test_assistant_latency_allows_missing_vad_endpoints_and_candidate() -> None:
     event = AssistantLatencyEvent(
         generation_id=1,
+        turn_commit_causal_source=CausalSource.SILERO_VAD,
         first_vad_endpoint_to_turn_commit_ms=None,
         final_vad_endpoint_to_turn_commit_ms=None,
         final_vad_endpoint_to_first_audio_send_ms=None,

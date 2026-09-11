@@ -134,9 +134,15 @@ def test_session_policy_has_no_extra_vad_speculation_debounce_by_default() -> No
 
 
 def test_session_policy_reads_pending_silence_speculation_window() -> None:
-    policy = SessionPolicy.from_environment({"VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS": "96"})
+    policy = SessionPolicy.from_environment(
+        {
+            "VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS": "96",
+            "VOICE_LIGHT_ADAPTER_FIRST_SPECULATION_WINDOW_MS": "64",
+        }
+    )
 
     assert policy.pending_silence_speculation_ms == 96
+    assert policy.adapter_first_speculation_window_ms == 64
 
 
 def test_session_policy_reads_normal_turn_commit_silence() -> None:
@@ -205,6 +211,7 @@ def test_session_policy_reads_interaction_thresholds_and_deadline() -> None:
         ("VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY", "1.1"),
         ("VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE", "-0.1"),
         ("VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS", "0"),
+        ("VOICE_LIGHT_ADAPTER_FIRST_SPECULATION_WINDOW_MS", "-1"),
         ("VOICE_LIGHT_MINIMUM_NORMAL_TURN_COMMIT_SILENCE_MS", "0"),
     ),
 )
@@ -1469,6 +1476,8 @@ def test_websocket_pcm_backpressure_keeps_overlap_commands_ahead_of_unsent_audio
         send_playback_started(websocket, 1)
         wait_until(lambda: sessions[0].playback_condition.state is PlaybackState.SPEAKING)
         websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
 
         events, blocked_audio = receive_until(websocket, "playback.command")
         assert blocked_audio is None
@@ -2638,10 +2647,10 @@ def test_successor_generation_waits_for_cancelled_generation_teardown() -> None:
         send_turn(websocket)
         receive_until(websocket, "assistant.audio.start")
         websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "playback.command")
         send_playback_stopped(websocket, 1, text_offset=0, played_sample_count=0)
-        websocket.send_bytes(SILENCE_CHUNK)
-        websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "assistant.text.delta")
         websocket.send_json({"type": "session.stop"})
 
@@ -3530,9 +3539,9 @@ def test_synthesis_cancellation_failure_reaches_client() -> None:
         send_turn(websocket)
         receive_until(websocket, "assistant.text.delta")
         websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "error")
-        websocket.send_bytes(SILENCE_CHUNK)
-        websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "assistant.text.delta")
         websocket.send_json({"type": "session.stop"})
 
@@ -3602,10 +3611,10 @@ def test_canceled_generation_accepts_final_browser_acknowledgement() -> None:
         receive_until(websocket, "assistant.audio.start")
 
         websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "playback.command")
         send_playback_stopped(websocket, 1, text_offset=3, played_sample_count=3)
-        websocket.send_bytes(SILENCE_CHUNK)
-        websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
         websocket.send_json({"type": "session.stop"})
 
@@ -3637,10 +3646,10 @@ def test_invalid_or_stale_playback_progress_is_ignored() -> None:
             played_sample_count=100,
         )
         websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
         receive_until(websocket, "playback.command")
         send_playback_stopped(websocket, 1, text_offset=0, played_sample_count=0)
-        websocket.send_bytes(SILENCE_CHUNK)
-        websocket.send_bytes(SILENCE_CHUNK)
         events, _ = receive_until(websocket, "llm.history")
         websocket.send_json({"type": "session.stop"})
 
@@ -3740,6 +3749,7 @@ def test_candidate_ready_before_commit_is_hidden_then_released() -> None:
     assert latency.first_browser_playback_ack is not None
     latency_event = latency_events[-1]
     assert latency_event["generation_id"] == 1
+    assert latency_event["turn_commit_causal_source"] == "turn_adapter"
     assert float(latency_event["first_vad_endpoint_to_turn_commit_ms"]) >= 0
     assert float(latency_event["final_vad_endpoint_to_turn_commit_ms"]) >= 0
     assert float(latency_event["final_vad_endpoint_to_first_audio_send_ms"]) >= 0
@@ -3841,7 +3851,10 @@ def test_pending_silence_starts_hidden_tts_before_authoritative_vad_endpoint() -
         ),
         playback_sink=sink,
         created_sessions=sessions,
-        policy=SessionPolicy(pending_silence_speculation_ms=80),
+        policy=SessionPolicy(
+            pending_silence_speculation_ms=80,
+            adapter_first_speculation_window_ms=0,
+        ),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -3860,6 +3873,67 @@ def test_pending_silence_starts_hidden_tts_before_authoritative_vad_endpoint() -
     assert candidate.causal_prediction.stamp.source is CausalSource.SILERO_PENDING_SILENCE
     assert candidate.latency.final_vad_endpoint_at is None
     assert sink.outputs == []
+
+
+def test_pending_silence_waits_for_adapter_before_silero_fallback() -> None:
+    speech_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.9,
+        pending_silence_samples=0,
+    )
+    adapter_window_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.2,
+        pending_silence_samples=1_536,
+    )
+    fallback_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.1,
+        pending_silence_samples=2_816,
+    )
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent",) * 4,),
+        final_texts=("hello agent",),
+    )
+    language_model = PredictiveTrackingLanguageModel()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        speech_detector=ScriptedSpeechDetector(
+            (
+                speech_observation,
+                speech_observation,
+                adapter_window_observation,
+                fallback_observation,
+            )
+        ),
+        created_sessions=sessions,
+        policy=SessionPolicy(
+            pending_silence_speculation_ms=80,
+            adapter_first_speculation_window_ms=80,
+        ),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: sessions[0].audio_sample_count == 960)
+
+        assert sessions[0].active_generation is None
+
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(lambda: language_model.completed_count == 1)
+        candidate = sessions[0].active_generation
+        assert candidate is not None
+        websocket.send_json({"type": "session.stop"})
+
+    assert candidate.causal_prediction is not None
+    assert candidate.causal_prediction.stamp.source is CausalSource.SILERO_PENDING_SILENCE
 
 
 def test_speech_recovery_discards_pending_silence_candidate() -> None:
@@ -3887,7 +3961,10 @@ def test_speech_recovery_discards_pending_silence_candidate() -> None:
             (speech_observation, speech_observation, pending_observation, speech_observation)
         ),
         created_sessions=sessions,
-        policy=SessionPolicy(pending_silence_speculation_ms=80),
+        policy=SessionPolicy(
+            pending_silence_speculation_ms=80,
+            adapter_first_speculation_window_ms=0,
+        ),
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -4348,7 +4425,7 @@ def test_candidate_continues_streaming_after_commit() -> None:
     assert {output.generation_id for output in sink.outputs} == {1}
 
 
-def test_volatile_suffix_revision_does_not_invalidate_stable_candidate() -> None:
+def test_lexical_volatile_suffix_revision_invalidates_stable_candidate() -> None:
     transcriber = ScriptedTranscriber(
         partials_by_turn=(("book a", "book a", "book a table"),),
         final_texts=("book a!",),
@@ -4361,12 +4438,14 @@ def test_volatile_suffix_revision_does_not_invalidate_stable_candidate() -> None
         )
     )
     sink = InMemoryPlaybackSink()
+    sessions: list[VoiceSession] = []
     web_app = create_test_app(
         transcriber,
         language_model,
         RecordingSpeechSynthesizer(),
         turn_prediction_source=prediction_source,
         playback_sink=sink,
+        created_sessions=sessions,
     )
 
     with TestClient(web_app).websocket_connect("/session") as websocket:
@@ -4379,9 +4458,13 @@ def test_volatile_suffix_revision_does_not_invalidate_stable_candidate() -> None
         wait_until(lambda: any(isinstance(output, ReleasedAudioEnd) for output in sink.outputs))
         websocket.send_json({"type": "session.stop"})
 
-    assert len(language_model.conversations) == 1
-    assert language_model.conversations[0][-1].content == "book a"
-    assert {output.generation_id for output in sink.outputs} == {1}
+    assert [conversation[-1].content for conversation in language_model.conversations] == [
+        "book a",
+        "book a",
+    ]
+    assert {output.generation_id for output in sink.outputs} == {2}
+    invalidations = sessions[0].predictive_metrics.report().invalidations
+    assert invalidations[0].reason is CandidateInvalidationReason.TRANSCRIPT_SUPERSEDED
 
 
 def test_stable_prefix_revision_rejects_candidate_and_uses_new_generation_id() -> None:

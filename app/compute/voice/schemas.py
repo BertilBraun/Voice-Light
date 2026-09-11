@@ -621,6 +621,7 @@ class AssistantAudioTextBoundaryEvent(FrozenBaseModel):
 class AssistantLatencyEvent(FrozenBaseModel):
     type: Literal[VoiceServerEventType.ASSISTANT_LATENCY] = VoiceServerEventType.ASSISTANT_LATENCY
     generation_id: int = Field(gt=0)
+    turn_commit_causal_source: CausalSource
     first_vad_endpoint_to_turn_commit_ms: float | None = Field(default=None, ge=0)
     final_vad_endpoint_to_turn_commit_ms: float | None = Field(default=None, ge=0)
     final_vad_endpoint_to_first_audio_send_ms: float | None = Field(default=None, ge=0)

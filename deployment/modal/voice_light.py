@@ -98,6 +98,7 @@ class ModalDeploymentConfiguration:
             "PYTHONPATH": str(REMOTE_REPOSITORY_ROOT),
             "TORCH_HOME": str(MODEL_CACHE_MOUNT / "torch"),
             "VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS": "1",
+            "VOICE_LIGHT_ADAPTER_FIRST_SPECULATION_WINDOW_MS": "80",
             "VOICE_LIGHT_COMPUTE_LOG_DIR": str(RUNTIME_CACHE_MOUNT / "logs"),
             "VOICE_LIGHT_DATASET_AUDIO_CACHE_DIR": str(RUNTIME_CACHE_MOUNT / "dataset-audio"),
             "VOICE_LIGHT_EAGER_MODEL_LOADING": "true",
