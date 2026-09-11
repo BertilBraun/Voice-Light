@@ -10,6 +10,10 @@ from typing import Final
 from fastapi import FastAPI
 
 import modal
+from app.compute.voice.model_constants import (
+    SEARCH_SUMMARIZER_MODEL_NAME,
+    SEARCH_SUMMARIZER_MODEL_REVISION,
+)
 from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 
 APPLICATION_NAME: Final = "VoiceLightAgent"
@@ -53,6 +57,10 @@ MODEL_REPOSITORIES: Final = (
     ModelRepository(
         repository_id=MERGED_LANGUAGE_MODEL_NAME,
         revision=MERGED_LANGUAGE_MODEL_REVISION,
+    ),
+    ModelRepository(
+        repository_id=SEARCH_SUMMARIZER_MODEL_NAME,
+        revision=SEARCH_SUMMARIZER_MODEL_REVISION,
     ),
     ModelRepository(
         repository_id="kyutai/tts-1.6b-en_fr",
@@ -109,7 +117,7 @@ class ModalDeploymentConfiguration:
             "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS": "900",
             "VOICE_LIGHT_QWEN_ENFORCE_EAGER": "true",
             "VOICE_LIGHT_QWEN_BACKEND": "transformers",
-            "VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH": "true",
+            "VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH": "false",
             "VOICE_LIGHT_TTS_BACKEND": "kyutai",
             "VOICE_LIGHT_TURN_ADAPTER_CHECKPOINT": str(REMOTE_ADAPTER_CHECKPOINT),
             "VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE": "0.70",

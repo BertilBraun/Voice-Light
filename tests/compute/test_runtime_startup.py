@@ -7,19 +7,28 @@ import pytest
 
 pytest.importorskip("silero_vad", reason="Compute runtime tests require compute dependencies.")
 
+from app.compute.config import ComputeSettings
 from app.compute.runtime import ComputeRuntime
 from app.shared.compute_api import ModelStageStatus, ModelWarmupStatus
 
 
 class RecordingComputeRuntime(ComputeRuntime):
-    def __init__(self, cache_directory: Path) -> None:
+    def __init__(self, cache_directory: Path, *, concurrent_search: bool = False) -> None:
+        voice_stack_settings = None
+        if concurrent_search:
+            voice_stack_settings = ComputeSettings.from_environment(
+                {"VOICE_LIGHT_COMPUTE_TOKEN": "test-token"}
+            ).voice_stack
+            assert voice_stack_settings is not None
         super().__init__(
-            voice_stack_settings=None,
+            voice_stack_settings=voice_stack_settings,
             dataset_audio_cache_directory=cache_directory,
         )
         self.events: list[str] = []
         self.parallel_loads_started = asyncio.Event()
         self.parallel_load_count = 0
+        self.expected_parallel_load_count = 4 if concurrent_search else 3
+        self.concurrent_search = concurrent_search
         self.early_warmup_started = asyncio.Event()
 
     async def _load_speech_detector(self) -> None:
@@ -32,7 +41,10 @@ class RecordingComputeRuntime(ComputeRuntime):
         await self._record_parallel_load("language_model")
 
     async def _load_search_text_generator(self) -> None:
-        self.events.append("search_summarizer")
+        if self.concurrent_search:
+            await self._record_parallel_load("search_summarizer")
+        else:
+            self.events.append("search_summarizer")
 
     async def _load_speech_synthesizer(self) -> None:
         await self._record_parallel_load("speech_synthesis")
@@ -49,7 +61,7 @@ class RecordingComputeRuntime(ComputeRuntime):
     async def _record_parallel_load(self, stage_name: str) -> None:
         self.events.append(f"{stage_name}_started")
         self.parallel_load_count += 1
-        if self.parallel_load_count == 3:
+        if self.parallel_load_count == self.expected_parallel_load_count:
             self.parallel_loads_started.set()
         await asyncio.wait_for(self.parallel_loads_started.wait(), timeout=1.0)
         if stage_name == "speech_synthesis":
@@ -87,6 +99,27 @@ def test_runtime_loads_and_warms_voice_models_concurrently(tmp_path: Path) -> No
             f"{stage_name}_warmup_completed"
         )
     assert events[-1] == "search_summarizer"
+
+
+def test_runtime_loads_independent_search_summarizer_with_primary_models(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> list[str]:
+        runtime = RecordingComputeRuntime(tmp_path / "cache", concurrent_search=True)
+        await runtime._load_models()
+        return runtime.events
+
+    events = asyncio.run(exercise())
+
+    assert set(events[1:5]) == {
+        "streaming_asr_started",
+        "language_model_started",
+        "speech_synthesis_started",
+        "search_summarizer_started",
+    }
+    assert events.index("search_summarizer_completed") < events.index(
+        "speech_synthesis_warmup_completed"
+    )
 
 
 def test_warmup_telemetry_is_ready_only_after_probe(tmp_path: Path) -> None:

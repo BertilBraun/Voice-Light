@@ -231,7 +231,7 @@ class ComputeRuntime:
     async def _load_models(self) -> None:
         started = time.perf_counter()
         await self._load_speech_detector()
-        await asyncio.gather(
+        primary_loads = (
             self._load_and_warm(
                 self._load_streaming_asr,
                 self._warm_streaming_asr,
@@ -245,7 +245,12 @@ class ComputeRuntime:
                 self._warm_speech_synthesizer,
             ),
         )
-        await self._load_search_text_generator()
+        settings = self.voice_stack_settings
+        if settings is not None and not settings.share_language_model_for_search:
+            await asyncio.gather(*primary_loads, self._load_search_text_generator())
+        else:
+            await asyncio.gather(*primary_loads)
+            await self._load_search_text_generator()
         logger.info(
             "all required compute models ready in %.3f seconds",
             time.perf_counter() - started,

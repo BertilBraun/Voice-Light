@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
+from app.compute.voice.model_constants import (
+    SEARCH_SUMMARIZER_MODEL_NAME,
+    SEARCH_SUMMARIZER_MODEL_REVISION,
+)
 from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MODEL_REVISION
 from deployment.modal.voice_light import (
     ADAPTER_CHECKPOINT,
@@ -55,7 +59,7 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     )
     assert environment["VOICE_LIGHT_QWEN_ENFORCE_EAGER"] == "true"
     assert environment["VOICE_LIGHT_QWEN_BACKEND"] == "transformers"
-    assert environment["VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH"] == "true"
+    assert environment["VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH"] == "false"
 
 
 def test_modal_cache_paths_are_absolute() -> None:
@@ -79,6 +83,9 @@ def test_modal_cache_population_pins_every_hugging_face_repository() -> None:
         MERGED_LANGUAGE_MODEL_REVISION
     )
     assert repositories_by_id[NEMOTRON_ASR_MODEL_NAME].revision == NEMOTRON_ASR_MODEL_REVISION
+    assert repositories_by_id[SEARCH_SUMMARIZER_MODEL_NAME].revision == (
+        SEARCH_SUMMARIZER_MODEL_REVISION
+    )
     voice_repository = repositories_by_id["kyutai/tts-voices"]
     assert voice_repository.allowed_files == (
         "expresso/ex03-ex01_happy_001_channel1_334s.wav",
