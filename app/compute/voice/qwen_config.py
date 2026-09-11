@@ -36,6 +36,21 @@ class QwenBackend(StrEnum):
 
 
 @dataclass(frozen=True)
+class QwenSamplingConfiguration:
+    temperature: float = 0.7
+    top_p: float = 0.8
+    top_k: int = 20
+
+    def __post_init__(self) -> None:
+        if self.temperature <= 0.0:
+            raise ValueError("Qwen sampling temperature must be positive.")
+        if not 0.0 < self.top_p <= 1.0:
+            raise ValueError("Qwen sampling top-p must be greater than zero and at most one.")
+        if self.top_k <= 0:
+            raise ValueError("Qwen sampling top-k must be positive.")
+
+
+@dataclass(frozen=True)
 class QwenModelConfiguration:
     model_name: str
     model_revision: str
@@ -44,6 +59,7 @@ class QwenModelConfiguration:
     maximum_model_length: int
     enforce_eager: bool
     backend: QwenBackend = QwenBackend.VLLM
+    sampling: QwenSamplingConfiguration = QwenSamplingConfiguration()
 
     def __post_init__(self) -> None:
         if not 0.0 < self.gpu_memory_utilization <= 1.0:

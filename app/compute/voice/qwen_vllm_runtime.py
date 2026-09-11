@@ -18,6 +18,7 @@ from app.compute.voice.llm_worker_protocol import (
 from app.compute.voice.qwen_config import (
     QwenAdapterConfiguration,
     QwenModelConfiguration,
+    QwenSamplingConfiguration,
 )
 from app.compute.voice.qwen_worker import (
     GeneratedTextDelta,
@@ -57,13 +58,14 @@ class QwenVllmRuntime:
         self.engine = AsyncLLM.from_engine_args(engine_arguments)
         self.tokenizer = cast(QwenChatTemplateTokenizer, self.engine.get_tokenizer())
         self.lora_request = create_lora_request(adapter)
+        self.sampling = configuration.sampling
 
     async def stream_text(
         self,
         command: QwenGenerationCommand,
     ) -> AsyncIterator[GeneratedTextDelta]:
         prompt = render_qwen_prompt(self.tokenizer, command)
-        sampling_parameters = sampling_parameters_for_command(command)
+        sampling_parameters = sampling_parameters_for_command(command, self.sampling)
         request_id = f"qwen-{command.invocation_id}"
         cumulative_token_count = 0
         async for request_output in self.engine.generate(
@@ -109,13 +111,15 @@ def create_lora_request(
 
 def sampling_parameters_for_command(
     command: QwenGenerationCommand,
+    sampling: QwenSamplingConfiguration,
 ) -> SamplingParams:
     match command:
         case StartLlmCommand():
             return SamplingParams(
                 max_tokens=256,
-                temperature=0.6,
-                top_p=0.9,
+                temperature=sampling.temperature,
+                top_p=sampling.top_p,
+                top_k=sampling.top_k,
                 output_kind=RequestOutputKind.DELTA,
             )
         case GenerateTextLlmCommand(max_new_tokens=max_new_tokens):

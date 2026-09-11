@@ -33,8 +33,8 @@ ADAPTER_CHECKPOINT: Final = (
 REMOTE_ADAPTER_CHECKPOINT: Final = PurePosixPath("/opt/voice-light-artifacts/adapter-best.pt")
 MODEL_CACHE_MOUNT: Final = PurePosixPath("/model-cache")
 RUNTIME_CACHE_MOUNT: Final = PurePosixPath("/runtime-cache")
-MERGED_LANGUAGE_MODEL_NAME: Final = "BertilBraun/qwen3-1.7b-voice-light-tool-use-merged"
-MERGED_LANGUAGE_MODEL_REVISION: Final = "557314e1a6839183e61a48833911606a23379d15"
+MERGED_LANGUAGE_MODEL_NAME: Final = "Qwen/Qwen3-4B-Instruct-2507"
+MERGED_LANGUAGE_MODEL_REVISION: Final = "cdbee75f17c01a7cc42f958dc650907174af0554"
 logger = logging.getLogger(__name__)
 
 

@@ -76,6 +76,7 @@ class QwenTransformersRuntime:
             ),
         ).to("cuda")
         self.model.eval()
+        self.sampling = configuration.sampling
 
     async def stream_text(
         self,
@@ -140,8 +141,9 @@ class QwenTransformersRuntime:
                             logits_processor=LogitsProcessorList([cancellation_processor]),
                             max_new_tokens=256,
                             do_sample=True,
-                            temperature=0.6,
-                            top_p=0.9,
+                            temperature=self.sampling.temperature,
+                            top_p=self.sampling.top_p,
+                            top_k=self.sampling.top_k,
                         )
                     case GenerateTextLlmCommand(max_new_tokens=max_new_tokens):
                         self.model.generate(

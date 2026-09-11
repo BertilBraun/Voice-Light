@@ -15,6 +15,7 @@ from app.compute.voice.qwen_config import (
     QWEN_ENFORCE_EAGER_ENVIRONMENT_VARIABLE,
     QwenAdapterConfiguration,
     QwenBackend,
+    QwenSamplingConfiguration,
     language_model_configuration_from_environment,
 )
 
@@ -28,6 +29,27 @@ def test_language_model_configuration_defaults_to_pinned_dynamic_adapter() -> No
         repository_id=LANGUAGE_MODEL_ADAPTER_NAME,
         revision=LANGUAGE_MODEL_ADAPTER_REVISION,
     )
+    assert configuration.sampling == QwenSamplingConfiguration(
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"temperature": 0.0},
+        {"top_p": 0.0},
+        {"top_p": 1.1},
+        {"top_k": 0},
+    ],
+)
+def test_qwen_sampling_configuration_rejects_invalid_values(
+    arguments: dict[str, float | int],
+) -> None:
+    with pytest.raises(ValueError):
+        QwenSamplingConfiguration(**arguments)
 
 
 def test_language_model_configuration_selects_pinned_merged_checkpoint() -> None:
