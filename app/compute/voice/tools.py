@@ -485,7 +485,9 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
                     "Search for current or externally verifiable information. This call is "
                     "required for current weather or news and when the user asks to search, look "
                     "up, check, browse, or make a tool call for external information. Call it now "
-                    "instead of promising a future search or asking the user to check elsewhere."
+                    "instead of promising a future search or asking the user to check elsewhere. "
+                    "Also call it to verify a niche factual claim when the user challenges the "
+                    "assistant's answer or supplies contrary firsthand evidence."
                 ),
                 parameters=SearchParameters(
                     properties=SearchParameterProperties(
@@ -496,7 +498,10 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
         ),
         ToolSpecification(
             function=CalculateToolFunctionSpecification(
-                description="Evaluate a basic numeric arithmetic expression.",
+                description=(
+                    "Evaluate a basic numeric arithmetic expression. Use it for requested exact "
+                    "arithmetic, comparisons, totals, and unit conversions."
+                ),
                 parameters=CalculateParameters(
                     properties=CalculateParameterProperties(
                         expression=ToolStringParameter(

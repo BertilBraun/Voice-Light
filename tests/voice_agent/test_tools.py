@@ -57,6 +57,9 @@ def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
     search_description = specifications[0].function.description
     assert "required for current weather or news" in search_description
     assert "instead of promising a future search" in search_description
+    assert "supplies contrary firsthand evidence" in search_description
+    calculate_description = specifications[1].function.description
+    assert "comparisons, totals, and unit conversions" in calculate_description
     time_specification = specifications[2].function
     assert time_specification.parameters.required == ()
     assert time_specification.parameters.properties.time_zone_names.maxItems == 8
