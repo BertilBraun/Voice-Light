@@ -1244,6 +1244,66 @@ class RecordingSpeechSynthesizer:
         return session
 
 
+class LookaheadSpeechSynthesisSession(FakeSpeechSynthesisSession):
+    def __init__(
+        self,
+        words: list[SynthesisWord],
+        emitted_words: list[SynthesisWord],
+        lookahead_word_count: int,
+    ) -> None:
+        super().__init__(words)
+        self.emitted_words = emitted_words
+        self.lookahead_word_count = lookahead_word_count
+        self.pending_words: list[SynthesisWord] = []
+
+    async def add_word(self, word: SynthesisWord) -> None:
+        self.words.append(word)
+        self.pending_words.append(word)
+        if len(self.pending_words) > self.lookahead_word_count:
+            await self._emit_word(self.pending_words.pop(0))
+
+    async def finish_input(self) -> None:
+        for word in self.pending_words:
+            await self._emit_word(word)
+        self.pending_words.clear()
+        self.finished = True
+        await self.events.put(None)
+
+    async def _emit_word(self, word: SynthesisWord) -> None:
+        self.emitted_words.append(word)
+        await self.events.put(
+            SynthesizedWordBoundary(text_offset=word.text_end, start_sample=self.next_sample)
+        )
+        await self.events.put(
+            SynthesizedAudioChunk(
+                pcm_bytes=b"\x01\x00\x02\x00",
+                start_sample=self.next_sample,
+            )
+        )
+        self.next_sample += 2
+
+
+class LookaheadSpeechSynthesizer:
+    def __init__(self, lookahead_word_count: int) -> None:
+        self.lookahead_word_count = lookahead_word_count
+        self.sessions: list[LookaheadSpeechSynthesisSession] = []
+        self.words: list[SynthesisWord] = []
+        self.emitted_words: list[SynthesisWord] = []
+
+    @property
+    def sample_rate(self) -> int:
+        return 24_000
+
+    def start_session(self) -> SpeechSynthesisSession:
+        session = LookaheadSpeechSynthesisSession(
+            self.words,
+            self.emitted_words,
+            self.lookahead_word_count,
+        )
+        self.sessions.append(session)
+        return session
+
+
 class BurstSpeechSynthesisSession(FakeSpeechSynthesisSession):
     async def add_word(self, word: SynthesisWord) -> None:
         self.words.append(word)
@@ -1655,7 +1715,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn(
     language_model = ScriptedWeatherLanguageModel()
     weather_handler = ControlledWeatherHandler()
     transcriber = RecordingTranscriber()
-    synthesizer = RecordingSpeechSynthesizer()
+    synthesizer = LookaheadSpeechSynthesizer(lookahead_word_count=2)
     sink = InMemoryPlaybackSink()
     sessions: list[VoiceSession] = []
     web_app = create_test_app(
@@ -1688,7 +1748,13 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn(
         assert first_request_event["tools"][0]["function"]["name"] == "search"
         assert len(language_model.requests) == 1
         assert len(synthesizer.sessions) == 1
-        assert not synthesizer.sessions[0].finished
+        assert synthesizer.sessions[0].finished
+        assert [word.text for word in synthesizer.emitted_words] == [
+            "Let",
+            "me",
+            "check",
+            "that.",
+        ]
         assert weather_handler.arguments == [SearchArguments(query="current weather in London")]
         assert released_text(sink) == "Let me check that."
         assert all("<tool_call>" not in word.text for word in synthesizer.words)
@@ -1794,7 +1860,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn(
         assert isinstance(tool_message.outcome, ToolSuccess)
         assert tool_message.outcome.result == "London is 12 degrees and lightly cloudy."
         assert second_request.tools == create_search_registry(weather_handler).specifications
-        assert len(synthesizer.sessions) == 1
+        assert len(synthesizer.sessions) == 2
         assert all(session.finished for session in synthesizer.sessions)
 
         released_outputs = tuple(sink.outputs)
@@ -1956,8 +2022,8 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
         for message in sessions[0].conversation
     )
     assert released_text(sink) == f"Let me look that up. {final_tool_result}"
-    assert len(synthesizer.sessions) == 1
-    assert synthesizer.sessions[0].finished
+    assert len(synthesizer.sessions) == 2
+    assert all(session.finished for session in synthesizer.sessions)
 
 
 def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn() -> None:
@@ -2061,7 +2127,7 @@ def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn()
         assert [boundary.start_sample for boundary in boundaries] == sorted(
             boundary.start_sample for boundary in boundaries
         )
-        assert len(synthesizer.sessions) == 1
+        assert len(synthesizer.sessions) == 3
         assert all(session.finished for session in synthesizer.sessions)
 
         send_turn(websocket)

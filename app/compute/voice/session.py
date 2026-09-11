@@ -2353,6 +2353,7 @@ class VoiceSession:
             if result.tool_failure is not None:
                 tool_outcome = self._tool_failure_outcome(result.tool_failure)
                 assistant_message = ModelAssistantMessage(content=audible_content)
+                await synthesis.finish_utterance()
             else:
                 request = result.tool_request
                 assert request is not None
@@ -2360,6 +2361,7 @@ class VoiceSession:
                 if isinstance(validated_call, ToolCallFailure):
                     tool_outcome = self._tool_failure_outcome(validated_call)
                     assistant_message = ModelAssistantMessage(content=audible_content)
+                    await synthesis.finish_utterance()
                 else:
                     tool_call = validated_call
                     if not audible_content:
@@ -2374,6 +2376,7 @@ class VoiceSession:
                         audible_content = generation.response_text[
                             audible_text_start:audible_text_end
                         ].strip()
+                    await synthesis.finish_utterance()
                     assistant_message = ModelAssistantMessage(
                         content=audible_content,
                         tool_calls=(tool_call,),
