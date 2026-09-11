@@ -619,6 +619,17 @@ tests, and 19 deterministic-routing tests before deployment. The Modal deploymen
 `session.ready` in 32.968 seconds. The smoke validates deployment and readiness, not microphone
 quality or post-change adapter contribution; those still require a fresh human interaction trace.
 
+An isolated L40S benchmark confirmed that Kyutai's first PCM is structurally delayed until model
+step 19: the checkpoint uses a 16-frame text/audio shift, a two-frame acoustic delay, and then the
+first complete decodable frame. Five warm 32-codebook runs reached first PCM in 313--342 ms
+(314 ms median after the first run), compared with 294--354 ms at 16 codebooks and 292--339 ms at
+8 codebooks. Reducing codebooks therefore saved only about 10--20 ms of first-frame latency while
+improving full-utterance real-time factor from approximately 0.28 to 0.20 and 0.16 respectively.
+Production remains at 32 codebooks because the small first-frame gain does not justify unmeasured
+speech-quality loss. The 570--650 ms Kyutai latency in the following full voice trace is instead
+consistent with GPU contention from concurrent Qwen inference; controlled Qwen/TTS scheduling is
+the next latency experiment.
+
 ## Known limitations
 
 - The latest truthful cold readiness sample is 32.294 seconds. Earlier samples ranged from 32.735
