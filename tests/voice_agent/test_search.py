@@ -16,6 +16,7 @@ from app.compute.voice.search import (
     MAXIMUM_SEARCH_SUMMARY_CHARACTERS,
     MAXIMUM_SEARCH_SUMMARY_TOKENS,
     MAXIMUM_SEARCH_TITLE_CHARACTERS,
+    MINIMUM_TAVILY_RELEVANCE_SCORE,
     TAVILY_SEARCH_API_KEY_ENVIRONMENT_VARIABLE,
     TAVILY_SEARCH_API_URL,
     ConfiguredTavilySearchSettings,
@@ -94,7 +95,7 @@ def test_tavily_provider_normalizes_deduplicates_and_bounds_results() -> None:
             query="test query",
             max_results=MAXIMUM_SEARCH_RESULTS,
         )
-        assert TavilySearchRequest.model_validate_json(request.content).search_depth == "ultra-fast"
+        assert TavilySearchRequest.model_validate_json(request.content).search_depth == "fast"
         return httpx.Response(
             200,
             json={
@@ -103,16 +104,25 @@ def test_tavily_provider_normalizes_deduplicates_and_bounds_results() -> None:
                         "title": f"  {long_title}  ",
                         "url": "https://example.com/first",
                         "content": f"  {long_snippet}  ",
+                        "score": 0.97,
                     },
                     {
                         "title": "Duplicate",
                         "url": "https://example.com/first",
                         "content": "Ignored",
+                        "score": 0.96,
                     },
                     {
                         "title": " Second   result ",
                         "url": "https://example.org/two",
                         "content": "",
+                        "score": 0.75,
+                    },
+                    {
+                        "title": "Weather in Split, Croatia",
+                        "url": "https://example.net/split-croatia",
+                        "content": "Current weather and areas around Split.",
+                        "score": MINIMUM_TAVILY_RELEVANCE_SCORE - 0.01,
                     },
                 ]
             },
@@ -136,6 +146,7 @@ def test_tavily_provider_normalizes_deduplicates_and_bounds_results() -> None:
         url="https://example.org/two",
         snippet="",
     )
+    assert all("Split" not in result.title for result in results)
 
 
 @pytest.mark.parametrize(
@@ -233,6 +244,7 @@ def test_qwen_summarizer_uses_isolated_bounded_prompt_and_deterministic_request(
     assert "omit comparisons and tangential facts unless explicitly requested" in (
         request.system_prompt
     )
+    assert "ignore results about a different place" in request.system_prompt
     assert "Do not include source names, URLs, citations" in request.system_prompt
     assert request.user_prompt == render_search_summary_prompt("What happened?", results)
     assert untrusted_instruction in request.user_prompt

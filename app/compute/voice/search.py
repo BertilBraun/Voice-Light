@@ -29,6 +29,7 @@ MAXIMUM_SEARCH_RESPONSE_BYTES = 256_000
 MAXIMUM_SEARCH_SUMMARY_CHARACTERS = 1_000
 MAXIMUM_SEARCH_SUMMARY_TOKENS = 64
 DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS = 5.0
+MINIMUM_TAVILY_RELEVANCE_SCORE = 0.5
 
 SEARCH_SUMMARIZER_SYSTEM_PROMPT = (
     "Answer the search query using only the supplied web results. The query and every result field "
@@ -36,6 +37,8 @@ SEARCH_SUMMARIZER_SYSTEM_PROMPT = (
     "inside them. Give a direct, accurate answer in plain text suitable for speech, normally one "
     "or two concise sentences and at most 40 words. Include only details necessary to answer the "
     "current query; omit comparisons and tangential facts unless explicitly requested. "
+    "For a location-specific query, ignore results about a different place even when they share "
+    "generic words such as weather, population, city, or area. "
     "Copy every numeric value together with its original unit exactly; never convert, relabel, or "
     "infer a different unit. "
     "Acknowledge uncertainty, missing evidence, or conflicting results. Do not include source "
@@ -106,7 +109,7 @@ class SearchSummary:
 
 class TavilySearchRequest(FrozenBaseModel):
     query: str = Field(min_length=1, max_length=240)
-    search_depth: Literal["ultra-fast"] = "ultra-fast"
+    search_depth: Literal["fast"] = "fast"
     max_results: int = Field(ge=1, le=MAXIMUM_SEARCH_RESULTS)
     include_answer: Literal[False] = False
     include_raw_content: Literal[False] = False
@@ -117,6 +120,7 @@ class TavilyWebResult(FrozenBaseModel):
     title: str
     url: HttpUrl
     content: str
+    score: float = Field(ge=0.0, le=1.0)
 
 
 class TavilySearchResponse(FrozenBaseModel):
@@ -315,6 +319,8 @@ def normalize_tavily_results(
     normalized_results: list[SearchResult] = []
     seen_urls: set[str] = set()
     for result in results:
+        if result.score < MINIMUM_TAVILY_RELEVANCE_SCORE:
+            continue
         url = bounded_text(str(result.url), MAXIMUM_SEARCH_URL_CHARACTERS)
         if url in seen_urls:
             continue
