@@ -17,8 +17,8 @@ latency-dominated global placements while retaining the larger European GPU pool
 to zero, has one maximum container, and keeps an idle container for 120 seconds. Modal sets
 `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
 initialization before Modal marks a cold container ready or admits the first request. Nemotron,
-Qwen, and Kyutai load and warm concurrently; the shared search generator then aliases Qwen. The
-1,800-second Modal startup timeout bounds that work. Other provider-neutral deployments retain
+Qwen, Kyutai, and the independent search summarizer load concurrently. The 1,800-second Modal
+startup timeout bounds that work. Other provider-neutral deployments retain
 background loading: `/health/live` can succeed before `/health/ready`, and `/v1/voice` closes with
 retryable code `1013` until every required model is ready.
 
@@ -33,10 +33,10 @@ backend canary replaced the final 16-pass 1.7B tool LoRA after fixed prompts rep
 factual reasoning and irrelevant tool choices. The official 4B checkpoint retained structured
 weather, calculation, and multi-zone time calls in the same canary. This is an integration check,
 not a general model-quality claim. Conversational sampling uses the model-card recommendations of
-temperature 0.7, top-p 0.8, and top-k 20. The same worker handles conversation generation and
-search summarization because tool rounds are sequential. This avoids vLLM's engine profiling path
-and a second Qwen backbone while preserving the typed streaming, tool-call, cancellation, and
-stale-event protocols.
+temperature 0.7, top-p 0.8, and top-k 20. Modal uses a separate pinned Qwen3-0.6B worker for search
+summarization. It loads concurrently with the conversation model and prevents search summarization
+from blocking the 4B conversation worker or contending with Kyutai during a tool turn. The typed
+streaming, tool-call, cancellation, and stale-event protocols remain unchanged.
 
 Qwen remains the primary tool selector. A model may emit a correct tool call without audible text;
 in that case the session supplies a short tool-specific bridge while execution is already in
@@ -45,11 +45,14 @@ current-information/search request or a confirmation of an immediately preceding
 narrow typed router supplies the missing `search` call. The call still passes through the normal
 schema validator, tool journal, and configured provider; post-tool rounds cannot route again.
 Grounded search summaries are already speech-ready and go directly to Kyutai instead of requiring
-a redundant second conversational-model round. The bridge and result remain in one TTS session;
-the session does not finalize Kyutai while awaiting a tool, eliminating the artificial pause/pop
-boundary that previously occurred at tool completion. Successful tool messages contain the raw
-result, matching both the fine-tuning renderer and Qwen's native tool-response format rather than
-an internal execution envelope.
+a redundant second conversational-model round. The short bridge is finalized at its semantic
+boundary while the tool continues in the background; the result then starts a new acoustic session
+inside the same browser playback generation. Kyutai's two-word lookahead otherwise strands the end
+of an open bridge until result text arrives, producing a deterministic mid-preamble stall.
+Successful tool messages contain the raw result, matching both the fine-tuning renderer and Qwen's
+native tool-response format rather than an internal execution envelope. Tavily uses its `fast`
+search depth, and results below the configured 0.5 relevance threshold are excluded before the
+summarizer. The summary prompt also rejects evidence about a different named place.
 
 Temperature conversion is deliberately narrower and deterministic. Explicit or contextual
 Celsius/Fahrenheit/Kelvin requests are converted into bounded calculator expressions, including
@@ -562,9 +565,26 @@ The deployed endpoint remains
 A browser microphone run is still required to judge the continuous tool-boundary audio and the
 new model's conversational behavior under real interruptions.
 
+The following human run exposed two tool-path regressions. The open Kyutai bridge session retained
+its two-word lookahead across the tool await, so spoken preambles stalled until result text arrived.
+The search pipeline used Tavily's lowest-relevance `ultra-fast` mode, discarded its relevance score,
+and admitted a Split, Croatia result into London and New York prompts. On that worker Tavily itself
+took 359--457 ms, while shared 4B search summarization took 1,246--2,016 ms and post-tool first PCM
+took another 926--1,969 ms. Tool execution began within 36 ms once a complete call was available;
+the provider was not being scheduled after playback.
+
+The deployed repair finalizes the bridge at the semantic boundary, uses Tavily `fast` search with a
+0.5 minimum relevance score and named-place mismatch instruction, and isolates search summarization
+on the pinned Qwen3-0.6B worker. A configured post-deploy provider smoke returned two accepted
+results in 407.77 ms. A scaled-to-zero WebSocket reached `session.ready` in 32.294 seconds. Runtime
+readiness was 21.439 seconds: the search summarizer loaded in 12.234 seconds, Nemotron loaded/warmed
+in 12.976/2.773 seconds, Qwen 4B in 15.428/2.105 seconds, and Kyutai in 20.430/0.893 seconds. All
+four workers started concurrently, and Kyutai remains the cold-start critical path. Audible bridge
+continuity and grounded result quality still require a refreshed human microphone run.
+
 ## Known limitations
 
-- The latest truthful cold readiness sample is 32.735 seconds. Earlier samples ranged from 35.124
+- The latest truthful cold readiness sample is 32.294 seconds. Earlier samples ranged from 32.735
   to 66.312 seconds. Modal scheduling, host performance, and fallback GPU selection remain
   variable; an
   earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
