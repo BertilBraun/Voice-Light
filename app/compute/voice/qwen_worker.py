@@ -42,6 +42,7 @@ from app.compute.voice.llm_worker_protocol import (
 from app.compute.voice.model_constants import (
     LANGUAGE_MODEL_SYSTEM_PROMPT,
 )
+from app.compute.voice.tools import ToolExecutionFailure, ToolSuccess
 
 logger = logging.getLogger(__name__)
 
@@ -346,9 +347,17 @@ def _qwen_chat_message(
         case LlmToolMessage():
             return {
                 "role": "tool",
-                "content": message.content.model_dump_json(),
+                "content": _qwen_tool_result_content(message.content),
                 "tool_call_id": message.tool_call_id,
             }
+
+
+def _qwen_tool_result_content(content: ToolSuccess | ToolExecutionFailure) -> str:
+    match content:
+        case ToolSuccess(result=result):
+            return result
+        case ToolExecutionFailure(message=message):
+            return f"Tool failure: {message}"
 
 
 def qwen_chat_messages(command: StartLlmCommand) -> list[QwenChatMessage]:

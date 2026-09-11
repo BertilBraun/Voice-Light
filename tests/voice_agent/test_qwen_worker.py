@@ -34,6 +34,8 @@ from app.compute.voice.tools import (
     SearchArguments,
     SearchToolCallFunction,
     ToolCall,
+    ToolExecutionFailure,
+    ToolExecutionFailureReason,
     ToolName,
     ToolSuccess,
     runtime_tool_specifications,
@@ -208,7 +210,7 @@ def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_tur
         },
         {
             "role": "tool",
-            "content": tool_outcome.model_dump_json(),
+            "content": "London is 12 degrees and lightly cloudy.",
             "tool_call_id": "qwen-41-tool-1",
         },
         {
@@ -227,7 +229,7 @@ def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_tur
         },
         {
             "role": "tool",
-            "content": second_tool_outcome.model_dump_json(),
+            "content": "Berlin is 18 degrees and clear.",
             "tool_call_id": "qwen-42-tool-1",
         },
         {
@@ -242,6 +244,28 @@ def test_qwen_template_preserves_sequential_tool_exchanges_before_later_user_tur
     assert tokenizer.tokenize is False
     assert tokenizer.add_generation_prompt is True
     assert tokenizer.enable_thinking is False
+
+
+def test_qwen_template_renders_concise_tool_failure_content() -> None:
+    failure = ToolExecutionFailure(
+        call_id="qwen-44-tool-1",
+        tool_name=ToolName.SEARCH,
+        reason=ToolExecutionFailureReason.HANDLER_FAILURE,
+        message="Search provider unavailable.",
+    )
+
+    assert qwen_chat_messages(
+        StartLlmCommand(
+            invocation_id=44,
+            assistant_generation_id=13,
+            messages=(LlmToolMessage(tool_call_id=failure.call_id, content=failure),),
+            tools=(),
+        )
+    )[-1] == {
+        "role": "tool",
+        "content": "Tool failure: Search provider unavailable.",
+        "tool_call_id": "qwen-44-tool-1",
+    }
 
 
 def test_qwen_text_generation_prompt_is_isolated_and_has_no_tools() -> None:
