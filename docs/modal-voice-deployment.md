@@ -614,7 +614,10 @@ queries to the typed 240-character provider limit, preferring the final complete
 reported 304-character windsurfing utterance therefore routes as `What's the actual max speed of a
 wind surfer ever?` instead of failing Pydantic validation. These changes were validated with 114
 session tests, 10 observability and Modal configuration tests, 33 overlap tests, 19 predictive
-tests, and 19 deterministic-routing tests before deployment.
+tests, and 19 deterministic-routing tests before deployment. The Modal deployment completed in
+44.886 seconds, and the immediately following scaled-to-zero WebSocket smoke reached
+`session.ready` in 32.968 seconds. The smoke validates deployment and readiness, not microphone
+quality or post-change adapter contribution; those still require a fresh human interaction trace.
 
 ## Known limitations
 
