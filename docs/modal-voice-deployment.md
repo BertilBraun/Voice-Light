@@ -191,7 +191,8 @@ The deployed starting values are:
 | `VOICE_LIGHT_SPECULATIVE_YIELD_THRESHOLD` | `0.55` | adapter yield probability that may start a private candidate |
 | `VOICE_LIGHT_SPECULATIVE_TURN_COMPLETION_THRESHOLD` | `0.55` | adapter completion probability that may independently start a private candidate |
 | `VOICE_LIGHT_SPECULATIVE_MINIMUM_CONFIDENCE` | `0.60` | minimum adapter confidence for either speculative trigger |
-| `VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS` | `80` | low-probability Silero silence that starts a private candidate before the authoritative endpoint |
+| `VOICE_LIGHT_PENDING_SILENCE_SPECULATION_MS` | `80` | low-probability Silero silence that opens the speculative decision window |
+| `VOICE_LIGHT_ADAPTER_FIRST_SPECULATION_WINDOW_MS` | `80` | additional window in which causal adapter evidence may start a candidate before the Silero fallback starts at 160 ms total silence |
 | `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS` | `0` | additional silence after Silero's causal endpoint before the VAD fallback starts |
 | `VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY` | `0.70` | synthetic yield evidence assigned to the causal VAD endpoint |
 | `VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE` | `0.70` | confidence assigned to the causal VAD endpoint evidence |
@@ -595,6 +596,25 @@ Markdown emphasis, code, strike markers, and double quotation marks are removed 
 words while apostrophes, numeric punctuation, the browser transcript, durable audible history, and
 source text offsets remain unchanged. This prevents Kyutai from vocalizing formatting artifacts
 without allowing normalization to alter tool JSON.
+
+The public-demo follow-up keeps the 4B Instruct model and does not restore the regressed 1.7B
+fine-tune. Predictive transcript revisions are compared as semantic word sequences: capitalization,
+punctuation, whitespace, and apostrophe-only changes preserve already prepared Qwen/TTS work, while
+lexical additions or substitutions invalidate it. The original ASR text, not the comparison form,
+is always sent to Qwen and retained in conversation history. During assistant playback, incomplete
+generic partials remain reversible until speech ends or the 900 ms hard deadline; explicit repair,
+question, and stop language plus strong adapter floor-take evidence remain immediate.
+
+The adapter now gets an 80 ms scheduling opportunity after the initial 80 ms pending-silence
+signal. If usable causal evidence has not arrived, the existing Silero fallback starts speculation
+at 160 ms. Every committed turn reports its causal source in the typed latency event, and overlap
+logs include decision, reason, source, and latency. This makes the adapter's actual contribution
+measurable instead of inferring it from probability plots. Deterministic search routing also bounds
+queries to the typed 240-character provider limit, preferring the final complete question; the
+reported 304-character windsurfing utterance therefore routes as `What's the actual max speed of a
+wind surfer ever?` instead of failing Pydantic validation. These changes were validated with 114
+session tests, 10 observability and Modal configuration tests, 33 overlap tests, 19 predictive
+tests, and 19 deterministic-routing tests before deployment.
 
 ## Known limitations
 
