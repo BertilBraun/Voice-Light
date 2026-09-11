@@ -453,6 +453,20 @@ class SplitWordLanguageModel:
         yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=5)
 
 
+class MarkdownLanguageModel:
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelTextDelta]:
+        del request
+        yield LanguageModelTextDelta(
+            text="**Hello,** “world!”",
+            cumulative_token_count=5,
+            invocation_id=1,
+        )
+        yield LanguageModelCompleted(invocation_id=1, cumulative_token_count=5)
+
+
 class ScriptedWeatherLanguageModel:
     def __init__(
         self,
@@ -2562,6 +2576,29 @@ def test_words_are_forwarded_on_whitespace_and_trailing_word_is_flushed() -> Non
             "start_sample": 4,
         },
     ]
+
+
+def test_markdown_and_double_quotes_are_removed_only_from_synthesis_words() -> None:
+    synthesizer = RecordingSpeechSynthesizer()
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        MarkdownLanguageModel(),
+        synthesizer,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        send_turn(websocket)
+        events, _ = receive_until(websocket, "assistant.audio.end")
+        websocket.send_json({"type": "session.stop"})
+
+    assert synthesizer.words == [
+        SynthesisWord(text="Hello,", text_start=0, text_end=10),
+        SynthesisWord(text="world!", text_start=11, text_end=19),
+    ]
+    released_deltas = [event["text"] for event in events if event["type"] == "assistant.text.delta"]
+    assert "".join(released_deltas) == "**Hello,** “world!”"
 
 
 def test_synthesis_failure_cancels_generation_and_reaches_client() -> None:

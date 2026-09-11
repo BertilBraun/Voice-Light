@@ -154,6 +154,7 @@ from app.compute.voice.tools import (
     ToolSuccess,
     tool_failure_spoken_response,
 )
+from app.compute.voice.tts_text import normalize_synthesis_word
 from app.compute.voice.word_stream import CompleteWordStream
 
 INPUT_SAMPLE_RATE = 16_000
@@ -3191,6 +3192,9 @@ class VoiceSession:
         synthesis: SpeechSynthesisSequence,
         word: SynthesisWord,
     ) -> None:
+        spoken_word = normalize_synthesis_word(word)
+        if spoken_word is None:
+            return
         generation.synthesis_word_count += 1
         if generation.latency.first_synthesis_word_at is None:
             generation.latency.first_synthesis_word_at = time.perf_counter()
@@ -3198,16 +3202,16 @@ class VoiceSession:
                 monotonic_time_seconds=generation.latency.first_synthesis_word_at,
                 input_sample_position=generation.input_audio_sample_position,
                 output_sample_position=None,
-                text_offset=word.text_end,
+                text_offset=spoken_word.text_end,
             )
             logger.info(
                 "speech synthesis first word: session=%s generation=%d text=%r",
                 self.session_id,
                 generation.generation_id,
-                word.text,
+                spoken_word.text,
             )
         try:
-            await synthesis.add_word(word)
+            await synthesis.add_word(spoken_word)
         except Exception as error:
             raise VoiceComponentError(
                 VoiceComponent.SPEECH_SYNTHESIS,
