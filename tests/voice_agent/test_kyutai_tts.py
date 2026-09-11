@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import queue
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from app.compute.voice.interfaces import (
     SynthesizedWordBoundary,
     VoxtreamSynthesisFirstAudioMetrics,
 )
+from app.compute.voice.kyutai_tts import KyutaiTtsConfiguration
 from app.compute.voice.subprocess_tts import (
     SubprocessSpeechSynthesisSession,
     TtsWorker,
@@ -94,6 +96,12 @@ class FakeKyutaiTtsWorker:
     def terminate(self) -> None:
         self.termination_count += 1
         self.events.put(TtsEndEvent(cancelled=True))
+
+
+@pytest.mark.parametrize("codebook_count", (0, 33))
+def test_kyutai_configuration_rejects_invalid_codebook_count(codebook_count: int) -> None:
+    with pytest.raises(ValueError, match="between 1 and 32"):
+        KyutaiTtsConfiguration(python_path=Path("python"), codebook_count=codebook_count)
 
 
 class FakeKyutaiTtsWorkerManager:

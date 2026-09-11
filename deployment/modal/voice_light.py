@@ -169,6 +169,11 @@ image = (
         copy=True,
     )
     .add_local_file(
+        str(REPOSITORY_ROOT / "deployment" / "compute" / "benchmark_tts.py"),
+        remote_path=str(REMOTE_REPOSITORY_ROOT / "deployment" / "compute" / "benchmark_tts.py"),
+        copy=True,
+    )
+    .add_local_file(
         str(REPOSITORY_ROOT / "deployment" / "modal" / "smoke_search_provider.py"),
         remote_path=str(
             REMOTE_REPOSITORY_ROOT / "deployment" / "modal" / "smoke_search_provider.py"
@@ -244,6 +249,20 @@ def smoke_tool_use() -> None:
     from deployment.compute.smoke_test_tool_use import main
 
     main()
+
+
+@app.function(
+    image=image,
+    env={"HF_HUB_OFFLINE": "1"},
+    gpu="L40S",
+    timeout=configuration.startup_timeout_seconds,
+    secrets=[compute_secret],
+    volumes={str(MODEL_CACHE_MOUNT): model_cache},
+)
+def benchmark_tts(codebook_count: int = 32, runs: int = 5) -> None:
+    from deployment.compute.benchmark_tts import main
+
+    main(("--codebook-count", str(codebook_count), "--runs", str(runs)))
 
 
 @app.function(

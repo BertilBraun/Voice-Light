@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import queue
 import sys
 import threading
@@ -58,14 +59,14 @@ _WorkerInput = TtsWordCommand | _WorkerMarker
 
 
 class KyutaiTtsWorkerRuntime:
-    def __init__(self, output_stream: TextIO) -> None:
+    def __init__(self, output_stream: TextIO, codebook_count: int) -> None:
         checkpoint = CheckpointInfo.from_hf_repo(
             KYUTAI_TTS_MODEL_NAME,
             revision=KYUTAI_TTS_MODEL_REVISION,
         )
         self.model = TTSModel.from_checkpoint_info(
             checkpoint,
-            n_q=KYUTAI_TTS_CODEBOOK_COUNT,
+            n_q=codebook_count,
             temp=KYUTAI_TTS_TEMPERATURE,
             device="cuda",
         )
@@ -464,8 +465,17 @@ def _discard_output(event: SynthesizedAudioChunk | SynthesizedWordBoundary) -> N
     del event
 
 
-def main() -> None:
-    runtime = KyutaiTtsWorkerRuntime(sys.stdout)
+def main(arguments: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--codebook-count",
+        type=int,
+        default=KYUTAI_TTS_CODEBOOK_COUNT,
+    )
+    options = parser.parse_args(arguments)
+    if not 1 <= options.codebook_count <= KYUTAI_TTS_CODEBOOK_COUNT:
+        raise ValueError("Kyutai TTS codebook count must be between 1 and 32.")
+    runtime = KyutaiTtsWorkerRuntime(sys.stdout, options.codebook_count)
     runtime.run(sys.stdin)
 
 
