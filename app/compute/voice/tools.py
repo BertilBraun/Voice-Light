@@ -19,6 +19,7 @@ MAXIMUM_ABSOLUTE_INTEGER_RESULT = 10**100
 MAXIMUM_ABSOLUTE_FLOAT_RESULT = 1e100
 MAXIMUM_ABSOLUTE_EXPONENT = 100
 MAXIMUM_CALCULATION_RESULTS = 8
+MAXIMUM_SEARCH_QUERY_CHARACTERS = 240
 
 
 class ToolName(StrEnum):
@@ -80,7 +81,7 @@ class ToolInvalidationReason(StrEnum):
 class SearchArguments(FrozenBaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    query: str = Field(min_length=1, max_length=240)
+    query: str = Field(min_length=1, max_length=MAXIMUM_SEARCH_QUERY_CHARACTERS)
 
 
 class CalculateArguments(FrozenBaseModel):

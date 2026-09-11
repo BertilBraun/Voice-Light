@@ -11,6 +11,7 @@ from app.compute.voice.conversation import (
     ModelUserMessage,
 )
 from app.compute.voice.tools import (
+    MAXIMUM_SEARCH_QUERY_CHARACTERS,
     CalculateArguments,
     SearchArguments,
     SerializedToolCall,
@@ -19,6 +20,7 @@ from app.compute.voice.tools import (
 )
 
 NORMALIZED_WORD_PATTERN = re.compile(r"[^a-z0-9]+")
+QUESTION_SENTENCE_PATTERN = re.compile(r"(?:^|(?<=[.!?])\s+)(?P<question>[^.!?]*\?)")
 SEARCH_ACTION_PATTERN = re.compile(r"\b(search|browse|look(?:\s+[a-z0-9]+){0,2}\s+up|lookup)\b")
 WEATHER_PATTERN = re.compile(r"\b(weather|forecast)\b")
 CURRENT_NEWS_PATTERN = re.compile(
@@ -235,7 +237,7 @@ def _routed_call(
     reason: SearchRoutingReason,
     call_id: str | None,
 ) -> RoutedSearchCall:
-    arguments = SearchArguments(query=query.strip())
+    arguments = SearchArguments(query=_bounded_search_query(query))
     return RoutedSearchCall(
         request=SerializedToolCall(
             id=call_id or f"qwen-{invocation_id}-routed-search-1",
@@ -244,6 +246,22 @@ def _routed_call(
         ),
         reason=reason,
     )
+
+
+def _bounded_search_query(text: str) -> str:
+    normalized_text = " ".join(text.split())
+    if len(normalized_text) <= MAXIMUM_SEARCH_QUERY_CHARACTERS:
+        return normalized_text
+    questions = tuple(QUESTION_SENTENCE_PATTERN.finditer(normalized_text))
+    if questions:
+        final_question = questions[-1].group("question").strip()
+        if len(final_question) <= MAXIMUM_SEARCH_QUERY_CHARACTERS:
+            return final_question
+    suffix = normalized_text[-MAXIMUM_SEARCH_QUERY_CHARACTERS:]
+    first_word_boundary = suffix.find(" ")
+    if first_word_boundary == -1:
+        return suffix
+    return suffix[first_word_boundary + 1 :]
 
 
 def _latest_user_index(messages: tuple[ModelMessage, ...]) -> int | None:

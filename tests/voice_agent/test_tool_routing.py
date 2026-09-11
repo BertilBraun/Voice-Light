@@ -60,6 +60,27 @@ def test_routed_search_can_reuse_the_models_started_call_identity() -> None:
     assert routed.request.id == "qwen-3-tool-1"
 
 
+def test_routed_search_preserves_final_question_from_long_spoken_request() -> None:
+    requested_text = (
+        "That is not true. I have exceeded sixty kilometers per hour if exceeded seventy five "
+        "kilometers per hour in far from ideal conditions, and I know that the windsurfing speed "
+        "world record is beyond a hundred kilometers an hour. Maybe you can look that up. What's "
+        "the actual max speed of a wind surfer ever?"
+    )
+    assert len(requested_text) == 304
+
+    routed = route_required_search_call(
+        (ModelUserMessage(content=requested_text),),
+        runtime_tool_specifications(),
+        invocation_id=4,
+    )
+
+    assert routed is not None
+    assert SearchArguments.model_validate_json(routed.request.arguments_json) == SearchArguments(
+        query="What's the actual max speed of a wind surfer ever?"
+    )
+
+
 def test_confirmation_routes_the_original_external_information_request() -> None:
     routed = route_required_search_call(
         (
