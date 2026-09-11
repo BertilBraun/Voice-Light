@@ -329,7 +329,7 @@ class ProvisionalVadTranscriptOverlapPolicy:
                     fast_path=False,
                 )
             provisional_feedback = True
-        elif transcript:
+        elif transcript and not evidence.speech_active:
             return ProvisionalOverlapDecision(
                 kind=OverlapResolutionKind.RESPONSE_REQUIRED,
                 reason=OverlapResolutionReason.MEANINGFUL_LEXICAL_MATERIAL,
@@ -340,9 +340,9 @@ class ProvisionalVadTranscriptOverlapPolicy:
             )
         if evidence.speech_active:
             if (
-                (transcript and not provisional_feedback)
-                or evidence.elapsed_ms >= self.config.transcript_free_floor_take_deadline_ms
-            ) and evidence.elapsed_ms >= self.config.classification_deadline_ms:
+                evidence.elapsed_ms >= self.config.transcript_free_floor_take_deadline_ms
+                and not provisional_feedback
+            ):
                 return ProvisionalOverlapDecision(
                     kind=OverlapResolutionKind.FLOOR_TAKING,
                     reason=OverlapResolutionReason.SPEECH_DURATION_DEADLINE,

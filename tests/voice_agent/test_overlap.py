@@ -90,6 +90,41 @@ def test_transcript_free_active_speech_remains_reversible_at_classification_dead
     assert decision.kind is OverlapResolutionKind.UNRESOLVED
 
 
+@pytest.mark.parametrize("transcript", ["A", "Y", "O", "I want to add something"])
+def test_unfinished_lexical_evidence_remains_reversible_while_speech_is_active(
+    transcript: str,
+) -> None:
+    policy = ProvisionalVadTranscriptOverlapPolicy(ProvisionalOverlapPolicyConfig())
+    decision = policy.classify(
+        OverlapEvidence(
+            elapsed_ms=500,
+            speech_active=True,
+            transcript=transcript,
+            transcript_event_id="transcript-1",
+            interruption_probability=None,
+            interruption_evidence_event_id=None,
+        )
+    )
+
+    assert decision.kind is OverlapResolutionKind.UNRESOLVED
+
+
+def test_finished_lexical_evidence_requires_a_response() -> None:
+    policy = ProvisionalVadTranscriptOverlapPolicy(ProvisionalOverlapPolicyConfig())
+    decision = policy.classify(
+        OverlapEvidence(
+            elapsed_ms=500,
+            speech_active=False,
+            transcript="I want to add something",
+            transcript_event_id="transcript-1",
+            interruption_probability=None,
+            interruption_evidence_event_id=None,
+        )
+    )
+
+    assert decision.kind is OverlapResolutionKind.RESPONSE_REQUIRED
+
+
 @pytest.mark.parametrize("transcript", ["mm-hm", "uh-huh", "yeah", "yes", "haha"])
 def test_active_feedback_remains_reversible_at_classification_deadline(
     transcript: str,
