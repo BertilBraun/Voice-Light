@@ -582,6 +582,20 @@ in 12.976/2.773 seconds, Qwen 4B in 15.428/2.105 seconds, and Kyutai in 20.430/0
 four workers started concurrently, and Kyutai remains the cold-start critical path. Audible bridge
 continuity and grounded result quality still require a refreshed human microphone run.
 
+The next human transcript showed that current-weather searches worked, but the base 4B model then
+answered an exact speed conversion and a disputed windsurfing claim from memory. The runtime prompt
+and typed tool descriptions now require `calculate` for exact arithmetic, comparisons, totals, and
+unit conversions, and require `search` for uncertain factual claims challenged by the user. The
+production-backend canary passed both a kilometers-per-hour-to-knots calculation call and the
+challenged-fact search call, in addition to its existing six cases. This strengthens tool selection;
+it does not make ungrounded base-model statements authoritative.
+
+All generated speech now passes through one TTS-boundary normalizer after structured tool parsing.
+Markdown emphasis, code, strike markers, and double quotation marks are removed from synthesis
+words while apostrophes, numeric punctuation, the browser transcript, durable audible history, and
+source text offsets remain unchanged. This prevents Kyutai from vocalizing formatting artifacts
+without allowing normalization to alter tool JSON.
+
 ## Known limitations
 
 - The latest truthful cold readiness sample is 32.294 seconds. Earlier samples ranged from 32.735
