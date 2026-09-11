@@ -132,6 +132,9 @@ def test_tool_prompt_requires_spoken_bridge_before_call() -> None:
         LANGUAGE_MODEL_SYSTEM_PROMPT
     )
     assert "Current weather, news" in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert "niche or uncertain factual claims" in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert "supplies contrary firsthand evidence" in LANGUAGE_MODEL_SYSTEM_PROMPT
+    assert "numeric comparisons, totals, and unit conversions" in LANGUAGE_MODEL_SYSTEM_PROMPT
     assert "Never merely promise that you will call a tool" in LANGUAGE_MODEL_SYSTEM_PROMPT
     assert "Mars" not in LANGUAGE_MODEL_SYSTEM_PROMPT
     assert "<tool_call>" not in LANGUAGE_MODEL_SYSTEM_PROMPT

@@ -21,6 +21,11 @@ from deployment.compute.smoke_test_tool_use import (
             '"arguments":{"expression":"37 * 14"}}</tool_call>',
         ),
         (
+            SmokeCase.CALCULATE_CONVERSION,
+            'I’ll convert that. <tool_call>{"name":"calculate",'
+            '"arguments":{"expression":"20 / 1.852"}}</tool_call>',
+        ),
+        (
             SmokeCase.SEARCH,
             'I’ll check the latest weather. <tool_call>{"name":"search",'
             '"arguments":{"query":"current weather Berlin"}}</tool_call>',
@@ -34,6 +39,11 @@ from deployment.compute.smoke_test_tool_use import (
             SmokeCase.CONFIRMED_SEARCH_REQUEST,
             'I’ll look it up. <tool_call>{"name":"search",'
             '"arguments":{"query":"current weather London"}}</tool_call>',
+        ),
+        (
+            SmokeCase.DISPUTED_FACT_SEARCH,
+            'I’ll verify that. <tool_call>{"name":"search",'
+            '"arguments":{"query":"professional windsurfing above 40 knots"}}</tool_call>',
         ),
         (SmokeCase.POST_TOOL_CONTINUATION, "That comes to 518."),
     ],

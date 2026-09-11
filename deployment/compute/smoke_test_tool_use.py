@@ -55,9 +55,11 @@ from app.shared.base_model import FrozenBaseModel
 class SmokeCase(StrEnum):
     ORDINARY = "ordinary_no_tool"
     CALCULATE = "calculate"
+    CALCULATE_CONVERSION = "calculate_conversion"
     SEARCH = "search"
     EXPLICIT_SEARCH_REQUEST = "explicit_search_request"
     CONFIRMED_SEARCH_REQUEST = "confirmed_search_request"
+    DISPUTED_FACT_SEARCH = "disputed_fact_search"
     POST_TOOL_CONTINUATION = "post_tool_continuation"
 
 
@@ -282,6 +284,16 @@ def _smoke_requests() -> tuple[SmokeRequest, ...]:
             expected_tool=ToolName.CALCULATE,
         ),
         SmokeRequest(
+            case=SmokeCase.CALCULATE_CONVERSION,
+            command=StartLlmCommand(
+                invocation_id=8,
+                assistant_generation_id=8,
+                messages=(LlmUserMessage(content="Convert 20 kilometers per hour to knots."),),
+                tools=tools,
+            ),
+            expected_tool=ToolName.CALCULATE,
+        ),
+        SmokeRequest(
             case=SmokeCase.SEARCH,
             command=StartLlmCommand(
                 invocation_id=3,
@@ -314,6 +326,23 @@ def _smoke_requests() -> tuple[SmokeRequest, ...]:
                     LlmUserMessage(content="Tell me the current weather in London."),
                     LlmAssistantMessage(content="I can look that up for you."),
                     LlmUserMessage(content="Please do so."),
+                ),
+                tools=tools,
+            ),
+            expected_tool=ToolName.SEARCH,
+        ),
+        SmokeRequest(
+            case=SmokeCase.DISPUTED_FACT_SEARCH,
+            command=StartLlmCommand(
+                invocation_id=7,
+                assistant_generation_id=7,
+                messages=(
+                    LlmUserMessage(
+                        content=(
+                            "You said professional windsurfers cannot sail above 40 knots, but I "
+                            "have sailed in that wind and know speed sailors use stronger winds."
+                        )
+                    ),
                 ),
                 tools=tools,
             ),
