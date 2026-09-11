@@ -9,9 +9,9 @@ registry, search integration, predictive generation, playback controller, Nemotr
 workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
-session. Modal requests A10 first and falls back only to L40S when A10 capacity is unavailable. The
-measured full stack uses about 9.5 GiB of A10's 23 GiB. A100 and H100 are deliberately excluded from
-the bounded fallback list because they are unnecessarily expensive for this stack. The endpoint is
+session. Modal requests A10 first and falls back only to L40S when A10 capacity is unavailable.
+A100 and H100 are deliberately excluded from the bounded fallback list because they are
+unnecessarily expensive for this stack. The endpoint is
 scheduled in Modal's broad `eu` compute region and routed through `eu-west`; this avoids
 latency-dominated global placements while retaining the larger European GPU pool. Modal may scale
 to zero, has one maximum container, and keeps an idle container for 120 seconds. Modal sets
@@ -27,17 +27,29 @@ The adapter consumes layer 6/12/18/24 features from the RNNT encoder call and re
 causal convolution and GRU state. A second Nemotron backbone and rolling waveform re-encoding are
 not used.
 
-Modal uses the pinned merged 1.7B Qwen checkpoint with the direct Transformers backend. The same
-worker handles conversation generation and search summarization because tool rounds are
-sequential. This avoids vLLM's approximately 90-second engine profiling path and a second Qwen
-backbone while preserving the existing typed streaming, tool-call, cancellation, and stale-event
-protocols.
+Modal uses pinned `Qwen/Qwen3-4B-Instruct-2507` revision
+`cdbee75f17c01a7cc42f958dc650907174af0554` with the direct Transformers backend. A production-
+backend canary replaced the final 16-pass 1.7B tool LoRA after fixed prompts reproduced its poor
+factual reasoning and irrelevant tool choices. The official 4B checkpoint retained structured
+weather, calculation, and multi-zone time calls in the same canary. This is an integration check,
+not a general model-quality claim. Conversational sampling uses the model-card recommendations of
+temperature 0.7, top-p 0.8, and top-k 20. The same worker handles conversation generation and
+search summarization because tool rounds are sequential. This avoids vLLM's engine profiling path
+and a second Qwen backbone while preserving the typed streaming, tool-call, cancellation, and
+stale-event protocols.
 
-Qwen remains the primary tool selector. If it omits a structured search call for an explicit
+Qwen remains the primary tool selector. A model may emit a correct tool call without audible text;
+in that case the session supplies a short tool-specific bridge while execution is already in
+flight. If Qwen omits a structured search call for an explicit
 current-information/search request or a confirmation of an immediately preceding lookup offer, a
 narrow typed router supplies the missing `search` call. The call still passes through the normal
-schema validator, tool journal, configured provider, and sequential Qwen continuation; post-tool
-rounds cannot route again.
+schema validator, tool journal, and configured provider; post-tool rounds cannot route again.
+Grounded search summaries are already speech-ready and go directly to Kyutai instead of requiring
+a redundant second conversational-model round. The bridge and result remain in one TTS session;
+the session does not finalize Kyutai while awaiting a tool, eliminating the artificial pause/pop
+boundary that previously occurred at tool completion. Successful tool messages contain the raw
+result, matching both the fine-tuning renderer and Qwen's native tool-response format rather than
+an internal execution envelope.
 
 Temperature conversion is deliberately narrower and deterministic. Explicit or contextual
 Celsius/Fahrenheit/Kelvin requests are converted into bounded calculator expressions, including
@@ -71,8 +83,8 @@ The deployment creates or reuses `voice-light-agent-model-cache` for Hugging Fac
 and `voice-light-runtime-cache` for runtime logs and dataset-audio cache. The adapter checkpoint is
 copied into the immutable image at `/opt/voice-light-artifacts/adapter-best.pt`; the source remains
 the untracked `.cache/rtx3090-node-final-backup-20260829/voice-light-human-finetune-v1` backup.
-Run `cache_models` before deployment to populate the Volume with the exact pinned Nemotron, merged
-Qwen, Kyutai, and selected voice artifacts. Serving sets `HF_HUB_OFFLINE=1`, so scale-from-zero
+Run `cache_models` before deployment to populate the Volume with the exact pinned Nemotron, Qwen,
+Kyutai, and selected voice artifacts. Serving sets `HF_HUB_OFFLINE=1`, so scale-from-zero
 containers read these files from Modal storage and do not redownload or query the Hub.
 
 ## Deploy
@@ -85,11 +97,14 @@ $env:PYTHONUTF8 = '1'
 modal run -m deployment.modal.voice_light::cache_models
 modal run -m deployment.modal.voice_light::smoke_tool_use
 modal run -m deployment.modal.voice_light::smoke_search_provider
+modal run -m deployment.modal.qwen_quality_canary::evaluate `
+  --model-name Qwen/Qwen3-4B-Instruct-2507 `
+  --model-revision cdbee75f17c01a7cc42f958dc650907174af0554
 modal deploy -m deployment.modal.voice_light
 python -m deployment.modal.smoke_websocket
 ```
 
-Run the tool-use smoke after prompt, schema, tokenizer, or merged-Qwen changes. It loads the exact
+Run the tool-use smoke after prompt, schema, tokenizer, or Qwen changes. It loads the exact
 production checkpoint on one L40S and requires ordinary speech, calculation, current search,
 explicit search, confirmed-search follow-up, and post-tool continuation cases to emit the expected
 spoken text and structured Hermes calls. It validates model behavior without invoking Tavily.
@@ -98,6 +113,10 @@ Run the search-provider smoke after creating or updating the `voice-light-search
 before making a request unless that secret contains `VOICE_LIGHT_TAVILY_API_KEY`, then performs a
 real bounded Tavily query. Its JSON output contains only `configured`, `result_count`, and
 `provider_latency_ms`; it never prints the credential or result content.
+
+The quality canary runs fixed factual-correction, comparison, arithmetic, tool-selection, multi-
+zone time, and short-story prompts on the production Transformers backend. Review its individual
+JSON observations; passing the protocol cases is not evidence of general research superiority.
 
 ### GPU memory snapshot canary
 
@@ -520,11 +539,34 @@ than cancelling it immediately. If ASR finalizes that onset without text, the sa
 released; lexical speech still commits an interruption. This avoids leaving the session idle after
 a pre-playback false start.
 
+### 2026-09-11 Qwen and tool-path validation
+
+The final 1.7B tool LoRA and the official 4B Instruct checkpoint were run through the same fixed
+production-backend canary. The 1.7B output reproduced the reported incoherent funny fact and an
+irrelevant correction path. The 4B checkpoint returned coherent comparison, arithmetic, weather-
+search, two-zone time, and story structures. One factual-correction answer still underestimated
+lifetime food consumption, so the result supports replacing the clearly regressed checkpoint but
+does not establish broad factual reliability.
+
+After promotion, the deployed L40S tool smoke passed all six protocol cases: ordinary speech,
+calculation, current search, explicit search, confirmed-search follow-up, and post-tool
+continuation. The configured real Tavily smoke returned two results in 233.996 ms. A scaled-to-zero
+WebSocket reached `session.ready` in 32.735 seconds. Runtime logs place the container in Frankfurt
+and show all required models ready in 21.008 seconds: Nemotron plus adapter load/warm took
+12.089/2.770 seconds, Qwen 4B took 15.080/2.218 seconds, and Kyutai took 19.975/0.918 seconds, with
+all three loading concurrently. The difference between 21.008-second runtime readiness and the
+32.735-second client observation is Modal scheduling/container/import/routing overhead.
+
+The deployed endpoint remains
+`wss://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run/v1/voice`.
+A browser microphone run is still required to judge the continuous tool-boundary audio and the
+new model's conversational behavior under real interruptions.
+
 ## Known limitations
 
-- The latest truthful cold readiness sample is 35.662 seconds, while the three fixed-A10 samples
-  immediately before it ranged from 35.124 to 66.312 seconds. Modal scheduling, host performance,
-  and fallback GPU selection remain variable; an
+- The latest truthful cold readiness sample is 32.735 seconds. Earlier samples ranged from 35.124
+  to 66.312 seconds. Modal scheduling, host performance, and fallback GPU selection remain
+  variable; an
   earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
   ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap, keeping a warm
   container (which conflicts with scale-to-zero), or replacing the larger current model stack;

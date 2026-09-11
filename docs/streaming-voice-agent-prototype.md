@@ -55,11 +55,11 @@ validated playback offsets enter model history.
   its resampler converts microphone audio before PCM16 quantization. Set
   `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` to `0`, `1`, `6`, or `13` to compare the model's 80, 160, 560,
   and 1120 ms streaming configurations without changing code.
-- Qwen3-1.7B runs in a persistent child process. A typed generation-ID protocol streams
+- Qwen3-4B-Instruct-2507 runs in a persistent child process. A typed generation-ID protocol streams
   non-thinking text deltas for the complete ordered conversation.
-- Qwen3-0.6B runs in a second persistent child process and handles only bounded, non-thinking
-  search-result summarization. Its model revision, lifecycle, and inference lock are independent
-  from the conversational worker.
+- Search-result summarization is bounded and non-thinking. Modal shares the conversational Qwen
+  worker to avoid loading a second backbone; other deployments may configure the independent
+  Qwen3-0.6B summarizer.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
   that generation's audible history. Every actual Qwen invocation also emits
   `llm.model_request`, including its typed private messages and tool specifications. The browser
@@ -82,7 +82,8 @@ validated playback offsets enter model history.
 Tool execution follows Qwen3's official Hermes function-calling protocol. The worker
 passes the typed message sequence and typed JSON-schema tool definition to
 `tokenizer.apply_chat_template(..., tools=..., enable_thinking=False)` using pinned
-`Qwen/Qwen3-1.7B` revision `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e`. It does not use a
+`Qwen/Qwen3-4B-Instruct-2507` revision `cdbee75f17c01a7cc42f958dc650907174af0554`.
+It does not use a
 stopword or ReAct protocol. The primary protocol reference is
 <https://qwen.readthedocs.io/en/stable/framework/function_call.html>.
 
