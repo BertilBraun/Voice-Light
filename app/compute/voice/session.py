@@ -2346,7 +2346,6 @@ class VoiceSession:
                     VoiceOperation.GENERATE_TEXT,
                     "Qwen attempted a tool call after the configured round limit.",
                 )
-            await synthesis.finish_utterance()
             audible_content = generation.response_text[audible_text_start:audible_text_end].strip()
             tool_call: ToolCall | None = None
             assistant_message: ModelAssistantMessage

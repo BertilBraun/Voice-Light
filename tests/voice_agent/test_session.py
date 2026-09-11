@@ -1662,7 +1662,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn(
         assert first_request_event["tools"][0]["function"]["name"] == "search"
         assert len(language_model.requests) == 1
         assert len(synthesizer.sessions) == 1
-        assert synthesizer.sessions[0].finished
+        assert not synthesizer.sessions[0].finished
         assert weather_handler.arguments == [SearchArguments(query="current weather in London")]
         assert released_text(sink) == "Let me check that."
         assert all("<tool_call>" not in word.text for word in synthesizer.words)
@@ -1768,7 +1768,7 @@ def test_weather_tool_streams_bridge_and_final_answer_in_one_playback_turn(
         assert isinstance(tool_message.outcome, ToolSuccess)
         assert tool_message.outcome.result == "London is 12 degrees and lightly cloudy."
         assert second_request.tools == create_search_registry(weather_handler).specifications
-        assert len(synthesizer.sessions) == 2
+        assert len(synthesizer.sessions) == 1
         assert all(session.finished for session in synthesizer.sessions)
 
         released_outputs = tuple(sink.outputs)
@@ -1894,10 +1894,11 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
     search_handler = StandardSearchHandler(
         SearchPipeline(PrivateSearchProvider(), PrivateSearchSummarizer())
     )
+    synthesizer = RecordingSpeechSynthesizer()
     web_app = create_test_app(
         RecordingTranscriber(),
         language_model,
-        RecordingSpeechSynthesizer(),
+        synthesizer,
         playback_sink=sink,
         created_sessions=sessions,
         tool_executor=create_search_registry(search_handler),
@@ -1929,6 +1930,8 @@ def test_search_raw_results_and_summary_prompt_never_enter_main_model_history() 
         for message in sessions[0].conversation
     )
     assert released_text(sink) == f"Let me check that. {final_tool_result}"
+    assert len(synthesizer.sessions) == 1
+    assert synthesizer.sessions[0].finished
 
 
 def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn() -> None:
@@ -2032,7 +2035,7 @@ def test_sequential_tool_rounds_preserve_context_journal_and_one_playback_turn()
         assert [boundary.start_sample for boundary in boundaries] == sorted(
             boundary.start_sample for boundary in boundaries
         )
-        assert len(synthesizer.sessions) == 3
+        assert len(synthesizer.sessions) == 1
         assert all(session.finished for session in synthesizer.sessions)
 
         send_turn(websocket)
