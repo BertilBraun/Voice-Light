@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import Annotated, Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from pydantic import ConfigDict, Field, TypeAdapter
+from pydantic import ConfigDict, Field, TypeAdapter, field_validator
 
 from app.compute.voice.search_debug import SearchDebugTrace, SearchToolOutput
 from app.shared.base_model import FrozenBaseModel
@@ -92,10 +92,34 @@ class CalculateArguments(FrozenBaseModel):
 class GetTimeArguments(FrozenBaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    time_zone_names: tuple[Annotated[str, Field(min_length=1, max_length=64)], ...] = Field(
+        default=(), max_length=8
+    )
+
+    @field_validator("time_zone_names")
+    @classmethod
+    def validate_time_zone_names(cls, names: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(names)) != len(names):
+            raise ValueError("Time-zone names must be unique.")
+        for name in names:
+            try:
+                ZoneInfo(name)
+            except (KeyError, ValueError) as error:
+                raise ValueError(f"Unknown IANA time-zone name: {name}") from error
+        return names
+
 
 class ToolStringParameter(FrozenBaseModel):
     type: Literal["string"] = "string"
     description: str
+
+
+class ToolStringArrayParameter(FrozenBaseModel):
+    type: Literal["array"] = "array"
+    items: ToolStringParameter
+    description: str
+    minItems: int = Field(default=1, ge=1)
+    maxItems: int = Field(default=8, ge=1)
 
 
 class SearchParameterProperties(FrozenBaseModel):
@@ -121,7 +145,7 @@ class CalculateParameters(FrozenBaseModel):
 
 
 class GetTimeParameterProperties(FrozenBaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    time_zone_names: ToolStringArrayParameter
 
 
 class GetTimeParameters(FrozenBaseModel):
@@ -276,7 +300,7 @@ class SearchAnswerer(Protocol):
 class GetTimeToolHandler(Protocol):
     def set_local_time_zone(self, time_zone_name: str) -> None: ...
 
-    async def __call__(self) -> str: ...
+    async def __call__(self, arguments: GetTimeArguments) -> str: ...
 
 
 class ToolExecutor(Protocol):
@@ -382,8 +406,8 @@ class RuntimeToolRegistry:
                             delivery = ToolResultDelivery.DIRECT_SPEECH
                 case CalculateToolCallFunction(arguments=arguments):
                     result = await self.calculate_handler(arguments)
-                case GetTimeToolCallFunction():
-                    result = await self.get_time_handler()
+                case GetTimeToolCallFunction(arguments=arguments):
+                    result = await self.get_time_handler(arguments)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -427,15 +451,16 @@ class CurrentLocalTimeHandler:
     def set_local_time_zone(self, time_zone_name: str) -> None:
         self.local_time_zone = ZoneInfo(time_zone_name)
 
-    async def __call__(self) -> str:
+    async def __call__(self, arguments: GetTimeArguments) -> str:
         current_time = self.current_time()
         if current_time.utcoffset() is None:
             raise ValueError("Current time must include a UTC offset.")
-        local_time = current_time.astimezone(self.local_time_zone)
-        return (
-            f"{local_time.isoformat(timespec='seconds')} "
-            f"(IANA time zone: {self.local_time_zone.key})"
+        time_zones = (
+            tuple(ZoneInfo(name) for name in arguments.time_zone_names)
+            if arguments.time_zone_names
+            else (self.local_time_zone,)
         )
+        return "\n".join(_time_in_zone(current_time, time_zone) for time_zone in time_zones)
 
 
 def create_runtime_tool_registry(
@@ -484,10 +509,23 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
         ToolSpecification(
             function=GetTimeToolFunctionSpecification(
                 description=(
-                    "Get the current date and time in the user's local time zone, including its "
-                    "UTC offset and IANA time-zone name."
+                    "Get the current date and time. Omit time_zone_names for the user's browser "
+                    "local time, or provide one or more IANA time-zone names in a single call "
+                    "to compare places, for example Europe/London and America/New_York."
                 ),
-                parameters=GetTimeParameters(properties=GetTimeParameterProperties()),
+                parameters=GetTimeParameters(
+                    properties=GetTimeParameterProperties(
+                        time_zone_names=ToolStringArrayParameter(
+                            items=ToolStringParameter(
+                                description="An IANA time-zone name such as Europe/London."
+                            ),
+                            description=(
+                                "IANA time-zone names to return together. Omit for browser-local "
+                                "time."
+                            ),
+                        )
+                    )
+                ),
             )
         ),
     )
@@ -495,6 +533,11 @@ def _tool_specifications() -> tuple[ToolSpecification, ...]:
 
 def _current_local_time() -> datetime:
     return datetime.now(UTC)
+
+
+def _time_in_zone(current_time: datetime, time_zone: ZoneInfo) -> str:
+    local_time = current_time.astimezone(time_zone)
+    return f"{local_time.isoformat(timespec='seconds')} (IANA time zone: {time_zone.key})"
 
 
 def _evaluate_arithmetic(expression: ast.expr) -> int | float:

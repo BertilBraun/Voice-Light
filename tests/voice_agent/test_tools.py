@@ -57,6 +57,9 @@ def test_runtime_registry_exposes_search_calculate_and_get_time() -> None:
     search_description = specifications[0].function.description
     assert "required for current weather or news" in search_description
     assert "instead of promising a future search" in search_description
+    time_specification = specifications[2].function
+    assert time_specification.parameters.required == ()
+    assert time_specification.parameters.properties.time_zone_names.maxItems == 8
 
 
 def test_unconfigured_registry_does_not_expose_or_validate_search() -> None:
@@ -236,9 +239,50 @@ def test_get_time_returns_browser_local_timestamp(current_time: datetime, expect
     async def fixed_time() -> str:
         handler = CurrentLocalTimeHandler(lambda: current_time)
         handler.set_local_time_zone("Europe/Berlin")
-        return await handler()
+        return await handler(GetTimeArguments())
 
     assert asyncio.run(fixed_time()) == expected
+
+
+def test_get_time_returns_multiple_requested_time_zones_from_one_instant() -> None:
+    async def get_times() -> str:
+        registry = RuntimeToolRegistry(
+            search_handler=None,
+            calculate_handler=PythonArithmeticHandler(),
+            get_time_handler=CurrentLocalTimeHandler(
+                lambda: datetime(2026, 7, 18, 12, 5, 9, tzinfo=UTC)
+            ),
+        )
+        validated = registry.validate(
+            SerializedToolCall(
+                id="call-1",
+                name="get_time",
+                arguments_json=('{"time_zone_names":["Europe/London","America/New_York"]}'),
+            )
+        )
+        assert isinstance(validated, ToolCall)
+        outcome = await registry.execute(validated)
+        assert isinstance(outcome, ToolSuccess)
+        return outcome.result
+
+    assert asyncio.run(get_times()) == (
+        "2026-07-18T13:05:09+01:00 (IANA time zone: Europe/London)\n"
+        "2026-07-18T08:05:09-04:00 (IANA time zone: America/New_York)"
+    )
+
+
+def test_get_time_rejects_unknown_requested_time_zone() -> None:
+    registry = create_runtime_tool_registry(search_handler=None)
+    validated = registry.validate(
+        SerializedToolCall(
+            id="call-1",
+            name="get_time",
+            arguments_json='{"time_zone_names":["Europe/London","Not/A_Zone"]}',
+        )
+    )
+
+    assert isinstance(validated, ToolCallFailure)
+    assert validated.reason is ToolCallFailureReason.INVALID_ARGUMENTS
 
 
 def test_registry_applies_session_time_zone_to_get_time() -> None:
@@ -332,3 +376,6 @@ def test_argument_models_are_tool_specific() -> None:
     assert SearchArguments(query="news").query == "news"
     assert CalculateArguments(expression="1 + 1").expression == "1 + 1"
     assert GetTimeArguments() == GetTimeArguments()
+    assert GetTimeArguments(time_zone_names=("Europe/London",)).time_zone_names == (
+        "Europe/London",
+    )
