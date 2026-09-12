@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from app.compute.voice.qwen_worker import (
     QwenGenerationCommand,
     render_qwen_prompt,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class QwenTransformersTokenizer(QwenChatTemplateTokenizer, Protocol):
@@ -121,6 +124,7 @@ class QwenTransformersRuntime:
             raise RuntimeError("The Transformers Qwen runtime already has an active generation.")
         prompt = render_qwen_prompt(self.tokenizer, command)
         model_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        _log_prompt_token_count(command.invocation_id, model_inputs.input_ids)
         streamer = TextIteratorStreamer(
             cast(PreTrainedTokenizerBase, self.tokenizer),
             skip_prompt=True,
@@ -220,6 +224,14 @@ class QwenTransformersRuntime:
 
     async def wake(self) -> None:
         raise RuntimeError("The Transformers Qwen backend does not support memory snapshots.")
+
+
+def _log_prompt_token_count(invocation_id: int, input_ids: torch.LongTensor) -> None:
+    logger.info(
+        "Qwen prompt tokenized: invocation=%d prompt_tokens=%d",
+        invocation_id,
+        input_ids.shape[-1],
+    )
 
 
 def _next_text(streamer: TextIteratorStreamer) -> str | None:

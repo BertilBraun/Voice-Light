@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 
 import pytest
@@ -14,6 +15,7 @@ from app.compute.voice.qwen_transformers_runtime import (
     GenerationFlowControl,
     GenerationFlowControlLogitsProcessor,
     QwenTransformersRuntime,
+    _log_prompt_token_count,
 )
 
 
@@ -87,3 +89,14 @@ def test_transformers_configuration_rejects_dynamic_adapter() -> None:
 
     with pytest.raises(ValueError, match="merged model checkpoint"):
         QwenTransformersRuntime(configuration)
+
+
+def test_transformers_logs_exact_prompt_token_count(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    input_ids = torch.tensor([[11, 12, 13, 14]])
+
+    with caplog.at_level(logging.INFO, logger="app.compute.voice.qwen_transformers_runtime"):
+        _log_prompt_token_count(invocation_id=17, input_ids=input_ids)
+
+    assert caplog.messages == ["Qwen prompt tokenized: invocation=17 prompt_tokens=4"]
