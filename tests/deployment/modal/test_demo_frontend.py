@@ -44,9 +44,9 @@ def test_demo_frontend_serves_voice_page_and_assets() -> None:
         script_response = client.get("/pages/voice-agent/app.js")
 
     assert page_response.status_code == 200
-    assert "Streaming Voice Agent" in page_response.text
+    assert "A voice agent that listens." in page_response.text
     assert script_response.status_code == 200
-    assert "voice-light-compute-voice-endpoint" in script_response.text
+    assert "PRODUCTION_VOICE_WEBSOCKET_URL" in script_response.text
 
 
 def test_demo_frontend_rejects_insecure_public_websocket() -> None:

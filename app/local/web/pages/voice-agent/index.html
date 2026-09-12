@@ -3,25 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Streaming Voice Agent · Voice Light</title>
-    <link rel="stylesheet" href="/pages/voice-agent/styles.css" />
+    <title>Voice Light · Streaming conversation demo</title>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main>
-      <header>
-        <a href="/">Voice Light</a>
+      <header class="site-header">
+        <a class="brand" href="https://github.com/BertilBraun/Voice-Light">
+          <span aria-hidden="true">VL</span>
+          Voice Light
+        </a>
         <span id="connection-status" data-state="idle">Disconnected</span>
       </header>
 
       <section class="hero">
-        <p class="eyebrow">Cascaded voice prototype</p>
-        <h1>Speak naturally.</h1>
-        <p>Audio streams to ASR continuously. A response starts after the end of your turn.</p>
+        <p class="eyebrow">Streaming conversation research</p>
+        <h1>A voice agent that listens.</h1>
+        <p>Talk naturally, add a quick “mm-hmm,” or interrupt. Voice Light responds while keeping track of who has the floor.</p>
       </section>
 
       <section class="controls">
-        <label for="endpoint-url">Compute voice session endpoint</label>
-        <input id="endpoint-url" type="url" placeholder="ws://compute-host:8000/v1/voice" />
         <div class="buttons">
           <button id="start-button" type="button">Start microphone</button>
           <button id="stop-button" type="button" disabled>Stop</button>
@@ -42,10 +43,16 @@
             <p class="eyebrow">Current session</p>
             <h2 id="conversation-title">Conversation history</h2>
           </div>
-          <div class="conversation-status" aria-label="Live conversation status">
-            <span>You <strong id="vad-status">waiting</strong></span>
-            <span>Assistant <strong id="playback-status">waiting</strong></span>
-            <span id="playback-underruns">underruns 0</span>
+          <div class="conversation-tools">
+            <label class="preview-toggle" for="generated-text-toggle">
+              <input id="generated-text-toggle" type="checkbox" />
+              Preview generated text
+            </label>
+            <div class="conversation-status" aria-label="Live conversation status">
+              <span>You <strong id="vad-status">waiting</strong></span>
+              <span>Assistant <strong id="playback-status">waiting</strong></span>
+              <span id="playback-underruns">underruns 0</span>
+            </div>
           </div>
         </div>
         <div id="conversation-history" class="conversation-history" aria-live="polite">
@@ -58,30 +65,16 @@
       <section class="interaction-debug" aria-labelledby="interaction-debug-title">
         <div>
           <p class="eyebrow">Ephemeral model evidence</p>
-          <h2 id="interaction-debug-title">Interaction policy</h2>
+          <h2 id="interaction-debug-title">How the agent reads the floor</h2>
         </div>
-        <dl>
-          <div><dt>Adapter</dt><dd id="debug-adapter-status">waiting</dd></div>
-          <div><dt>Silero</dt><dd id="debug-silero">waiting</dd></div>
-          <div><dt>User yield (commit input)</dt><dd id="debug-user-yield">—</dd></div>
-          <div><dt>Turn completion</dt><dd id="debug-turn-completion">—</dd></div>
-          <div><dt>Floor take</dt><dd id="debug-floor-take">—</dd></div>
-          <div><dt>Non-floor feedback</dt><dd id="debug-non-floor">—</dd></div>
-          <div><dt>Decision</dt><dd id="debug-policy-decision">waiting</dd></div>
-          <div><dt>Decision latency</dt><dd id="debug-policy-latency">—</dd></div>
-          <div><dt>First applicable prediction</dt><dd id="debug-prediction-latency">—</dd></div>
-          <div><dt>Latest model sample</dt><dd id="debug-prediction-disposition">—</dd></div>
-          <div><dt>Playback action</dt><dd id="debug-action-latency">—</dd></div>
-          <div><dt>Evidence cadence</dt><dd id="debug-evidence-cadence">no model observations</dd></div>
-        </dl>
         <div class="interaction-timeline-heading">
-          <p>Last 20 seconds · solid dots affect policy; hollow dots were rejected</p>
+          <p>Last 20 seconds · dots are model observations, not conversation labels</p>
           <div class="interaction-timeline-legend" aria-hidden="true">
-            <span data-series="yield">user-yield samples</span>
-            <span data-series="completion">completion samples</span>
-            <span data-series="floor">floor-take samples</span>
-            <span data-series="feedback">non-floor samples</span>
-            <span data-series="rejected">hollow = rejected</span>
+            <span data-series="yield">user yielded</span>
+            <span data-series="completion">turn complete</span>
+            <span data-series="floor">taking the floor</span>
+            <span data-series="feedback">backchannel</span>
+            <span data-series="rejected">hollow = stale or inapplicable</span>
           </div>
         </div>
         <canvas
@@ -91,6 +84,28 @@
           role="img"
           aria-label="Live Silero, assistant playback, and turn-taking probability timeline"
         ></canvas>
+        <details class="policy-details">
+          <summary>Latest policy snapshot</summary>
+          <p class="policy-explanation">
+            These probabilities are causal evidence used by the hybrid policy. “User yielded” means
+            the user is not holding the floor; “taking the floor” means speech should interrupt the
+            assistant; “backchannel” means brief feedback that should let it continue.
+          </p>
+          <dl>
+            <div><dt>Adapter</dt><dd id="debug-adapter-status">waiting</dd></div>
+            <div><dt>Silero speech</dt><dd id="debug-silero">waiting</dd></div>
+            <div title="Broad HOLD/YIELD estimate used for speculation and commitment."><dt>User yielded</dt><dd id="debug-user-yield">—</dd></div>
+            <div title="Probability that the current conversational turn is complete."><dt>Turn complete</dt><dd id="debug-turn-completion">—</dd></div>
+            <div title="Probability that user speech intends to claim the floor during assistant playback."><dt>Taking the floor</dt><dd id="debug-floor-take">—</dd></div>
+            <div title="Probability that user speech is feedback which should not take the floor."><dt>Backchannel</dt><dd id="debug-non-floor">—</dd></div>
+            <div><dt>Final decision</dt><dd id="debug-policy-decision">waiting</dd></div>
+            <div><dt>Decision latency</dt><dd id="debug-policy-latency">—</dd></div>
+            <div><dt>First usable prediction</dt><dd id="debug-prediction-latency">—</dd></div>
+            <div><dt>Latest sample</dt><dd id="debug-prediction-disposition">—</dd></div>
+            <div><dt>Playback action</dt><dd id="debug-action-latency">—</dd></div>
+            <div><dt>Evidence cadence</dt><dd id="debug-evidence-cadence">no model observations</dd></div>
+          </dl>
+        </details>
       </section>
 
       <details>
@@ -98,6 +113,6 @@
         <ol id="event-log"></ol>
       </details>
     </main>
-    <script type="module" src="/pages/voice-agent/app.js?v=19"></script>
+    <script type="module" src="./app.js?v=20"></script>
   </body>
 </html>

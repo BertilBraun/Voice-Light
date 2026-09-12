@@ -9,6 +9,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     with TestClient(app) as client:
         page_response = client.get("/voice-agent")
         script_response = client.get("/pages/voice-agent/app.js")
+        configuration_response = client.get("/pages/voice-agent/public-config.mjs")
         evidence_response = client.get("/pages/voice-agent/interaction-evidence.mjs")
         progress_response = client.get("/pages/voice-agent/spoken-text-progress.mjs")
         capture_worklet_response = client.get("/pages/voice-agent/capture-worklet.js")
@@ -16,6 +17,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
 
     assert page_response.status_code == 200
     assert progress_response.status_code == 200
+    assert configuration_response.status_code == 200
     assert evidence_response.status_code == 200
     assert 'id="conversation-history"' in page_response.text
     assert 'id="conversation-empty"' in page_response.text
@@ -55,17 +57,9 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'message.type === "assistant.cancel"' in script_response.text
     assert 'message.type === "assistant.audio.text_boundary"' in script_response.text
     assert 'message.type === "assistant.latency"' in script_response.text
-    assert 'label: "total"' in script_response.text
-    assert 'label: "endpoint"' in script_response.text
-    assert 'label: "first pause"' in script_response.text
-    assert 'label: "end→PCM"' in script_response.text
-    assert 'label: "ASR final"' in script_response.text
-    assert 'label: "candidate"' in script_response.text
-    assert 'label: "release"' in script_response.text
-    assert 'label: "prepared"' in script_response.text
-    assert 'label: "LLM"' in script_response.text
-    assert 'label: "TTS"' in script_response.text
-    assert 'label: "play"' in script_response.text
+    assert 'label: "response"' in script_response.text
+    assert 'id="generated-text-toggle"' in page_response.text
+    assert "PRODUCTION_VOICE_WEBSOCKET_URL" in configuration_response.text
     assert "turn-latencies" in script_response.text
     assert 'message.type === "playback.command"' in script_response.text
     assert 'data.type === "playback.started"' in script_response.text
@@ -86,11 +80,11 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'data.type === "playback.clock"' in script_response.text
     assert "underrun_count: data.underrunCount" in script_response.text
     assert 'id="playback-underruns"' in page_response.text
-    assert "app.js?v=19" in page_response.text
+    assert "app.js?v=20" in page_response.text
     assert 'message.type !== "speech_understanding.debug"' in script_response.text
     assert "MAX_EVENT_LOG_ENTRIES = 200" in script_response.text
     assert "scheduleInteractionTimelineDraw" in script_response.text
-    assert "solid dots affect policy; hollow dots were rejected" in page_response.text
+    assert "dots are model observations, not conversation labels" in page_response.text
     assert "modelObservationSamples(points, field)" in script_response.text
     assert 'sample.disposition === "applicable"' in script_response.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text

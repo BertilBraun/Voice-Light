@@ -1,4 +1,5 @@
 import { SpokenTextProgress } from "./spoken-text-progress.mjs";
+import { PRODUCTION_VOICE_WEBSOCKET_URL } from "./public-config.mjs";
 import {
   INTERACTION_TIMELINE_DURATION_MS,
   modelObservationSamples,
@@ -8,9 +9,7 @@ import {
 
 const INPUT_SAMPLE_RATE = 16000;
 const LOCAL_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Etc/UTC";
-const ENDPOINT_STORAGE_KEY = "voice-light-compute-voice-endpoint";
 const MAX_EVENT_LOG_ENTRIES = 200;
-const endpointInput = document.querySelector("#endpoint-url");
 const startButton = document.querySelector("#start-button");
 const stopButton = document.querySelector("#stop-button");
 const recordingReview = document.querySelector("#recording-review");
@@ -23,6 +22,7 @@ const playbackStatus = document.querySelector("#playback-status");
 const playbackUnderruns = document.querySelector("#playback-underruns");
 const conversationHistory = document.querySelector("#conversation-history");
 const conversationEmpty = document.querySelector("#conversation-empty");
+const generatedTextToggle = document.querySelector("#generated-text-toggle");
 const eventLog = document.querySelector("#event-log");
 const debugAdapterStatus = document.querySelector("#debug-adapter-status");
 const debugSilero = document.querySelector("#debug-silero");
@@ -59,7 +59,6 @@ new ResizeObserver(scheduleInteractionTimelineDraw).observe(interactionTimeline)
 
 class ConversationTurn {
   constructor(role, state) {
-    const followHistory = historyIsAtEnd();
     conversationEmpty.remove();
     this.element = document.createElement("article");
     this.element.className = "conversation-turn";
@@ -93,7 +92,7 @@ class ConversationTurn {
     this.element.append(heading, this.transcript);
     conversationHistory.append(this.element);
     this.setState(state);
-    followConversationHistory(followHistory);
+    followConversationHistory(true);
   }
 
   setText(text) {
@@ -112,8 +111,10 @@ class ConversationTurn {
 
   setSpokenOffset(offset) {
     if (!this.spokenTranscript || offset <= this.progress.spokenOffset) return;
+    const followHistory = historyIsAtEnd();
     this.progress.markSpoken(offset);
     this.renderText();
+    followConversationHistory(followHistory);
   }
 
   acknowledgeOffset(offset) {
@@ -121,8 +122,10 @@ class ConversationTurn {
   }
 
   settleInterruptedText() {
+    const followHistory = historyIsAtEnd();
     this.progress.settleInterruptedText();
     this.renderText();
+    followConversationHistory(followHistory);
   }
 
   renderText() {
@@ -140,84 +143,13 @@ class ConversationTurn {
   }
 
   setLatencies(latencies) {
-    const measurements = [
-      ...(latencies.final_vad_endpoint_to_turn_commit_ms === null
-        ? []
-        : [
-            {
-              label: "endpoint",
-              value: latencies.final_vad_endpoint_to_turn_commit_ms,
-              description: "Final Silero speech endpoint to server turn commitment.",
-            },
-            {
-              label: "end→PCM",
-              value: latencies.final_vad_endpoint_to_first_audio_send_ms,
-              description: "Final Silero speech endpoint to the first released PCM packet.",
-            },
-          ]),
-      ...(latencies.first_vad_endpoint_to_turn_commit_ms === null
-        ? []
-        : [
-            {
-              label: "first pause",
-              value: latencies.first_vad_endpoint_to_turn_commit_ms,
-              description:
-                "First Silero endpoint in the utterance to commitment; this includes resumed speech.",
-            },
-          ]),
-      {
-        label: "ASR final",
-        value: latencies.asr_finalization_ms,
-        description: "Time spent finalizing the streaming ASR turn.",
-      },
-      ...(latencies.candidate_resolution_ms === null
-        ? []
-        : [
-            {
-              label: "candidate",
-              value: latencies.candidate_resolution_ms,
-              description: "Turn commitment to speculative-candidate promotion.",
-            },
-          ]),
-      {
-        label: "total",
-        value: latencies.turn_commit_to_playback_ms,
-        description:
-          "Committed user turn to the server receiving the browser's first-rendered-audio acknowledgement.",
-      },
-      {
-        label: "release",
-        value: latencies.turn_commit_to_first_audio_send_ms,
-        description: "Server turn commitment to the first released PCM packet.",
-      },
-      {
-        label: "LLM",
-        value: latencies.generation_to_first_word_ms,
-        description: "Language-model generation start to its first complete spoken word.",
-      },
-      {
-        label: "TTS",
-        value: latencies.tts_first_word_to_first_pcm_ms,
-        description: "First word submitted to speech synthesis to its first generated PCM packet.",
-      },
-      {
-        label: "play",
-        value: latencies.first_audio_send_to_playback_ms,
-        description:
-          "First PCM packet sent by the server to receipt of the browser's first-rendered-audio acknowledgement.",
-      },
-    ];
-    if (latencies.speculative_candidate_promoted) {
-      measurements.push({
-        label: "prepared",
-        value: latencies.speculative_hidden_work_ms,
-        description:
-          `${latencies.prepared_qwen_token_count} Qwen tokens, ` +
-          `${latencies.prepared_word_count} TTS words, ` +
-          `${latencies.buffered_audio_ms.toFixed(1)} ms buffered audio; ` +
-          `first PCM ready: ${latencies.first_tts_pcm_ready_at_commit ? "yes" : "no"}.`,
-      });
-    }
+    const measurements = latencies.final_vad_endpoint_to_first_audio_send_ms === null
+      ? []
+      : [{
+          label: "response",
+          value: latencies.final_vad_endpoint_to_first_audio_send_ms,
+          description: "Final speech endpoint to the first released audio packet.",
+        }];
     this.latencies.replaceChildren(
       ...measurements.map(({ label, value, description }) => {
         const measurement = document.createElement("span");
@@ -234,17 +166,13 @@ class ConversationTurn {
   }
 }
 
-endpointInput.value = new URLSearchParams(location.search).get("compute") ?? localStorage.getItem(ENDPOINT_STORAGE_KEY) ?? "";
 startButton.addEventListener("click", startSession);
 stopButton.addEventListener("click", stopSession);
+generatedTextToggle.addEventListener("change", () => {
+  document.body.dataset.showGeneratedText = String(generatedTextToggle.checked);
+});
 
 async function startSession() {
-  const endpoint = endpointInput.value.trim();
-  if (!endpoint.startsWith("wss://") && !endpoint.startsWith("ws://")) {
-    setConnection("error", "Invalid endpoint", "Enter a WebSocket URL beginning with ws:// or wss://.");
-    return;
-  }
-  localStorage.setItem(ENDPOINT_STORAGE_KEY, endpoint);
   clearInputRecording();
   clearConversationHistory();
   stopRequested = false;
@@ -253,7 +181,7 @@ async function startSession() {
   stopButton.disabled = false;
   setConnection("starting", "Server starting…", "Waking the server. This can take about a minute after it has scaled down.");
   try {
-    socket = await openSocket(endpoint);
+    socket = await openSocket(PRODUCTION_VOICE_WEBSOCKET_URL);
     setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
     const sessionReady = waitForSessionReady(socket);
     socket.send(JSON.stringify({
@@ -337,7 +265,7 @@ async function setupCapture(stream) {
   if (captureContext.sampleRate !== INPUT_SAMPLE_RATE) {
     throw new Error(`Browser created a ${captureContext.sampleRate} Hz capture context instead of ${INPUT_SAMPLE_RATE} Hz.`);
   }
-  await captureContext.audioWorklet.addModule("/pages/voice-agent/capture-worklet.js?v=2");
+  await captureContext.audioWorklet.addModule("./capture-worklet.js?v=2");
   const source = captureContext.createMediaStreamSource(stream);
   const captureNode = new AudioWorkletNode(captureContext, "pcm-capture", {
     processorOptions: { targetSampleRate: INPUT_SAMPLE_RATE },
@@ -358,7 +286,7 @@ async function setupCapture(stream) {
 
 async function setupPlayback(inputSampleRate) {
   playbackContext = new AudioContext();
-  await playbackContext.audioWorklet.addModule("/pages/voice-agent/playback-worklet.js?v=9");
+  await playbackContext.audioWorklet.addModule("./playback-worklet.js?v=9");
   playbackNode = new AudioWorkletNode(playbackContext, "pcm-playback", {
     outputChannelCount: [1],
     processorOptions: { inputSampleRate },
@@ -821,13 +749,13 @@ function drawInteractionTimeline() {
   const probabilityBottom = height - 24;
 
   context.font = "11px ui-monospace, monospace";
-  context.fillStyle = "#718078";
+  context.fillStyle = "#64706a";
   context.textBaseline = "middle";
   context.fillText("user speech", 8, userLaneTop + laneHeight / 2);
   context.fillText("assistant", 8, assistantLaneTop + laneHeight / 2);
   for (const [label, probability] of [["1", 1], [".5", 0.5], ["0", 0]]) {
     const y = probabilityBottom - probability * (probabilityBottom - probabilityTop);
-    context.strokeStyle = "#29322c";
+    context.strokeStyle = "#d9e0dc";
     context.beginPath();
     context.moveTo(labelWidth, y);
     context.lineTo(plotRight, y);
@@ -842,11 +770,11 @@ function drawInteractionTimeline() {
     const x = xForTime(point.audioTimeMs);
     if (x < labelWidth || x > plotRight) continue;
     if (point.sileroSpeech) {
-      context.fillStyle = "#34764f";
+      context.fillStyle = "#4ea878";
       context.fillRect(x - frameWidth, userLaneTop, frameWidth, laneHeight);
     }
     if (point.assistantAudible) {
-      context.fillStyle = "#8b6f2e";
+      context.fillStyle = "#d4a94f";
       context.fillRect(x - frameWidth, assistantLaneTop, frameWidth, laneHeight);
     }
   }
@@ -855,7 +783,7 @@ function drawInteractionTimeline() {
   drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "floorTake", "#ff796f");
   drawProbabilitySeries(context, points, xForTime, probabilityTop, probabilityBottom, "nonFloorFeedback", "#77a9ff");
 
-  context.fillStyle = "#718078";
+  context.fillStyle = "#64706a";
   context.textBaseline = "alphabetic";
   context.fillText("−20s", labelWidth, height - 7);
   context.textAlign = "right";

@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -66,10 +66,8 @@ def asr_analysis_page() -> FileResponse:
 
 
 @app.get("/voice-agent")
-def voice_agent_page() -> FileResponse:
-    return FileResponse(
-        WEB_ROOT / "pages" / "voice-agent" / "index.html", headers={"Cache-Control": "no-store"}
-    )
+def voice_agent_page() -> RedirectResponse:
+    return RedirectResponse("/pages/voice-agent/index.html")
 
 
 @app.get("/datasets")
