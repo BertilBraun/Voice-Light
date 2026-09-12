@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -38,6 +39,10 @@ from app.compute.voice.tts_worker_protocol import (
     VoxtreamTtsFirstAudioMetricsEvent,
     tts_worker_event_adapter,
 )
+from app.compute.voice.worker_device import (
+    CudaWorkerDevice,
+    select_cuda_worker_environment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,7 @@ class SubprocessTtsConfiguration:
     worker_stop_timeout_seconds: float
     worker_start_timeout_seconds: float
     watchdog_poll_seconds: float
+    cuda_device: CudaWorkerDevice | None = None
 
 
 class TtsWorker(Protocol):
@@ -92,6 +98,7 @@ class TtsWorkerProcess:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            env=select_cuda_worker_environment(os.environ, configuration.cuda_device),
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None

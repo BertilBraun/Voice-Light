@@ -253,9 +253,12 @@ def test_nemotron_spawn_failure_releases_manager_lock(
 ) -> None:
     construction_count = 0
 
-    def create_worker(python_path: Path) -> FakeNemotronWorker:
+    def create_worker(
+        python_path: Path,
+        cuda_device: nemotron_client.CudaWorkerDevice | None,
+    ) -> FakeNemotronWorker:
         nonlocal construction_count
-        del python_path
+        del python_path, cuda_device
         construction_count += 1
         if construction_count > 1:
             raise RuntimeError("synthetic spawn failure")

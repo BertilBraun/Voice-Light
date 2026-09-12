@@ -16,4 +16,4 @@ def test_snapshot_canary_is_isolated_on_a_fixed_supported_gpu() -> None:
     assert CANARY_APPLICATION_NAME != APPLICATION_NAME
     assert CANARY_ENDPOINT_LABEL == "voicelightagent-voice-light-snapshot-canary"
     assert CANARY_GPU == "A10"
-    assert CANARY_GPU in production_configuration.gpu_options
+    assert f"{CANARY_GPU}:2" in production_configuration.gpu_options

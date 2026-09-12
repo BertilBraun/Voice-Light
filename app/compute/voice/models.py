@@ -72,6 +72,10 @@ from app.compute.voice.qwen_config import (
     qwen_enforce_eager_from_environment,
 )
 from app.compute.voice.subprocess_start import read_worker_start_event
+from app.compute.voice.worker_device import (
+    CudaWorkerDevice,
+    select_cuda_worker_environment,
+)
 
 logger = logging.getLogger(__name__)
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[3]
@@ -106,6 +110,7 @@ class QwenWorkerLease:
 class QwenWorkerConfiguration:
     model: QwenModelConfiguration
     component_name: str
+    cuda_device: CudaWorkerDevice | None = None
 
 
 class QwenWorkerManager(Protocol):
@@ -154,7 +159,7 @@ class QwenWorkerProcess:
             encoding="utf-8",
             bufsize=1,
             start_new_session=True,
-            env=_worker_process_environment(python_path),
+            env=_worker_process_environment(python_path, configuration.cuda_device),
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -241,8 +246,11 @@ class QwenWorkerProcess:
         self.output_stream.close()
 
 
-def _worker_process_environment(python_path: Path) -> dict[str, str]:
-    environment = dict(os.environ)
+def _worker_process_environment(
+    python_path: Path,
+    cuda_device: CudaWorkerDevice | None = None,
+) -> dict[str, str]:
+    environment = select_cuda_worker_environment(os.environ, cuda_device)
     worker_binary_directory = str(python_path.parent)
     inherited_path = environment.get("PATH")
     environment["PATH"] = (
@@ -331,6 +339,10 @@ class VllmLanguageModel:
             QwenWorkerConfiguration(
                 model=model_configuration,
                 component_name="Qwen language model",
+                cuda_device=CudaWorkerDevice.from_environment(
+                    os.environ,
+                    "VOICE_LIGHT_QWEN_CUDA_DEVICE",
+                ),
             ),
         )
         self.active_sessions: dict[int, QwenInvocationSession] = {}
@@ -397,6 +409,10 @@ class VllmTextGenerator:
                     backend=backend,
                 ),
                 component_name="Qwen search summarizer",
+                cuda_device=CudaWorkerDevice.from_environment(
+                    os.environ,
+                    "VOICE_LIGHT_SEARCH_CUDA_DEVICE",
+                ),
             ),
         )
 

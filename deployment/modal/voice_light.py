@@ -79,7 +79,7 @@ MODEL_REPOSITORIES: Final = (
 
 @dataclass(frozen=True)
 class ModalDeploymentConfiguration:
-    gpu_options: tuple[str, ...] = ("A10", "L40S")
+    gpu_options: tuple[str, ...] = ("A10:2", "L40S:2")
     compute_regions: tuple[str, ...] = ("eu",)
     routing_region: str = "eu-west"
     scaledown_window_seconds: int = 120
@@ -117,12 +117,16 @@ class ModalDeploymentConfiguration:
             "VOICE_LIGHT_SPECULATIVE_YIELD_THRESHOLD": "0.55",
             "VOICE_LIGHT_TRANSCRIPT_FREE_FLOOR_TAKE_DEADLINE_MS": "900",
             "VOICE_LIGHT_QWEN_ENFORCE_EAGER": "true",
-            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED": "true",
+            "VOICE_LIGHT_QWEN_CUDA_DEVICE": "0",
+            "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED": "false",
             "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS": "400",
             "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT": "11",
             "VOICE_LIGHT_QWEN_BACKEND": "transformers",
+            "VOICE_LIGHT_SEARCH_CUDA_DEVICE": "0",
             "VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH": "false",
             "VOICE_LIGHT_TTS_BACKEND": "kyutai",
+            "VOICE_LIGHT_TTS_CUDA_DEVICE": "1",
+            "VOICE_LIGHT_NEMOTRON_CUDA_DEVICE": "0",
             "VOICE_LIGHT_TURN_ADAPTER_CHECKPOINT": str(REMOTE_ADAPTER_CHECKPOINT),
             "VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE": "0.70",
             "VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY": "0.70",

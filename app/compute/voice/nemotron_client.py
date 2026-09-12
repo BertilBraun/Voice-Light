@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,10 @@ from app.compute.voice.interfaces import (
 )
 from app.compute.voice.schemas import CapturedAudioChunk, InteractionPrediction
 from app.compute.voice.subprocess_start import read_worker_start_event
+from app.compute.voice.worker_device import (
+    CudaWorkerDevice,
+    select_cuda_worker_environment,
+)
 
 logger = logging.getLogger(__name__)
 NEMOTRON_PYTHON_PATH: Final = Path(sys.executable)
@@ -83,7 +88,7 @@ class NemotronWorkerManager(Protocol):
 
 
 class NemotronWorkerProcess:
-    def __init__(self, python_path: Path) -> None:
+    def __init__(self, python_path: Path, cuda_device: CudaWorkerDevice | None = None) -> None:
         self.process = subprocess.Popen(
             [python_path.as_posix(), "-m", "app.compute.voice.nemotron_worker"],
             stdin=subprocess.PIPE,
@@ -91,6 +96,7 @@ class NemotronWorkerProcess:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            env=select_cuda_worker_environment(os.environ, cuda_device),
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -179,16 +185,28 @@ class NemotronWorkerProcess:
 
 
 class RestartingNemotronWorkerManager:
-    def __init__(self, python_path: Path) -> None:
+    def __init__(
+        self,
+        python_path: Path,
+        cuda_device: CudaWorkerDevice | None = None,
+    ) -> None:
         self.python_path = python_path
-        self.worker: NemotronWorkerProcess | None = NemotronWorkerProcess(python_path)
+        self.cuda_device = cuda_device
+        self.worker: NemotronWorkerProcess | None = NemotronWorkerProcess(
+            python_path,
+            cuda_device,
+        )
         self.lock = asyncio.Lock()
 
     async def acquire(self) -> NemotronWorker:
         await self.lock.acquire()
         try:
             if self.worker is None:
-                self.worker = await asyncio.to_thread(NemotronWorkerProcess, self.python_path)
+                self.worker = await asyncio.to_thread(
+                    NemotronWorkerProcess,
+                    self.python_path,
+                    self.cuda_device,
+                )
             return self.worker
         except BaseException:
             self.lock.release()
@@ -220,8 +238,16 @@ class RestartingNemotronWorkerManager:
 
 
 class NemotronStreamingTranscriber:
-    def __init__(self, python_path: Path = NEMOTRON_PYTHON_PATH) -> None:
-        self.worker_manager = RestartingNemotronWorkerManager(python_path)
+    def __init__(
+        self,
+        python_path: Path = NEMOTRON_PYTHON_PATH,
+        cuda_device: CudaWorkerDevice | None = None,
+    ) -> None:
+        selected_device = cuda_device or CudaWorkerDevice.from_environment(
+            os.environ,
+            "VOICE_LIGHT_NEMOTRON_CUDA_DEVICE",
+        )
+        self.worker_manager = RestartingNemotronWorkerManager(python_path, selected_device)
         self.active_session: NemotronStreamingSession | None = None
 
     def start_session(self) -> TranscriptionSession:
