@@ -10,9 +10,10 @@ workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
 session. Modal requests a co-located A10 pair first and falls back only to an L40S pair when A10
-capacity is unavailable. Qwen, Nemotron, and the search summarizer are pinned to physical GPU 0;
-Kyutai is pinned to physical GPU 1, so concurrent text and first-frame speech generation cannot
-contend for the same CUDA device.
+capacity is unavailable. Qwen and the search summarizer are pinned to physical GPU 0; Nemotron and
+Kyutai are pinned to physical GPU 1. This placement is an A/B experiment intended to keep Qwen
+speculation from delaying ASR and turn-adapter inference. It must retain Kyutai's isolated-GPU
+latency profile and interaction responsiveness to remain deployed.
 A100 and H100 are deliberately excluded from the bounded fallback list because they are
 unnecessarily expensive for this stack. The endpoint is
 scheduled in Modal's broad `eu` compute region and routed through `eu-west`; this avoids
@@ -201,7 +202,7 @@ The deployed starting values are:
 | `VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE` | `0.70` | confidence assigned to the causal VAD endpoint evidence |
 | `VOICE_LIGHT_QWEN_CUDA_DEVICE` | `0` | physical CUDA device used by the primary Qwen worker |
 | `VOICE_LIGHT_SEARCH_CUDA_DEVICE` | `0` | physical CUDA device used by the bounded search summarizer |
-| `VOICE_LIGHT_NEMOTRON_CUDA_DEVICE` | `0` | physical CUDA device used by Nemotron ASR and the shared turn adapter |
+| `VOICE_LIGHT_NEMOTRON_CUDA_DEVICE` | `1` | physical CUDA device used by Nemotron ASR and the shared turn adapter |
 | `VOICE_LIGHT_TTS_CUDA_DEVICE` | `1` | physical CUDA device reserved for Kyutai TTS |
 | `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED` | `false` | shared-GPU Qwen yielding is disabled for the isolated two-GPU deployment |
 | `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT` | `11` | conservative English-word runway before yielding shared-GPU time to Kyutai |
