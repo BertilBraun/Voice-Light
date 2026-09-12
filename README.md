@@ -1,6 +1,34 @@
 # Voice Light
 
-Small local browser app for inspecting conversational speech data and analysis outputs.
+Voice Light is a streaming voice-agent research prototype focused on natural turn-taking. It
+combines streaming Nemotron ASR, a causal adapter trained on conversational audio, Qwen tool use,
+Kyutai speech synthesis, and browser-authoritative playback with reversible backchannels and
+interruptions.
+
+## Live demo
+
+[Open the public Voice Light demo](https://bertil-braun-private--voice-light-demo.modal.run)
+
+The demo runs on scale-to-zero Modal GPUs. The page loads independently, but the first microphone
+session after an idle period currently takes approximately 32--55 seconds to initialize. Only one
+voice session is admitted at a time. Use a current desktop browser, allow microphone access, and
+wear headphones for the clearest interruption behavior.
+
+![Voice Light interaction-policy timeline](docs/assets/voice-agent-interaction-policy.png)
+
+The production path keeps one Nemotron backbone for both streaming transcription and adapter
+features. Qwen and Nemotron run on the first GPU, while Kyutai runs on the second. Search,
+calculation, and current-time calls use typed tools; model evidence remains ephemeral and only
+audio acknowledged by browser playback enters durable conversation history.
+
+See the [streaming architecture](docs/streaming-voice-agent-prototype.md), [Modal deployment
+runbook](docs/modal-voice-deployment.md), [turn-taking training](docs/turn-taking-training.md),
+[dataset construction](docs/synthetic-conversational-turn-taking-dataset.md), and [evaluation
+benchmark](docs/turn-detection-benchmark.md) for the complete technical record.
+
+The standalone technical report is deferred until after applications. The repository documentation
+is the authoritative report in the meantime, so further evaluation can still be incorporated
+without maintaining a second publication artifact.
 
 ## Data
 
@@ -164,7 +192,8 @@ VOICE_LIGHT_COMPUTE_TOKEN=<token from the compute .env.compute file>
 The compute URL has no implicit deployment default. The local application fails clearly when a
 compute-backed operation is requested without these values.
 
-The voice prototype instead connects the browser directly to the compute service. Open
+The voice prototype instead connects the browser directly to the compute service. Use the
+[public demo](https://bertil-braun-private--voice-light-demo.modal.run), or open
 `http://127.0.0.1:8000/voice-agent` and enter `ws://<vast-ip>:8000/v1/voice` in the endpoint field.
 The ephemeral research WebSocket does not use the HTTP bearer token.
 

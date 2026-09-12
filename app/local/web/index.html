@@ -62,6 +62,16 @@
         border-color: #146b63;
       }
 
+      a.primary {
+        background: #146b63;
+        border-color: #146b63;
+        color: #ffffff;
+      }
+
+      a.primary span {
+        color: #e8f4f1;
+      }
+
       strong {
         display: block;
         font-size: 17px;
@@ -76,12 +86,19 @@
   <body>
     <main>
       <h1>Voice Light</h1>
-      <p>Analysis tools and dataset dashboards.</p>
+      <p>Streaming turn-taking research, evaluation tools, and conversational-audio datasets.</p>
       <div class="links">
+        <a class="primary" href="https://bertil-braun-private--voice-light-demo.modal.run">
+          <span>
+            <strong>Public streaming voice demo</strong>
+            Talk to the deployed ASR, turn-taking adapter, tool-enabled LLM, and streaming TTS stack.
+          </span>
+          <span>Launch</span>
+        </a>
         <a href="/voice-agent">
           <span>
-            <strong>Streaming voice agent</strong>
-            Talk to the cascaded ASR, LLM, and TTS prototype.
+            <strong>Local streaming voice agent</strong>
+            Open the development client and choose a compute WebSocket endpoint.
           </span>
           <span>Open</span>
         </a>

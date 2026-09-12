@@ -160,9 +160,17 @@ not planned for this project completion pass.
 
 The deployed endpoints are:
 
+- public demo: `https://bertil-braun-private--voice-light-demo.modal.run`
 - HTTPS base: `https://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run`
 - voice WebSocket: `wss://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run/v1/voice`
 - Modal dashboard: `https://modal.com/apps/bertil-braun-private/main/deployed/VoiceLightAgent`
+
+The public page is a lightweight CPU-only ASGI deployment that serves the existing browser client
+and injects the production WebSocket URL. It scales independently from the GPU runtime, so loading
+the page does not start or hold an inference container. A cold HTTP verification on 2026-09-12
+returned the page with status 200 in 6.909 seconds and its JavaScript asset with status 200 in
+1.251 seconds. GPU scale-from-zero remains the longer 32--55 second initialization path described
+above.
 
 Serve the browser locally, then put the WebSocket URL in the endpoint field or query string:
 
