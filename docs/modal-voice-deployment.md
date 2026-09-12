@@ -9,7 +9,10 @@ registry, search integration, predictive generation, playback controller, Nemotr
 workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
-session. Modal requests A10 first and falls back only to L40S when A10 capacity is unavailable.
+session. Modal requests a co-located A10 pair first and falls back only to an L40S pair when A10
+capacity is unavailable. Qwen, Nemotron, and the search summarizer are pinned to physical GPU 0;
+Kyutai is pinned to physical GPU 1, so concurrent text and first-frame speech generation cannot
+contend for the same CUDA device.
 A100 and H100 are deliberately excluded from the bounded fallback list because they are
 unnecessarily expensive for this stack. The endpoint is
 scheduled in Modal's broad `eu` compute region and routed through `eu-west`; this avoids
@@ -196,7 +199,11 @@ The deployed starting values are:
 | `VOICE_LIGHT_VAD_SPECULATION_DEBOUNCE_MS` | `0` | additional silence after Silero's causal endpoint before the VAD fallback starts |
 | `VOICE_LIGHT_VAD_ENDPOINT_YIELD_PROBABILITY` | `0.70` | synthetic yield evidence assigned to the causal VAD endpoint |
 | `VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE` | `0.70` | confidence assigned to the causal VAD endpoint evidence |
-| `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED` | `true` | pause Transformers Qwen at a token boundary when Kyutai has enough queued text but no PCM |
+| `VOICE_LIGHT_QWEN_CUDA_DEVICE` | `0` | physical CUDA device used by the primary Qwen worker |
+| `VOICE_LIGHT_SEARCH_CUDA_DEVICE` | `0` | physical CUDA device used by the bounded search summarizer |
+| `VOICE_LIGHT_NEMOTRON_CUDA_DEVICE` | `0` | physical CUDA device used by Nemotron ASR and the shared turn adapter |
+| `VOICE_LIGHT_TTS_CUDA_DEVICE` | `1` | physical CUDA device reserved for Kyutai TTS |
+| `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED` | `false` | shared-GPU Qwen yielding is disabled for the isolated two-GPU deployment |
 | `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT` | `11` | conservative English-word runway before yielding shared-GPU time to Kyutai |
 | `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS` | `400` | safety deadline that resumes Qwen even if first PCM has not arrived |
 
@@ -650,9 +657,20 @@ the yield threshold, so they validate the unchanged fast path rather than provin
 gain. A fresh human run with long non-tool responses is still needed to judge audible quality and
 the shared-GPU benefit across varied generations.
 
+The next deployment replaced shared-GPU scheduling with two co-located GPUs. It requests
+`A10:2` with `L40S:2` as the only fallback, retains scale-to-zero and the 120-second idle window,
+and excludes A100/H100. Deployment commit `d78115d2` reached cold `session.ready` in 32.736 seconds;
+model initialization itself took 21.238 seconds. Three warm recorded-microphone trials measured
+Kyutai worker first-word-to-PCM at 353.4, 346.6, and 346.2 ms. Its LM portion was 183.4--184.4 ms
+and Mimi decoding was 160.0--168.6 ms. This restores the isolated Kyutai profile and removes the
+previous human trace's 621.6--711.8 ms shared-GPU TTS times. Qwen first delta remained 231.5--237.6
+ms. Commit-to-first-PCM was 632.14--655.18 ms (649.59 ms median), so GPU isolation fixes measured
+TTS contention but does not remove endpoint, final-transcript, candidate-resolution, or network
+latency. A human interaction run is still required to measure end-to-PCM and perceived pacing.
+
 ## Known limitations
 
-- The latest truthful cold readiness sample is 32.294 seconds. Earlier samples ranged from 32.735
+- The latest truthful cold readiness sample is 32.736 seconds. Earlier samples ranged from 32.294
   to 66.312 seconds. Modal scheduling, host performance, and fallback GPU selection remain
   variable; an
   earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
