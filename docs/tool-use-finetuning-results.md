@@ -4,8 +4,10 @@ This report records the completed Voice Light proof of concept for teaching a sm
 to speak naturally before a tool call, emit valid structured calls, consume tool results, continue
 the same conversation, and avoid spurious calls in ordinary dialogue.
 
-No adapter has been merged, integrated, or deployed. This is an offline training and evaluation
-result.
+This report describes the original offline proof of concept. The adapter and a merged BF16
+checkpoint were subsequently published on Hugging Face. The current public voice demo deliberately
+uses the stronger Qwen3 4B base checkpoint instead, so these results remain a reproducible training
+experiment rather than a claim about the deployed model.
 
 ## Result in one paragraph
 

@@ -1,281 +1,198 @@
 # Voice Light
 
-Voice Light is a streaming voice-agent research prototype focused on natural turn-taking. It
-combines streaming Nemotron ASR, a causal adapter trained on conversational audio, Qwen tool use,
-Kyutai speech synthesis, and browser-authoritative playback with reversible backchannels and
-interruptions.
+Voice Light is an end-to-end research project for building a natural, low-latency streaming voice
+agent: generate and label conversational data, train language and turn-taking adapters, evaluate
+their behavior, integrate the useful pieces into a full-duplex cascade, and deploy the result on
+scale-to-zero GPU compute.
 
-## Live demo
-
-[Open the public Voice Light demo](https://bertilbraun.github.io/Voice-Light/)
-
-The demo runs on scale-to-zero Modal GPUs. The page loads independently, but the first microphone
-session after an idle period currently takes approximately 32--55 seconds to initialize. Only one
-voice session is admitted at a time. Use a current desktop browser, allow microphone access, and
-wear headphones for the clearest interruption behavior.
+[Try the live demo](https://voice.bertil-braun.de) ·
+[Read the deployment record](docs/modal-voice-deployment.md) ·
+[Explore the models and datasets](#published-artifacts)
 
 ![Voice Light public streaming demo](docs/assets/voice-agent-public-demo.png)
 
-The production path keeps one Nemotron backbone for both streaming transcription and adapter
-features. Qwen and Nemotron run on the first GPU, while Kyutai runs on the second. Search,
-calculation, and current-time calls use typed tools; model evidence remains ephemeral and only
-audio acknowledged by browser playback enters durable conversation history.
+The browser streams microphone audio directly to a provider-neutral compute service on Modal.
+Nemotron performs streaming ASR and supplies the encoder features used by a small causal turn-taking
+adapter. Qwen produces conversational responses and structured tool calls, Kyutai streams speech,
+and browser playback acknowledgements ensure that only audio the user actually heard enters durable
+conversation history.
 
-See the [streaming architecture](docs/streaming-voice-agent-prototype.md), [Modal deployment
-runbook](docs/modal-voice-deployment.md), [turn-taking training](docs/turn-taking-training.md),
-[dataset construction](docs/synthetic-conversational-turn-taking-dataset.md), and [evaluation
-benchmark](docs/turn-detection-benchmark.md) for the complete technical record.
+## What this project covers
 
-The standalone technical report is deferred until after applications. The repository documentation
-is the authoritative report in the meantime, so further evaluation can still be incorporated
-without maintaining a second publication artifact.
+Voice Light treats the deployed agent as the last stage of a reproducible research pipeline rather
+than an isolated demo.
 
-## Data
+1. **Synthetic spoken tool-use data.** A pinned Qwen3.6-27B teacher generated 3,999 typed
+   conversations across eight behavior families and five speech styles. The generator models
+   ordinary dialogue, search, calculation, time lookup, failures, corrections, and sequential tool
+   rounds while keeping audible speech separate from structured protocol data.
+2. **Tool-use language-model fine-tuning.** A rank-16 LoRA trained Qwen3-1.7B to say a short spoken
+   bridge, emit a structured call, consume its result, continue naturally, and avoid unnecessary
+   tools. The adapter and a merged BF16 checkpoint are published independently of the runtime.
+3. **Synthetic turn-taking audio.** Typed conversation plans describe completion, HOLD pauses,
+   backchannels, responses, and interruptions. User speech is synthesized and measured before the
+   pipeline compiles causal 20-second views with dense 80 ms labels; virtual assistant speech is a
+   timeline signal, not leaked audio.
+4. **Automatic annotation of human conversations.** The ingestion pipeline registers and hashes
+   two-speaker recordings, runs independent ASR and VAD analysis, aligns channels, derives
+   conversation regions and quality evidence, and preserves supplied human annotations as a
+   separate source of evidence. Conversation-disjoint splits prevent windows from the same call
+   crossing train, validation, and test.
+5. **Causal turn-taking adapter training.** A roughly 183k-parameter GRU adapter consumes taps from
+   the frozen streaming Nemotron encoder plus assistant-playback state. Training starts on synthetic
+   interaction semantics, then fine-tunes on human conversation with synthetic replay; human
+   validation, not synthetic fit, selects the checkpoint.
+6. **Evaluation and integration.** Offline benchmarks lock thresholds before test evaluation and
+   report false cutoffs, recall, calibration, and latency. The deployed hybrid controller combines
+   Silero onset, reversible ducking, learned floor-taking evidence, backchannel resume, and a
+   conservative fallback instead of treating every sound as an irreversible interruption.
 
-Voice Light uses two conversational-audio sources. Raw source files, derived
-audio, transcripts, annotations, credentials, and private dataset artifacts are excluded from Git
-and are not published by this repository.
+The detailed records are in [synthetic tool-use generation](docs/tool-use-synthetic-generation.md),
+[LoRA training](docs/tool-use-lora-training.md), [tool-use evaluation](docs/tool-use-finetuning-results.md),
+[synthetic turn-taking construction](docs/synthetic-conversational-turn-taking-dataset.md),
+[human corpus preparation](docs/training-corpus-preparation.md), [turn-taking training](docs/turn-taking-training.md),
+and the [locked turn-detection benchmark](docs/turn-detection-benchmark.md).
 
-| Local dataset ID | Intended source | Preparation path | Transcript path |
-| --- | --- | --- | --- |
-| `dataset_2` | [MagicHub Multi-stream Spontaneous Conversation Training Datasets (English)](https://magichub.com/datasets/multi-stream-spontaneous-conversation-training-datasets_english/) | Prepared into the generic sample layout. | Full ASR and quality analysis are complete. |
-| `dataset_3` | [Mundo TurnBench dev](https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev) | Source-provided FLAC tracks and annotations are prepared in the generic sample layout. | Supplied timestamps and transcripts are materialized into the analysis pipeline; no model inference is used. |
-
-The generic local layout is:
-
-```text
-data/
-  dataset_2/
-    samples/
-      sample_001/
-        speaker_1.wav
-        speaker_2.wav
-        metadata.json
-  dataset_3/
-    samples/
-      sample_001/
-        speaker_1.flac
-        speaker_2.flac
-        metadata.json
-        source_annotations.json
-```
-
-`data/` is intentionally ignored by Git. Preparation preserves source attribution, source URL,
-source version, and applicable terms in private provenance records. Verify the source's current
-access, attribution, license, privacy, and handling requirements before importing, training on,
-or storing any source material. This repository does not make a rights determination for either
-source.
-
-## Run
-
-### Docker Compose
-
-Start Postgres, apply migrations, and run the app:
-
-```powershell
-docker compose up
-```
-
-This builds the shared application image, including the ML dependencies used by the compute code.
-For a lightweight Windows restart of only Postgres and the local web application, use the
-instructions under **Local on Windows** instead.
-
-Then open:
+## Runtime architecture
 
 ```text
-http://127.0.0.1:8000
+Browser microphone
+    │ 16 kHz PCM + playback acknowledgements
+    ▼
+Modal WebSocket (/v1/voice)
+    ├── GPU 0: streaming Nemotron ASR ── shared encoder taps ── turn adapter
+    │          Qwen3 4B conversation model + Qwen3 0.6B search summarizer
+    ├── GPU 1: Kyutai streaming TTS
+    └── typed orchestration: prediction, tools, cancellation, playback barriers
+                         │
+                         ▼
+Browser audio queue + live interaction diagnostics
 ```
 
-Useful pages:
+The production endpoint admits one session at a time and scales to zero after two idle minutes.
+Model caches live in a persistent Modal volume; model processes are persistent inside a warm
+container, but an idle deployment still pays the CUDA and model-initialization cost on its next
+cold start. The static frontend is hosted separately on GitHub Pages.
 
-```text
-http://127.0.0.1:8000/datasets
-http://127.0.0.1:8000/datasets/ingest
-http://127.0.0.1:8000/analyses/end-of-turn
-http://127.0.0.1:8000/analyses/asr
-http://127.0.0.1:8000/future-work
-```
+The deployed conversation model is the stronger pinned `Qwen/Qwen3-4B-Instruct-2507`, not the
+1.7B experimental LoRA. This preserves general conversational quality while keeping the LoRA as a
+reproducible result and comparison point. The same principle applies to endpointing: the learned
+adapter contributes interaction evidence, but current production latency still relies heavily on
+Silero and speculative generation because the locked learned completion policy did not beat the
+stronger timing baselines.
 
-See [ASR analysis](docs/asr-analysis.md) for the model, caching, and post-processing workflow.
-See [turn-taking adapter training](docs/turn-taking-training.md) for the dataset contract, model
-choice, training schedule, and runnable training prototype.
-See the [synthetic tool-use generator](docs/tool-use-synthetic-generation.md), the
-[tool-use LoRA runbook](docs/tool-use-lora-training.md), and the
-[measured fine-tuning results](docs/tool-use-finetuning-results.md) for the complete natural
-spoken tool-use experiment.
+## Measured results
 
-## Future work
+### Tool-use fine-tuning
 
-The [Future Work](http://127.0.0.1:8000/future-work) page automatically lists and renders every
-Markdown file in `docs/future-work/`. To add an idea, create a kebab-case `.md` file whose first
-line is an H1 title and whose first paragraph is a short summary for the index card. No application
-code or navigation update is required.
+On the original balanced 80-record holdout, the final 1.7B proof-of-concept adapter improved:
 
-The Compose app mounts the repository `data/` directory at `/app/data` in the
-container. For local dataset ingestion, use a selected prepared dataset root, for example:
+| Behavior | Base Qwen3-1.7B | Fine-tuned adapter |
+| --- | ---: | ---: |
+| Correct tool decision | 80.0% | 95.2% |
+| Exact tool name | 78.6% | 94.3% |
+| Concise spoken bridge | 7.6% | 94.3% |
+| Correctly avoided a tool | 70.0% | 100.0% |
 
-```text
-/app/data/dataset_2/samples
-```
+These are held-out results from a synthetic experiment, not evidence of general factual accuracy.
+A later 240-state checkpoint comparison selected an earlier epoch and also exposed remaining tool
+selection errors; the complete lineage and both evaluations are documented in the
+[results report](docs/tool-use-finetuning-results.md) and published model card.
 
-Postgres data is stored in the `voice-light-postgres` Docker volume.
+### Turn detection
 
-### Local on Windows
+The locked real-conversation test contained 1,673 candidates. At its selected policy, the Voice
+Light checkpoint produced one false cutoff among 37 HOLD cases, but crossed its learned threshold
+for only 205 of 1,636 EOT cases. Most endpoints therefore used the timeout, and the adapter did not
+outperform the Silero or LiveKit timing policies on this protocol. The small HOLD denominator and
+known benchmark provenance constraints are reported with the results; no superiority claim is
+made from synthetic interaction validation.
 
-The project's uv resolution is currently limited to Linux x86_64, and the shared dependency list
-contains Linux-oriented ML packages. Do not use `uv run` for routine Windows restarts because it
-may try to synchronize those dependencies. Use the existing `.venv` directly.
+### Public voice demo
 
-Start only the local Postgres service and apply migrations:
+The final human microphone acceptance run on 12 September 2026 completed eight of eight turns,
+including live tool use and conversational follow-ups. Six turns reached browser PCM in under
+800 ms after speech end.
 
-```powershell
-docker compose up -d postgres
-.\.venv\Scripts\python.exe -m app.local.db.migrate
-```
+| Metric | Observed value |
+| --- | ---: |
+| Speech end → browser PCM, median | 677 ms |
+| Speech end → browser PCM, mean | 829 ms |
+| Speech end → browser PCM, range | 593–1,451 ms |
+| Endpoint decision, median | 508 ms |
+| LLM first word, median | 268 ms |
+| TTS first PCM, median | 453 ms |
+| Browser playback, median | 109 ms |
 
-Start the FastAPI server from the repository root:
+This is one human session, not a controlled latency distribution. The final deployment record
+contains the full smoke-test history, failure analysis, and measurement definitions.
 
-```powershell
-$env:VOICE_LIGHT_HOST = '127.0.0.1'
-$env:VOICE_LIGHT_PORT = '8000'
-$env:VOICE_LIGHT_RELOAD = 'false'
-.\.venv\Scripts\python.exe -m app.local.server
-```
+## Published artifacts
 
-To keep it running in the background:
+| Artifact | Purpose | Access |
+| --- | --- | --- |
+| [Tool-use synthetic dataset](https://huggingface.co/datasets/BertilBraun/voice-light-tool-use-synthetic) | 3,999 canonical tool-rich and no-tool conversations plus reproducibility material | Public |
+| [Qwen3-1.7B tool-use LoRA](https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-lora) | PEFT adapter, configuration, metrics, and evaluation | Public |
+| [Merged Qwen3-1.7B checkpoint](https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-merged) | Standalone BF16 merge of the base model and tool-use adapter | Public |
+| [Synthetic turn-taking audio](https://huggingface.co/datasets/BertilBraun/voice-light-synthetic-audio) | Trimmed user speech units and deterministic conversation reconstruction metadata | Public |
+| [Human conversation corpus](https://huggingface.co/datasets/BertilBraun/voice-light-audio) | Licensed source audio, annotations, and materialized turn-taking windows | Restricted |
+| [Mundo TurnBench dev](https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev) | Public source with independent human turn annotations | External source |
 
-```powershell
-$env:VOICE_LIGHT_HOST = '127.0.0.1'
-$env:VOICE_LIGHT_PORT = '8000'
-$env:VOICE_LIGHT_RELOAD = 'false'
-$runtimeDirectory = (New-Item -ItemType Directory -Force '.\.runtime').FullName
+Other human sources retain their original access, license, privacy, and redistribution constraints.
+Raw source mappings, credentials, private annotations, and local training artifacts are excluded
+from Git. See [corpus preparation](docs/training-corpus-preparation.md) before using any human data.
 
-Start-Process `
-  -FilePath '.\.venv\Scripts\python.exe' `
-  -ArgumentList '-m', 'app.local.server' `
-  -WorkingDirectory (Get-Location) `
-  -WindowStyle Hidden `
-  -RedirectStandardOutput (Join-Path $runtimeDirectory 'local-server.stdout.log') `
-  -RedirectStandardError (Join-Path $runtimeDirectory 'local-server.stderr.log')
-```
+## Documentation
 
-Then open:
+### Data and training
 
-```text
-http://127.0.0.1:8000
-```
+- [Synthetic tool-use generation](docs/tool-use-synthetic-generation.md)
+- [Teacher-led generation and reproducibility](docs/teacher-led-tool-use-generation.md)
+- [Tool-use LoRA training](docs/tool-use-lora-training.md)
+- [Synthetic conversational turn-taking dataset](docs/synthetic-conversational-turn-taking-dataset.md)
+- [Human training corpus preparation and validation](docs/training-corpus-preparation.md)
+- [Turn-taking adapter training](docs/turn-taking-training.md)
+- [Full-recording ASR and automatic annotation](docs/full-recording-asr.md)
 
-Set `VOICE_LIGHT_PORT` to use a different port.
+### Evaluation and design
 
-For DB-backed dataset pages outside Docker, the app defaults to the Postgres service exposed by
-this repository's Compose configuration at
-`postgresql://voice_light:voice_light@127.0.0.1:5432/voice_light`. Override
-`VOICE_LIGHT_DATABASE_URL` only when using a different database.
+- [Tool-use fine-tuning results](docs/tool-use-finetuning-results.md)
+- [Turn-detection benchmark](docs/turn-detection-benchmark.md)
+- [Completion retraining](docs/completion-retraining.md)
+- [Latency and endpoint baselines](docs/latency-and-eot-baselines.md)
+- [Natural interaction design study](docs/natural-interaction-design-study.md)
 
-### Local on Linux
+### Runtime and deployment
 
-The uv-managed path remains available on Linux x86_64:
+- [Streaming voice-agent architecture](docs/streaming-voice-agent-prototype.md)
+- [Provider-neutral compute service](docs/compute-backend.md)
+- [Modal deployment runbook and test record](docs/modal-voice-deployment.md)
+- [Historical Modal restoration design](docs/modal-turn-taking-restoration-design.md)
+- [Vast.ai compute deployment](docs/vast-deployment.md)
 
-```powershell
-docker compose up -d postgres
-uv run python -m app.local.db.migrate
-uv run python -m app.local.server
-```
+## Running the project
 
-Batch ASR and dataset quality analysis require the local application to know the compute backend:
+For the local data and analysis application, start Postgres, apply migrations, and run the FastAPI
+server as described in the [compute and local-app guide](docs/compute-backend.md). Open
+`http://127.0.0.1:8000` for the dataset tools or `/voice-agent` for the local voice client.
 
-```text
-VOICE_LIGHT_COMPUTE_URL=http://<vast-ip>:8000
-VOICE_LIGHT_COMPUTE_TOKEN=<token from the compute .env.compute file>
-```
+For the production voice stack, follow the [Modal runbook](docs/modal-voice-deployment.md). It covers
+the pinned models, persistent cache volume, adapter checkpoint packaging, GPU topology, secrets,
+deployment command, scale-from-zero smoke test, and browser verification. Credentials are supplied
+through Modal secrets and are never committed.
 
-The compute URL has no implicit deployment default. The local application fails clearly when a
-compute-backed operation is requested without these values.
+## Known limitations
 
-The voice prototype instead connects the browser directly to the compute service. Use the
-[public demo](https://bertilbraun.github.io/Voice-Light/), or open
-`http://127.0.0.1:8000/voice-agent`. Both clients use the production Modal WebSocket compiled into
-the public client. The ephemeral research WebSocket does not use the HTTP bearer token.
+- Scale-from-zero readiness is approximately 32–55 seconds in the final topology; cached weights do
+  not eliminate Python, CUDA, and model initialization.
+- The learned completion head has low recall at its conservative locked threshold, so production
+  endpointing remains a hybrid policy rather than an adapter-only result.
+- Tool use and factual answers remain model fallible. Tool schemas and results are validated, but
+  the language model can still select the wrong tool or misstate a result.
+- Tool bridges and post-result continuations are separate semantic speech segments and can retain
+  a small audible seam.
+- The public demo is single-session and English-first. Microphone, network, browser scheduling, and
+  Modal host variation all affect perceived latency.
 
-## Vast.ai compute backend
-
-For a new Vast.ai PyTorch rental, deploy the committed local revision and open the private tunnel
-with one PowerShell command:
-
-```powershell
-.\deployment\compute\deploy-vast.ps1 `
-  -SshHost '<vast-ssh-host>' `
-  -SshPort <vast-ssh-port> `
-  -SshKeyPath "$HOME\.ssh\codex_vast_ed25519" `
-  -Mode asr
-```
-
-`-Mode asr` deploys only the batch-ASR environment: it skips vLLM, TTS, PEFT/LoRA, the voice-stack
-model downloads, and the isolated VoXtream environment. It also writes
-`VOICE_LIGHT_VOICE_STACK_ENABLED=false`, so the compute service exposes batch ASR without loading
-the conversational stack. Omit `-Mode asr` for the existing full voice-stack deployment.
-
-The command transfers the repository without requiring remote Git credentials, bootstraps the
-selected locked compute environment, installs an automatically restarting Supervisor service,
-saves the new token in `.runtime/compute.env`, and verifies the backend through
-`http://127.0.0.1:8080`.
-
-To bootstrap from a shell already open on the rental instead:
-
-```bash
-git clone <repository-url> /workspace/Voice-Light
-cd Voice-Light
-bash deployment/compute/bootstrap.sh --mode asr
-bash deployment/compute/install-service.sh
-```
-
-`bootstrap.sh --mode asr` installs Linux audio/compiler packages, synchronizes the locked Python
-3.12 environment with the batch-ASR dependencies, then replaces only its PyTorch runtime with the
-official CUDA 12.6 wheels. This keeps ASR-only rentals compatible with NVIDIA drivers that expose
-CUDA 12.6; the locked full voice-stack environment remains unchanged. It validates CUDA access,
-at least 10 GiB of GPU memory, and at least 12 GiB of free disk. It does not pre-download a batch
-model; the selected model is cached on its first request. Use `--mode full` (the default) to additionally
-install vLLM and validate/cache the voice stack. In full mode, it caches
-required voice models, and performs a streaming TTS smoke test. Moshi, NeMo, librosa, and
-faster-whisper are compute-only dependencies and are not installed for the local app. The script
-creates an ignored `.env.compute` containing a new bearer token and
-`VOICE_LIGHT_TTS_BACKEND=kyutai`. Set that value to `voxtream` and rerun bootstrap to install the
-pinned isolated VoXtream environment. Copy the token securely into `VOICE_LIGHT_COMPUTE_TOKEN` on
-the local machine.
-
-After a later pull, synchronize dependencies and restart the Supervisor service with:
-
-```bash
-git pull
-bash deployment/compute/start.sh
-```
-
-The start command synchronizes only changed dependencies and restarts the managed service.
-Operational commands are:
-
-```bash
-bash deployment/compute/status.sh
-bash deployment/compute/stop.sh
-.venv/bin/python -m deployment.compute.benchmark_tts
-```
-
-The conversational Qwen adapter can also be built as a standalone BF16 safetensors checkpoint.
-The merge command always uses the exact base-model and adapter revisions pinned by Voice Light:
-
-```powershell
-uv run python -m deployment.compute.merge_qwen_lora `
-  --output-directory '.runtime/qwen3-1.7b-tool-use-merged' `
-  --destination-repository-id 'BertilBraun/qwen3-1.7b-voice-light-tool-use-merged'
-```
-
-The output includes the tokenizer, a Hugging Face model card, and machine-readable merge
-provenance. After uploading it, configure both
-`VOICE_LIGHT_MERGED_LANGUAGE_MODEL_NAME=BertilBraun/qwen3-1.7b-voice-light-tool-use-merged` and
-`VOICE_LIGHT_MERGED_LANGUAGE_MODEL_REVISION=<Hugging Face commit hash>` in `.env.compute`.
-Voice Light then loads that pinned checkpoint in vLLM with dynamic LoRA disabled. If neither
-variable is present, it continues to load the separately pinned base model and LoRA adapter.
-
-See [provider-neutral compute backend](docs/compute-backend.md) for the deployment boundary,
-endpoints, authentication, readiness behavior, and TTS decision.
-See [Vast.ai deployment](docs/vast-deployment.md) for the rental requirements, one-command local
-deployment, replacement procedure, and cleanup boundary.
+The repository documentation is the current technical report. A standalone report is intentionally
+deferred until the evaluation record is stable enough to justify maintaining a second artifact.

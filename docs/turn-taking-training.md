@@ -1,4 +1,19 @@
-# Turn-Taking Adapter Training Plan
+# Turn-Taking Adapter Training
+
+## Completed checkpoint
+
+The production artifact is `adapter-best.pt` from optimizer step 750 of the human fine-tuning run.
+It uses the pinned Nemotron revision `ebe59e5a817142986528bbbee5dba8db7b38ed50`, one lookahead
+token, encoder taps 6, 12, 18, and 24, and a single-layer 64-dimensional GRU. The checkpoint was
+warm-started from synthetic interaction training and selected by human validation while retaining
+15% synthetic replay. Modal packages this artifact into the deployment image and runs it against
+features from the same persistent Nemotron worker used for ASR.
+
+The locked test and deployed behavior remain hybrid rather than adapter-only: the completion head
+was conservative and did not beat the strongest timing baselines, while the interaction heads
+provide evidence for distinguishing floor-taking speech from non-floor feedback. See the
+[turn-detection benchmark](turn-detection-benchmark.md) and [Modal deployment record](modal-voice-deployment.md)
+for the measured limitations and operational policy.
 
 > **Synthetic revamp:**
 > [`synthetic-conversational-turn-taking-dataset.md`](synthetic-conversational-turn-taking-dataset.md)
@@ -6,7 +21,7 @@
 > and assistant-probability contracts. This document still describes the current adapter and real
 > corpus interfaces; its inverse `yield_probability` naming is an implementation migration point.
 
-## Decision
+## Architecture decision
 
 Train a causal adapter on the frozen encoder states of
 [`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b).
