@@ -1083,6 +1083,30 @@ class PredictiveTrackingLanguageModel:
                 self.active_generation_count -= 1
 
 
+class BlockingCancellationLanguageModel:
+    def __init__(self) -> None:
+        self.generation_started = threading.Event()
+        self.cancellation_started = threading.Event()
+        self.allow_cancellation = threading.Event()
+
+    async def stream_response(
+        self,
+        request: LanguageModelRequest,
+    ) -> AsyncIterator[LanguageModelEvent]:
+        del request
+        self.generation_started.set()
+        try:
+            yield LanguageModelTextDelta(
+                text="Prepared answer ",
+                cumulative_token_count=2,
+                invocation_id=1,
+            )
+            await asyncio.sleep(10)
+        finally:
+            self.cancellation_started.set()
+            await asyncio.to_thread(self.allow_cancellation.wait)
+
+
 @dataclass(frozen=True)
 class PredictionDirective:
     p_user_speech: float
@@ -4129,6 +4153,62 @@ def test_speech_recovery_discards_pending_silence_candidate() -> None:
     assert sessions[0].active_generation is None
 
 
+def test_speculative_teardown_does_not_block_microphone_processing() -> None:
+    speech_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.9,
+        pending_silence_samples=0,
+    )
+    pending_observation = SpeechDetectionObservation(
+        is_speech=True,
+        speech_probability=0.1,
+        pending_silence_samples=1_536,
+    )
+    transcriber = ScriptedTranscriber(
+        partials_by_turn=(("hello agent",) * 5,),
+        final_texts=("hello agent",),
+    )
+    language_model = BlockingCancellationLanguageModel()
+    sessions: list[VoiceSession] = []
+    web_app = create_test_app(
+        transcriber,
+        language_model,
+        RecordingSpeechSynthesizer(),
+        speech_detector=ScriptedSpeechDetector(
+            (
+                speech_observation,
+                speech_observation,
+                pending_observation,
+                speech_observation,
+                speech_observation,
+            )
+        ),
+        created_sessions=sessions,
+        policy=SessionPolicy(
+            pending_silence_speculation_ms=80,
+            adapter_first_speculation_window_ms=0,
+        ),
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        websocket.receive_json()
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SPEECH_CHUNK)
+        websocket.send_bytes(SILENCE_CHUNK)
+        wait_until(language_model.generation_started.is_set)
+
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(language_model.cancellation_started.is_set)
+        websocket.send_bytes(SPEECH_CHUNK)
+        wait_until(lambda: sessions[0].audio_sample_count == 1_600)
+
+        assert language_model.allow_cancellation.is_set() is False
+        assert sessions[0].generations[1].accepts_playback is False
+        language_model.allow_cancellation.set()
+        websocket.send_json({"type": "session.stop"})
+
+
 def test_adapter_hold_at_vad_endpoint_does_not_suppress_endpoint_speculation() -> None:
     transcriber = ScriptedTranscriber(
         partials_by_turn=(("hello agent", "hello agent", None),),
@@ -4605,7 +4685,7 @@ def test_lexical_volatile_suffix_revision_invalidates_stable_candidate() -> None
 
     assert [conversation[-1].content for conversation in language_model.conversations] == [
         "book a",
-        "book a",
+        "book a!",
     ]
     assert {output.generation_id for output in sink.outputs} == {2}
     invalidations = sessions[0].predictive_metrics.report().invalidations

@@ -742,6 +742,7 @@ class VoiceSession:
         self.started = False
         self.lifecycle = SessionLifecycle.CREATED
         self.pending_generation_teardown: ActiveGeneration | None = None
+        self.pending_generation_teardown_task: asyncio.Task[None] | None = None
         self.latest_transcript_revision: TranscriptRevision | None = None
         self.interaction_prediction_reducer = InteractionPredictionReducer()
         self.predictive_metrics = PredictiveMetrics()
@@ -1808,8 +1809,9 @@ class VoiceSession:
         revision: TranscriptRevision,
         prediction: InteractionPrediction,
     ) -> None:
+        if self.pending_generation_teardown is not None:
+            return
         await self._finalize_cancelled_playback()
-        await self._await_generation_teardown()
         assert self.active_generation is None
         prompted_text = self._speculative_prompt_text(revision, prediction)
         prompt_messages = (
@@ -3638,11 +3640,7 @@ class VoiceSession:
             )
         self.playback_flow_control.invalidate_generation(generation.generation_id)
         self.active_generation = None
-        self.pending_generation_teardown = generation
-        if generation.release_task is not None and not generation.release_task.done():
-            generation.release_task.cancel()
-        if generation.task is not None and not generation.task.done():
-            generation.task.cancel()
+        self._schedule_generation_teardown(generation)
         return command
 
     async def _invalidate_speculative_candidate(
@@ -3659,6 +3657,7 @@ class VoiceSession:
         ):
             return
         generation.cancelled = True
+        generation.accepts_playback = False
         self._invalidate_tool_execution(
             generation,
             reason=ToolInvalidationReason.SPECULATIVE_INVALIDATION,
@@ -3685,12 +3684,7 @@ class VoiceSession:
             CandidateLifecycle.CANCELLATION_REQUESTED,
         )
         self.active_generation = None
-        self.pending_generation_teardown = generation
-        if generation.release_task is not None and not generation.release_task.done():
-            generation.release_task.cancel()
-        if generation.task is not None and not generation.task.done():
-            generation.task.cancel()
-        await self._await_generation_teardown()
+        self._schedule_generation_teardown(generation)
         logger.info(
             "speculative candidate invalidated: session=%s generation=%d reason=%s "
             "wasted_qwen_tokens=%d wasted_tts_samples=%d",
@@ -3701,18 +3695,35 @@ class VoiceSession:
             generation.tts_sample_count,
         )
 
-    async def _await_generation_teardown(self) -> None:
-        generation = self.pending_generation_teardown
-        if generation is None:
-            return
+    def _schedule_generation_teardown(self, generation: ActiveGeneration) -> None:
+        assert self.pending_generation_teardown is None
+        assert self.pending_generation_teardown_task is None
+        self.pending_generation_teardown = generation
         for task in (generation.task, generation.release_task):
-            if task is not None:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-        if generation.lifecycle is CandidateLifecycle.CANCELLATION_REQUESTED:
-            self._transition_generation(generation, CandidateLifecycle.CANCELLED)
-        if self.pending_generation_teardown is generation:
-            self.pending_generation_teardown = None
+            if task is not None and not task.done():
+                task.cancel()
+        self.pending_generation_teardown_task = asyncio.create_task(
+            self._run_generation_teardown(generation)
+        )
+
+    async def _run_generation_teardown(self, generation: ActiveGeneration) -> None:
+        try:
+            for task in (generation.task, generation.release_task):
+                if task is not None:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+            if generation.lifecycle is CandidateLifecycle.CANCELLATION_REQUESTED:
+                self._transition_generation(generation, CandidateLifecycle.CANCELLED)
+        finally:
+            if self.pending_generation_teardown is generation:
+                self.pending_generation_teardown = None
+                self.pending_generation_teardown_task = None
+
+    async def _await_generation_teardown(self) -> None:
+        teardown_task = self.pending_generation_teardown_task
+        if teardown_task is None:
+            return
+        await asyncio.shield(teardown_task)
 
     async def _close_generation_tasks(self) -> None:
         tasks = tuple(
