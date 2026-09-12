@@ -155,7 +155,8 @@ all models in 24.432 seconds, then Modal reported `Failed to create memory snaps
 retry loaded in 49.059 seconds and exceeded the default memory request during capture. A bounded
 retry with 64 GiB of container memory again failed snapshot creation, retried model initialization,
 and never completed the WebSocket handshake within 300 seconds. The canary application was stopped
-after each attempt. Production therefore keeps snapshots disabled.
+after each attempt. Production therefore keeps snapshots disabled, and further snapshot work is
+not planned for this project completion pass.
 
 The deployed endpoints are:
 
@@ -173,6 +174,89 @@ python -m app.local.server
 ```text
 http://127.0.0.1:8000/voice-agent?compute=wss%3A%2F%2Fbertil-braun-private--voicelightagent-voice-light.eu-west.modal.run%2Fv1%2Fvoice
 ```
+
+## Current completion record
+
+The final runtime keeps the current provider-neutral compute application and uses Modal only for
+packaging, placement, secrets, persistent cache Volumes, admission, and scale-to-zero. Production
+requests a co-located two-GPU allocation (`A10:2`, with `L40S:2` as the only fallback), keeps Qwen,
+Nemotron, and the search summarizer on GPU 0, and reserves GPU 1 for Kyutai. Four persistent model
+workers load concurrently. The shared Nemotron worker supplies both streaming ASR and causal encoder
+features to the incremental turn adapter; it does not load a second speech backbone or repeatedly
+re-encode a rolling waveform window. The 120-second idle window is the intentional compromise
+between scale-to-zero cost and avoiding a cold start between immediately adjacent demonstrations.
+
+The current final-topology scaled-to-zero readiness observations span approximately 32.0--54.9
+seconds, including one 32.736-second two-GPU deployment sample. These are individual observations,
+not a percentile or availability guarantee. Modal placement, image startup, framework imports, and
+host performance remain variable even though all model weights are read from the persistent Volume.
+
+Two consecutive human production traces reported 11 complete turns with the following browser
+telemetry. `end→PCM` ranged from 760 to 1,631 ms (1,288 ms median). Five turns that displayed a
+prepared candidate ranged from 760 to 1,014 ms (1,007 ms median); six turns without one ranged from
+1,288 to 1,631 ms (1,413 ms median). Across the same turns, endpoint was 487--502 ms, ASR final was
+42--147 ms, LLM was 101--164 ms, TTS was 584--665 ms, and browser play acknowledgement was
+122--139 ms. These UI spans have different origins and overlap; they must not be added. They include
+the user's network and browser path and are human observations rather than a controlled latency
+benchmark. The traces exercised current London/New York weather, current time, ordinary follow-up,
+and prepared and non-prepared turns. Earlier human runs also exercised backchannel resume,
+interruption, stories, and sequential tool use, but no percentile claim is made from those sessions.
+
+At a valid structured tool boundary, the current session flushes the bridge words and finishes that
+TTS utterance before executing the call. Tool execution is asynchronous with respect to already
+buffered browser playback. Search summaries that are already safe for speech are appended directly;
+other successful results return through a subsequent Qwen invocation. Either path starts another
+TTS utterance inside the same assistant generation and monotonically rebases its PCM and text
+offsets. This prevents Kyutai's lookahead from holding the final bridge words across a tool wait,
+but a short pause or acoustic seam at the utterance boundary remains possible and should be judged
+in a human microphone smoke. Reusing one uninterrupted Kyutai utterance across the tool wait was
+implemented and tested, then reverted because its two-word lookahead could withhold the end of the
+bridge until result text arrived; semantic utterance boundaries are the final production behavior.
+
+The following commands reproduce the completion validation without embedding credentials:
+
+```powershell
+.\.venv\Scripts\ruff.exe format --exclude .cache .
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+.\.venv\Scripts\ruff.exe check --fix --exclude .cache .
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+.\.venv\Scripts\python.exe -m pytest -m "not integration" `
+  --ignore=tests/compute/test_merge_qwen_lora.py `
+  tests/voice_agent tests/training/turn_taking tests/deployment/modal tests/compute -q
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+node --test tests\browser\*.test.mjs
+```
+
+The final 2026-09-12 run passed 708 Python tests, with three environment-dependent skips and one
+live integration test deselected, in 34.71 seconds. The ignored offline LoRA merge test requires the
+optional `peft` package, which was unavailable in the Windows validation environment and is not used
+by the deployed unadapted 4B runtime. The browser playback/debug suite passed all 35 tests. Ruff
+formatting and linting passed. The deployed Qwen tool-routing smoke passed all eight cases, the real
+Tavily provider smoke returned two bounded results in 338.89 ms, and the final WebSocket readiness
+probe completed in 54.858 seconds. A previous probe of the same final topology completed in 32.042
+seconds, illustrating the cold-start variability rather than a code-path change.
+
+After creating the secrets shown above, prepare and validate the pinned artifacts, then deploy and
+probe the exact public route:
+
+```powershell
+$env:PYTHONUTF8 = '1'
+modal run -m deployment.modal.voice_light::cache_models
+modal run -m deployment.modal.voice_light::smoke_tool_use
+modal run -m deployment.modal.voice_light::smoke_search_provider
+modal run -m deployment.modal.qwen_quality_canary::evaluate `
+  --model-name Qwen/Qwen3-4B-Instruct-2507 `
+  --model-revision cdbee75f17c01a7cc42f958dc650907174af0554
+modal deploy -m deployment.modal.voice_light
+python -m deployment.modal.smoke_websocket `
+  --url wss://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run/v1/voice
+```
+
+The automated WebSocket smoke proves admission, protocol readiness, PCM ingestion, and response
+framing. Final acceptance still requires a browser microphone run covering audible response,
+current search, calculation, current time, normal completion, a short `mm-hmm` backchannel, and a
+clear interruption. Record the browser's `end→PCM`, endpoint, ASR, LLM, TTS, play, onset-to-duck,
+onset-to-cancel, and onset-to-resume fields from that same run.
 
 ## Turn-policy configuration
 
@@ -235,7 +319,9 @@ and rejects stale-generation PCM; it does not delete valid audio or advance audi
 
 ## Validation and measured deployment results
 
-The final validation record is dated 2026-09-09. Automated route-level WebSocket coverage uses the
+The chronological engineering record below includes measurements from superseded configurations;
+the current completion record above is authoritative for the final topology. Automated route-level
+WebSocket coverage uses the
 real `/v1/voice` route with mocked model providers and verifies session readiness, PCM ingestion,
 final transcript, and audible response framing. The voice-agent and turn-taking suites cover
 checkpoint validation, protocol serialization, recurrent reset, incremental causality, optional
@@ -677,21 +763,26 @@ Nemotron and Qwen on GPU 0 and reserves GPU 1 for Kyutai.
 
 ## Known limitations
 
-- The latest truthful cold readiness sample is 32.736 seconds. Earlier samples ranged from 32.294
-  to 66.312 seconds. Modal scheduling, host performance, and fallback GPU selection remain
-  variable; an
-  earlier A100 fallback required 105.341 seconds end to end. Restoring the old approximately
+- The current final-topology cold readiness observations range from approximately 32.0 to 54.9
+  seconds. Earlier architectures ranged as high as 66.312 seconds, and an obsolete A100 fallback
+  required 105.341 seconds end to end. Modal scheduling and host performance remain variable.
+  Restoring the old approximately
   ten-second behavior requires consolidating repeated Python/CUDA worker bootstrap, keeping a warm
   container (which conflicts with scale-to-zero), or replacing the larger current model stack;
   cached weights alone cannot remove library initialization. GPU memory snapshots remain an alpha
   experiment, not a production setting: the fixed-A10 canary failed capture even with a 64 GiB
-  memory request. Retesting requires a relevant Modal compatibility change or consolidation of the
-  three CUDA subprocesses, followed by coherent restoration and first-turn validation.
+  memory request. Further GPU-snapshot work is not planned.
 - A live human must provide microphone speech and judge audible output. Automated and agent-run
   checks cannot honestly certify microphone capture, speaker audibility, natural backchannel, or
   interruption perception.
-- Speech-end-to-first-text/audio and live duck, cancellation, and resume latency require a ready
-  GPU session plus timestamped real audio; no synthetic result is presented as production proof.
+- Human `end→PCM` is currently 760--1,631 ms across the two latest recorded traces. The sample is too
+  small for percentiles, and controlled live duck, cancellation, and resume measurements remain to
+  be recorded on the final deployment.
+- The Transformers conversation worker now logs the exact input prompt-token count, but conversation
+  history is not yet compacted or token-budgeted. A long session can therefore increase prefill
+  latency, dilute attention to the latest topic, and eventually exceed the model context window.
+- Tool bridges and results are separate TTS utterances within one assistant generation. The semantic
+  boundary prevents a lookahead stall, but an audible pause or voice seam can remain at that point.
 - The adapter currently catches up from a bounded 300 ms pre-roll after Silero onset. Continuous
   assistant-playback context requires replacing the high-level RNNT generation loop with one
   scheduler that owns persistent encoder, decoder, and adapter state; a side encoder loop cannot

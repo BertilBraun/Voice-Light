@@ -57,18 +57,18 @@ validated playback offsets enter model history.
   and 1120 ms streaming configurations without changing code.
 - Qwen3-4B-Instruct-2507 runs in a persistent child process. A typed generation-ID protocol streams
   non-thinking text deltas for the complete ordered conversation.
-- Search-result summarization is bounded and non-thinking. Modal shares the conversational Qwen
-  worker to avoid loading a second backbone; other deployments may configure the independent
-  Qwen3-0.6B summarizer.
+- Search-result summarization is bounded and non-thinking. Modal runs an independent pinned
+  Qwen3-0.6B summarizer so search work does not block the conversational Qwen worker.
 - Each committed user turn emits `llm.history` with the immutable conversation snapshot supplied to
   that generation's audible history. Every actual Qwen invocation also emits
   `llm.model_request`, including its typed private messages and tool specifications. The browser
   logs both events as tables and formatted JSON to its developer console for prompt inspection.
 - Each complete whitespace-delimited word enters Kyutai TTS while Qwen generates later text. The
   final trailing word is flushed when Qwen finishes.
-- A response may contain multiple sequential asynchronous `get_weather` calls. The response keeps
-  one assistant playback generation and one TTS session open across every spoken segment, tool
-  wait, and final answer. Each Qwen invocation has a separate globally monotonic invocation ID.
+- A response may contain multiple sequential asynchronous `search`, `calculate`, or `get_time`
+  calls. It keeps one assistant playback generation across every spoken segment, tool wait, and
+  final answer, while each semantic segment uses a separately finished TTS utterance. Each Qwen
+  invocation has a separate globally monotonic invocation ID.
 - A new authoritative server speech-start still immediately cancels private or inaudible queued
   work. When browser-authoritative state says a committed response is audibly speaking, the start
   instead opens unresolved overlap: the server sends an immediate duck and boundary-pause command
@@ -90,7 +90,7 @@ stopword or ReAct protocol. The primary protocol reference is
 The deterministic end-to-end fixture records this raw first pass:
 
 ```text
-Let me check that.<tool_call>{"name":"get_weather","arguments":{"location":"London"}}</tool_call>
+Let me check that.<tool_call>{"name":"search","arguments":{"query":"current weather in London"}}</tool_call>
 ```
 
 The Qwen worker's incremental parser normalizes that private byte stream into:
@@ -98,7 +98,7 @@ The Qwen worker's incremental parser normalizes that private byte stream into:
 ```text
 spoken_text_delta(invocation=1, text="Let me check that.")
 tool_call_started(invocation=1, call="qwen-1-tool-1")
-tool_call(invocation=1, name="get_weather", location="London")
+tool_call(invocation=1, name="search", query="current weather in London")
 completed(invocation=1)
 ```
 
@@ -109,9 +109,10 @@ second call within the same invocation, or content after a call becomes an expli
 Sequential calls use separate invocations. VoiceSession never parses Hermes XML and never receives
 raw tool syntax as spoken text.
 
-After any tool-producing invocation ends, VoiceSession validates the buffered call through the
-injected typed registry. Waiting until invocation completion prevents a later duplicate or
-malformed tail from racing into execution. VoiceSession then stages the complete typed assistant
+VoiceSession normally validates a completed buffered call through the injected typed registry.
+For required searches and deterministic temperature conversions, a narrow router may dispatch as
+soon as the tool-call start marker is observed instead of waiting for model-authored JSON tail.
+VoiceSession then stages the complete typed assistant
 message, its spoken-segment offsets, call ID, invocation ID, and turn identity immediately before
 creating the handler task. Staging is generation-local and is not returned by a committed
 private-context snapshot. A staged call therefore cannot become a dangling assistant call in a
@@ -123,21 +124,15 @@ current, it atomically replaces the stage with the assistant call and its exact 
 tool result. For an authoritative generation this is `session_committed`. A speculative
 generation first becomes `generation_local_committed`; promotion upgrades it to
 `session_committed`, while invalidation discards every generation-local exchange from that
-candidate. After valid London and Berlin calls, the private model context becomes:
+candidate. After a valid London search, the private model context becomes:
 
 ```text
 user("What's the weather like in London?")
 assistant(content="Let me check that.", tool_call(id="qwen-1-tool-1",
-          name="get_weather", arguments=GetWeatherArguments(location="London")))
+          name="search", arguments=SearchArguments(query="current weather in London")))
 tool(tool_call_id="qwen-1-tool-1",
-     outcome=WeatherResult(location="London", temperature_celsius=12,
-                           conditions="lightly cloudy"))
-assistant(content="London is cool; I will compare Berlin.",
-          tool_call(id="qwen-2-tool-1", name="get_weather",
-                    arguments=GetWeatherArguments(location="Berlin")))
-tool(tool_call_id="qwen-2-tool-1",
-     outcome=WeatherResult(location="Berlin", temperature_celsius=18,
-                           conditions="clear"))
+     outcome=ToolSuccess(result="London is 12 degrees and lightly cloudy."))
+assistant(content="London is 12 degrees and lightly cloudy.")
 ```
 
 The next tool-enabled Qwen invocation may make another call or produce the final answer:
@@ -147,11 +142,10 @@ Berlin is warmer at 18 degrees.
 ```
 
 Tool description, parsing, validation, execution, orchestration, speech, and durable history are
-separate. `get_weather` is the only registered tool. Its production demonstration handler waits
-approximately one second and returns frozen deterministic results for London, Berlin, and San
-Francisco. Other locations use the documented deterministic fallback of 20 degrees Celsius and
-`clear (deterministic fallback)`. It does not use a network API or randomness. The registry is
-injected into VoiceSession, so VoiceSession contains no city or weather-specific branch.
+separate. The runtime registry always supplies bounded arithmetic and current IANA-zone time tools.
+It supplies search only when Tavily is configured; search combines a bounded provider request with
+an isolated grounded summarizer. The registry is injected into VoiceSession, so VoiceSession
+contains no provider, arithmetic, place, or time-zone-specific execution branch.
 
 The tool lifecycle is orthogonal to candidate/playback state:
 
@@ -208,9 +202,11 @@ tool-disabled and any attempted call fails the generation rather than executing.
 One `CompleteWordStream`, synthesis output task, browser generation, audio sequence, text-offset
 space, and source-sample space span all Qwen invocations. Each spoken segment's trailing word is
 flushed and its TTS utterance is finished at a tool boundary, allowing the bridge to complete before
-the latency-bearing wait. Later utterances continue at larger text offsets; their zero-based PCM is
+the latency-bearing wait. Tool execution can overlap playback of already buffered bridge audio.
+Later utterances continue at larger text offsets; their zero-based PCM is
 rebased to the next exact generation sample. The browser still receives one audio start and one
-audio end.
+audio end. A continuous TTS utterance across the wait was tested and reverted because Kyutai's
+lookahead could strand the final bridge words until tool-result text became available.
 
 Each journal entry records its call, execution, result-commit, cancellation, and invalidation
 timing. Generation-scoped monotonic instrumentation retains first-round bridge and first
@@ -259,10 +255,10 @@ each continuation below the round bound, and a later user turn receive the regis
 definitions. A round-limited or parser/validation-recovery invocation receives an empty tool list.
 VoiceSession neither parses nor stores Hermes XML.
 
-Current limitations are deliberate: one deterministic registered tool, one call per Qwen
-invocation, at most eight sequential calls by default, no parallel calls, no network weather, no
-arbitrary execution, no MCP, and no native duplex model. Sequential calls may depend on earlier
-typed results. During a drained tool gap the current worklet keeps the not-yet-ended generation
+Current limitations are deliberate: one call per Qwen invocation, at most eight sequential calls by
+default, no parallel calls, no arbitrary execution, no MCP, and no native duplex model. Search
+requires the separately managed Tavily secret. Sequential calls may depend on earlier typed results.
+During a drained tool gap the current worklet keeps the not-yet-ended generation
 active; this enables the existing duck/pause backchannel policy but can conservatively classify
 speech during the silent gap as overlap with an active assistant turn.
 
@@ -629,7 +625,9 @@ reasons, stale-candidate escapes, commit-to-first-playback p50/p90/p95, ground-t
 when annotations are supplied, hidden pre-commit work, wasted Qwen output tokens and TTS samples,
 baseline latency without a candidate, and latency after invalidation. Qwen token accounting uses
 the worker tokenizer's cumulative tokenization of decoded response text rather than word or
-character estimates.
+character estimates. The Transformers runtime separately logs the exact rendered input-prompt token
+count for every invocation. The current private conversation context is not compacted, so this log
+must be watched during long sessions until a typed, tool-exchange-safe token budget is implemented.
 
 Overlap summaries additionally report onset-to-duck, onset-to-pause, explicit-stop,
 onset-to-resume, cooperative and competitive overlap duration, paused-buffer age, synthesized,

@@ -5,6 +5,7 @@
 /synthetic-generation/.env
 
 .venv/
+/.env
 .env.compute
 /.cache/compute/
 /.cache/huggingface/
