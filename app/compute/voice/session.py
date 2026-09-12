@@ -2475,7 +2475,6 @@ class VoiceSession:
                         audible_content = generation.response_text[
                             audible_text_start:audible_text_end
                         ].strip()
-                    await synthesis.finish_utterance()
                     assistant_message = ModelAssistantMessage(
                         content=audible_content,
                         tool_calls=(tool_call,),
