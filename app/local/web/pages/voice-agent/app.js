@@ -19,7 +19,6 @@ const connectionStatus = document.querySelector("#connection-status");
 const sessionGuidance = document.querySelector("#session-guidance");
 const vadStatus = document.querySelector("#vad-status");
 const playbackStatus = document.querySelector("#playback-status");
-const playbackUnderruns = document.querySelector("#playback-underruns");
 const conversationHistory = document.querySelector("#conversation-history");
 const conversationEmpty = document.querySelector("#conversation-empty");
 const generatedTextToggle = document.querySelector("#generated-text-toggle");
@@ -327,7 +326,6 @@ async function setupPlayback(inputSampleRate) {
           output_sample_rate: data.outputSampleRate,
         }));
       }
-      playbackUnderruns.textContent = `underruns ${data.underrunCount}`;
       return;
     }
     if (data.type === "boundary.started") {
@@ -584,7 +582,6 @@ function resetControls() {
   stopButton.disabled = true;
   vadStatus.textContent = "waiting";
   playbackStatus.textContent = "waiting";
-  playbackUnderruns.textContent = "underruns 0";
   debugSilero.textContent = "waiting";
   debugAdapterStatus.textContent = "waiting";
   debugTurnCompletion.textContent = "—";

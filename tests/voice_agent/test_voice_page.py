@@ -79,7 +79,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "playback-worklet.js?v=9" in script_response.text
     assert 'data.type === "playback.clock"' in script_response.text
     assert "underrun_count: data.underrunCount" in script_response.text
-    assert 'id="playback-underruns"' in page_response.text
+    assert 'id="playback-underruns"' not in page_response.text
     assert "app.js?v=20" in page_response.text
     assert 'message.type !== "speech_understanding.debug"' in script_response.text
     assert "MAX_EVENT_LOG_ENTRIES = 200" in script_response.text
