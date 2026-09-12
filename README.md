@@ -6,6 +6,7 @@ their behavior, integrate the useful pieces into a full-duplex cascade, and depl
 scale-to-zero GPU compute.
 
 [Try the live demo](https://voice.bertil-braun.de) ·
+[Read the technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.0/voice-light-technical-report.pdf) ·
 [Read the deployment record](docs/modal-voice-deployment.md) ·
 [Explore the models and datasets](#published-artifacts)
 
@@ -194,5 +195,6 @@ through Modal secrets and are never committed.
 - The public demo is single-session and English-first. Microphone, network, browser scheduling, and
   Modal host variation all affect perceived latency.
 
-The repository documentation is the current technical report. A standalone report is intentionally
-deferred until the evaluation record is stable enough to justify maintaining a second artifact.
+The 11-page [Voice Light technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.0/voice-light-technical-report.pdf)
+connects the data, training, evaluation, integration, deployment, and final human acceptance record
+in one narrative. Its LaTeX source is in [`docs/technical-report`](docs/technical-report).

@@ -796,8 +796,9 @@ separately timestamped duck, cancellation, or backchannel-resume actions.
 - A live human must provide microphone speech and judge audible output. Automated and agent-run
   checks cannot honestly certify microphone capture, speaker audibility, natural backchannel, or
   interruption perception.
-- Human `end→PCM` is currently 760--1,631 ms across the two latest recorded traces. The sample is too
-  small for percentiles, and controlled live duck, cancellation, and resume measurements remain to
+- The final eight-turn human acceptance trace measured `end→PCM` at 593--1,451 ms (677 ms median,
+  829 ms mean), with six turns below 800 ms. It remains one small acceptance trace rather than a
+  latency distribution, and controlled live duck, cancellation, and resume measurements remain to
   be recorded on the final deployment.
 - The Transformers conversation worker now logs the exact input prompt-token count, but conversation
   history is not yet compacted or token-budgeted. A long session can therefore increase prefill
