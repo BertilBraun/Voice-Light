@@ -10,10 +10,9 @@ workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
 session. Modal requests a co-located A10 pair first and falls back only to an L40S pair when A10
-capacity is unavailable. Qwen and the search summarizer are pinned to physical GPU 0; Nemotron and
-Kyutai are pinned to physical GPU 1. This placement is an A/B experiment intended to keep Qwen
-speculation from delaying ASR and turn-adapter inference. It must retain Kyutai's isolated-GPU
-latency profile and interaction responsiveness to remain deployed.
+capacity is unavailable. Qwen, Nemotron, and the search summarizer are pinned to physical GPU 0;
+Kyutai is pinned to physical GPU 1, so concurrent text and first-frame speech generation cannot
+contend for the same CUDA device.
 A100 and H100 are deliberately excluded from the bounded fallback list because they are
 unnecessarily expensive for this stack. The endpoint is
 scheduled in Modal's broad `eu` compute region and routed through `eu-west`; this avoids
@@ -202,7 +201,7 @@ The deployed starting values are:
 | `VOICE_LIGHT_VAD_ENDPOINT_CONFIDENCE` | `0.70` | confidence assigned to the causal VAD endpoint evidence |
 | `VOICE_LIGHT_QWEN_CUDA_DEVICE` | `0` | physical CUDA device used by the primary Qwen worker |
 | `VOICE_LIGHT_SEARCH_CUDA_DEVICE` | `0` | physical CUDA device used by the bounded search summarizer |
-| `VOICE_LIGHT_NEMOTRON_CUDA_DEVICE` | `1` | physical CUDA device used by Nemotron ASR and the shared turn adapter |
+| `VOICE_LIGHT_NEMOTRON_CUDA_DEVICE` | `0` | physical CUDA device used by Nemotron ASR and the shared turn adapter |
 | `VOICE_LIGHT_TTS_CUDA_DEVICE` | `1` | physical CUDA device reserved for Kyutai TTS |
 | `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED` | `false` | shared-GPU Qwen yielding is disabled for the isolated two-GPU deployment |
 | `VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT` | `11` | conservative English-word runway before yielding shared-GPU time to Kyutai |
@@ -668,6 +667,13 @@ previous human trace's 621.6--711.8 ms shared-GPU TTS times. Qwen first delta re
 ms. Commit-to-first-PCM was 632.14--655.18 ms (649.59 ms median), so GPU isolation fixes measured
 TTS contention but does not remove endpoint, final-transcript, candidate-resolution, or network
 latency. A human interaction run is still required to measure end-to-PCM and perceived pacing.
+
+An A/B placement experiment moved Nemotron beside Kyutai on physical GPU 1, leaving Qwen alone on
+GPU 0. Cold model readiness remained effectively unchanged at 21.151 seconds and Qwen first delta
+improved from roughly 232--238 ms to 204--207 ms. During five warm recorded turns, however, Kyutai
+worker first-word-to-PCM regressed to 458.9--485.6 ms from the isolated 346.2--353.4 ms baseline.
+The roughly one-third TTS regression outweighed the small Qwen gain, so production retains
+Nemotron and Qwen on GPU 0 and reserves GPU 1 for Kyutai.
 
 ## Known limitations
 

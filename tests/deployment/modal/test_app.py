@@ -64,7 +64,7 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     assert environment["VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_ENABLED"] == "false"
     assert environment["VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT"] == "11"
     assert environment["VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_TIMEOUT_MS"] == "400"
-    assert environment["VOICE_LIGHT_NEMOTRON_CUDA_DEVICE"] == "1"
+    assert environment["VOICE_LIGHT_NEMOTRON_CUDA_DEVICE"] == "0"
     assert environment["VOICE_LIGHT_SEARCH_CUDA_DEVICE"] == "0"
     assert environment["VOICE_LIGHT_TTS_CUDA_DEVICE"] == "1"
     assert environment["VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH"] == "false"
