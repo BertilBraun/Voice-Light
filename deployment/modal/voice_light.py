@@ -18,10 +18,6 @@ from app.shared.model_constants import NEMOTRON_ASR_MODEL_NAME, NEMOTRON_ASR_MOD
 
 APPLICATION_NAME: Final = "VoiceLightAgent"
 REMOTE_REPOSITORY_ROOT: Final = PurePosixPath("/opt/voice-light")
-REMOTE_DEMO_WEB_ROOT: Final = PurePosixPath("/opt/voice-light-demo")
-PUBLIC_VOICE_WEBSOCKET_URL: Final = (
-    "wss://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run/v1/voice"
-)
 
 
 def repository_root(module_path: Path, local: bool) -> Path:
@@ -31,7 +27,6 @@ def repository_root(module_path: Path, local: bool) -> Path:
 
 
 REPOSITORY_ROOT: Final = repository_root(Path(__file__).resolve(), modal.is_local())
-DEMO_WEB_ROOT: Final = REPOSITORY_ROOT / "app" / "local" / "web" / "pages" / "voice-agent"
 ADAPTER_CHECKPOINT: Final = (
     REPOSITORY_ROOT
     / ".cache"
@@ -212,13 +207,6 @@ image = (
     .workdir(str(REMOTE_REPOSITORY_ROOT))
 )
 
-demo_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .pip_install("fastapi==0.139.0")
-    .add_local_python_source("deployment", "app")
-    .add_local_dir(DEMO_WEB_ROOT, remote_path=str(REMOTE_DEMO_WEB_ROOT))
-)
-
 with image.imports():
     from huggingface_hub import snapshot_download
 
@@ -238,21 +226,6 @@ runtime_cache = modal.Volume.from_name(
     configuration.runtime_cache_volume_name,
     create_if_missing=True,
 )
-
-
-@app.function(
-    image=demo_image,
-    scaledown_window=configuration.scaledown_window_seconds,
-)
-@modal.concurrent(max_inputs=100)
-@modal.asgi_app(label="voice-light-demo")
-def voice_light_demo() -> FastAPI:
-    from deployment.modal.demo_frontend import create_demo_frontend_app
-
-    return create_demo_frontend_app(
-        voice_page_directory=Path(REMOTE_DEMO_WEB_ROOT),
-        voice_websocket_url=PUBLIC_VOICE_WEBSOCKET_URL,
-    )
 
 
 @app.function(

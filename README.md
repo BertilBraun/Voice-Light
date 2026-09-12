@@ -7,14 +7,14 @@ interruptions.
 
 ## Live demo
 
-[Open the public Voice Light demo](https://bertil-braun-private--voice-light-demo.modal.run)
+[Open the public Voice Light demo](https://bertilbraun.github.io/Voice-Light/)
 
 The demo runs on scale-to-zero Modal GPUs. The page loads independently, but the first microphone
 session after an idle period currently takes approximately 32--55 seconds to initialize. Only one
 voice session is admitted at a time. Use a current desktop browser, allow microphone access, and
 wear headphones for the clearest interruption behavior.
 
-![Voice Light interaction-policy timeline](docs/assets/voice-agent-interaction-policy.png)
+![Voice Light public streaming demo](docs/assets/voice-agent-public-demo.png)
 
 The production path keeps one Nemotron backbone for both streaming transcription and adapter
 features. Qwen and Nemotron run on the first GPU, while Kyutai runs on the second. Search,
@@ -193,9 +193,9 @@ The compute URL has no implicit deployment default. The local application fails 
 compute-backed operation is requested without these values.
 
 The voice prototype instead connects the browser directly to the compute service. Use the
-[public demo](https://bertil-braun-private--voice-light-demo.modal.run), or open
-`http://127.0.0.1:8000/voice-agent` and enter `ws://<vast-ip>:8000/v1/voice` in the endpoint field.
-The ephemeral research WebSocket does not use the HTTP bearer token.
+[public demo](https://bertilbraun.github.io/Voice-Light/), or open
+`http://127.0.0.1:8000/voice-agent`. Both clients use the production Modal WebSocket compiled into
+the public client. The ephemeral research WebSocket does not use the HTTP bearer token.
 
 ## Vast.ai compute backend
 

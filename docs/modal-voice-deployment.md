@@ -160,17 +160,16 @@ not planned for this project completion pass.
 
 The deployed endpoints are:
 
-- public demo: `https://bertil-braun-private--voice-light-demo.modal.run`
+- public demo: `https://bertilbraun.github.io/Voice-Light/`
 - HTTPS base: `https://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run`
 - voice WebSocket: `wss://bertil-braun-private--voicelightagent-voice-light.eu-west.modal.run/v1/voice`
 - Modal dashboard: `https://modal.com/apps/bertil-braun-private/main/deployed/VoiceLightAgent`
 
-The public page is a lightweight CPU-only ASGI deployment that serves the existing browser client
-and injects the production WebSocket URL. It scales independently from the GPU runtime, so loading
-the page does not start or hold an inference container. A cold HTTP verification on 2026-09-12
-returned the page with status 200 in 6.909 seconds and its JavaScript asset with status 200 in
-1.251 seconds. GPU scale-from-zero remains the longer 32--55 second initialization path described
-above.
+GitHub Pages serves the static browser client from
+`app/local/web/pages/voice-agent`; its production WebSocket URL is an explicit checked-in constant.
+The Pages deployment therefore has no Python runtime, model artifacts, or credentials and loading
+it does not start or hold an inference container. Modal hosts only the GPU WebSocket service. GPU
+scale-from-zero remains the longer 32--55 second initialization path described above.
 
 Serve the browser locally, then put the WebSocket URL in the endpoint field or query string:
 
@@ -768,6 +767,20 @@ improved from roughly 232--238 ms to 204--207 ms. During five warm recorded turn
 worker first-word-to-PCM regressed to 458.9--485.6 ms from the isolated 346.2--353.4 ms baseline.
 The roughly one-third TTS regression outweighed the small Qwen gain, so production retains
 Nemotron and Qwen on GPU 0 and reserves GPU 1 for Kyutai.
+
+## Final human acceptance run
+
+The final microphone run on 2026-09-12 completed eight of eight turns, including live weather and
+time tool use and ordinary conversational follow-ups. The tester reported that background speech
+and interaction actions behaved correctly and considered the result ready to wrap. The trace's
+`end→PCM` values were 593, 597, 616, 660, 694, 705, 1,318, and 1,451 ms: median 677 ms, mean
+829 ms, and six of eight turns below 800 ms. Median endpoint decision, LLM first-word, TTS
+first-PCM, and browser playback measurements were 508, 268, 453, and 109 ms respectively.
+
+The two latency outliers were the turns that did not promote prepared speculative work; both still
+completed normally. No turn was dropped and no playback stall was reported. This is one human
+session rather than a controlled population estimate, and the supplied transcript does not contain
+separately timestamped duck, cancellation, or backchannel-resume actions.
 
 ## Known limitations
 
