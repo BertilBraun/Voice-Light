@@ -1107,6 +1107,9 @@ class DeterministicTurnPredictionSource:
         del observation
         return True
 
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        del observation
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -1137,6 +1140,9 @@ class DelayedTurnPredictionSource:
         del observation
         return True
 
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        del observation
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -1166,6 +1172,9 @@ class AssistantAudibleTurnPredictionSource:
     def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
         return observation.audio_chunk.playback_condition.generation_id is not None
 
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        del observation
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -1188,6 +1197,9 @@ class FailingTurnPredictionSource:
     def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
         del observation
         return True
+
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        del observation
 
     async def predict(
         self,
@@ -4428,7 +4440,7 @@ def test_prediction_beyond_policy_lag_cannot_start_candidate() -> None:
         wait_until(lambda: transcriber.sessions[0].next_partial_index >= 7)
         prediction_source.release.set()
         assert prediction_source.completed.wait(timeout=1)
-        wait_until(lambda: prediction_source.observation_count >= 6)
+        wait_until(lambda: prediction_source.observation_count >= 2)
         websocket.send_bytes(SILENCE_CHUNK)
         wait_until(lambda: transcriber.sessions[0].next_partial_index >= 8)
 

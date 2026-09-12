@@ -177,6 +177,30 @@ def test_nemotron_prediction_waiters_follow_encoder_chunk_boundaries() -> None:
     asyncio.run(run_session())
 
 
+def test_cancelled_nemotron_prediction_wait_cleans_observation_state() -> None:
+    async def run_session() -> None:
+        session = NemotronStreamingSession(
+            worker_manager=FakeNemotronWorkerManager(FakeNemotronWorker()),
+            finish_timeout_seconds=1.0,
+        )
+        chunk = _chunk(STREAMING_CHUNK_BYTE_COUNT)
+        observation_id = "audio:1:0"
+        session.expected_prediction_observations.add(observation_id)
+        session.prediction_waiters[observation_id] = asyncio.Event()
+
+        prediction_task = asyncio.create_task(session.take_prediction(chunk))
+        await asyncio.sleep(0)
+        prediction_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await prediction_task
+        assert session.expected_prediction_observations == set()
+        assert session.prediction_waiters == {}
+        assert session.predictions == {}
+
+    asyncio.run(run_session())
+
+
 def test_asr_ready_event_serializes_prediction_cadence() -> None:
     event = AsrWorkerReadyEvent(
         first_prediction_audio_samples=16_000,

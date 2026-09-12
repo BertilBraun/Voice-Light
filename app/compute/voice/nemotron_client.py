@@ -291,6 +291,9 @@ class NemotronTurnPredictionSource:
             observation.audio_chunk
         )
 
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        self.transcriber.require_active_session().discard_prediction(observation.audio_chunk)
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -356,18 +359,25 @@ class NemotronStreamingSession:
         waiter = self.prediction_waiters[observation_id]
         try:
             await asyncio.wait_for(waiter.wait(), timeout=timeout_seconds)
+            if self.turn_adapter_error is not None:
+                raise RuntimeError(self.turn_adapter_error)
+            return self.predictions[observation_id]
         except TimeoutError:
-            self.expected_prediction_observations.discard(observation_id)
-            self.prediction_waiters.pop(observation_id, None)
             return None
-        self.expected_prediction_observations.discard(observation_id)
-        self.prediction_waiters.pop(observation_id, None)
-        if self.turn_adapter_error is not None:
-            raise RuntimeError(self.turn_adapter_error)
-        return self.predictions.pop(observation_id)
+        finally:
+            self._discard_prediction(observation_id, discard_result=True)
 
     def prediction_expected(self, chunk: CapturedAudioChunk) -> bool:
         return _observation_id(chunk) in self.expected_prediction_observations
+
+    def discard_prediction(self, chunk: CapturedAudioChunk) -> None:
+        self._discard_prediction(_observation_id(chunk), discard_result=True)
+
+    def _discard_prediction(self, observation_id: str, discard_result: bool) -> None:
+        self.expected_prediction_observations.discard(observation_id)
+        self.prediction_waiters.pop(observation_id, None)
+        if discard_result:
+            self.predictions.pop(observation_id, None)
 
     async def finish(self) -> str:
         if self.finished:

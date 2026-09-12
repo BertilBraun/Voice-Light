@@ -92,6 +92,7 @@ class RecordingPredictionSource:
         self.condition_on_transcript = condition_on_transcript
         self.expected_sequences = expected_sequences
         self.observations: list[TurnPredictionObservation] = []
+        self.discarded_observations: list[TurnPredictionObservation] = []
         self.closed = False
 
     def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
@@ -99,6 +100,9 @@ class RecordingPredictionSource:
             self.expected_sequences is None
             or observation.audio_chunk.sequence_number in self.expected_sequences
         )
+
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        self.discarded_observations.append(observation)
 
     async def predict(
         self,
@@ -118,6 +122,9 @@ class FailingPredictionSource:
         del observation
         return True
 
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        del observation
+
     async def predict(
         self,
         observation: TurnPredictionObservation,
@@ -132,21 +139,28 @@ class FailingPredictionSource:
 class BlockingPredictionSource:
     def __init__(self) -> None:
         self.started = asyncio.Event()
+        self.release = asyncio.Event()
         self.cancelled = False
         self.observation_count = 0
+        self.observations: list[TurnPredictionObservation] = []
+        self.discarded_observations: list[TurnPredictionObservation] = []
 
     def prediction_expected(self, observation: TurnPredictionObservation) -> bool:
         del observation
         return True
+
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None:
+        self.discarded_observations.append(observation)
 
     async def predict(
         self,
         observation: TurnPredictionObservation,
     ) -> InteractionPrediction:
         self.observation_count += 1
+        self.observations.append(observation)
         self.started.set()
         try:
-            await asyncio.sleep(60)
+            await self.release.wait()
         except asyncio.CancelledError:
             self.cancelled = True
             raise
@@ -345,7 +359,7 @@ def test_late_optional_result_is_cancelled_and_old_turn_audio_is_rejected() -> N
     asyncio.run(exercise())
 
 
-def test_optional_predictor_queue_gap_disables_detector_without_stalling_asr() -> None:
+def test_optional_predictor_keeps_one_in_flight_and_latest_pending_observation() -> None:
     async def exercise() -> None:
         source = BlockingPredictionSource()
         transcriber = RecordingTranscriber(RecordingTranscriptionSession)
@@ -354,31 +368,44 @@ def test_optional_predictor_queue_gap_disables_detector_without_stalling_asr() -
             turn_prediction_provider=SingleSessionTurnPredictionProvider(source),
             asr_model_name="test-asr",
             asr_model_revision="1",
-            optional_predictor_queue_size=1,
         )
         session = provider.create_session(stream_epoch=1)
 
-        for sequence_number in range(4):
+        for sequence_number in range(5):
             await session.add_audio(
                 create_chunk(
                     sequence_number=sequence_number,
                     stream_epoch=1,
                     turn_epoch=1,
+                    playback_state=PlaybackState.SPEAKING,
+                    assistant_audible=True,
                 )
             )
-        await session.add_audio(create_chunk(sequence_number=4, stream_epoch=1, turn_epoch=1))
 
         events = session.drain_events()
-        degraded = tuple(
-            event for event in events if isinstance(event, SpeechUnderstandingDegradedEvent)
-        )
         assert len(transcriber.sessions[0].audio) == 5
-        assert degraded[-1].dropped_observation_count >= 1
-        assert "disabled for the conversation" in degraded[-1].reason
-        assert source.cancelled is True
         assert source.observation_count == 1
+        assert [
+            observation.audio_chunk.sequence_number for observation in source.discarded_observations
+        ] == [1, 2, 3]
+        assert not any(isinstance(event, SpeechUnderstandingDegradedEvent) for event in events)
         assert not any(isinstance(event, YieldEvidence) for event in events)
+
+        source.release.set()
+        await session.settle_predictions(timeout_seconds=1.0)
+
+        completed_events = session.drain_events()
+        assert [observation.audio_chunk.sequence_number for observation in source.observations] == [
+            0,
+            4,
+        ]
+        assert [
+            event.stamp.observation_id
+            for event in completed_events
+            if isinstance(event, YieldEvidence)
+        ] == ["audio:1:0", "audio:1:4"]
         await session.close()
+        assert source.cancelled is False
 
     asyncio.run(exercise())
 

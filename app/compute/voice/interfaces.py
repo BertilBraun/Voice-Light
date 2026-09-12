@@ -154,6 +154,8 @@ class TurnPredictionObservation:
 class TurnPredictionSource(Protocol):
     def prediction_expected(self, observation: TurnPredictionObservation) -> bool: ...
 
+    def discard_prediction(self, observation: TurnPredictionObservation) -> None: ...
+
     async def predict(
         self,
         observation: TurnPredictionObservation,

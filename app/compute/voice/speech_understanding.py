@@ -43,7 +43,6 @@ from app.compute.voice.schemas import (
     YieldEvidence,
 )
 
-DEFAULT_OPTIONAL_PREDICTOR_QUEUE_SIZE: Final = 64
 DEFAULT_REDUCER_MAXIMUM_PLAYBACK_CONDITIONS: Final = 128
 DEFAULT_REDUCER_MAXIMUM_EVIDENCE_GROUPS: Final = 64
 DEFAULT_REDUCER_MAXIMUM_SAMPLE_LAG: Final = 1_600
@@ -275,15 +274,11 @@ class CompositeSpeechUnderstandingProvider:
         turn_prediction_provider: TurnPredictionProvider | None,
         asr_model_name: str | None,
         asr_model_revision: str | None,
-        optional_predictor_queue_size: int = DEFAULT_OPTIONAL_PREDICTOR_QUEUE_SIZE,
     ) -> None:
-        if optional_predictor_queue_size <= 0:
-            raise ValueError("Optional predictor queue size must be positive.")
         self.transcriber = transcriber
         self.turn_prediction_provider = turn_prediction_provider
         self.asr_model_name = asr_model_name
         self.asr_model_revision = asr_model_revision
-        self.optional_predictor_queue_size = optional_predictor_queue_size
         self.closed = False
 
     def create_session(self, stream_epoch: int) -> SpeechUnderstandingSession:
@@ -302,7 +297,6 @@ class CompositeSpeechUnderstandingProvider:
             stream_epoch=stream_epoch,
             asr_model_name=self.asr_model_name,
             asr_model_revision=self.asr_model_revision,
-            optional_predictor_queue_size=self.optional_predictor_queue_size,
         )
 
     def close(self) -> None:
@@ -339,7 +333,6 @@ class CompositeSpeechUnderstandingSession:
         stream_epoch: int,
         asr_model_name: str | None,
         asr_model_revision: str | None,
-        optional_predictor_queue_size: int,
     ) -> None:
         self.transcriber = transcriber
         self.prediction_source = prediction_source
@@ -354,11 +347,8 @@ class CompositeSpeechUnderstandingSession:
         self.last_sequence_number: int | None = None
         self.last_input_end_sample: int | None = None
         self.event_queue: asyncio.Queue[SpeechUnderstandingEvent | None] = asyncio.Queue()
-        self.prediction_queue: asyncio.Queue[_PredictionWork | None] = asyncio.Queue(
-            maxsize=optional_predictor_queue_size
-        )
+        self.prediction_queue: asyncio.Queue[_PredictionWork] = asyncio.Queue(maxsize=1)
         self.prediction_task: asyncio.Task[None] | None = None
-        self.prediction_in_flight = False
         self.pending_prediction_count = 0
         self.predictions_settled = asyncio.Event()
         self.predictions_settled.set()
@@ -399,6 +389,7 @@ class CompositeSpeechUnderstandingSession:
             partial_text = await self.transcription.add_audio(chunk)
         except Exception:
             await self._stop_optional_predictor()
+            self._discard_pending_predictions()
             raise
         if partial_text:
             previous_revision = self.transcript_revisions.latest
@@ -437,8 +428,7 @@ class CompositeSpeechUnderstandingSession:
             raise RuntimeError("Cannot finalize a closed speech-understanding session.")
         finalized_turn_epoch = self._turn_epoch
         await self._stop_optional_predictor()
-        while not self.prediction_queue.empty():
-            self.prediction_queue.get_nowait()
+        self._discard_pending_predictions()
         final_text = await self.transcription.finish()
         latest_revision = self.transcript_revisions.latest
         latest_chunk = self.latest_chunk
@@ -481,6 +471,7 @@ class CompositeSpeechUnderstandingSession:
         optional_error: Exception | None = None
         try:
             await self._stop_optional_predictor()
+            self._discard_pending_predictions()
         except Exception as error:
             optional_error = error
         try:
@@ -515,17 +506,24 @@ class CompositeSpeechUnderstandingSession:
             raise ValueError("Captured audio sample ranges must not overlap.")
 
     def _enqueue_prediction(self, chunk: CapturedAudioChunk) -> None:
-        if self.prediction_source is None or self.optional_predictor_degraded:
+        if self.prediction_source is None:
             return
-        if not self.interaction_observation_started and chunk.silero_evidence.is_speech:
-            self.interaction_observation_started = True
-            if not chunk.playback_condition.assistant_audible:
-                return
         observation = TurnPredictionObservation(
             audio_chunk=chunk,
             transcript_revision=self.transcript_revisions.latest,
         )
-        if not self.prediction_source.prediction_expected(observation):
+        prediction_expected = self.prediction_source.prediction_expected(observation)
+        if self.optional_predictor_degraded:
+            if prediction_expected:
+                self.prediction_source.discard_prediction(observation)
+            return
+        if not self.interaction_observation_started and chunk.silero_evidence.is_speech:
+            self.interaction_observation_started = True
+            if not chunk.playback_condition.assistant_audible:
+                if prediction_expected:
+                    self.prediction_source.discard_prediction(observation)
+                return
+        if not prediction_expected:
             return
         if self.prediction_task is None:
             self.prediction_task = asyncio.create_task(self._run_optional_predictor())
@@ -534,37 +532,9 @@ class CompositeSpeechUnderstandingSession:
             transcript_revision=observation.transcript_revision,
         )
         if self.prediction_queue.full():
-            dropped_observation_count = (
-                self.prediction_queue.qsize() + int(self.prediction_in_flight) + 1
-            )
-            self.dropped_prediction_observations += dropped_observation_count
-            self.optional_predictor_degraded = True
-            while not self.prediction_queue.empty():
-                self.prediction_queue.get_nowait()
-            self.pending_prediction_count = int(self.prediction_in_flight)
-            if self.pending_prediction_count == 0:
-                self.predictions_settled.set()
-            if self.prediction_task is not None and not self.prediction_task.done():
-                self.prediction_task.cancel()
-            self.prediction_in_flight = False
-            self.event_queue.put_nowait(
-                SpeechUnderstandingDegradedEvent(
-                    stamp=self._chunk_stamp(
-                        chunk,
-                        source=CausalSource.TURN_ADAPTER,
-                        model_name=None,
-                        model_revision=None,
-                        conditioned_transcript_revision=None,
-                    ),
-                    component=SpeechUnderstandingComponent.STANDALONE_TURN_DETECTOR,
-                    reason=(
-                        "Optional detector queue overflowed; continuity was lost and the detector "
-                        "was disabled for the conversation."
-                    ),
-                    dropped_observation_count=self.dropped_prediction_observations,
-                )
-            )
-            return
+            superseded_work = self.prediction_queue.get_nowait()
+            self._discard_prediction_work(superseded_work)
+            self.pending_prediction_count -= 1
         self.prediction_queue.put_nowait(work)
         self.pending_prediction_count += 1
         self.predictions_settled.clear()
@@ -583,13 +553,10 @@ class CompositeSpeechUnderstandingSession:
         assert self.prediction_source is not None
         while True:
             work = await self.prediction_queue.get()
-            if work is None:
-                return
             observation = TurnPredictionObservation(
                 audio_chunk=work.chunk,
                 transcript_revision=work.transcript_revision,
             )
-            self.prediction_in_flight = True
             try:
                 prediction = await self.prediction_source.predict(observation)
                 if self.optional_predictor_degraded:
@@ -619,6 +586,8 @@ class CompositeSpeechUnderstandingSession:
                 raise
             except Exception as error:
                 self.optional_predictor_degraded = True
+                self.dropped_prediction_observations += self.prediction_queue.qsize()
+                self._discard_pending_predictions()
                 if self._is_current(work.chunk):
                     self.event_queue.put_nowait(
                         SpeechUnderstandingDegradedEvent(
@@ -634,11 +603,8 @@ class CompositeSpeechUnderstandingSession:
                             dropped_observation_count=self.dropped_prediction_observations,
                         )
                     )
-                while not self.prediction_queue.empty():
-                    self.prediction_queue.get_nowait()
                 return
             finally:
-                self.prediction_in_flight = False
                 self.pending_prediction_count -= 1
                 if self.pending_prediction_count == 0:
                     self.predictions_settled.set()
@@ -652,6 +618,23 @@ class CompositeSpeechUnderstandingSession:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         self.prediction_task = None
+
+    def _discard_pending_predictions(self) -> None:
+        while not self.prediction_queue.empty():
+            work = self.prediction_queue.get_nowait()
+            self._discard_prediction_work(work)
+            self.pending_prediction_count -= 1
+        if self.pending_prediction_count == 0:
+            self.predictions_settled.set()
+
+    def _discard_prediction_work(self, work: _PredictionWork) -> None:
+        assert self.prediction_source is not None
+        self.prediction_source.discard_prediction(
+            TurnPredictionObservation(
+                audio_chunk=work.chunk,
+                transcript_revision=work.transcript_revision,
+            )
+        )
 
     def _validate_prediction(
         self,
