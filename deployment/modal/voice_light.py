@@ -215,7 +215,7 @@ image = (
 demo_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("fastapi==0.139.0")
-    .add_local_python_source("deployment")
+    .add_local_python_source("deployment", "app")
     .add_local_dir(DEMO_WEB_ROOT, remote_path=str(REMOTE_DEMO_WEB_ROOT))
 )
 
