@@ -14,11 +14,15 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
         progress_response = client.get("/pages/voice-agent/spoken-text-progress.mjs")
         capture_worklet_response = client.get("/pages/voice-agent/capture-worklet.js")
         worklet_response = client.get("/pages/voice-agent/playback-worklet.js")
+        icon_response = client.get("/pages/voice-agent/icon.svg")
 
     assert page_response.status_code == 200
     assert progress_response.status_code == 200
     assert configuration_response.status_code == 200
     assert evidence_response.status_code == 200
+    assert icon_response.status_code == 200
+    assert icon_response.headers["content-type"].startswith("image/svg+xml")
+    assert 'rel="icon" href="./icon.svg"' in page_response.text
     assert 'id="conversation-history"' in page_response.text
     assert 'id="conversation-empty"' in page_response.text
     assert 'id="recording-player"' in page_response.text
