@@ -17,6 +17,10 @@ from app.compute.voice.tts_text import normalize_synthesis_word
         ("don't", "don't"),
         ("Leo’s", "Leo’s"),
         ("25–35", "25–35"),
+        ("Great! 😄", "Great! "),
+        ("weather☀️", "weather"),
+        ("flag🇬🇧", "flag"),
+        ("20°C", "20°C"),
     ],
 )
 def test_normalize_synthesis_word_removes_speech_formatting(
@@ -34,5 +38,11 @@ def test_normalize_synthesis_word_removes_speech_formatting(
 
 def test_normalize_synthesis_word_drops_formatting_only_token() -> None:
     word = SynthesisWord(text="***", text_start=4, text_end=7)
+
+    assert normalize_synthesis_word(word) is None
+
+
+def test_normalize_synthesis_word_drops_emoji_only_token() -> None:
+    word = SynthesisWord(text="👩🏽‍💻", text_start=4, text_end=8)
 
     assert normalize_synthesis_word(word) is None
