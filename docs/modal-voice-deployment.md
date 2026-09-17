@@ -773,9 +773,11 @@ Nemotron and Qwen on GPU 0 and reserves GPU 1 for Kyutai.
 The final microphone run on 2026-09-12 completed eight of eight turns, including live weather and
 time tool use and ordinary conversational follow-ups. The tester reported that background speech
 and interaction actions behaved correctly and considered the result ready to wrap. The trace's
-`end→PCM` values were 593, 597, 616, 660, 694, 705, 1,318, and 1,451 ms: median 677 ms, mean
-829 ms, and six of eight turns below 800 ms. Median endpoint decision, LLM first-word, TTS
-first-PCM, and browser playback measurements were 508, 268, 453, and 109 ms respectively.
+final-VAD-endpoint-to-first-server-audio values were 593, 597, 616, 660, 694, 705, 1,318, and
+1,451 ms: median 677 ms, mean 829 ms, and six of eight turns below 800 ms. The paired
+final-VAD-endpoint-to-browser-render values were 698, 717, 725, 753, 812, 823, 1,459, and 1,560 ms:
+median 783 ms and mean 943 ms. Median endpoint decision, LLM first-word, TTS first-PCM, and
+first-server-audio-to-browser-render measurements were 508, 268, 453, and 109 ms respectively.
 
 The two latency outliers were the turns that did not promote prepared speculative work; both still
 completed normally. No turn was dropped and no playback stall was reported. This is one human
@@ -796,8 +798,9 @@ separately timestamped duck, cancellation, or backchannel-resume actions.
 - A live human must provide microphone speech and judge audible output. Automated and agent-run
   checks cannot honestly certify microphone capture, speaker audibility, natural backchannel, or
   interruption perception.
-- The final eight-turn human acceptance trace measured `end→PCM` at 593--1,451 ms (677 ms median,
-  829 ms mean), with six turns below 800 ms. It remains one small acceptance trace rather than a
+- The final eight-turn human acceptance trace measured final VAD endpoint to first server audio at
+  593--1,451 ms (677 ms median, 829 ms mean), with six turns below 800 ms. The paired median to
+  browser render was 783 ms. It remains one small acceptance trace rather than a
   latency distribution, and controlled live duck, cancellation, and resume measurements remain to
   be recorded on the final deployment.
 - The Transformers conversation worker now logs the exact input prompt-token count, but conversation

@@ -6,7 +6,7 @@ their behavior, integrate the useful pieces into a full-duplex cascade, and depl
 scale-to-zero GPU compute.
 
 [Try the live demo](https://voice.bertil-braun.de) ·
-[Read the technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.0/voice-light-technical-report.pdf) ·
+[Read the technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.1/voice-light-technical-report.pdf) ·
 [Read the deployment record](docs/modal-voice-deployment.md) ·
 [Explore the models and datasets](#published-artifacts)
 
@@ -112,18 +112,19 @@ made from synthetic interaction validation.
 ### Public voice demo
 
 The final human microphone acceptance run on 12 September 2026 completed eight of eight turns,
-including live tool use and conversational follow-ups. Six turns reached browser PCM in under
-800 ms after speech end.
+including live tool use and conversational follow-ups. Six turns sent their first server audio
+packet within 800 ms of the final VAD endpoint.
 
 | Metric | Observed value |
 | --- | ---: |
-| Speech end → browser PCM, median | 677 ms |
-| Speech end → browser PCM, mean | 829 ms |
-| Speech end → browser PCM, range | 593–1,451 ms |
+| Final VAD endpoint → first server audio, median | 677 ms |
+| Final VAD endpoint → first server audio, mean | 829 ms |
+| Final VAD endpoint → first server audio, range | 593–1,451 ms |
 | Endpoint decision, median | 508 ms |
 | LLM first word, median | 268 ms |
 | TTS first PCM, median | 453 ms |
-| Browser playback, median | 109 ms |
+| First server audio → browser render, median | 109 ms |
+| Final VAD endpoint → browser render, median | 783 ms |
 
 This is one human session, not a controlled latency distribution. The final deployment record
 contains the full smoke-test history, failure analysis, and measurement definitions.
@@ -195,6 +196,7 @@ through Modal secrets and are never committed.
 - The public demo is single-session and English-first. Microphone, network, browser scheduling, and
   Modal host variation all affect perceived latency.
 
-The 11-page [Voice Light technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.0/voice-light-technical-report.pdf)
+The [Voice Light technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.1/voice-light-technical-report.pdf)
 connects the data, training, evaluation, integration, deployment, and final human acceptance record
-in one narrative. Its LaTeX source is in [`docs/technical-report`](docs/technical-report).
+in one narrative. Its LaTeX source and build instructions are in
+[`docs/technical-report`](docs/technical-report).

@@ -1,6 +1,6 @@
-\documentclass[10pt,twoside]{article}
+\documentclass[10pt,twocolumn]{article}
 
-\usepackage[letterpaper,margin=0.76in,headheight=20pt]{geometry}
+\usepackage[a4paper,top=18mm,bottom=20mm,left=16mm,right=16mm,columnsep=7mm]{geometry}
 \usepackage{newtxtext,newtxmath}
 \usepackage{microtype}
 \usepackage{xcolor}
@@ -14,11 +14,12 @@
 \pgfplotsset{compat=1.18}
 \usepackage{hyperref}
 \usepackage{xurl}
-\usepackage{fancyhdr}
 \usepackage{titlesec}
 \usepackage{enumitem}
 \usepackage{caption}
 \usepackage{float}
+\usepackage{balance}
+\usepackage{needspace}
 
 \definecolor{vlteal}{HTML}{16615A}
 \definecolor{vltealdark}{HTML}{0E4742}
@@ -39,99 +40,55 @@
   pdfauthor={Bertil Braun}
 }
 
-\pagestyle{fancy}
-\fancyhf{}
-\fancyhead[LE,LO]{\small\color{vlmuted}VOICE-LIGHT TECHNICAL REPORT}
-\fancyhead[RE,RO]{\small\color{vlmuted}SEPTEMBER 2026}
-\fancyfoot[C]{\small\color{vlmuted}\thepage}
-\renewcommand{\headrulewidth}{0.3pt}
-\renewcommand{\headrule}{\hbox to\headwidth{\color{vlrule}\leaders\hrule height \headrulewidth\hfill}}
-\fancypagestyle{plain}{%
-  \fancyhf{}
-  \fancyhead[LE,LO]{\small\color{vlmuted}VOICE-LIGHT TECHNICAL REPORT}
-  \fancyhead[RE,RO]{\small\color{vlmuted}SEPTEMBER 2026}
-  \fancyfoot[C]{\small\color{vlmuted}\thepage}
-  \renewcommand{\headrulewidth}{0.3pt}}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.55em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{1.15em}{0.45em}
+\titlespacing*{\subsection}{0pt}{0.9em}{0.3em}
 
-\titleformat{\section}{\Large\bfseries\color{vltealdark}}{\thesection}{0.6em}{}
-\titleformat{\subsection}{\large\bfseries\color{vltext}}{\thesubsection}{0.55em}{}
-\titlespacing*{\section}{0pt}{1.4em}{0.55em}
-\titlespacing*{\subsection}{0pt}{1.1em}{0.35em}
-
-\setlength{\parindent}{0pt}
-\setlength{\parskip}{0.48em}
-\setlist[itemize]{leftmargin=1.3em,itemsep=0.18em,topsep=0.3em}
-\setlist[enumerate]{leftmargin=1.45em,itemsep=0.25em,topsep=0.3em}
-\DeclareCaptionFont{vlmuted}{\color{vlmuted}}
-\DeclareCaptionFont{vltealdark}{\color{vltealdark}}
-\captionsetup{font={small,vlmuted},labelfont={bf,vltealdark}}
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0pt}
+\setlength{\columnsep}{7mm}
+\setlist[itemize]{leftmargin=1.25em,itemsep=0.08em,topsep=0.25em}
+\setlist[enumerate]{leftmargin=1.35em,itemsep=0.12em,topsep=0.25em}
+\captionsetup{font=small,labelfont=bf}
 
 \newcommand{\VoiceLight}{\textsc{Voice-Light}}
 \newcommand{\code}[1]{\texttt{#1}}
-\newcommand{\keyresult}[2]{%
-  \begin{minipage}[t]{0.235\textwidth}
-    \centering
-    {\Large\bfseries\color{vlteal}#1}\par
-    \vspace{0.15em}
-    {\small\color{vlmuted}#2}
-  \end{minipage}}
+\title{\textbf{Voice-Light: From Conversational Data to a\\Deployed Streaming Voice Agent}}
+\author{Bertil Braun\\
+  \small \href{mailto:contact@bertil-braun.de}{contact@bertil-braun.de}}
+\date{}
 
 \begin{document}
 
-\begin{titlepage}
-  \pagecolor{vlpaper}
-  \vspace*{0.6in}
-  {\color{vlteal}\rule{\textwidth}{5pt}}\\[0.55in]
-  {\fontsize{18}{20}\selectfont\bfseries\color{vlteal}VOICE-LIGHT}\\[0.22in]
-  {\fontsize{34}{39}\selectfont\bfseries\color{vltext}
-    From conversational data to a\\deployed streaming voice agent\par}
-  \vspace{0.35in}
-  {\Large\color{vlmuted}
-    Synthetic generation, automatic annotation, causal turn-taking,
-    latency engineering, and scale-to-zero deployment\par}
-  \vfill
-  \begin{tikzpicture}[x=1cm,y=1cm]
-    \draw[vlrule,line width=1.2pt] (0,0) -- (16.2,0);
-    \foreach \x/\h in {0.1/0.35,0.45/0.65,0.8/0.28,1.15/0.9,1.5/0.42,1.85/1.2,2.2/0.55,2.55/0.82,2.9/0.3,3.25/1.05,3.6/0.52,3.95/0.72,4.3/0.4,4.65/0.95,5/0.3,5.35/1.15,5.7/0.5,6.05/0.8,6.4/0.35,6.75/1.05,7.1/0.48,7.45/0.7,7.8/0.32,8.15/0.98,8.5/0.45,8.85/1.18,9.2/0.52,9.55/0.75,9.9/0.3,10.25/1.0,10.6/0.47,10.95/0.68,11.3/0.38,11.65/1.1,12/0.52,12.35/0.88,12.7/0.33,13.05/1.0,13.4/0.46,13.75/0.76,14.1/0.3,14.45/1.12,14.8/0.5,15.15/0.82,15.5/0.35,15.85/0.62}
-      \draw[vlteal,line width=2.1pt,line cap=round] (\x,-\h) -- (\x,\h);
-  \end{tikzpicture}
-  \vfill
-  {\large\bfseries Bertil Braun}\par
-  {\color{vlmuted}Technical report, version 1.0 \textbullet\ September 2026}\par
-  \vspace{0.25in}
-  \href{https://voice.bertil-braun.de}{voice.bertil-braun.de}\quad
-  \href{https://github.com/BertilBraun/Voice-Light}{github.com/BertilBraun/Voice-Light}
-  \vspace{0.4in}
-\end{titlepage}
-\nopagecolor
-
+\twocolumn[
+\begin{@twocolumnfalse}
+\maketitle
+\vspace{-1.8em}
 \begin{abstract}
 \VoiceLight{} is an end-to-end investigation of natural, low-latency interaction in a cascaded
-voice agent. The project covers structured synthetic conversation generation, automatic
-enrichment of human conversational audio, fine-tuning a language model for spoken tool use,
-training a causal adapter over a streaming speech encoder, locked offline evaluation, full-duplex
-playback control, and a public two-GPU Modal deployment. The strongest result is the complete,
-measured development loop rather than a claim that every learned component surpassed its
-baseline. A Qwen3-1.7B LoRA substantially improved tool protocol behavior on its synthetic
-holdout, yet a stronger Qwen3-4B checkpoint was retained for production quality. The turn adapter
-learned useful causal interaction evidence, yet its completion policy did not beat Silero or
-LiveKit timing baselines on the locked real-conversation benchmark; production therefore uses a
-hybrid controller. In a final eight-turn microphone session, every turn completed and six reached
-browser PCM within 800 ms of speech end, with a 677 ms median. The report documents the positive
-results, reversals, latency work, and limitations that produced the deployed system.
+voice agent. The project covers structured synthetic conversation generation, automated
+preparation and annotation of licensed two-speaker audio, fine-tuning a language model for spoken
+tool use, training a causal adapter over a streaming speech encoder, locked offline evaluation,
+full-duplex playback control, and a public two-GPU Modal deployment. Its primary engineering
+contribution is a measured development loop rather than a claim that every learned component
+surpassed its baseline. A Qwen3-1.7B LoRA substantially improved tool protocol behavior on its synthetic
+holdout, yet Qwen3-4B was favored for conversational quality in live canary review. The turn
+adapter produced causal interaction evidence, yet an earlier locked completion checkpoint did not
+beat Silero or LiveKit timing policies on the real-conversation benchmark; production therefore
+uses a hybrid controller. In a final microphone session, the first server audio packet arrived a
+median of 677 ms after the final VAD endpoint, with most turns below 800 ms.
+The report documents the positive results, reversals, latency work, and limitations that produced
+the deployed system.
 \end{abstract}
+\vspace{0.45em}
+\noindent\textbf{Keywords:} streaming voice agents, turn-taking, synthetic data, causal streaming
+inference, speech synthesis, tool use, deployment
+\vspace{1.0em}
+\end{@twocolumnfalse}
+]
 
-\begin{center}
-  \keyresult{3,999}{typed synthetic tool-use conversations}\hfill
-  \keyresult{183k}{approximately, turn-adapter parameters}\hfill
-  \keyresult{677 ms}{median speech end to browser PCM}\hfill
-  \keyresult{8/8}{completed final microphone turns}
-\end{center}
-
-\vspace{0.5em}
-\tableofcontents
-
-\section{Problem and design goals}
+\section{Introduction}
 
 A conventional voice assistant is often drawn as a serial pipeline: automatic speech recognition
 (ASR), then a language model, then text-to-speech (TTS). That abstraction hides the interaction
@@ -140,6 +97,10 @@ within-turn hesitation; react immediately when speech begins during playback wit
 every short acknowledgment; ensure canceled audio cannot reappear; and distinguish generated text
 from speech that actually reached the listener.
 
+Here, \emph{full duplex} means that microphone ingestion continues during assistant playback,
+playback can react reversibly to detected user speech, and generation, synthesis, and acknowledged
+audio are managed concurrently.
+
 \VoiceLight{} began with an aspirational 250--600 ms speech-end-to-first-audio budget. The budget
 was deliberately decomposed into endpoint confirmation, language-model response formation, speech
 synthesis, transport, and browser playback. These stages overlap in the final system, so their
@@ -147,7 +108,7 @@ individual medians must not be added. The project instead uses monotonic timesta
 sample positions to expose both critical-path latency and private work completed before a turn is
 committed.
 
-The design goals were:
+The investigation was organized around the following system requirements:
 
 \begin{itemize}
   \item stream audio, ASR, text generation, synthesis, and playback rather than batch each stage;
@@ -167,9 +128,14 @@ can be complementary \cite{acousticllm}. \VoiceLight{} explores a narrower engin
 how much of that interaction evidence can be attached to an existing streaming ASR backbone and
 then used safely inside a real playback controller?
 
-\section{One project, two data pipelines}
+\section{Data generation and preparation}
 
-\begin{figure}[H]
+The project produced two model-training branches. The language-model branch generated typed
+spoken-tool conversations for a Qwen adapter. The turn-taking branch combined synthetic interaction
+timelines with automatically prepared human conversations for a causal speech adapter. Figure
+\ref{fig:pipeline} shows where the branches remain separate and where they meet the deployed system.
+
+\begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
   node distance=0.55cm and 0.65cm,
@@ -193,21 +159,22 @@ then used safely inside a real playback controller?
   \draw[arrow] (synthdata.east) -- ++(0.35,0) |- (turn.west);
   \draw[arrow] (annotation) -- (turn);
   \draw[arrow] (turn) -- (deploy);
-  \draw[arrow] (lora.east) -- ++(0.4,0) |- (deploy.north);
+  \draw[arrow] (lora.east) -- ++(0.3,0) |- ([xshift=-0.25cm,yshift=0.18cm]deploy.west) -- ([yshift=0.18cm]deploy.west);
 \end{tikzpicture}
-\caption{The report follows two training branches into one evaluated deployment. Synthetic and
-human evidence remain distinguishable throughout the pipeline.}
+\caption{Two model-training branches feed one evaluated deployment. The turn-taking branch combines
+synthetic interaction timelines with separately prepared human evidence; the language-model branch
+uses synthetic typed conversations.}
 \label{fig:pipeline}
-\end{figure}
+\end{figure*}
 
 \subsection{Synthetic spoken tool use}
 
 Spoken tool use was treated as a data and protocol problem rather than a prompt-only feature. A
 pinned \code{Qwen3.6-27B-FP8} teacher generated provider-neutral records for natural
 conversation, drafting, brainstorming, search, calculation, time queries, sequential calls, and
-correction or recovery. The production run planned 4,000 scenarios and accepted 3,999; one request
-ended in an HTTP read timeout. The resulting corpus contains 11,810 user messages, 15,308 assistant
+correction or recovery. The published corpus contains 3,999 conversations, 11,810 user messages, 15,308 assistant
 messages, and 3,498 structured calls across \code{search}, \code{calculate}, and \code{get\_time}.
+It is available through the project collection on Hugging Face \cite{tooldata,hfprofile}.
 
 Generation used a causal conversation state machine. The teacher produced a user turn and then
 either assistant speech or speech followed by a typed call. The controller executed or synthesized
@@ -239,13 +206,13 @@ noise. This prevents future assistant state or clean synthetic timing from leaki
 adapter.
 
 The accepted rendering route used Qwen VoiceDesign references to condition CosyVoice 3 zero-shot
-voices. Qwen Base ICL cloning was rejected for robotic speech, while IndexTTS 2.5, Chatterbox, and
+voices \cite{cosyvoice}. Qwen Base ICL cloning was rejected for robotic speech, while IndexTTS 2.5, Chatterbox, and
 VoXtream were rejected in listening gates. Each user unit was rendered and trimmed independently;
 the compiler then measured its active speech, assembled the final timeline, and rasterized
 20-second views into 250 frames at 80 ms. A planned pause became HOLD supervision only if the
 rendered unit contained at least 500 ms of silence followed by resumed speech.
 
-The public synthetic repository stores lossless speech units and reconstruction metadata rather
+The public synthetic repository \cite{turndata,hfprofile} stores lossless speech units and reconstruction metadata rather
 than duplicating every composed waveform. Plans, voice provenance, trim measurements, composition
 seeds, split assignments, and checksums allow conversation audio and training crops to be rebuilt.
 The retained V4 and V5 manifests contain 1,092 and 1,097 timelines, approximately 21.84 and 21.80
@@ -267,18 +234,19 @@ conversation regions, and quality flags. Supplied Mundo TurnBench human annotati
 independent evidence source rather than being copied into model-output fields to manufacture
 agreement.
 
-The prepared sources included eight accepted MagicHub conversations (about 2.77 hours) and 37
-accepted Mundo TurnBench conversations (about 7.31 hours); a silent TurnBench recording was
-excluded. Splits are conversation-disjoint. The first manual plumbing gate reviewed 12
-dataset-stratified recordings and retained its final items after specific exclusions. It was not a
-comprehensive audit of every split, category, or rejection reason, and the report does not present
-it as one.
+The completed preparation pass accepted eight MagicHub conversations (about 2.77 hours)
+\cite{magichub} and 37 Mundo TurnBench conversations (about 7.31 hours) \cite{mundo}; a silent
+TurnBench recording was excluded.
+These additions joined previously prepared authorized conversational material. The locked corpus
+manifest records 107 accepted conversations totaling 36.3 hours across conversation-disjoint train,
+validation, and test splits. A manual plumbing gate reviewed 12 dataset-stratified recordings and
+applied targeted exclusions; broader corpus quality was tracked through the automated evidence pipeline.
 
 \section{Models and training}
 
 \subsection{A language adapter for spoken tools}
 
-The tool-use experiment fine-tuned \code{Qwen/Qwen3-1.7B} with a BF16 rank-16 LoRA. Two source
+The tool-use experiment fine-tuned \code{Qwen/Qwen3-1.7B} \cite{qwen3} with a BF16 rank-16 LoRA. Two source
 records from each combination of eight behavior families and five speech styles formed a balanced
 80-record validation split; the remaining 3,919 records were training data. Across 16 deterministic
 passes, every record appeared once per pass. Intact short segments were regrouped into histories
@@ -295,16 +263,17 @@ in 47 minutes on an RTX 4090.
 Validation loss reached its minimum after approximately four logical passes and then increased,
 while free-generation task metrics continued to improve. This mismatch made validation loss an
 unsafe sole checkpoint selector. It also exposed the narrower limitation: learning the synthetic
-protocol did not imply improved general reasoning. A later production canary favored the stronger
-Qwen3-4B Instruct checkpoint, which is what the public deployment uses. The LoRA remains a
-published, reproducible training result rather than the deployed conversation model.
+protocol did not imply improved general reasoning. A later live canary favored Qwen3-4B Instruct
+for conversational quality and tool routing \cite{qwen4}; this was an integration review, not a controlled
+quantitative comparison. The public deployment uses that checkpoint. The LoRA remains a published,
+reproducible training result \cite{toollora,toolmerged} rather than the deployed conversation model.
 
 \subsection{A causal adapter on shared Nemotron features}
 
 The turn-taking model attaches approximately 183,000 trainable parameters to the frozen
-\code{Nemotron Speech Streaming 0.6B} encoder. Nemotron is a cache-aware streaming
+\code{Nemotron Speech Streaming 0.6B} encoder \cite{nemotron}. Nemotron is a cache-aware streaming
 FastConformer-RNNT. Its activation caches allow new non-overlapping chunks to reuse prior work
-\cite{stateful,fastconformer}. This property made it possible to share one streaming backbone
+\cite{fastconformer,stateful}. This property made it possible to share one streaming backbone
 between ASR and turn inference rather than re-encoding a rolling waveform or loading a second
 0.6-billion-parameter model.
 
@@ -322,30 +291,54 @@ human boundaries: 1,038 HOLD and 846 EOT. The 750-step run improved human AUROC 
 risk-constrained EOT recall from 47.48\% to 65.04\%, while false cutoffs moved from 4.48\% to
 3.73\%. Human p95 commitment latency remained 2.0 seconds.
 
-The final \code{adapter-best.pt} is step 750, pinned to Nemotron revision
-\code{ebe59e5a817142986528bbbee5dba8db7b38ed50}, one lookahead token, 80 ms encoder frames, and the
-four taps above. Human validation selected it; synthetic validation could not. At runtime, forward
+The final \code{adapter-best.pt} is step 750, with the pinned Nemotron revision listed in
+Table~\ref{tab:repro}, one lookahead token, 80 ms encoder frames, and the four taps above. Human
+validation selected it; synthetic validation could not. At runtime, forward
 hooks capture the exact features produced by persistent streaming ASR. A bounded latest-value queue
 supersedes stale adapter work, and loading or inference failure degrades the predictor without
 stopping ASR or the voice session.
 
-\section{Evaluation changed the product}
+Table~\ref{tab:lineage} separates the checkpoint roles. In particular, the locked benchmark did
+not evaluate the deployed human-fine-tuned artifact.
 
-The project uses separate evaluation contracts for separate claims. Tool-use generation measures
-behavior on held-out synthetic conversation states. The historical V1 turn benchmark evaluates
-future silence through the original yield target and locks a validation-selected policy before
-opening test. V2 evaluates semantic completion at speech boundaries; it stopped at validation after
-no detector met the predefined deployment gate. Deployment acceptance is a human microphone smoke
-test, not a substitute for a controlled conversational study.
-
-\subsection{Tool-use proof of concept}
-
-\begin{table}[H]
+\begin{table}[t]
 \centering
-\caption{Original balanced synthetic holdout for the Qwen3-1.7B LoRA.}
-\begin{tabularx}{0.82\textwidth}{Xrr}
+\caption{Turn-adapter checkpoint lineage. Parenthesized values are training steps. ``Validation''
+and ``test'' name distinct locked inventories; results must not be transferred between artifacts.}
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}p{3.2cm}X@{}}
 \toprule
-Behavior & Base & Final adapter \\
+Checkpoint (step) & Role and evidence \\
+\midrule
+Synthetic (2,250) & Pretraining seed; synthetic and human validation \\
+Historical (3,500) & V1/V2 benchmark; locked V1 test and V2 validation \\
+Human fine-tune (750) & Deployed adapter; human validation and runtime \\
+Completion challenger (625) & Later experiment; V2 validation only \\
+\bottomrule
+\end{tabularx}
+\label{tab:lineage}
+\end{table}
+
+\section{Evaluation and design decisions}
+
+The project uses separate evaluation protocols for separate claims. Tool-use evaluation measures
+behavior on held-out synthetic conversation states. Turn completion has two non-comparable
+protocols: the original V1 benchmark scores future silence under a yield-oriented target and opens a
+locked test split only after policy selection on validation, whereas V2 scores semantic completion
+at speech boundaries. V2 stopped at validation because no detector met its predefined deployment
+gate, so its test split remained sealed. Deployment acceptance is a human microphone smoke test,
+not a substitute for a controlled conversational study.
+
+\subsection{Synthetic tool-use evaluation}
+
+\begin{table}[t]
+\centering
+\caption{Original balanced synthetic holdout for Qwen3-1.7B. Entries are percentages of applicable
+states; higher is better. ``Fine-tuned'' is the selected LoRA checkpoint.}
+\scriptsize
+\begin{tabularx}{\columnwidth}{Xrr}
+\toprule
+Behavior & Base & Fine-tuned \\
 \midrule
 Correct tool decision & 80.0\% & \textbf{95.2\%} \\
 Exact tool name & 78.6\% & \textbf{94.3\%} \\
@@ -358,17 +351,16 @@ Valid post-tool continuation & 98.3\% & \textbf{100.0\%} \\
 \label{tab:tool}
 \end{table}
 
-Across three decoding seeds, the final adapter emitted 200 of 210 expected calls, selected the
-exact tool for 198, produced 200 schema-valid required calls, avoided a tool in all 90 no-tool
-states, and continued after all 180 tool results. The result demonstrates acquisition of the
-generator's conversational protocol. It does not establish factual accuracy, robust web search, or
-general tool intelligence because evaluation points share the synthetic generator and schema.
+Across three decoding seeds, the evaluation repeated generation over a fixed set of seeded states;
+it did not create independent tasks. The result demonstrates acquisition of the generator's
+conversational protocol. It does not establish factual accuracy, robust web search, or general tool
+intelligence because evaluation points share the synthetic generator and schema.
 
-\begin{figure}[H]
+\begin{figure}[t]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=0.84\textwidth,height=5.0cm,
+  width=\columnwidth,height=4.2cm,
   xlabel={Logical training pass},ylabel={Validation loss},
   xmin=0,xmax=16.5,ymin=0.65,ymax=1.22,
   grid=major,grid style={vlrule!55},
@@ -381,7 +373,7 @@ general tool intelligence because evaluation points share the synthetic generato
  (6,0.802) (7,0.838) (8,0.873) (9,0.914) (10,0.949) (11,0.986)
  (12,1.021) (13,1.061) (14,1.098) (15,1.132) (16,1.1660)};
 \addplot[color=vlgold,dashed] coordinates {(4,0.65) (4,1.22)};
-\node[anchor=south west,font=\small,color=vlgold] at (axis cs:4.15,0.78) {loss minimum};
+\node[anchor=south west,font=\small,color=vlgold] at (axis cs:4.25,0.91) {loss minimum};
 \end{axis}
 \end{tikzpicture}
 \caption{Teacher-forced validation loss bottomed early, then rose. Behavioral checkpoint
@@ -389,7 +381,7 @@ selection remained necessary; improving task behavior does not make the overfitt
 \label{fig:loss}
 \end{figure}
 
-\subsection{Locked turn-detection benchmark}
+\subsection{Causal turn-completion evaluation}
 
 The locked V1 test contains 1,673 causal silence candidates from 11 conversations, including only
 37 HOLD cases. Threshold, minimum delay, and timeout were selected on validation and frozen before
@@ -398,35 +390,44 @@ low false-cutoff rate but crossed its learned threshold on only 205 of 1,636 EOT
 therefore used the 800 ms timeout, and the learned policy did not beat the Silero or LiveKit timing
 baselines.
 
+The detectors do not score after identical amounts of silence. Voice-Light emits its boundary score
+at 80 ms, Smart Turn at 240 ms, LiveKit at 320 ms, and Silero updates a silence proxy on 32 ms
+chunks. Comparisons therefore evaluate complete causal policies at their native gates rather than
+isolating model quality under identical acoustic evidence. The implementations are pinned to
+Silero VAD 6.2.1, Pipecat Smart Turn v3.2, and LiveKit v1-mini \cite{silero,smartturn,livekit}.
+
 \begin{table}[H]
 \centering
-\caption{Historical locked V1 real-conversation test. Smart Turn has known source-overlap risk and
-is shown only as contextual evidence.}
-\small
-\begin{tabularx}{\textwidth}{Xrrrr}
+\caption{Locked real-conversation test under the original V1 yield-target protocol. False cutoff is
+the fraction of HOLD candidates incorrectly committed as end-of-turn; EOT recall is the fraction of
+completed turns committed before timeout. Smart Turn has known source-overlap risk and is included
+only as contextual evidence. Mean latency includes timeout actions and is capped by the earlier of
+the policy timeout and the observed opportunity end. VL is Voice Light step 3,500; policy values
+are threshold, minimum delay, and timeout.}
+\scriptsize
+\setlength{\tabcolsep}{3.2pt}
+\begin{tabularx}{\columnwidth}{Xrrrr}
 \toprule
-Detector & False cutoff & EOT recall & Mean latency & Policy \\
+Metric & VL & Silero & Smart & LiveKit \\
 \midrule
-Voice Light step 3,500 & 2.70\% (1/37) & 12.53\% & 770 ms & 0.90 / 560 / 800 \\
-Silero VAD 6.2.1 & 2.70\% (1/37) & \textbf{95.60\%} & 656 ms & 0.05 / 640 / 800 \\
-Smart Turn 3.2 & 13.51\% (5/37) & 20.72\% & 684 ms & 0.95 / 80 / 800 \\
-LiveKit v1-mini & 2.70\% (1/37) & 91.50\% & \textbf{654 ms} & 0.15 / 640 / 800 \\
+False cutoff & 2.70\% & 2.70\% & 13.51\% & 2.70\% \\
+HOLD errors ($n=37$) & 1 & 1 & 5 & 1 \\
+EOT recall & 12.53\% & \textbf{95.60\%} & 20.72\% & 91.50\% \\
+Mean latency & 770 ms & 656 ms & 684 ms & \textbf{654 ms} \\
+Threshold & 0.90 & 0.05 & 0.95 & 0.15 \\
+Minimum delay & 560 ms & 640 ms & 80 ms & 640 ms \\
+Timeout & 800 ms & 800 ms & 800 ms & 800 ms \\
 \bottomrule
 \end{tabularx}
 \label{tab:v1}
 \end{table}
 
-The V2 semantic-completion validation set retained 134 HOLD and 655 EOT examples after ignoring
-216 ambiguous cases. Voice-Light step 3,500 achieved 3.73\% false cutoffs, 65.80\% EOT recall,
-1,732 ms mean latency, 0.6866 AUROC, and 0.8993 AP. EOT prevalence was already 83.02\%, so AP was
-only modestly above a constant prevalence reference. No detector met the joint gate of at most 5\%
-false cutoff, at least 70\% recall, and at most 800 ms p95 latency; V2 test therefore remained
-unopened.
-
-A completion-primary retrain improved AP, calibration, and recall but still missed the gate. Step
-625 reached 0.6864 AUROC, 0.9052 AP, 4.48\% false cutoffs, and 69.01\% EOT recall, with a 2.0-second
-p95. Training to step 3,000 reduced recall. This rejected both "use the old target longer" and
-"train the new target longer" as sufficient production strategies.
+The V2 semantic-completion validation inventory retained 134 HOLD and 655 EOT examples after
+excluding ambiguous cases. Voice-Light ranked above chance but remained worse than a constant
+soft-prior predictor on calibration. No detector met the joint gate of at most 5\% false cutoff, at
+least 70\% recall, and at most 800 ms p95 latency, so the V2 test split remained unopened. A
+completion-primary retrain improved recall and calibration but still missed the gate, while longer
+training reduced recall. Neither target therefore justified replacing the hybrid runtime policy.
 
 \subsection{Threats to validity}
 
@@ -444,8 +445,6 @@ Several constraints limit interpretation:
   a clean superiority comparison without exact source-audio auditing.
   \item The V2 completion inventory uses heuristic confidence bands and leaves 216 ambiguous cases
   out of scoring. The planned independent human label audit remains incomplete.
-  \item The final microphone result is one acceptance session. It has no separately timestamped
-  final-topology duck, cancellation, or backchannel-resume events.
 \end{itemize}
 
 These limitations are part of the result. They directly constrain the claims made here and explain
@@ -453,7 +452,7 @@ why the deployed system is hybrid.
 
 \section{Deployed streaming system}
 
-\begin{figure}[H]
+\begin{figure*}[t]
 \centering
 \resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[
@@ -470,42 +469,26 @@ why the deployed system is hybrid.
   \node[dark,right=0.8cm of nemotron] (policy) {Hybrid commitment\\and speculation policy};
   \node[box,right=0.8cm of policy] (qwen) {Qwen3-4B\\typed tools};
   \node[green,below=0.6cm of qwen] (tts) {Dedicated GPU\\Kyutai TTS};
-  \node[green,below=0.6cm of policy] (playback) {Browser AudioWorklet\\clock and acknowledgements};
+  \node[box,above=0.6cm of qwen] (tools) {Tool providers\\and search summarizer};
+  \node[green,below=0.6cm of policy] (playback) {Browser playback clock\\and acknowledgements};
   \draw[arrow] (browser) -- (silero);
   \draw[arrow] (silero) -- (nemotron);
   \draw[arrow] (nemotron) -- (policy);
   \draw[arrow] (nemotron) -- (adapter);
   \draw[arrow] (adapter) -- (policy);
   \draw[arrow] (policy) -- (qwen);
+  \draw[arrow] (qwen) to[bend left=18] (tools);
+  \draw[arrow] (tools) to[bend left=18] (qwen);
   \draw[arrow] (qwen) -- (tts);
   \draw[arrow] (tts) -- (playback);
+  \draw[arrow] (playback) -- (policy);
 \end{tikzpicture}
 }
-\caption{Production runtime. Immediate acoustic reaction and learned interaction evidence meet at
-a typed controller; browser playback remains the authority on what was heard.}
+\caption{Simplified production runtime. Immediate acoustic reaction and learned interaction
+evidence meet at a typed controller. Tool calls and results use a structured loop; browser playback
+acknowledgments feed the controller and remain authoritative for durable audible history.}
 \label{fig:runtime}
-\end{figure}
-
-\subsection{Hybrid overlap policy}
-
-Silero remains the immediate acoustic authority. When user speech begins during assistant playback,
-the browser fades toward -15 dB over 450 ms and pauses by 500 ms. This response is reversible: onset
-alone does not discard generation. A floor-take probability above the configurable 0.82 threshold
-can commit interruption and cancellation. A non-floor-feedback probability above 0.82 becomes
-actionable after the short speech burst ends and resumes the same generation without adding a user
-turn. Explicit stop, repair, question, or meaningful lexical evidence provides another fast path.
-
-Ambiguous overlap is bounded. Sustained speech commits floor taking after 900 ms, while a short
-ended burst resolves conservatively as non-floor feedback. Empty or slow final ASR receives a
-120 ms grace rather than parking playback indefinitely. Generation and TTS budgets are held after
-350 ms of unresolved overlap, and paused audio remains resumable for at most 800 ms. A committed
-interruption rejects new server PCM immediately and fades no more than 100 ms of already-buffered
-audio.
-
-The adapter does not continuously encode assistant-only silence. It catches up from a bounded
-pre-roll after Silero detects user activity, using the same persistent Nemotron stream once active.
-This preserves one backbone and strict causality, but limits the acoustic context available at the
-earliest overlap decision.
+\end{figure*}
 
 \subsection{Speculation and cancellation}
 
@@ -535,25 +518,46 @@ result begins a second TTS utterance within the same assistant generation. Reusi
 TTS session was implemented and reverted because it could strand the last bridge words until tool
 completion, producing a deterministic mid-preamble stall. The final design avoids that stall but
 can retain a short acoustic seam at the semantic boundary.
+Before synthesis, a narrow text-boundary filter removes Markdown formatting, quotation marks, and
+emoji that Kyutai would otherwise pronounce poorly; the durable generated text remains unchanged.
 
-A separate Qwen3-0.6B worker summarizes web results so provider output does not occupy the main
+A separate Qwen3-0.6B worker \cite{qwen06} summarizes web results so provider output does not occupy the main
 conversation worker. Tavily latency varied from approximately 234--408 ms in several calls to
 roughly 1.98--2.29 seconds in slower observations. External provider time is therefore reported
 separately from first-response latency.
 
+\subsection{Hybrid overlap policy}
+
+Silero remains the immediate acoustic authority. When user speech begins during assistant playback,
+the browser fades toward -15 dB over 450 ms and pauses by 500 ms. This response is reversible: onset
+alone does not discard generation. A floor-take probability above the configurable 0.82 threshold
+can commit interruption and cancellation. A non-floor-feedback probability above 0.82 becomes
+actionable after the short speech burst ends and resumes the same generation without adding a user
+turn. Explicit stop, repair, question, or meaningful lexical evidence provides another fast path.
+
+Ambiguous overlap is bounded. Sustained speech commits floor taking after 900 ms, while a short
+ended burst resolves conservatively as non-floor feedback. Empty or slow final ASR receives a
+120 ms grace rather than parking playback indefinitely. Generation and TTS budgets are held after
+350 ms of unresolved overlap, and paused audio remains resumable for at most 800 ms. A committed
+interruption rejects new server PCM immediately and fades no more than 100 ms of already-buffered
+audio.
+
+The adapter catches up from bounded pre-roll after Silero detects user activity, using the same
+persistent Nemotron stream once active. This preserves one backbone and strict causality while
+limiting the acoustic context available at the earliest overlap decision.
+
 \subsection{Two GPUs and scale to zero}
 
-Production requests a co-located pair of A10 GPUs, with an L40S pair as the only capacity fallback;
-A100 and H100 devices are excluded on cost grounds. GPU 0 runs Nemotron, the adapter, Qwen3-4B, and
+Production requests a co-located pair of A10 GPUs, with an L40S pair as the capacity fallback.
+GPU 0 runs Nemotron, the adapter, Qwen3-4B, and
 the small search summarizer. GPU 1 is reserved for Kyutai. Moving Nemotron beside Kyutai improved
 Qwen first-delta latency by roughly 25--30 ms but regressed Kyutai first-word-to-PCM from
 346--353 ms to 459--486 ms. Because first audible speech dominates perceived response time, the
 dedicated-TTS topology was retained.
 
-Modal is a thin wrapper around the provider-neutral compute application. Model revisions and the
+Modal \cite{modal} is a thin wrapper around the provider-neutral compute application. Model revisions and the
 adapter are pinned; Hugging Face and Torch caches live on a persistent volume; serving operates
-offline after initialization. Model subprocesses persist inside a warm container. The endpoint
-admits one session, caps scale at one container, and terminates after 120 idle seconds.
+offline after initialization. Model subprocesses persist inside a warm container.
 
 The final topology loads Nemotron, Qwen, Kyutai, and the search summarizer concurrently after the
 small VAD is ready. Cached weights prevent downloads but not image scheduling, imports, CUDA
@@ -563,63 +567,81 @@ GPU snapshots failed for the multi-process CUDA layout, and an import-only CPU s
 
 \section{Latency and human acceptance}
 
-Kyutai did not emit decodable PCM until its nineteenth model step. Reducing 32 acoustic codebooks
+Kyutai TTS \cite{kyutai} did not emit decodable PCM until its nineteenth model step. Reducing 32 acoustic codebooks
 to 16 or 8 saved only about 10--20 ms and introduced an unmeasured quality trade-off, so production
 retained 32. Isolating TTS on its own GPU was materially more effective: controlled warm
 first-word-to-PCM fell to 346.2--353.4 ms from approximately 622--712 ms in the earlier shared-GPU
 human trace.
 
-The final microphone acceptance run on 12 September 2026 completed all eight turns, including live
-weather and time tools and ordinary follow-ups. No turn was dropped and no playback stall was
-reported. The two outliers did not promote prepared speculative work but still completed.
+\Needspace{6\baselineskip}
+The final microphone acceptance session covered live tools and ordinary follow-ups without a
+dropped turn or playback stall. The six turns that promoted speculative work had a 638 ms median
+from final VAD endpoint to first server audio, compared with 1,385 ms for the two turns that did
+not. The 747 ms observed gap is consistent with speculation hiding work, but the small uncontrolled
+trace cannot establish that the policy caused the full difference.
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=0.9\textwidth,height=5.2cm,
-  xlabel={Turn in final microphone session},ylabel={Speech end to browser PCM (ms)},
-  xmin=0.5,xmax=8.5,ymin=450,ymax=1600,
-  xtick={1,2,3,4,5,6,7,8},
+  width=\columnwidth,height=4.2cm,
+  ylabel={Final VAD endpoint to first server audio (ms)},
+  xmin=0.5,xmax=2.5,ymin=450,ymax=1600,
+  xtick={1,2},xticklabels={Promoted,Not promoted},
   grid=major,grid style={vlrule!55},axis line style={vlmuted},tick style={vlmuted},
   label style={font=\small},tick label style={font=\small}
 ]
 \addplot[color=vlteal,only marks,mark=*,mark size=3pt] coordinates {
- (1,593) (2,597) (3,616) (4,660) (5,694) (6,705) (7,1318) (8,1451)};
-\addplot[color=vlgold,dashed,line width=1.2pt] coordinates {(0.5,800) (8.5,800)};
-\node[anchor=south east,font=\small,color=vlgold] at (axis cs:8.4,810) {800 ms target};
+ (0.88,593) (0.93,597) (0.98,616) (1.03,660) (1.08,694) (1.13,705)};
+\addplot[color=vlred,only marks,mark=*,mark size=3pt] coordinates {(1.94,1318) (2.06,1451)};
+\addplot[color=vlgold,dashed,line width=1.2pt] coordinates {(0.5,800) (2.5,800)};
+\node[anchor=south east,font=\small,color=vlgold] at (axis cs:2.45,810) {800 ms reference};
 \end{axis}
 \end{tikzpicture}
-\caption{All eight measured turns. Six were below 800 ms; the sample is an acceptance trace, not a
-latency distribution.}
+\caption{Final VAD endpoint to first server audio grouped by whether prepared speculative work was
+promoted. The observed median gap was 747 ms; this acceptance trace does not estimate a causal
+speedup.}
 \label{fig:human}
 \end{figure}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.83\textwidth]{../assets/voice-agent-interaction-policy-light.png}
+\caption{Light-theme interaction diagnostics from the public browser client. Filled dots are actual
+model observations; hollow marks indicate stale or inapplicable evidence. The speech lanes show
+observed user activity and acknowledged assistant playback.}
+\label{fig:debug}
+\end{figure*}
 
 \begin{table}[H]
 \centering
 \caption{Final human acceptance measurements. Component medians overlap in time and are not
 additive.}
-\begin{tabularx}{0.72\textwidth}{Xr}
+\begin{tabularx}{\columnwidth}{Xr}
 \toprule
 Measurement & Observed value \\
 \midrule
 Completed turns & 8 / 8 \\
-Speech end to browser PCM, median & \textbf{677 ms} \\
-Speech end to browser PCM, mean & 829 ms \\
-Speech end to browser PCM, range & 593--1,451 ms \\
+Final VAD endpoint to first server audio, median & \textbf{677 ms} \\
+Final VAD endpoint to first server audio, mean & 829 ms \\
+Final VAD endpoint to first server audio, range & 593--1,451 ms \\
 Turns below 800 ms & 6 / 8 \\
 Endpoint decision, median & 508 ms \\
 LLM first word, median & 268 ms \\
 TTS first PCM, median & 453 ms \\
-Browser playback, median & 109 ms \\
+Server audio to browser render, median & 109 ms \\
+Final VAD endpoint to browser render, median & 783 ms \\
 \bottomrule
 \end{tabularx}
 \label{tab:latency}
 \end{table}
 
-The appropriate conclusion is demonstrated end-to-end operation with promising warm interactive
-latency. The sample does not justify a p50 or p95 population claim, nor does it independently
-quantify final-topology interruption, duck, or backchannel-resume latency.
+The rendered-audio median is computed from the eight paired per-turn measurements rather than by
+adding component medians. The original 250--600 ms aspiration was not met consistently: the median
+to first server audio was 677 ms and two turns exceeded 1.3 seconds. The 800 ms line became a
+practical acceptance reference, not a replacement population-level target. The sample does not
+justify a population p50 or p95 claim, nor does it independently quantify final-topology
+interruption, duck, or backchannel-resume latency.
 
 \section{Observability and reproducibility}
 
@@ -628,52 +650,32 @@ The browser's diagnostic stream separates model evidence from durable conversati
 completion, floor-take, and non-floor-feedback observations. Each point includes adapter health,
 Silero state, applicability, causal audio time, age, and inference latency. Policy events record the
 decision, reason, causal source, and decision latency; action events record browser acknowledgment.
+Figure~\ref{fig:debug} shows the resulting browser view.
 
-\begin{figure}[H]
-\centering
-\includegraphics[width=0.95\textwidth]{../assets/voice-agent-interaction-policy.png}
-\caption{Public interaction diagnostics. Dots are actual model observations; gaps indicate that no
-adapter inference was available at that time.}
-\label{fig:debug}
-\end{figure}
-
-Reproducibility is expressed at boundaries. Serialized records are frozen, typed, and reject extra
-fields. Model names and revisions are pinned. Training manifests retain seeds, input hashes,
-configuration, metrics, and checkpoint identity. Evaluation inventories and predictions carry
-content hashes and detector provenance; test commands require the validation lock. Deployment
-packages the final adapter and mounts persistent model caches without committing credentials.
+Concrete reproducibility artifacts accompany each boundary: immutable serialized schemas reject
+extra fields; manifests retain seeds, input hashes, configuration, metrics, and checkpoint identity;
+locked evaluation files carry content hashes and detector provenance; and build and test commands
+are recorded with pinned model revisions. Deployment packages the final adapter and mounts
+persistent model caches without committing credentials. Table~\ref{tab:repro} identifies the final
+runtime snapshot and principal pins.
 
 The public artifacts include the tool-use dataset, LoRA, merged 1.7B checkpoint, and synthetic
-turn-taking audio. Human conversational audio remains restricted by its source terms. The source
+turn-taking audio \cite{tooldata,toollora,toolmerged,turndata,hfprofile}. Human conversational audio remains restricted by its source terms. The source
 repository contains the generation, preparation, training, evaluation, runtime, browser, and Modal
 deployment code together with detailed runbooks.
 
 \section{Discussion and limitations}
 
-The project produced two useful reversals. First, the smaller language model learned the synthetic
-tool protocol but lost too much general quality in live canaries; production uses Qwen3-4B. Second,
-the causal adapter learned cross-domain interaction signal but did not provide a competitive sole
-endpoint policy; production combines its evidence with immediate Silero timing and conservative
-fallbacks. These are not failed integrations. They are examples of evaluation changing a system
-before a narrow offline metric became a product claim.
+Two evaluation results changed the deployed design. First, the smaller language model learned the
+synthetic tool protocol but produced lower general conversational quality in live canaries;
+production therefore uses Qwen3-4B. Second, the causal adapter learned cross-domain interaction
+signal but did not provide a competitive standalone endpoint policy; production therefore combines
+its evidence with immediate Silero timing and conservative fallbacks. These results bound the claims
+that can be made for each trained component and motivate the hybrid system.
 
-The deployed result still has important limitations:
-
-\begin{itemize}
-  \item Cold scale-from-zero readiness is approximately 32--55 seconds despite cached weights and
-  concurrent worker loading.
-  \item The public service is English-first, admits one session, and depends on a two-GPU Modal
-  allocation.
-  \item The learned completion head remains conservative; production interaction quality belongs
-  to the full hybrid policy, not the adapter alone.
-  \item The adapter begins from bounded pre-roll around detected user activity rather than running
-  the encoder continuously through assistant-only playback and silence.
-  \item Tool selection and factual generation remain fallible. Search depends on an external
-  provider secret and tool-result summarization.
-  \item Separate bridge and result TTS utterances can retain a small audible seam.
-  \item Human evidence is limited to iterative development sessions and one final eight-turn
-  acceptance trace, not a blinded multi-participant study.
-\end{itemize}
+The learned completion head remains conservative, so production interaction quality belongs to the
+full hybrid policy rather than the adapter alone. Tool selection and factual generation also remain
+fallible, particularly when retrieval results are incomplete or ambiguous.
 
 The highest-value next research step is not more synthetic scale. It is a controlled, independently
 annotated human evaluation of completion, backchannel, and interruption behavior, with
@@ -684,61 +686,156 @@ locked evidence.
 \section{Conclusion}
 
 \VoiceLight{} demonstrates a complete path from conversational data work to a public streaming
-system. The project generated and published typed synthetic corpora, automatically prepared human
+system \cite{demo,voice-light}. The project generated and published typed synthetic corpora, automatically prepared human
 conversation evidence, trained two focused adapters, built locked causal evaluations, restored a
-provider-neutral runtime to Modal, and iterated on real microphone behavior until normal turns,
-tools, backchannels, interruptions, cancellation, and audible-only history worked together.
+provider-neutral runtime to Modal, and iterated on real microphone behavior. The final acceptance
+trace covered ordinary and tool-using turns; backchannel, interruption, cancellation, and
+audible-only-history behavior were repeatedly exercised during iterative development.
 
-Its most defensible outcome is methodological: training metrics were allowed to lose arguments.
-The synthetic LoRA remained an artifact when a larger base model sounded better; the turn adapter
-became supporting evidence when timing baselines were stronger; GPU placement changed when
-component latency exposed contention; and TTS session reuse was reverted when it produced an
-audible stall. The resulting hybrid is less ideologically pure and more useful. It also leaves a
-clear record of what would need stronger evidence before the next claim or architectural change.
+The central result is the integrated system and the evaluation discipline around it. Components
+were retained when they improved the deployed interaction and demoted to supporting evidence when
+they did not. This produced a practical hybrid voice agent while keeping experimental claims tied
+to their actual evaluations.
 
-\section*{Artifact links}
-
-\begin{itemize}
-  \item Live demo: \url{https://voice.bertil-braun.de}
-  \item Source and documentation: \url{https://github.com/BertilBraun/Voice-Light}
-  \item Tool-use dataset: \url{https://huggingface.co/datasets/BertilBraun/voice-light-tool-use-synthetic}
-  \item Qwen3-1.7B LoRA: \url{https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-lora}
-  \item Merged 1.7B checkpoint: \url{https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-merged}
-  \item Synthetic turn-taking audio: \url{https://huggingface.co/datasets/BertilBraun/voice-light-synthetic-audio}
-\end{itemize}
-
-\begin{thebibliography}{9}
+\balance
+\begingroup
+\small
+\interlinepenalty=10000
+\begin{thebibliography}{99}
 \bibitem{fastconformer}
 D. Rekesh et al., ``Fast Conformer with Linearly Scalable Attention for Efficient Speech
-Recognition,'' arXiv:2305.05084, 2023. \url{https://arxiv.org/abs/2305.05084}
+Recognition,'' \href{https://arxiv.org/abs/2305.05084}{arXiv:2305.05084}, 2023.
 
 \bibitem{stateful}
 V. Noroozi et al., ``Stateful Conformer with Cache-based Inference for Streaming Automatic Speech
-Recognition,'' arXiv:2312.17279, 2023. \url{https://arxiv.org/abs/2312.17279}
+Recognition,'' \href{https://arxiv.org/abs/2312.17279}{arXiv:2312.17279}, 2023.
 
 \bibitem{vap}
 E. Ekstedt and G. Skantze, ``Voice Activity Projection: Self-supervised Learning of Turn-taking
-Events,'' arXiv:2205.09812, 2022. \url{https://arxiv.org/abs/2205.09812}
+Events,'' \href{https://arxiv.org/abs/2205.09812}{arXiv:2205.09812}, 2022.
 
 \bibitem{acousticllm}
 J. Wang et al., ``Turn-taking and Backchannel Prediction with Acoustic and Large Language Model
-Fusion,'' arXiv:2401.14717, 2024. \url{https://arxiv.org/abs/2401.14717}
+Fusion,'' \href{https://arxiv.org/abs/2401.14717}{arXiv:2401.14717}, 2024.
 
 \bibitem{qwen3}
-A. Yang et al., ``Qwen3 Technical Report,'' arXiv:2505.09388, 2025.
-\url{https://arxiv.org/abs/2505.09388}
+A. Yang et al., ``Qwen3 Technical Report,''
+\href{https://arxiv.org/abs/2505.09388}{arXiv:2505.09388}, 2025.
+
+\bibitem{qwen4}
+Qwen Team, \href{https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507}
+{``Qwen3-4B-Instruct-2507,''} model card, 2025.
+
+\bibitem{qwen06}
+Qwen Team, \href{https://huggingface.co/Qwen/Qwen3-0.6B}{``Qwen3-0.6B,''} model card, 2025.
 
 \bibitem{nemotron}
-NVIDIA, ``Nemotron Speech Streaming English 0.6B,'' model card, 2026.
-\url{https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b}
+NVIDIA, \href{https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b}
+{``Nemotron Speech Streaming English 0.6B,''} model card, 2026.
 
 \bibitem{kyutai}
-Kyutai, ``Kyutai TTS 1.6B,'' model and implementation documentation, 2025.
-\url{https://kyutai.org/tts/}
+Kyutai, \href{https://huggingface.co/kyutai/tts-1.6b-en_fr}{``TTS 1.6B English/French,''}
+model card, 2025.
+
+\bibitem{cosyvoice}
+FunAudioLLM, \href{https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512}
+{``Fun-CosyVoice3-0.5B-2512,''} model card, 2025.
+
+\bibitem{magichub}
+MagicHub, \href{https://magichub.com/datasets/multi-stream-spontaneous-conversation-training-datasets_english/}
+{``Multi-stream Spontaneous Conversation Training Datasets (English),''} dataset description.
+
+\bibitem{mundo}
+Mundo AI, \href{https://huggingface.co/datasets/mundo-ai/turn-benchmark-dev}
+{``Turn Benchmark Dev,''} dataset card.
+
+\bibitem{silero}
+Silero Team, \href{https://github.com/snakers4/silero-vad}{``Silero VAD,''} software and model
+documentation.
+
+\bibitem{smartturn}
+Pipecat AI, \href{https://huggingface.co/pipecat-ai/smart-turn-v3}{``Smart Turn v3,''} model card.
+
+\bibitem{livekit}
+LiveKit, \href{https://docs.livekit.io/agents/logic/turns/turn-detector/}
+{``Turn Detector,''} documentation.
+
+\bibitem{modal}
+Modal Labs, \href{https://modal.com/docs}{``Modal Documentation.''}
+
+\bibitem{demo}
+B. Braun, \href{https://voice.bertil-braun.de}{``Voice-Light live demo.''}
 
 \bibitem{voice-light}
-B. Braun, ``Voice-Light source code, data-generation pipelines, evaluation records, and deployment
-documentation,'' 2026. \url{https://github.com/BertilBraun/Voice-Light}
+B. Braun, \href{https://github.com/BertilBraun/Voice-Light}{``Voice-Light source code,
+data-generation pipelines, evaluation records, and deployment documentation,''} 2026.
+
+\bibitem{hfprofile}
+B. Braun, \href{https://huggingface.co/BertilBraun}{``Published Voice-Light datasets and models.''}
+
+\bibitem{tooldata}
+B. Braun, \href{https://huggingface.co/datasets/BertilBraun/voice-light-tool-use-synthetic}
+{``Voice-Light synthetic tool-use dataset.''}
+
+\bibitem{toollora}
+B. Braun, \href{https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-lora}
+{``Voice-Light Qwen3-1.7B tool-use LoRA.''}
+
+\bibitem{toolmerged}
+B. Braun, \href{https://huggingface.co/BertilBraun/qwen3-1.7b-voice-light-tool-use-merged}
+{``Voice-Light Qwen3-1.7B merged tool-use checkpoint.''}
+
+\bibitem{turndata}
+B. Braun, \href{https://huggingface.co/datasets/BertilBraun/voice-light-synthetic-audio}
+{``Voice-Light synthetic turn-taking audio.''}
 \end{thebibliography}
+\endgroup
+
+\clearpage
+\onecolumn
+\appendix
+\section{Reproducibility snapshot}
+
+\begin{table}[H]
+\centering
+\caption{Principal revisions, hashes, and recorded validation for the final runtime. Full commands
+and additional hashes are recorded in the repository runbooks \cite{voice-light}.}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{4.1cm}X@{}}
+\toprule
+Artifact & Revision, hash, or recorded result \\
+\midrule
+Report source & GitHub release \code{v1.0.1}; committed TeX, figure assets, and build instructions \\
+Runtime source snapshot & \code{e2f79adc} on \code{master}; evaluated two-GPU deployment \code{d78115d2} \\
+Qwen3-4B-Instruct-2507 & \nolinkurl{cdbee75f17c01a7cc42f958dc650907174af0554} \\
+Qwen3-0.6B summarizer & \nolinkurl{c1899de289a04d12100db370d81485cdf75e47ca} \\
+Nemotron Streaming 0.6B & \nolinkurl{ebe59e5a817142986528bbbee5dba8db7b38ed50} \\
+Kyutai TTS 1.6B & \nolinkurl{f65439609986c392cb12df63938abcc550c3fb15} \\
+Deployed adapter step 750 & SHA-256 \nolinkurl{d5c8e02c61dc9c230eac57992278383b81f14e3b71935b8dc684fe5da4171011} \\
+Recorded validation & 630 Python tests (1 skipped, 1 integration deselected), 38 browser tests, Ruff clean \\
+\bottomrule
+\end{tabularx}
+\label{tab:repro}
+\end{table}
+
+\subsection{Build and validation commands}
+
+The release PDF is built from the committed source. From the repository root on Windows, the
+recorded validation sequence is:
+
+\begin{small}
+\begin{verbatim}
+.\.venv\Scripts\ruff.exe format --check --exclude .cache .
+.\.venv\Scripts\ruff.exe check --exclude .cache .
+.\.venv\Scripts\python.exe -m pytest tests\voice_agent tests\training\turn_taking
+    -m "not integration" --import-mode=importlib
+node --test tests\browser\*.test.mjs
+tectonic --outdir output\pdf docs\technical-report\voice-light-technical-report.tex
+\end{verbatim}
+\end{small}
+
+Model-dependent integration tests and the deployed microphone acceptance session require the
+documented external services, GPU environment, and uncommitted credentials; they are not implied by
+the local command sequence above.
 
 \end{document}
