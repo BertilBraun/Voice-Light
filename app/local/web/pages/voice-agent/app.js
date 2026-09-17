@@ -15,6 +15,7 @@ const stopButton = document.querySelector("#stop-button");
 const recordingReview = document.querySelector("#recording-review");
 const recordingPlayer = document.querySelector("#recording-player");
 const recordingDownload = document.querySelector("#recording-download");
+const traceDownload = document.querySelector("#trace-download");
 const connectionStatus = document.querySelector("#connection-status");
 const sessionGuidance = document.querySelector("#session-guidance");
 const vadStatus = document.querySelector("#vad-status");
@@ -49,6 +50,10 @@ let expectedAudioSequence = 0;
 let activeUserTurn;
 let recordedInputChunks = [];
 let recordingUrl;
+let sessionTraceStartedAt;
+let sessionTraceEvents = [];
+let sessionTraceId;
+let traceUrl;
 const assistantTurns = new Map();
 const intentionallyClosedSockets = new WeakSet();
 const interactionEvidence = new Map();
@@ -173,6 +178,7 @@ generatedTextToggle.addEventListener("change", () => {
 
 async function startSession() {
   clearInputRecording();
+  clearSessionTrace();
   clearConversationHistory();
   stopRequested = false;
   startButton.disabled = true;
@@ -183,11 +189,11 @@ async function startSession() {
     socket = await openSocket(PRODUCTION_VOICE_WEBSOCKET_URL);
     setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
     const sessionReady = waitForSessionReady(socket);
-    socket.send(JSON.stringify({
+    sendClientEvent({
       type: "session.start",
       input_sample_rate: INPUT_SAMPLE_RATE,
       local_time_zone: LOCAL_TIME_ZONE,
-    }));
+    });
     const ready = await sessionReady;
     await setupPlayback(ready.output_sample_rate);
     if (stopRequested) return;
@@ -227,7 +233,10 @@ function openSocket(endpoint) {
     candidate.addEventListener("message", handleMessage);
     candidate.addEventListener("close", () => {
       if (!opened) reject(new Error("The server connection closed before it was ready."));
-      void stopMedia().then(finalizeInputRecording);
+      void stopMedia().then(() => {
+        finalizeInputRecording();
+        finalizeSessionTrace();
+      });
       resetControls();
       if (intentionallyClosedSockets.has(candidate)) return;
       if (stopRequested) setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
@@ -297,14 +306,14 @@ async function setupPlayback(inputSampleRate) {
         clientTimeMs: performance.now(),
       });
       if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
+        sendClientEvent({
           type: "playback.started",
           generation_id: data.generationId,
           browser_monotonic_time_ns: data.browserMonotonicTimeNs,
           rendered_output_sample_position: data.renderedOutputSamplePosition,
           source_sample_position: data.sourceSamplePosition,
           output_sample_rate: data.outputSampleRate,
-        }));
+        });
       }
       return;
     }
@@ -314,7 +323,7 @@ async function setupPlayback(inputSampleRate) {
     }
     if (data.type === "playback.clock") {
       if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
+        sendClientEvent({
           type: "playback.clock",
           generation_id: data.generationId,
           state: data.state,
@@ -324,7 +333,7 @@ async function setupPlayback(inputSampleRate) {
           queued_source_sample_count: data.queuedSourceSampleCount,
           underrun_count: data.underrunCount,
           output_sample_rate: data.outputSampleRate,
-        }));
+        });
       }
       return;
     }
@@ -339,7 +348,7 @@ async function setupPlayback(inputSampleRate) {
       turn?.settleInterruptedText();
       turn?.setState("cancelled");
       if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
+        sendClientEvent({
           type: "playback.stopped",
           generation_id: data.generationId,
           text_offset: data.textOffset,
@@ -347,7 +356,7 @@ async function setupPlayback(inputSampleRate) {
           browser_monotonic_time_ns: data.browserMonotonicTimeNs,
           rendered_output_sample_position: data.renderedOutputSamplePosition,
           output_sample_rate: data.outputSampleRate,
-        }));
+        });
       }
       return;
     }
@@ -361,21 +370,21 @@ async function setupPlayback(inputSampleRate) {
       turn?.setSpokenOffset(completeOffset);
       turn?.acknowledgeOffset(completeOffset);
       turn?.setState("complete");
-      socket.send(JSON.stringify({
+      sendClientEvent({
         type: "playback.complete",
         generation_id: data.generationId,
         browser_monotonic_time_ns: data.browserMonotonicTimeNs,
         rendered_output_sample_position: data.renderedOutputSamplePosition,
         source_sample_position: data.sourceSamplePosition,
         output_sample_rate: data.outputSampleRate,
-      }));
+      });
       vadStatus.textContent = "ready";
       playbackStatus.textContent = "waiting";
       return;
     }
     if (data.type === "playback.acknowledgement") {
       if (socket?.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify({
+      sendClientEvent({
         type: "playback.acknowledgement",
         command_id: data.commandId,
         generation_id: data.generationId,
@@ -395,7 +404,7 @@ async function setupPlayback(inputSampleRate) {
         replayed_source_sample_count: data.replayedSourceSampleCount,
         skipped_source_sample_count: data.skippedSourceSampleCount,
         resume_rejected: data.resumeRejected,
-      }));
+      });
     }
   };
   playbackNode.connect(playbackContext.destination);
@@ -421,6 +430,8 @@ function handleMessage(event) {
     return;
   }
   const message = JSON.parse(event.data);
+  recordSessionTraceEvent("server", message);
+  if (message.type === "session.ready") sessionTraceId = message.session_id;
   if (message.type !== "speech_understanding.debug") logEvent(message);
   if (message.type === "vad.started") vadStatus.textContent = "speaking";
   if (message.type === "vad.stopped") {
@@ -553,13 +564,14 @@ function handleMessage(event) {
 async function stopSession() {
   stopRequested = true;
   setConnection("connected", "Stopping…", "Closing the microphone and server connection.");
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session.stop" }));
+  if (socket?.readyState === WebSocket.OPEN) sendClientEvent({ type: "session.stop" });
   if (socket) {
     intentionallyClosedSockets.add(socket);
     socket.close();
   }
   await stopMedia();
   finalizeInputRecording();
+  finalizeSessionTrace();
   resetControls();
   setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
 }
@@ -604,6 +616,48 @@ function clearInputRecording() {
   recordingPlayer.load();
   recordingDownload.removeAttribute("href");
   recordingReview.hidden = true;
+}
+
+function clearSessionTrace() {
+  sessionTraceStartedAt = new Date().toISOString();
+  sessionTraceEvents = [];
+  sessionTraceId = undefined;
+  if (traceUrl) URL.revokeObjectURL(traceUrl);
+  traceUrl = undefined;
+  traceDownload.removeAttribute("href");
+}
+
+function recordSessionTraceEvent(direction, message) {
+  sessionTraceEvents.push({
+    direction,
+    browser_monotonic_time_ms: performance.now(),
+    message,
+  });
+}
+
+function sendClientEvent(message) {
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  recordSessionTraceEvent("client", message);
+  socket.send(JSON.stringify(message));
+}
+
+function finalizeSessionTrace() {
+  if (traceUrl || sessionTraceEvents.length === 0) return;
+  const trace = {
+    schema_version: 1,
+    session_id: sessionTraceId ?? null,
+    started_at: sessionTraceStartedAt,
+    ended_at: new Date().toISOString(),
+    local_time_zone: LOCAL_TIME_ZONE,
+    browser_user_agent: navigator.userAgent,
+    events: sessionTraceEvents,
+  };
+  traceUrl = URL.createObjectURL(
+    new Blob([JSON.stringify(trace, null, 2)], { type: "application/json" }),
+  );
+  traceDownload.href = traceUrl;
+  const timestamp = new Date().toISOString().replaceAll(":", "-");
+  traceDownload.download = `voice-light-session-${timestamp}.json`;
 }
 
 function finalizeInputRecording() {
@@ -811,7 +865,7 @@ function updateBoundaryProgress(progress) {
   turn.setSpokenOffset(progress.textOffset);
   turn.acknowledgeOffset(progress.textOffset);
   if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({
+    sendClientEvent({
       type: "playback.progress",
       generation_id: progress.generationId,
       text_offset: progress.textOffset,
@@ -820,7 +874,7 @@ function updateBoundaryProgress(progress) {
       browser_monotonic_time_ns: progress.browserMonotonicTimeNs,
       rendered_output_sample_position: progress.renderedOutputSamplePosition,
       output_sample_rate: progress.outputSampleRate,
-    }));
+    });
   }
 }
 

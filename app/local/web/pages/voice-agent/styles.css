@@ -35,7 +35,8 @@ button:disabled { cursor: default; opacity: .4; }
 .recording-review { background: #f7f9f7; border: 1px solid #dce3de; border-radius: 10px; margin-top: 14px; padding: 12px 14px; }
 .recording-review p { color: #637068; font-size: 13px; margin: 0 0 10px; }
 .recording-review audio { display: block; width: 100%; }
-.recording-review a { color: #176b4a; display: inline-block; font-size: 13px; margin-top: 10px; }
+.recording-downloads { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; }
+.recording-review a { color: #176b4a; display: inline-block; font-size: 13px; }
 .conversation { margin: 22px 0; overflow: hidden; }
 .interaction-debug { margin: 22px 0; padding: 20px 22px; }
 .interaction-debug .eyebrow { margin: 0 0 6px; }

@@ -27,6 +27,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'id="conversation-empty"' in page_response.text
     assert 'id="recording-player"' in page_response.text
     assert 'id="recording-download"' in page_response.text
+    assert 'id="trace-download"' in page_response.text
     assert 'id="user-transcript"' not in page_response.text
     assert 'id="assistant-transcript"' not in page_response.text
     assert 'message.type === "turn.committed"' in script_response.text
@@ -84,7 +85,10 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'data.type === "playback.clock"' in script_response.text
     assert "underrun_count: data.underrunCount" in script_response.text
     assert 'id="playback-underruns"' not in page_response.text
-    assert "app.js?v=20" in page_response.text
+    assert "app.js?v=21" in page_response.text
+    assert 'recordSessionTraceEvent("server", message)' in script_response.text
+    assert 'recordSessionTraceEvent("client", message)' in script_response.text
+    assert "schema_version: 1" in script_response.text
     assert 'message.type !== "speech_understanding.debug"' in script_response.text
     assert "MAX_EVENT_LOG_ENTRIES = 200" in script_response.text
     assert "scheduleInteractionTimelineDraw" in script_response.text
