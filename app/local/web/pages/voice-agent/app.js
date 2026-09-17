@@ -1,6 +1,7 @@
 import { SpokenTextProgress } from "./spoken-text-progress.mjs";
 import { PRODUCTION_VOICE_WEBSOCKET_URL } from "./public-config.mjs";
 import {
+  contiguousModelObservationSegments,
   INTERACTION_TIMELINE_DURATION_MS,
   modelObservationSamples,
   summarizeModelObservationCadence,
@@ -843,7 +844,24 @@ function drawInteractionTimeline() {
 }
 
 function drawProbabilitySeries(context, points, xForTime, top, bottom, field, color) {
-  for (const sample of modelObservationSamples(points, field)) {
+  const samples = modelObservationSamples(points, field);
+  for (const segment of contiguousModelObservationSegments(samples)) {
+    context.beginPath();
+    for (const [index, sample] of segment.entries()) {
+      const x = xForTime(sample.audioTimeMs);
+      const y = bottom - sample.probability * (bottom - top);
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    }
+    context.strokeStyle = color;
+    context.globalAlpha = 0.55;
+    context.lineWidth = 1.25;
+    context.setLineDash(segment[0].disposition === "applicable" ? [] : [3, 3]);
+    context.stroke();
+  }
+  context.globalAlpha = 1;
+  context.setLineDash([]);
+  for (const sample of samples) {
     const x = xForTime(sample.audioTimeMs);
     const y = bottom - sample.probability * (bottom - top);
     context.beginPath();

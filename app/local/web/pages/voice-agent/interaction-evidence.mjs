@@ -1,4 +1,5 @@
 export const INTERACTION_TIMELINE_DURATION_MS = 20000;
+export const MODEL_OBSERVATION_CONNECTION_GAP_MS = 240;
 
 export function updateInteractionEvidence(evidence, message) {
   const previous = evidence.get(message.observed_audio_time_ms);
@@ -42,6 +43,27 @@ export function modelObservationSamples(points, field) {
       probability: point[field],
       disposition: point.predictionDisposition,
     }));
+}
+
+export function contiguousModelObservationSegments(
+  samples,
+  maximumGapMs = MODEL_OBSERVATION_CONNECTION_GAP_MS,
+) {
+  const segments = [];
+  let segment = [];
+  for (const sample of samples) {
+    const previous = segment.at(-1);
+    const continuesSegment = previous !== undefined
+      && sample.audioTimeMs - previous.audioTimeMs <= maximumGapMs
+      && sample.disposition === previous.disposition;
+    if (!continuesSegment) {
+      if (segment.length > 1) segments.push(segment);
+      segment = [];
+    }
+    segment.push(sample);
+  }
+  if (segment.length > 1) segments.push(segment);
+  return segments;
 }
 
 export function summarizeModelObservationCadence(points) {

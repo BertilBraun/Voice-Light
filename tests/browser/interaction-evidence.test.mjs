@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  contiguousModelObservationSegments,
   modelObservationSamples,
   summarizeModelObservationCadence,
   updateInteractionEvidence,
@@ -70,4 +71,29 @@ test("retains rejected model observations with their typed disposition", () => {
   assert.deepEqual(modelObservationSamples([...evidence.values()], "turnCompletion"), [
     { audioTimeMs: 160, probability: 0.7, disposition: "rejected_superseded" },
   ]);
+});
+
+test("connects only adjacent observations with the same disposition", () => {
+  const samples = [
+    { audioTimeMs: 80, probability: 0.4, disposition: "applicable" },
+    { audioTimeMs: 240, probability: 0.6, disposition: "applicable" },
+    { audioTimeMs: 400, probability: 0.8, disposition: "rejected_superseded" },
+    { audioTimeMs: 560, probability: 0.7, disposition: "rejected_superseded" },
+    { audioTimeMs: 960, probability: 0.5, disposition: "applicable" },
+  ];
+
+  assert.deepEqual(contiguousModelObservationSegments(samples), [
+    samples.slice(0, 2),
+    samples.slice(2, 4),
+  ]);
+});
+
+test("does not bridge an inference pause", () => {
+  const samples = [
+    { audioTimeMs: 80, probability: 0.4, disposition: "applicable" },
+    { audioTimeMs: 240, probability: 0.6, disposition: "applicable" },
+    { audioTimeMs: 560, probability: 0.8, disposition: "applicable" },
+  ];
+
+  assert.deepEqual(contiguousModelObservationSegments(samples), [samples.slice(0, 2)]);
 });

@@ -85,7 +85,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'data.type === "playback.clock"' in script_response.text
     assert "underrun_count: data.underrunCount" in script_response.text
     assert 'id="playback-underruns"' not in page_response.text
-    assert "app.js?v=21" in page_response.text
+    assert "app.js?v=22" in page_response.text
     assert 'recordSessionTraceEvent("server", message)' in script_response.text
     assert 'recordSessionTraceEvent("client", message)' in script_response.text
     assert "schema_version: 1" in script_response.text
@@ -94,6 +94,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert "scheduleInteractionTimelineDraw" in script_response.text
     assert "dots are model observations, not conversation labels" in page_response.text
     assert "modelObservationSamples(points, field)" in script_response.text
+    assert "contiguousModelObservationSegments(samples)" in script_response.text
     assert 'sample.disposition === "applicable"' in script_response.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script_response.text
     assert "local_time_zone: LOCAL_TIME_ZONE" in script_response.text

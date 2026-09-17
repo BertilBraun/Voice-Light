@@ -20,7 +20,7 @@ test("public demo hides endpoint configuration and generated text by default", a
   assert.doesNotMatch(page, /endpoint-url/);
   assert.match(page, /id="generated-text-toggle" type="checkbox"/);
   assert.match(page, /href="\.\/styles\.css"/);
-  assert.match(page, /src="\.\/app\.js\?v=20"/);
+  assert.match(page, /src="\.\/app\.js\?v=22"/);
 });
 
 test("public demo publishes branded browser metadata", async () => {
