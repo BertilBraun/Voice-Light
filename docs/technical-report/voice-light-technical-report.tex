@@ -132,6 +132,44 @@ The contributions are systems and evaluation contributions. The paper does not c
 adapter is a new state of the art, that synthetic evaluation measures general tool competence, or
 that the microphone sessions estimate population-level interaction quality.
 
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[
+  node distance=0.65cm and 0.7cm,
+  box/.style={draw=vlrule,rounded corners=3pt,fill=white,minimum height=0.75cm,text width=2.65cm,align=center,font=\small},
+  green/.style={box,fill=vllight,draw=vlteal},
+  dark/.style={box,fill=vlteal,draw=vlteal,text=white},
+  arrow/.style={-{Latex[length=2.2mm]},line width=0.85pt,color=vlmuted}
+]
+  \node[green] (browser) {Browser microphone\\16 kHz PCM};
+  \node[green,right=of browser] (silero) {Silero onset\\reversible duck};
+  \node[box,right=of silero] (nemotron) {Streaming Nemotron ASR\\shared encoder taps};
+  \node[box,below=0.6cm of nemotron] (adapter) {Causal adapter\\completion / floor / feedback};
+  \node[dark,right=0.8cm of nemotron] (policy) {Hybrid commitment\\and speculation policy};
+  \node[box,right=0.8cm of policy] (qwen) {Qwen3-4B\\typed tools};
+  \node[green,below=0.6cm of qwen] (tts) {Dedicated GPU\\Kyutai TTS};
+  \node[box,above=0.6cm of qwen] (tools) {Tool providers\\and search summarizer};
+  \node[green,below=0.6cm of policy] (playback) {Browser playback clock\\and acknowledgments};
+  \draw[arrow] (browser) -- (silero);
+  \draw[arrow] (silero) -- (nemotron);
+  \draw[arrow] (nemotron) -- (policy);
+  \draw[arrow] (nemotron) -- (adapter);
+  \draw[arrow] (adapter) -- (policy);
+  \draw[arrow] (policy) -- (qwen);
+  \draw[arrow] (qwen) to[bend left=18] (tools);
+  \draw[arrow] (tools) to[bend left=18] (qwen);
+  \draw[arrow] (qwen) -- (tts);
+  \draw[arrow] (tts) -- (playback);
+  \draw[arrow] (playback) -- (policy);
+\end{tikzpicture}
+}
+\caption{Production runtime. Immediate acoustic reaction and learned interaction evidence meet at
+a typed controller. Tool calls and results use a structured loop; acknowledged browser playback is
+authoritative for durable assistant history.}
+\label{fig:runtime}
+\end{figure*}
+
 \section{Related work}
 
 \paragraph{Turn-taking and endpointing.}
@@ -170,44 +208,6 @@ encoder layers to the causal adapter without loading a second speech backbone. T
 combines those signals with transcript revisions, playback state, and conservative deadlines.
 Qwen generates speech and typed calls; Kyutai TTS \cite{kyutai} synthesizes only text released by
 the controller.
-
-\begin{figure*}[t]
-\centering
-\resizebox{\textwidth}{!}{
-\begin{tikzpicture}[
-  node distance=0.65cm and 0.7cm,
-  box/.style={draw=vlrule,rounded corners=3pt,fill=white,minimum height=0.75cm,text width=2.65cm,align=center,font=\small},
-  green/.style={box,fill=vllight,draw=vlteal},
-  dark/.style={box,fill=vlteal,draw=vlteal,text=white},
-  arrow/.style={-{Latex[length=2.2mm]},line width=0.85pt,color=vlmuted}
-]
-  \node[green] (browser) {Browser microphone\\16 kHz PCM};
-  \node[green,right=of browser] (silero) {Silero onset\\reversible duck};
-  \node[box,right=of silero] (nemotron) {Streaming Nemotron ASR\\shared encoder taps};
-  \node[box,below=0.6cm of nemotron] (adapter) {Causal adapter\\completion / floor / feedback};
-  \node[dark,right=0.8cm of nemotron] (policy) {Hybrid commitment\\and speculation policy};
-  \node[box,right=0.8cm of policy] (qwen) {Qwen3-4B\\typed tools};
-  \node[green,below=0.6cm of qwen] (tts) {Dedicated GPU\\Kyutai TTS};
-  \node[box,above=0.6cm of qwen] (tools) {Tool providers\\and search summarizer};
-  \node[green,below=0.6cm of policy] (playback) {Browser playback clock\\and acknowledgments};
-  \draw[arrow] (browser) -- (silero);
-  \draw[arrow] (silero) -- (nemotron);
-  \draw[arrow] (nemotron) -- (policy);
-  \draw[arrow] (nemotron) -- (adapter);
-  \draw[arrow] (adapter) -- (policy);
-  \draw[arrow] (policy) -- (qwen);
-  \draw[arrow] (qwen) to[bend left=18] (tools);
-  \draw[arrow] (tools) to[bend left=18] (qwen);
-  \draw[arrow] (qwen) -- (tts);
-  \draw[arrow] (tts) -- (playback);
-  \draw[arrow] (playback) -- (policy);
-\end{tikzpicture}
-}
-\caption{Production runtime. Immediate acoustic reaction and learned interaction evidence meet at
-a typed controller. Tool calls and results use a structured loop; acknowledged browser playback is
-authoritative for durable assistant history.}
-\label{fig:runtime}
-\end{figure*}
 
 Four invariants define the system. All learned turn features are causal and share the ASR stream.
 Speech onset may duck or pause playback immediately, but only stronger lexical, learned, or timeout
@@ -476,7 +476,7 @@ because evaluation points share the training generator and schema.
  (6,0.7872) (7,0.8170) (8,0.8602) (9,0.9043) (10,0.9713) (11,1.0168)
  (12,1.0754) (13,1.1182) (14,1.1515) (15,1.1659) (16,1.1660)};
 \addplot[color=vlgold,dashed] coordinates {(4,0.72) (4,1.20)};
-\node[anchor=south west,font=\small,color=vlgold] at (axis cs:4.25,0.84) {loss minimum};
+\node[anchor=south west,font=\small,color=vlgold] at (axis cs:4.25,0.91) {loss minimum};
 \end{axis}
 \end{tikzpicture}
 \caption{Recorded assistant-token validation loss after each logical pass. The directly comparable
