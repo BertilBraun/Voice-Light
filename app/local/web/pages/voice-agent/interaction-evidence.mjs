@@ -1,5 +1,5 @@
 export const INTERACTION_TIMELINE_DURATION_MS = 20000;
-export const MODEL_OBSERVATION_CONNECTION_GAP_MS = 240;
+export const MODEL_OBSERVATION_CONNECTION_GAP_MS = 400;
 
 export function updateInteractionEvidence(evidence, message) {
   const previous = evidence.get(message.observed_audio_time_ms);
@@ -54,8 +54,7 @@ export function contiguousModelObservationSegments(
   for (const sample of samples) {
     const previous = segment.at(-1);
     const continuesSegment = previous !== undefined
-      && sample.audioTimeMs - previous.audioTimeMs <= maximumGapMs
-      && sample.disposition === previous.disposition;
+      && sample.audioTimeMs - previous.audioTimeMs <= maximumGapMs;
     if (!continuesSegment) {
       if (segment.length > 1) segments.push(segment);
       segment = [];

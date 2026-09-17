@@ -606,10 +606,11 @@ speedup.}
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=0.83\textwidth]{../assets/voice-agent-interaction-policy-light.png}
-\caption{Light-theme interaction diagnostics from the public browser client. Filled dots are actual
-model observations; hollow marks indicate stale or inapplicable evidence. The speech lanes show
-observed user activity and acknowledged assistant playback.}
+\includegraphics[width=0.96\textwidth]{../assets/voice-agent-interaction-policy-light.png}
+\caption{Observable activity during a 20-second excerpt from an interactive microphone session.
+Green spans show detected user speech and gold spans show acknowledged assistant playback. The
+session exercised short backchannels and a floor-taking interruption, but the lanes intentionally do
+not assign semantic labels to individual overlaps.}
 \label{fig:debug}
 \end{figure*}
 
@@ -645,12 +646,13 @@ interruption, duck, or backchannel-resume latency.
 
 \section{Observability and reproducibility}
 
-The browser's diagnostic stream separates model evidence from durable conversation. A rolling
-20-second view shows user-speech and assistant-audible lanes together with actual, non-interpolated
-completion, floor-take, and non-floor-feedback observations. Each point includes adapter health,
-Silero state, applicability, causal audio time, age, and inference latency. Policy events record the
-decision, reason, causal source, and decision latency; action events record browser acknowledgment.
-Figure~\ref{fig:debug} shows the resulting browser view.
+The browser's diagnostic stream separates model evidence from durable conversation. Its rolling
+20-second view records user-speech and assistant-audible lanes, raw adapter outputs, Silero state,
+applicability, causal audio time, age, inference latency, policy decisions, and browser
+acknowledgments. The adapter heads were not independently calibrated as probabilities of observable
+conversational behavior; their values are therefore retained as engineering telemetry rather than
+presented as behavioral results. Figure~\ref{fig:debug} limits the paper view to directly observable
+speech and playback activity.
 
 Concrete reproducibility artifacts accompany each boundary: immutable serialized schemas reject
 extra fields; manifests retain seeds, input hashes, configuration, metrics, and checkpoint identity;

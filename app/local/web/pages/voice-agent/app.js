@@ -856,11 +856,9 @@ function drawProbabilitySeries(context, points, xForTime, top, bottom, field, co
     context.strokeStyle = color;
     context.globalAlpha = 0.55;
     context.lineWidth = 1.25;
-    context.setLineDash(segment[0].disposition === "applicable" ? [] : [3, 3]);
     context.stroke();
   }
   context.globalAlpha = 1;
-  context.setLineDash([]);
   for (const sample of samples) {
     const x = xForTime(sample.audioTimeMs);
     const y = bottom - sample.probability * (bottom - top);

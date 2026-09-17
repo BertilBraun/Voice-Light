@@ -85,7 +85,7 @@ def test_voice_page_exposes_streaming_conversation_history() -> None:
     assert 'data.type === "playback.clock"' in script_response.text
     assert "underrun_count: data.underrunCount" in script_response.text
     assert 'id="playback-underruns"' not in page_response.text
-    assert "app.js?v=22" in page_response.text
+    assert "app.js?v=23" in page_response.text
     assert 'recordSessionTraceEvent("server", message)' in script_response.text
     assert 'recordSessionTraceEvent("client", message)' in script_response.text
     assert "schema_version: 1" in script_response.text
