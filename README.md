@@ -6,7 +6,7 @@ their behavior, integrate the useful pieces into a full-duplex cascade, and depl
 scale-to-zero GPU compute.
 
 [Try the live demo](https://voice.bertil-braun.de) ·
-[Read the technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.1/voice-light-technical-report.pdf) ·
+[Read the paper](https://arxiv.org/abs/2609.20995) ·
 [Read the deployment record](docs/modal-voice-deployment.md) ·
 [Explore the models and datasets](#published-artifacts)
 
@@ -111,23 +111,27 @@ made from synthetic interaction validation.
 
 ### Public voice demo
 
-The final human microphone acceptance run on 12 September 2026 completed eight of eight turns,
-including live tool use and conversational follow-ups. Six turns sent their first server audio
-packet within 800 ms of the final VAD endpoint.
+Across three unscripted operator-run microphone sessions, 36 response turns were measured. The
+first server audio packet arrived within 800 ms of the final VAD endpoint for 21 turns. One session
+exported complete component telemetry for 13 turns.
 
 | Metric | Observed value |
 | --- | ---: |
-| Final VAD endpoint → first server audio, median | 677 ms |
-| Final VAD endpoint → first server audio, mean | 829 ms |
-| Final VAD endpoint → first server audio, range | 593–1,451 ms |
-| Endpoint decision, median | 508 ms |
-| LLM first word, median | 268 ms |
-| TTS first PCM, median | 453 ms |
-| First server audio → browser render, median | 109 ms |
-| Final VAD endpoint → browser render, median | 783 ms |
+| Sessions / measured turns | 3 / 36 |
+| Final VAD endpoint → first server audio, median | 758 ms |
+| Final VAD endpoint → first server audio, mean | 932 ms |
+| Final VAD endpoint → first server audio, range | 528–1,652 ms |
+| Turns below 800 ms | 21 / 36 |
+| Fully traced turns | 13 |
+| Endpoint decision, median | 502 ms |
+| LLM first word, median | 336 ms |
+| TTS first PCM, median | 444 ms |
+| First server audio → browser render, median | 95 ms |
+| Final VAD endpoint → browser render, median | 836 ms |
 
-This is one human session, not a controlled latency distribution. The final deployment record
-contains the full smoke-test history, failure analysis, and measurement definitions.
+This is an instrumented case study run by one operator, not a controlled user evaluation or a
+population latency distribution. The paper and final deployment record contain the measurement
+definitions, limitations, and development smoke-test history.
 
 ## Published artifacts
 
@@ -196,7 +200,22 @@ through Modal secrets and are never committed.
 - The public demo is single-session and English-first. Microphone, network, browser scheduling, and
   Modal host variation all affect perceived latency.
 
-The [Voice Light technical report](https://github.com/BertilBraun/Voice-Light/releases/download/v1.0.1/voice-light-technical-report.pdf)
-connects the data, training, evaluation, integration, deployment, and final human acceptance record
-in one narrative. Its LaTeX source and build instructions are in
+## Paper
+
+[Voice-Light: A Full-Duplex Cascaded Voice Agent with Causal Turn-Taking and Speculative
+Generation](https://arxiv.org/abs/2609.20995) connects the data, training, evaluation, integration,
+deployment, and microphone case study in one narrative. The [corresponding GitHub
+release](https://github.com/BertilBraun/Voice-Light/releases/tag/v1.0.2) contains the PDF and exact
+arXiv source package; the maintained LaTeX source and build instructions are in
 [`docs/technical-report`](docs/technical-report).
+
+```bibtex
+@article{braun2026voicelight,
+  title = {Voice-Light: A Full-Duplex Cascaded Voice Agent with Causal Turn-Taking and Speculative Generation},
+  author = {Braun, Bertil},
+  journal = {arXiv preprint arXiv:2609.20995},
+  year = {2026},
+  doi = {10.48550/arXiv.2609.20995},
+  url = {https://arxiv.org/abs/2609.20995},
+}
+```
