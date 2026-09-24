@@ -1,5 +1,6 @@
 import { SpokenTextProgress } from "./spoken-text-progress.mjs";
 import { PRODUCTION_VOICE_WEBSOCKET_URL } from "./public-config.mjs";
+import { rejectIfModalGpuBudgetIsExhausted } from "./compute-availability.mjs";
 import {
   contiguousModelObservationSegments,
   INTERACTION_TIMELINE_DURATION_MS,
@@ -187,6 +188,7 @@ async function startSession() {
   stopButton.disabled = false;
   setConnection("starting", "Server starting…", "Waking the server. This can take about a minute after it has scaled down.");
   try {
+    await rejectIfModalGpuBudgetIsExhausted(PRODUCTION_VOICE_WEBSOCKET_URL);
     socket = await openSocket(PRODUCTION_VOICE_WEBSOCKET_URL);
     setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
     const sessionReady = waitForSessionReady(socket);
