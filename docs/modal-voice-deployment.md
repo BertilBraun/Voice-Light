@@ -9,15 +9,16 @@ registry, search integration, predictive generation, playback controller, Nemotr
 workers, and Kyutai TTS remain authoritative.
 
 The GPU container admits one Modal input and the compute route separately enforces one live voice
-session. Modal requests a co-located A10 pair first and falls back only to an L40S pair when A10
-capacity is unavailable. Qwen, Nemotron, and the search summarizer are pinned to physical GPU 0;
+session. Modal requests co-located GPU pairs in the ordered fallback sequence A10, L40S, L4, then
+A100. Qwen, Nemotron, and the search summarizer are pinned to physical GPU 0;
 Kyutai is pinned to physical GPU 1, so concurrent text and first-frame speech generation cannot
 contend for the same CUDA device.
-A100 and H100 are deliberately excluded from the bounded fallback list because they are
-unnecessarily expensive for this stack. The endpoint is
-scheduled in Modal's broad `eu` compute region and routed through `eu-west`; this avoids
-latency-dominated global placements while retaining the larger European GPU pool. Modal may scale
-to zero, has one maximum container, and keeps an idle container for 120 seconds. Modal sets
+T4 is excluded because its 16 GB memory is below the validated 24 GB deployment class, and H100 is
+excluded on cost grounds. Requests enter Modal through `eu-west`, while containers use Modal's
+global compute fleet. Modal's region constraints are strict and do not support an ordered
+Europe-first/global-spill policy for one WebSocket function; leaving compute unpinned prevents an
+empty European capacity pool from blocking the demo indefinitely. Modal may scale to zero, has one
+maximum container, and keeps an idle container for 120 seconds. Modal sets
 `VOICE_LIGHT_EAGER_MODEL_LOADING=true`, so the ASGI lifespan awaits model
 initialization before Modal marks a cold container ready or admits the first request. Nemotron,
 Qwen, Kyutai, and the independent search summarizer load concurrently. The 1,800-second Modal
@@ -186,12 +187,13 @@ http://127.0.0.1:8000/voice-agent?compute=wss%3A%2F%2Fbertil-braun-private--voic
 
 The final runtime keeps the current provider-neutral compute application and uses Modal only for
 packaging, placement, secrets, persistent cache Volumes, admission, and scale-to-zero. Production
-requests a co-located two-GPU allocation (`A10:2`, with `L40S:2` as the only fallback), keeps Qwen,
-Nemotron, and the search summarizer on GPU 0, and reserves GPU 1 for Kyutai. Four persistent model
-workers load concurrently. The shared Nemotron worker supplies both streaming ASR and causal encoder
-features to the incremental turn adapter; it does not load a second speech backbone or repeatedly
-re-encode a rolling waveform window. The 120-second idle window is the intentional compromise
-between scale-to-zero cost and avoiding a cold start between immediately adjacent demonstrations.
+requests a co-located two-GPU allocation in the ordered fallback sequence `A10:2`, `L40S:2`,
+`L4:2`, and `A100:2`, keeps Qwen, Nemotron, and the search summarizer on GPU 0, and reserves
+GPU 1 for Kyutai. Four persistent model workers load concurrently. The shared Nemotron worker
+supplies both streaming ASR and causal encoder features to the incremental turn adapter; it does not
+load a second speech backbone or repeatedly re-encode a rolling waveform window. The 120-second idle
+window is the intentional compromise between scale-to-zero cost and avoiding a cold start between
+immediately adjacent demonstrations.
 
 The current final-topology scaled-to-zero readiness observations span approximately 32.0--54.9
 seconds, including one 32.736-second two-GPU deployment sample. These are individual observations,

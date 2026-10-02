@@ -1,6 +1,9 @@
 import { SpokenTextProgress } from "./spoken-text-progress.mjs";
 import { PRODUCTION_VOICE_WEBSOCKET_URL } from "./public-config.mjs";
-import { rejectIfModalGpuBudgetIsExhausted } from "./compute-availability.mjs";
+import {
+  provisioningStatus,
+  rejectIfModalGpuBudgetIsExhausted,
+} from "./compute-availability.mjs";
 import {
   contiguousModelObservationSegments,
   INTERACTION_TIMELINE_DURATION_MS,
@@ -186,10 +189,18 @@ async function startSession() {
   startButton.disabled = true;
   startButton.textContent = "Starting…";
   stopButton.disabled = false;
-  setConnection("starting", "Server starting…", "Waking the server. This can take about a minute after it has scaled down.");
+  const provisioningStartedAt = performance.now();
+  const updateProvisioningStatus = () => {
+    const status = provisioningStatus(performance.now() - provisioningStartedAt);
+    setConnection("starting", status.title, status.detail);
+  };
+  updateProvisioningStatus();
+  let provisioningStatusTimer = window.setInterval(updateProvisioningStatus, 1000);
   try {
     await rejectIfModalGpuBudgetIsExhausted(PRODUCTION_VOICE_WEBSOCKET_URL);
     socket = await openSocket(PRODUCTION_VOICE_WEBSOCKET_URL);
+    window.clearInterval(provisioningStatusTimer);
+    provisioningStatusTimer = null;
     setConnection("connected", "Preparing session…", "The server is connected, but the microphone is not ready yet.");
     const sessionReady = waitForSessionReady(socket);
     sendClientEvent({
@@ -222,6 +233,8 @@ async function startSession() {
     resetControls();
     if (stopRequested) setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
     else setConnection("error", "Connection problem", error.message);
+  } finally {
+    if (provisioningStatusTimer !== null) window.clearInterval(provisioningStatusTimer);
   }
 }
 

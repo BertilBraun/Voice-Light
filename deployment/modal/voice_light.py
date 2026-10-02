@@ -79,8 +79,13 @@ MODEL_REPOSITORIES: Final = (
 
 @dataclass(frozen=True)
 class ModalDeploymentConfiguration:
-    gpu_options: tuple[str, ...] = ("A10:2", "L40S:2")
-    compute_regions: tuple[str, ...] = ("eu",)
+    gpu_options: tuple[str, ...] = (
+        "A10:2",
+        "L40S:2",
+        "L4:2",
+        "A100:2",
+    )
+    compute_regions: tuple[str, ...] | None = None
     routing_region: str = "eu-west"
     scaledown_window_seconds: int = 120
     startup_timeout_seconds: int = 1_800
@@ -292,7 +297,9 @@ def smoke_search_provider() -> None:
     image=image,
     env={"HF_HUB_OFFLINE": "1"},
     gpu=list(configuration.gpu_options),
-    region=list(configuration.compute_regions),
+    region=(
+        list(configuration.compute_regions) if configuration.compute_regions is not None else None
+    ),
     routing_region=configuration.routing_region,
     max_containers=1,
     min_containers=0,
@@ -306,7 +313,7 @@ def smoke_search_provider() -> None:
     },
 )
 @modal.concurrent(max_inputs=1)
-class VoiceLightEurope:
+class VoiceLight:
     settings: ComputeSettings
     runtime: ComputeRuntime
 
