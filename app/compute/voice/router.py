@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import WebSocket
 
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope
+from app.compute.voice.client_metadata import VoiceClientMetadata
 from app.compute.voice.playback import PlaybackPolicyConfig
 from app.compute.voice.search import (
     ConfiguredTavilySearchSettings,
@@ -15,13 +17,22 @@ from app.compute.voice.search import (
 from app.compute.voice.session import SessionPolicy, VoiceSession
 from app.compute.voice.tools import StandardSearchHandler, create_runtime_tool_registry
 
+logger = logging.getLogger(__name__)
+
 
 async def run_voice_session(
     websocket: WebSocket,
     runtime: ComputeRuntime,
     request_id: str,
+    client_metadata: VoiceClientMetadata,
 ) -> None:
     with RequestIdScope(request_id):
+        logger.info(
+            "voice client admitted: origin=%r user_agent=%r client_hash=%s",
+            client_metadata.origin,
+            client_metadata.user_agent,
+            client_metadata.client_address_hash,
+        )
         language_model = runtime.require_language_model()
         voice_stack_settings = runtime.voice_stack_settings
         assert voice_stack_settings is not None

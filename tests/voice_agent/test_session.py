@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
+from starlette.websockets import WebSocketDisconnect
 
 from app.compute.voice.conversation import (
     ConversationMessage,
@@ -279,6 +280,33 @@ def test_session_policy_reads_tool_timeouts() -> None:
 
     assert policy.tool_timeout_seconds == 3.5
     assert policy.tool_cancellation_timeout_seconds == 0.4
+
+
+def test_session_policy_reads_session_deadlines() -> None:
+    policy = SessionPolicy.from_environment(
+        {
+            "VOICE_LIGHT_SESSION_START_TIMEOUT_SECONDS": "3.5",
+            "VOICE_LIGHT_SESSION_INACTIVITY_TIMEOUT_SECONDS": "45",
+            "VOICE_LIGHT_SESSION_MAXIMUM_DURATION_SECONDS": "300",
+        }
+    )
+
+    assert policy.session_start_timeout_seconds == 3.5
+    assert policy.session_inactivity_timeout_seconds == 45.0
+    assert policy.session_maximum_duration_seconds == 300.0
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    (
+        "VOICE_LIGHT_SESSION_START_TIMEOUT_SECONDS",
+        "VOICE_LIGHT_SESSION_INACTIVITY_TIMEOUT_SECONDS",
+        "VOICE_LIGHT_SESSION_MAXIMUM_DURATION_SECONDS",
+    ),
+)
+def test_session_policy_rejects_invalid_session_deadlines(environment_name: str) -> None:
+    with pytest.raises(ValueError, match="Session deadlines|must be numeric"):
+        SessionPolicy.from_environment({environment_name: "0"})
 
 
 def test_session_policy_default_allows_search_summarization_latency() -> None:
@@ -1509,6 +1537,78 @@ class CleanupFailingSpeechSynthesizer:
 
     def start_session(self) -> SpeechSynthesisSession:
         return CleanupFailingSpeechSynthesisSession()
+
+
+def test_session_closes_when_start_event_does_not_arrive() -> None:
+    policy = SessionPolicy(
+        session_start_timeout_seconds=0.03,
+        session_inactivity_timeout_seconds=1.0,
+        session_maximum_duration_seconds=1.0,
+        vad_speculation_enabled=False,
+    )
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        policy=policy,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_json()
+
+    assert disconnect.value.code == 1000
+    assert disconnect.value.reason == "The session start deadline was reached."
+
+
+def test_session_closes_after_meaningful_inactivity() -> None:
+    policy = SessionPolicy(
+        session_start_timeout_seconds=1.0,
+        session_inactivity_timeout_seconds=0.03,
+        session_maximum_duration_seconds=1.0,
+        vad_speculation_enabled=False,
+    )
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        policy=policy,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        assert websocket.receive_json()["type"] == "session.ready"
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_json()
+
+    assert disconnect.value.code == 1000
+    assert disconnect.value.reason == (
+        "The session ended after an extended period without voice activity."
+    )
+
+
+def test_session_closes_at_absolute_duration_limit() -> None:
+    policy = SessionPolicy(
+        session_start_timeout_seconds=1.0,
+        session_inactivity_timeout_seconds=1.0,
+        session_maximum_duration_seconds=0.03,
+        vad_speculation_enabled=False,
+    )
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        policy=policy,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json({"type": "session.start", "input_sample_rate": 16_000})
+        assert websocket.receive_json()["type"] == "session.ready"
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_json()
+
+    assert disconnect.value.code == 1000
+    assert disconnect.value.reason == "The public demo session time limit was reached."
 
 
 def test_full_session_streams_audio_and_commits_naturally_completed_history() -> None:

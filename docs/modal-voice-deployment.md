@@ -86,6 +86,14 @@ unauthenticated because the page connects directly. Public model downloads work 
 search credential cannot replace the compute token. Without the Tavily key, the search tool reports
 its typed unavailable result. Updating a Modal secret restarts dependent containers.
 
+The public WebSocket has server-enforced cost boundaries. A connection must send `session.start`
+within 10 seconds, closes after two minutes without speech, generation, or playback activity, and
+has an absolute ten-minute lifetime. These limits apply even when a client omits browser cleanup.
+The browser additionally closes a live session after one minute in a hidden tab and immediately on
+page exit. Admission logs record the request identifier, Origin, bounded User-Agent, keyed client
+address hash, local time zone, selected GPU names, close reason, and duration. Raw client addresses
+are never persisted; the hash is deployment-specific because it uses the compute secret as its key.
+
 The deployment creates or reuses `voice-light-agent-model-cache` for Hugging Face and Torch data
 and `voice-light-runtime-cache` for runtime logs and dataset-audio cache. The adapter checkpoint is
 copied into the immutable image at `/opt/voice-light-artifacts/adapter-best.pt`; the source remains
@@ -274,6 +282,9 @@ The deployed starting values are:
 | Environment variable | Value | Meaning |
 | --- | ---: | --- |
 | `VOICE_LIGHT_ASR_LOOKAHEAD_TOKENS` | `1` | Nemotron streaming lookahead used in training and inference |
+| `VOICE_LIGHT_SESSION_START_TIMEOUT_SECONDS` | `10` | maximum delay between WebSocket admission and `session.start` |
+| `VOICE_LIGHT_SESSION_INACTIVITY_TIMEOUT_SECONDS` | `120` | maximum time without speech, generation, or playback activity |
+| `VOICE_LIGHT_SESSION_MAXIMUM_DURATION_SECONDS` | `600` | absolute public-demo session lifetime |
 | `VOICE_LIGHT_FLOOR_TAKE_THRESHOLD` | `0.82` | predicted floor take that commits interruption |
 | `VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD` | `0.82` | predicted feedback that resumes the same generation |
 | `VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS` | `500` | conservative unresolved-overlap deadline |

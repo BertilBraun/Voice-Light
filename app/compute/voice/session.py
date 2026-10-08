@@ -168,6 +168,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SessionPolicy:
+    session_start_timeout_seconds: float = 10.0
+    session_inactivity_timeout_seconds: float = 120.0
+    session_maximum_duration_seconds: float = 600.0
     # This silence begins after Silero's configured 250 ms end-of-speech decision.
     silence_duration_ms: int = 500
     pre_roll_duration_ms: int = 300
@@ -337,6 +340,21 @@ class SessionPolicy:
             0.7,
         )
         return cls(
+            session_start_timeout_seconds=_environment_float(
+                environment,
+                "VOICE_LIGHT_SESSION_START_TIMEOUT_SECONDS",
+                10.0,
+            ),
+            session_inactivity_timeout_seconds=_environment_float(
+                environment,
+                "VOICE_LIGHT_SESSION_INACTIVITY_TIMEOUT_SECONDS",
+                120.0,
+            ),
+            session_maximum_duration_seconds=_environment_float(
+                environment,
+                "VOICE_LIGHT_SESSION_MAXIMUM_DURATION_SECONDS",
+                600.0,
+            ),
             speculative_yield_threshold=speculative_yield_threshold,
             speculative_turn_completion_threshold=(speculative_turn_completion_threshold),
             speculative_minimum_confidence=speculative_minimum_confidence,
@@ -364,6 +382,13 @@ class SessionPolicy:
         )
 
     def __post_init__(self) -> None:
+        session_deadlines = (
+            self.session_start_timeout_seconds,
+            self.session_inactivity_timeout_seconds,
+            self.session_maximum_duration_seconds,
+        )
+        if any(deadline <= 0.0 for deadline in session_deadlines):
+            raise ValueError("Session deadlines must be positive.")
         thresholds = (
             self.speculative_yield_threshold,
             self.speculative_turn_completion_threshold,
@@ -422,6 +447,15 @@ class SessionLifecycle(StrEnum):
     FAILED = "failed"
     STOPPING = "stopping"
     CLOSED = "closed"
+
+
+class SessionClosureReason(StrEnum):
+    CLIENT_DISCONNECTED = "client_disconnected"
+    CLIENT_STOPPED = "client_stopped"
+    START_TIMEOUT = "start_timeout"
+    INACTIVITY_TIMEOUT = "inactivity_timeout"
+    MAXIMUM_DURATION = "maximum_duration"
+    SESSION_FAILURE = "session_failure"
 
 
 class QwenFirstAudioYieldEndReason(StrEnum):
@@ -741,6 +775,9 @@ class VoiceSession:
         self.audio_sample_count = 0
         self.started = False
         self.lifecycle = SessionLifecycle.CREATED
+        self.connected_at = 0.0
+        self.last_meaningful_activity_at = 0.0
+        self.closure_reason: SessionClosureReason | None = None
         self.pending_generation_teardown: ActiveGeneration | None = None
         self.pending_generation_teardown_task: asyncio.Task[None] | None = None
         self.latest_transcript_revision: TranscriptRevision | None = None
@@ -768,16 +805,21 @@ class VoiceSession:
 
     async def run(self) -> None:
         await self.websocket.accept()
+        self.connected_at = time.perf_counter()
+        self.last_meaningful_activity_at = self.connected_at
         self._transition_session(SessionLifecycle.CONNECTED)
         logger.info("voice session opened: session=%s", self.session_id)
         receive_task = asyncio.create_task(self._receive_loop())
         recognition_task = asyncio.create_task(self._recognition_loop())
+        deadline_task = asyncio.create_task(self._enforce_session_deadlines())
         try:
             await asyncio.gather(receive_task, recognition_task)
         except WebSocketDisconnect:
-            pass
+            if self.closure_reason is None:
+                self.closure_reason = SessionClosureReason.CLIENT_DISCONNECTED
         except Exception as error:
             self.lifecycle = SessionLifecycle.FAILED
+            self.closure_reason = SessionClosureReason.SESSION_FAILURE
             logger.exception("voice session failed: %s", self.session_id)
             failure = _component_error(
                 error,
@@ -789,6 +831,7 @@ class VoiceSession:
             self.lifecycle = SessionLifecycle.STOPPING
             receive_task.cancel()
             recognition_task.cancel()
+            deadline_task.cancel()
             await self._request_generation_cancellation(
                 send_event=False,
                 tool_invalidation_reason=ToolInvalidationReason.SESSION_STOPPED,
@@ -796,7 +839,7 @@ class VoiceSession:
             await self._await_generation_teardown()
             await self._close_generation_tasks()
             await self.speech_understanding.close()
-            for task in (receive_task, recognition_task):
+            for task in (receive_task, recognition_task, deadline_task):
                 try:
                     await task
                 except asyncio.CancelledError:
@@ -823,7 +866,49 @@ class VoiceSession:
                 self.session_id,
                 self.overlap_metrics.report(),
             )
-            logger.info("voice session closed: session=%s", self.session_id)
+            logger.info(
+                "voice session closed: session=%s reason=%s duration_seconds=%.1f",
+                self.session_id,
+                self.closure_reason or SessionClosureReason.CLIENT_DISCONNECTED,
+                time.perf_counter() - self.connected_at,
+            )
+
+    async def _enforce_session_deadlines(self) -> None:
+        while True:
+            now = time.perf_counter()
+            maximum_deadline = self.connected_at + self.policy.session_maximum_duration_seconds
+            if not self.started:
+                deadline = min(
+                    self.connected_at + self.policy.session_start_timeout_seconds,
+                    maximum_deadline,
+                )
+                reason = SessionClosureReason.START_TIMEOUT
+            else:
+                inactivity_deadline = (
+                    self.last_meaningful_activity_at
+                    + self.policy.session_inactivity_timeout_seconds
+                )
+                deadline = min(inactivity_deadline, maximum_deadline)
+                reason = SessionClosureReason.INACTIVITY_TIMEOUT
+            if maximum_deadline <= deadline:
+                reason = SessionClosureReason.MAXIMUM_DURATION
+            if now < deadline:
+                await asyncio.sleep(deadline - now)
+                continue
+            self.closure_reason = reason
+            logger.warning(
+                "voice session deadline reached: session=%s reason=%s",
+                self.session_id,
+                reason,
+            )
+            close_message = _session_close_message(reason)
+            with contextlib.suppress(RuntimeError):
+                await self.websocket.close(code=1000, reason=close_message)
+            await self.audio_queue.put(None)
+            return
+
+    def _record_meaningful_activity(self) -> None:
+        self.last_meaningful_activity_at = time.perf_counter()
 
     async def _receive_loop(self) -> None:
         while True:
@@ -842,6 +927,7 @@ class VoiceSession:
             if event_json is None:
                 continue
             event = voice_client_event_adapter.validate_json(event_json)
+            self._record_meaningful_activity()
             match event:
                 case SessionStartEvent():
                     await self._start(event)
@@ -858,6 +944,7 @@ class VoiceSession:
                 case PlaybackCommandAcknowledgementEvent():
                     await self._acknowledge_playback_command(event)
                 case SessionStopEvent():
+                    self.closure_reason = SessionClosureReason.CLIENT_STOPPED
                     await self.audio_queue.put(None)
                     return
 
@@ -868,7 +955,13 @@ class VoiceSession:
             raise ValueError(f"Input sample rate must be {INPUT_SAMPLE_RATE} Hz.")
         self.tool_executor.configure_session(event.local_time_zone)
         self.started = True
+        self._record_meaningful_activity()
         self._transition_session(SessionLifecycle.READY)
+        logger.info(
+            "voice session started: session=%s time_zone=%s",
+            self.session_id,
+            event.local_time_zone,
+        )
         await self._send_event(
             SessionReadyEvent(
                 session_id=self.session_id,
@@ -936,6 +1029,8 @@ class VoiceSession:
                     playback_condition=observed_playback_condition,
                 )
                 is_speech = speech_detection.is_speech
+                if is_speech:
+                    self._record_meaningful_activity()
                 self.next_audio_sequence_number += 1
                 await self._send_periodic_speech_debug(chunk)
                 if not speech_active:
@@ -2217,6 +2312,7 @@ class VoiceSession:
                 self._mark_generation_interrupted(generation)
 
     async def _run_generation(self, generation: ActiveGeneration) -> None:
+        self._record_meaningful_activity()
         generation.latency.generation_started_at = time.perf_counter()
         generation.latency.qwen_start = MediaLatencyPoint(
             monotonic_time_seconds=generation.latency.generation_started_at,
@@ -4454,6 +4550,18 @@ def _require_turn_commit_causal_source(latency: GenerationLatency) -> CausalSour
     if latency.turn_commit_causal_source is None:
         raise AssertionError("Missing turn-commit causal source.")
     return latency.turn_commit_causal_source
+
+
+def _session_close_message(reason: SessionClosureReason) -> str:
+    match reason:
+        case SessionClosureReason.START_TIMEOUT:
+            return "The session start deadline was reached."
+        case SessionClosureReason.INACTIVITY_TIMEOUT:
+            return "The session ended after an extended period without voice activity."
+        case SessionClosureReason.MAXIMUM_DURATION:
+            return "The public demo session time limit was reached."
+        case _:
+            raise AssertionError(f"No close message is defined for {reason}.")
 
 
 def _environment_float(

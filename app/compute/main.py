@@ -24,6 +24,7 @@ from app.compute.dataset_audio import (
 from app.compute.quality.router import analyze_uploaded_quality
 from app.compute.runtime import ComputeRuntime
 from app.compute.telemetry import RequestIdScope, configure_logging, gpu_memory
+from app.compute.voice.client_metadata import create_voice_client_metadata
 from app.compute.voice.router import run_voice_session
 from app.shared.asr import RemoteAsrRequest, RemoteAsrResponse
 from app.shared.compute_api import (
@@ -194,10 +195,18 @@ def create_compute_app_for_runtime(
             await websocket.close(code=1013, reason="Another voice session is active. Retry later.")
             return
         try:
+            client_metadata = create_voice_client_metadata(
+                origin=websocket.headers.get("origin"),
+                user_agent=websocket.headers.get("user-agent"),
+                forwarded_for=websocket.headers.get("x-forwarded-for"),
+                peer_host=websocket.client.host if websocket.client is not None else None,
+                hash_key=settings.token,
+            )
             await run_voice_session(
                 websocket=websocket,
                 runtime=runtime,
                 request_id=request_id,
+                client_metadata=client_metadata,
             )
         finally:
             runtime.release_voice_session(lease)

@@ -1,6 +1,10 @@
 import { SpokenTextProgress } from "./spoken-text-progress.mjs";
 import { PRODUCTION_VOICE_WEBSOCKET_URL } from "./public-config.mjs";
 import {
+  HIDDEN_SESSION_STOP_DELAY_MS,
+  shouldScheduleHiddenSessionStop,
+} from "./session-lifetime.mjs";
+import {
   provisioningStatus,
   rejectIfModalGpuBudgetIsExhausted,
 } from "./compute-availability.mjs";
@@ -63,6 +67,7 @@ const assistantTurns = new Map();
 const intentionallyClosedSockets = new WeakSet();
 const interactionEvidence = new Map();
 let interactionTimelineFrame;
+let hiddenSessionStopTimer;
 
 new ResizeObserver(scheduleInteractionTimelineDraw).observe(interactionTimeline);
 
@@ -176,7 +181,9 @@ class ConversationTurn {
 }
 
 startButton.addEventListener("click", startSession);
-stopButton.addEventListener("click", stopSession);
+stopButton.addEventListener("click", () => void stopSession());
+document.addEventListener("visibilitychange", handleVisibilityChange);
+window.addEventListener("pagehide", closeSessionForPageExit);
 generatedTextToggle.addEventListener("change", () => {
   document.body.dataset.showGeneratedText = String(generatedTextToggle.checked);
 });
@@ -247,8 +254,10 @@ function openSocket(endpoint) {
     candidate.addEventListener("open", () => { opened = true; resolve(candidate); }, { once: true });
     candidate.addEventListener("error", () => reject(new Error("WebSocket connection failed.")), { once: true });
     candidate.addEventListener("message", handleMessage);
-    candidate.addEventListener("close", () => {
-      if (!opened) reject(new Error("The server connection closed before it was ready."));
+    candidate.addEventListener("close", (event) => {
+      if (!opened) {
+        reject(new Error(event.reason || "The server connection closed before it was ready."));
+      }
       void stopMedia().then(() => {
         finalizeInputRecording();
         finalizeSessionTrace();
@@ -256,6 +265,7 @@ function openSocket(endpoint) {
       resetControls();
       if (intentionallyClosedSockets.has(candidate)) return;
       if (stopRequested) setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
+      else if (event.reason) setConnection("idle", "Session ended", event.reason);
       else setConnection("error", "Connection closed", "The server connection closed unexpectedly. Start again to reconnect.");
     });
   });
@@ -274,7 +284,10 @@ function waitForSessionReady(candidate) {
         reject(new Error(message.message));
       }
     }
-    function onClose() { cleanup(); reject(new Error("The server closed before the session was ready.")); }
+    function onClose(event) {
+      cleanup();
+      reject(new Error(event.reason || "The server closed before the session was ready."));
+    }
     function cleanup() {
       candidate.removeEventListener("message", onMessage);
       candidate.removeEventListener("close", onClose);
@@ -577,7 +590,9 @@ function handleMessage(event) {
   }
 }
 
-async function stopSession() {
+async function stopSession(
+  finalDetail = "Press Start microphone to wake the server.",
+) {
   stopRequested = true;
   setConnection("connected", "Stopping…", "Closing the microphone and server connection.");
   if (socket?.readyState === WebSocket.OPEN) sendClientEvent({ type: "session.stop" });
@@ -589,7 +604,27 @@ async function stopSession() {
   finalizeInputRecording();
   finalizeSessionTrace();
   resetControls();
-  setConnection("idle", "Disconnected", "Press Start microphone to wake the server.");
+  setConnection("idle", "Disconnected", finalDetail);
+}
+
+function handleVisibilityChange() {
+  if (hiddenSessionStopTimer !== undefined) {
+    window.clearTimeout(hiddenSessionStopTimer);
+    hiddenSessionStopTimer = undefined;
+  }
+  const readyState = socket?.readyState ?? WebSocket.CLOSED;
+  if (!shouldScheduleHiddenSessionStop(document.hidden, readyState)) return;
+  hiddenSessionStopTimer = window.setTimeout(() => {
+    hiddenSessionStopTimer = undefined;
+    void stopSession("The microphone stopped after one minute in a background tab.");
+  }, HIDDEN_SESSION_STOP_DELAY_MS);
+}
+
+function closeSessionForPageExit() {
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  sendClientEvent({ type: "session.stop" });
+  intentionallyClosedSockets.add(socket);
+  socket.close();
 }
 
 async function stopMedia() {
@@ -602,6 +637,10 @@ async function stopMedia() {
 }
 
 function resetControls() {
+  if (hiddenSessionStopTimer !== undefined) {
+    window.clearTimeout(hiddenSessionStopTimer);
+    hiddenSessionStopTimer = undefined;
+  }
   cancelledGenerationId = -1;
   audioGenerationId = -1;
   expectedAudioSequence = 0;

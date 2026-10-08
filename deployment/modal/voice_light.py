@@ -128,6 +128,9 @@ class ModalDeploymentConfiguration:
             "VOICE_LIGHT_QWEN_FIRST_AUDIO_YIELD_WORD_COUNT": "11",
             "VOICE_LIGHT_QWEN_BACKEND": "transformers",
             "VOICE_LIGHT_SEARCH_CUDA_DEVICE": "0",
+            "VOICE_LIGHT_SESSION_INACTIVITY_TIMEOUT_SECONDS": "120",
+            "VOICE_LIGHT_SESSION_MAXIMUM_DURATION_SECONDS": "600",
+            "VOICE_LIGHT_SESSION_START_TIMEOUT_SECONDS": "10",
             "VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH": "false",
             "VOICE_LIGHT_TTS_BACKEND": "kyutai",
             "VOICE_LIGHT_TTS_CUDA_DEVICE": "1",
@@ -213,6 +216,7 @@ image = (
 )
 
 with image.imports():
+    import torch
     from huggingface_hub import snapshot_download
 
     from app.compute.config import ComputeSettings
@@ -327,6 +331,13 @@ class VoiceLight:
             os.environ["MODAL_CLOUD_PROVIDER"],
             os.environ["MODAL_REGION"],
             os.environ["MODAL_TASK_ID"],
+        )
+        logger.info(
+            "Modal container hardware: gpus=%s",
+            tuple(
+                torch.cuda.get_device_name(device_index)
+                for device_index in range(torch.cuda.device_count())
+            ),
         )
         self.runtime = create_compute_runtime(self.settings)
         asyncio.run(self._load_models())

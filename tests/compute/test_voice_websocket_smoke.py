@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import app.compute.main as compute_main
 from app.compute.config import ComputeSettings, VoiceStackSettings
 from app.compute.voice.admission import SingleVoiceSessionAdmission, VoiceSessionLease
+from app.compute.voice.client_metadata import VoiceClientMetadata
 from app.compute.voice.schemas import (
     AssistantAudioBoundaryEvent,
     AssistantTextDeltaEvent,
@@ -56,8 +57,9 @@ async def run_mock_voice_session(
     websocket: WebSocket,
     runtime: FakeComputeRuntime,
     request_id: str,
+    client_metadata: VoiceClientMetadata,
 ) -> None:
-    del runtime, request_id
+    del runtime, request_id, client_metadata
     await websocket.accept()
     assert await websocket.receive_json() == {
         "type": "session.start",
