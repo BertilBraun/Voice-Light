@@ -94,6 +94,17 @@ page exit. Admission logs record the request identifier, Origin, bounded User-Ag
 address hash, local time zone, selected GPU names, close reason, and duration. Raw client addresses
 are never persisted; the hash is deployment-specific because it uses the compute secret as its key.
 
+Sessions that reach `session.start` are retained privately for research and quality analysis under
+`/runtime-cache/session-captures` in the existing `voice-light-runtime-cache` Modal Volume. Each
+session produces a mono 16 kHz PCM16 WAV containing exactly the microphone frames accepted by the
+WebSocket and a paired JSON record containing final audible conversation history, generated
+candidates, tool requests and outcomes, client metadata, closure reason, and predictive, playback,
+and overlap summaries. The files are not served by an HTTP route. Files older than 30 days are
+deleted when the next session capture is saved. The public page discloses this capture and asks
+visitors not to share sensitive information. Set
+`VOICE_LIGHT_SESSION_CAPTURE_DIRECTORY` only on deployments intended to retain sessions; omitting
+it disables capture.
+
 The deployment creates or reuses `voice-light-agent-model-cache` for Hugging Face and Torch data
 and `voice-light-runtime-cache` for runtime logs and dataset-audio cache. The adapter checkpoint is
 copied into the immutable image at `/opt/voice-light-artifacts/adapter-best.pt`; the source remains
@@ -285,6 +296,8 @@ The deployed starting values are:
 | `VOICE_LIGHT_SESSION_START_TIMEOUT_SECONDS` | `10` | maximum delay between WebSocket admission and `session.start` |
 | `VOICE_LIGHT_SESSION_INACTIVITY_TIMEOUT_SECONDS` | `120` | maximum time without speech, generation, or playback activity |
 | `VOICE_LIGHT_SESSION_MAXIMUM_DURATION_SECONDS` | `600` | absolute public-demo session lifetime |
+| `VOICE_LIGHT_SESSION_CAPTURE_DIRECTORY` | `/runtime-cache/session-captures` | private Modal Volume directory for paired WAV and JSON session captures |
+| `VOICE_LIGHT_SESSION_CAPTURE_RETENTION_DAYS` | `30` | age pruned whenever a new capture is saved |
 | `VOICE_LIGHT_FLOOR_TAKE_THRESHOLD` | `0.82` | predicted floor take that commits interruption |
 | `VOICE_LIGHT_NON_FLOOR_FEEDBACK_THRESHOLD` | `0.82` | predicted feedback that resumes the same generation |
 | `VOICE_LIGHT_OVERLAP_CLASSIFICATION_DEADLINE_MS` | `500` | conservative unresolved-overlap deadline |

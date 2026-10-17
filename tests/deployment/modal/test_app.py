@@ -74,6 +74,10 @@ def test_modal_environment_enables_current_voice_stack() -> None:
     assert environment["VOICE_LIGHT_SESSION_START_TIMEOUT_SECONDS"] == "10"
     assert environment["VOICE_LIGHT_SESSION_INACTIVITY_TIMEOUT_SECONDS"] == "120"
     assert environment["VOICE_LIGHT_SESSION_MAXIMUM_DURATION_SECONDS"] == "600"
+    assert environment["VOICE_LIGHT_SESSION_CAPTURE_DIRECTORY"] == (
+        "/runtime-cache/session-captures"
+    )
+    assert environment["VOICE_LIGHT_SESSION_CAPTURE_RETENTION_DAYS"] == "30"
     assert environment["VOICE_LIGHT_TTS_CUDA_DEVICE"] == "1"
     assert environment["VOICE_LIGHT_SHARE_LANGUAGE_MODEL_FOR_SEARCH"] == "false"
 

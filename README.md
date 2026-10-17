@@ -75,6 +75,11 @@ Model caches live in a persistent Modal volume; model processes are persistent i
 container, but an idle deployment still pays the CUDA and model-initialization cost on its next
 cold start. The static frontend is hosted separately on GitHub Pages.
 
+For research and quality analysis, started public-demo sessions are privately retained for up to
+30 days as reconstructable microphone WAV audio plus structured transcripts, generated responses,
+tool activity, and timing summaries. The demo discloses this before microphone access; captures
+remain in private Modal storage and are not exposed by the application.
+
 The deployed conversation model is the stronger pinned `Qwen/Qwen3-4B-Instruct-2507`, not the
 1.7B experimental LoRA. This preserves general conversational quality while keeping the LoRA as a
 reproducible result and comparison point. The same principle applies to endpointing: the learned

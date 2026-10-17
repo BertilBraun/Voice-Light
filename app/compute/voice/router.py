@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 
 from fastapi import WebSocket
 
@@ -15,6 +16,7 @@ from app.compute.voice.search import (
     SearchPipeline,
 )
 from app.compute.voice.session import SessionPolicy, VoiceSession
+from app.compute.voice.session_capture import SessionCaptureConfig, SessionCaptureStore
 from app.compute.voice.tools import StandardSearchHandler, create_runtime_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -58,5 +60,17 @@ async def run_voice_session(
             policy=SessionPolicy.from_environment(os.environ),
             playback_policy=PlaybackPolicyConfig.from_environment(os.environ),
             tool_executor=create_runtime_tool_registry(search_handler=search_handler),
+            request_id=request_id,
+            client_metadata=client_metadata,
+            capture_store=_create_session_capture_store(os.environ),
         )
         await session.run()
+
+
+def _create_session_capture_store(
+    environment: Mapping[str, str],
+) -> SessionCaptureStore | None:
+    capture_config = SessionCaptureConfig.from_environment(environment)
+    if capture_config is None:
+        return None
+    return SessionCaptureStore(capture_config)

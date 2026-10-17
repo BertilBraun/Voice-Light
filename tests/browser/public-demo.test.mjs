@@ -43,6 +43,14 @@ test("public demo bounds abandoned background sessions", async () => {
   assert.match(application, /pagehide/);
 });
 
+test("public demo discloses private analysis capture", async () => {
+  const page = await readFile(pagePath, "utf8");
+
+  assert.match(page, /privately stores microphone audio/);
+  assert.match(page, /for up to 30 days/);
+  assert.match(page, /Do not share sensitive information/);
+});
+
 test("public demo publishes branded browser metadata", async () => {
   const [page, icon] = await Promise.all([readFile(pagePath, "utf8"), readFile(iconPath, "utf8")]);
 

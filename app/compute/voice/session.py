@@ -8,12 +8,14 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Self
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.compute.voice.client_metadata import VoiceClientMetadata
 from app.compute.voice.conversation import (
     ConversationMessage,
     ConversationRole,
@@ -124,6 +126,13 @@ from app.compute.voice.schemas import (
     VoiceServerEvent,
     VoiceServerEventType,
     voice_client_event_adapter,
+)
+from app.compute.voice.session_capture import (
+    SessionCaptureGeneration,
+    SessionCaptureRecord,
+    SessionCaptureStore,
+    SessionCaptureTool,
+    SessionClosureReason,
 )
 from app.compute.voice.speech_understanding import InteractionPredictionReducer
 from app.compute.voice.synthesis_sequence import SpeechSynthesisSequence
@@ -449,15 +458,6 @@ class SessionLifecycle(StrEnum):
     CLOSED = "closed"
 
 
-class SessionClosureReason(StrEnum):
-    CLIENT_DISCONNECTED = "client_disconnected"
-    CLIENT_STOPPED = "client_stopped"
-    START_TIMEOUT = "start_timeout"
-    INACTIVITY_TIMEOUT = "inactivity_timeout"
-    MAXIMUM_DURATION = "maximum_duration"
-    SESSION_FAILURE = "session_failure"
-
-
 class QwenFirstAudioYieldEndReason(StrEnum):
     FIRST_PCM = "first_pcm"
     TIMEOUT = "timeout"
@@ -722,10 +722,13 @@ class VoiceSession:
         speech_synthesizer: SpeechSynthesizer,
         policy: SessionPolicy,
         tool_executor: ToolExecutor,
+        request_id: str,
+        client_metadata: VoiceClientMetadata,
         language_model_flow_control: LanguageModelFlowControl | None = None,
         playback_sink: PlaybackSink | None = None,
         playback_policy: PlaybackPolicyConfig | None = None,
         overlap_policy: ProvisionalVadTranscriptOverlapPolicy | None = None,
+        capture_store: SessionCaptureStore | None = None,
     ) -> None:
         self.websocket = websocket
         self.speech_detector = speech_detector
@@ -735,6 +738,9 @@ class VoiceSession:
         self.speech_synthesizer = speech_synthesizer
         self.policy = policy
         self.tool_executor = tool_executor
+        self.request_id = request_id
+        self.client_metadata = client_metadata
+        self.capture_store = capture_store
         self.playback_controller = PlaybackController(
             source_sample_rate=speech_synthesizer.sample_rate,
             config=playback_policy or PlaybackPolicyConfig(),
@@ -776,6 +782,9 @@ class VoiceSession:
         self.started = False
         self.lifecycle = SessionLifecycle.CREATED
         self.connected_at = 0.0
+        self.connected_at_utc: datetime | None = None
+        self.local_time_zone: str | None = None
+        self.input_pcm16 = bytearray()
         self.last_meaningful_activity_at = 0.0
         self.closure_reason: SessionClosureReason | None = None
         self.pending_generation_teardown: ActiveGeneration | None = None
@@ -806,6 +815,7 @@ class VoiceSession:
     async def run(self) -> None:
         await self.websocket.accept()
         self.connected_at = time.perf_counter()
+        self.connected_at_utc = datetime.now(UTC)
         self.last_meaningful_activity_at = self.connected_at
         self._transition_session(SessionLifecycle.CONNECTED)
         logger.info("voice session opened: session=%s", self.session_id)
@@ -847,6 +857,7 @@ class VoiceSession:
                 except Exception:
                     # The session-level exception path already logged and reported this failure.
                     pass
+            await self._save_session_capture()
             self.conversation.clear()
             self.model_context.clear()
             self.generations.clear()
@@ -872,6 +883,73 @@ class VoiceSession:
                 self.closure_reason or SessionClosureReason.CLIENT_DISCONNECTED,
                 time.perf_counter() - self.connected_at,
             )
+
+    async def _save_session_capture(self) -> None:
+        if not self.started or self.capture_store is None:
+            return
+        connected_at = self.connected_at_utc
+        assert connected_at is not None
+        closed_at = datetime.now(UTC)
+        try:
+            record = self._create_session_capture_record(connected_at, closed_at)
+            await asyncio.to_thread(
+                self.capture_store.save,
+                record,
+                bytes(self.input_pcm16),
+            )
+        except Exception:
+            logger.exception("voice session capture failed: session=%s", self.session_id)
+
+    def _create_session_capture_record(
+        self,
+        connected_at: datetime,
+        closed_at: datetime,
+    ) -> SessionCaptureRecord:
+        return SessionCaptureRecord(
+            session_id=self.session_id,
+            request_id=self.request_id,
+            connected_at=connected_at,
+            closed_at=closed_at,
+            duration_seconds=max((closed_at - connected_at).total_seconds(), 0.0),
+            closure_reason=(self.closure_reason or SessionClosureReason.CLIENT_DISCONNECTED),
+            local_time_zone=self.local_time_zone,
+            client=self.client_metadata,
+            input_sample_rate=INPUT_SAMPLE_RATE,
+            input_sample_count=len(self.input_pcm16) // PCM_BYTES_PER_SAMPLE,
+            audio_file=f"voice-session-{self.session_id}.wav",
+            conversation=tuple(self.conversation),
+            tools=tuple(
+                SessionCaptureTool(
+                    round_index=entry.round_index,
+                    invocation_id=entry.invocation_id,
+                    call_id=entry.call_id,
+                    lifecycle=entry.lifecycle,
+                    result_commit_status=entry.result_commit_status,
+                    request=entry.request,
+                    outcome=entry.outcome,
+                    invalidation_reason=entry.invalidation_reason,
+                    wasted=entry.wasted,
+                )
+                for entry in self.tool_execution_journal
+            ),
+            generations=tuple(
+                SessionCaptureGeneration(
+                    generation_id=generation.generation_id,
+                    user_turn_id=generation.user_turn_id,
+                    speculative=generation.speculative,
+                    lifecycle=generation.lifecycle,
+                    invalidation_reason=generation.invalidation_reason,
+                    response_text=generation.response_text,
+                    acknowledged_text_offset=generation.acknowledged_offset,
+                    qwen_token_count=generation.qwen_token_count,
+                    synthesized_sample_count=generation.tts_sample_count,
+                )
+                for generation in self.generations.values()
+            ),
+            predictive_metrics=self.predictive_metrics.report(),
+            playback_metrics=self.playback_controller.metrics.report(),
+            overlap_metrics=self.overlap_metrics.report(),
+        )
 
     async def _enforce_session_deadlines(self) -> None:
         while True:
@@ -921,6 +999,7 @@ class VoiceSession:
                     raise ValueError("session.start must be sent before microphone audio.")
                 if len(pcm_bytes) % PCM_BYTES_PER_SAMPLE != 0:
                     raise ValueError("PCM16 audio frames must contain complete samples.")
+                self.input_pcm16.extend(pcm_bytes)
                 await self.audio_queue.put(pcm_bytes)
                 continue
             event_json = message.get("text")
@@ -954,6 +1033,7 @@ class VoiceSession:
         if event.input_sample_rate != INPUT_SAMPLE_RATE:
             raise ValueError(f"Input sample rate must be {INPUT_SAMPLE_RATE} Hz.")
         self.tool_executor.configure_session(event.local_time_zone)
+        self.local_time_zone = event.local_time_zone
         self.started = True
         self._record_meaningful_activity()
         self._transition_session(SessionLifecycle.READY)

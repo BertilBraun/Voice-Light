@@ -6,9 +6,11 @@ import logging
 import struct
 import threading
 import time
+import wave
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -17,6 +19,7 @@ from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
+from app.compute.voice.client_metadata import VoiceClientMetadata
 from app.compute.voice.conversation import (
     ConversationMessage,
     ConversationRole,
@@ -76,6 +79,12 @@ from app.compute.voice.schemas import (
 )
 from app.compute.voice.search import SearchPipeline, SearchResult, SearchSummary
 from app.compute.voice.session import SessionPolicy, VoiceSession
+from app.compute.voice.session_capture import (
+    SessionCaptureConfig,
+    SessionCaptureRecord,
+    SessionCaptureStore,
+    SessionClosureReason,
+)
 from app.compute.voice.speech_understanding import (
     CompositeSpeechUnderstandingProvider,
     SingleSessionTurnPredictionProvider,
@@ -1650,6 +1659,49 @@ def test_full_session_streams_audio_and_commits_naturally_completed_history() ->
     ]
     assert len(synthesizer.sessions) == 2
     assert synthesizer.sessions[0] is not synthesizer.sessions[1]
+
+
+def test_full_session_persists_private_capture(tmp_path: Path) -> None:
+    capture_store = SessionCaptureStore(SessionCaptureConfig(tmp_path))
+    web_app = create_test_app(
+        RecordingTranscriber(),
+        FakeLanguageModel(),
+        RecordingSpeechSynthesizer(),
+        capture_store=capture_store,
+    )
+
+    with TestClient(web_app).websocket_connect("/session") as websocket:
+        websocket.send_json(
+            {
+                "type": "session.start",
+                "input_sample_rate": 16_000,
+                "local_time_zone": "Europe/Berlin",
+            }
+        )
+        ready = websocket.receive_json()
+        send_turn(websocket)
+        receive_until(websocket, "assistant.audio.end")
+        send_playback_complete(websocket, 1)
+        websocket.send_json({"type": "session.stop"})
+
+    session_id = ready["session_id"]
+    capture = SessionCaptureRecord.model_validate_json(
+        (tmp_path / f"voice-session-{session_id}.json").read_text(encoding="utf-8")
+    )
+    assert capture.closure_reason is SessionClosureReason.CLIENT_STOPPED
+    assert capture.local_time_zone == "Europe/Berlin"
+    assert capture.client.origin == "https://voice.test"
+    assert capture.conversation == (
+        ConversationMessage(role=ConversationRole.USER, content="hello agent"),
+        ConversationMessage(
+            role=ConversationRole.ASSISTANT,
+            content="One two three four five six seven eight.",
+        ),
+    )
+    expected_pcm16 = SPEECH_CHUNK + SILENCE_CHUNK + SILENCE_CHUNK
+    assert capture.input_sample_count == len(expected_pcm16) // 2
+    with wave.open(str(tmp_path / capture.audio_file), "rb") as audio_file:
+        assert audio_file.readframes(audio_file.getnframes()) == expected_pcm16
 
 
 def test_websocket_pcm_backpressure_keeps_overlap_commands_ahead_of_unsent_audio() -> None:
@@ -5138,6 +5190,7 @@ def create_test_app(
     created_sessions: list[VoiceSession] | None = None,
     tool_executor: ToolExecutor | None = None,
     language_model_flow_control: LanguageModelFlowControl | None = None,
+    capture_store: SessionCaptureStore | None = None,
 ) -> FastAPI:
     web_app = FastAPI()
 
@@ -5162,8 +5215,15 @@ def create_test_app(
             speech_synthesizer=speech_synthesizer,
             policy=policy,
             tool_executor=tool_executor or create_search_registry(UnconfiguredTestSearchHandler()),
+            request_id="test-request",
+            client_metadata=VoiceClientMetadata(
+                origin="https://voice.test",
+                user_agent="voice-session-test",
+                client_address_hash="test-client",
+            ),
             language_model_flow_control=language_model_flow_control,
             playback_sink=playback_sink,
+            capture_store=capture_store,
         )
         if created_sessions is not None:
             created_sessions.append(session)

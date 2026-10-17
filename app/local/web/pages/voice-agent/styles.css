@@ -29,6 +29,7 @@ h1 { font-size: clamp(42px, 7vw, 66px); letter-spacing: -.055em; line-height: .9
 #session-guidance[data-state="connected"] { background: #fff9e8; border-color: #e6cf8e; color: #7a5b12; }
 #session-guidance[data-state="ready"] { background: #e9f7ef; border-color: #a8d5ba; color: #176b4a; font-weight: 700; }
 #session-guidance[data-state="error"] { background: #fff1f0; border-color: #e8b3ae; color: #9b332b; }
+.privacy-notice { color: #707b74; font-size: 12px; line-height: 1.45; margin: 12px 2px 0; max-width: 760px; }
 button { background: #176b4a; border: 0; border-radius: 999px; color: #ffffff; cursor: pointer; font: inherit; font-weight: 700; padding: 11px 18px; }
 button:last-child { background: #e9eeeb; color: #33443a; }
 button:disabled { cursor: default; opacity: .4; }
